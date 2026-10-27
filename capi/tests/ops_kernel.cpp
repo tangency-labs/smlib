@@ -22,7 +22,9 @@
 #include <SmOffsetGeometryCreation.h>
 #include <SmOffsetSurface.h>
 #include <SmAxis2Placement.h>
+#include <SmSolutionArray.h>
 #include <SmSphere.h>
+#include <SmSurface.h>
 #include <SmSurfOfRevolution.h>
 #include <SmVector3d.h>
 #include <SmVertex.h>
@@ -361,6 +363,145 @@ void corner_setback_open()
         CHECK(std::unique(seen.begin(), seen.end()) == seen.end());
         smlib_flat_free(f);
         done(r);
+    }
+    smlib_brep_free(part);
+}
+
+// Every section half round an open set-back corner of `r` (`holes`, as smlib_blend_setback_open
+// writes them, `n_corners` holes) is the exact arc of its round: a rational B-spline lying on the
+// round within the body's tolerance, its tangent in the round's tangent plane. The sides on the
+// planar faces are the faces' own curves, not looked at here. Returns how many halves it saw.
+int sections_on_their_rounds(const smlib_brep *r, const int64_t *holes, int64_t n_corners, const char *what)
+{
+    SmBrep *b = r->p;
+    SmTArray<SmEdge *> edges;
+    SmTArray<SmFace *> faces;
+    b->GetEdges(edges);
+    b->GetFaces(faces);
+    double tol = static_cast<double>(b->GetTolerance());
+    int halves = 0;
+    const int64_t *h = holes;
+    for (int64_t k = 0; k < n_corners; ++k)
+    {
+        int64_t n = h[0];
+        for (int64_t i = 0; i < n; ++i)
+        {
+            int64_t e = h[1 + 3 * i];
+            int64_t f = h[2 + 3 * i];
+            bool indexed = e >= 0 && static_cast<ULONG>(e) < edges.GetSize() && f >= 0 && static_cast<ULONG>(f) < faces.GetSize();
+            CHECK(indexed);
+            if (!indexed)
+            {
+                continue;
+            }
+            SmSurface *round = faces[static_cast<ULONG>(f)]->GetSurface();
+            if (round == nullptr || round->IsPlanar(tol))
+            {
+                continue;
+            }
+            ++halves;
+            SmEdge *edge = edges[static_cast<ULONG>(e)];
+            SmCurve *c = edge->GetCurve();
+            bool rational = c != nullptr && c->IsKindOf(SmBSplineCurve_TYPE) && c->IsRational();
+            double off = 0.0;
+            double tilt = 0.0;
+            if (c != nullptr)
+            {
+                SmExtent1d ivl = edge->GetInterval();
+                for (int s = 0; s <= 16; ++s)
+                {
+                    double t = ivl.GetMin() + (ivl.GetMax() - ivl.GetMin()) * s / 16.0;
+                    SmVector3d pd[2];
+                    CHECK(c->Evaluate(t, 1, TRUE, pd) == SM_SUCCESS);
+                    SmSolutionArray sol;
+                    CHECK(round->GlobalPointSolve(round->GetNaturalUVDomain(), SM_SO_MINIMIZE, SmPoint3d(pd[0]), SmZoneTol3d(1e-12), nullptr,
+                                                  SM_SR_SINGLE, sol) == SM_SUCCESS &&
+                          sol.GetSize() > 0);
+                    if (sol.GetSize() == 0)
+                    {
+                        off = HUGE_VAL;
+                        continue;
+                    }
+                    SmPoint2d uv(sol[0].m_vStart[0], sol[0].m_vStart[1]);
+                    SmPoint3d q;
+                    SmVector3d normal;
+                    CHECK(round->EvaluatePoint(uv, q) == SM_SUCCESS && round->EvaluateNormal(uv, TRUE, TRUE, normal) == SM_SUCCESS);
+                    off = std::max(off, (SmPoint3d(pd[0]) - q).Length());
+                    double speed = pd[1].Length();
+                    if (speed > 0.0)
+                    {
+                        tilt = std::max(tilt, std::asin(std::min(1.0, std::fabs(pd[1].Dot(normal)) / speed)));
+                    }
+                }
+            }
+            // The tangent's tilt out of the plane, no more than a point within `tol` of the
+            // round can give it over the half's length.
+            double length = (edge->GetStartVertex()->GetPoint() - edge->GetEndVertex()->GetPoint()).Length();
+            bool ok = rational && off <= tol && tilt <= std::max(1e-9, 10.0 * tol / std::max(length, tol));
+            if (!ok)
+            {
+                std::fprintf(stderr,
+                             "  %s, hole %lld: section half (edge %lld, face %lld) rational %d degree %lu, %.3g off the round, tangent %.3g deg "
+                             "out of its plane (tolerance %.3g)\n",
+                             what, static_cast<long long>(k), static_cast<long long>(e), static_cast<long long>(f), rational ? 1 : 0,
+                             c != nullptr && c->IsKindOf(SmBSplineCurve_TYPE)
+                                 ? static_cast<unsigned long>(static_cast<SmBSplineCurve *>(c)->GetDegree())
+                                 : 0ul,
+                             off, tilt * 180.0 / PI, tol);
+            }
+            CHECK(ok);
+        }
+        h += 1 + 3 * n;
+    }
+    return halves;
+}
+
+// tangency-labs/solidcore#1377: a 40 x 40 x 40 box with every edge rounded r 4 and every corner
+// set back 7, left open, and its corner (0, 0, 0) alone: each of the six section halves round
+// every hole is its round's exact arc, never a polynomial spline fitted near it.
+void setback_sections_are_exact_arcs()
+{
+    smlib_brep *part = box(0, 0, 0, 40, 40, 40);
+    double edges[36];
+    for (int k = 0; k < 4; ++k)
+    {
+        double a = (k & 1) != 0 ? 40 : 0;
+        double c = (k & 2) != 0 ? 40 : 0;
+        const double along_x[3] = {20, a, c};
+        const double along_y[3] = {a, 20, c};
+        const double along_z[3] = {a, c, 20};
+        for (int j = 0; j < 3; ++j)
+        {
+            edges[9 * k + j] = along_x[j];
+            edges[9 * k + 3 + j] = along_y[j];
+            edges[9 * k + 6 + j] = along_z[j];
+        }
+    }
+    double radii[12];
+    std::fill(radii, radii + 12, 4.0);
+    double corners[24];
+    double backs[8];
+    for (int k = 0; k < 8; ++k)
+    {
+        corners[3 * k] = (k & 1) != 0 ? 40 : 0;
+        corners[3 * k + 1] = (k & 2) != 0 ? 40 : 0;
+        corners[3 * k + 2] = (k & 4) != 0 ? 40 : 0;
+        backs[k] = 7.0;
+    }
+    for (int64_t n_corners : {8, 1})
+    {
+        smlib_brep *r = nullptr;
+        std::vector<int64_t> holes(static_cast<size_t>(8 * 64));
+        int64_t len = -1;
+        CHECK(smlib_blend_setback_open(part, SMLIB_BLEND_ROUND, edges, radii, 12, corners, backs, n_corners, 0.1, &r, holes.data(),
+                                       static_cast<int64_t>(holes.size()), &len, nullptr, nullptr) == SMLIB_OK &&
+              r != nullptr && len == n_corners * (1 + 3 * 12));
+        if (r != nullptr)
+        {
+            CHECK(sections_on_their_rounds(r, holes.data(), n_corners, n_corners == 8 ? "eight corners" : "corner (0, 0, 0)") ==
+                  6 * n_corners);
+            done(r);
+        }
     }
     smlib_brep_free(part);
 }
@@ -3267,6 +3408,7 @@ int main()
     shelled_dome_rim();
     corner_setback();
     corner_setback_open();
+    setback_sections_are_exact_arcs();
     concave_corner_setback();
     shelled_tapered_box_rounds();
 
