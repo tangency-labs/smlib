@@ -35,6 +35,7 @@ class SmGfxArraySet ;
 class SmDropCurveFail ;
 class SmBrepData ;
 class SmMerge;
+class SmStitchCallback;
 
 // First failure per input GetFaces() index.
 enum SmTessellationStage
@@ -1405,12 +1406,14 @@ public:
                        double             & rdMaxEdgeGap,                // out: max gap found between coincident edges    considered for glueing     
                        SmTArray<SmFace *> * pOptFaces = NULL,            // in : only stitch topology connected to these faces, NULL=all faces           
                                                                          //    : default:[NULL]                                                       
-                       SmBoolean            bAllowSpineEdges = FALSE) ;  // in : if true this allows formation of spine edges. See c below.           
+                       SmBoolean            bAllowSpineEdges = FALSE,    // in : if true this allows formation of spine edges. See c below.           
                                                                          //    : default:[FALSE]                                                      
                                                                          //    : NOTE: some coincident vertex and edge pairs do not get glued due to  
                                                                          //    : a. gaps exceeding tolerances                                         
                                                                          //    : b. a failure within the glue edge function                           
                                                                          //    : c. not being lamina when m_bMakingManifoldSolid == TRUE
+                       SmStitchCallback   * pOptCallback = NULL) ;      // in : SolidCraft change: picks which of two coincident vertices or edges
+                                                                         //      to keep, NULL = SmStitchCallback's own choice. default:[NULL]
            
 
   SmStatus StitchAndOrient(double dStitchTol3d = -0.1,                   // in : dXSectTol3d =  (dStitchTol3d < 0.0) ? 2.0 * ZoneTol3d,

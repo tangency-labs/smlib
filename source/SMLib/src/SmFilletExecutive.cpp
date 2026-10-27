@@ -26,6 +26,7 @@
 #include <SmCrvOnSurf.h>
 
 #include <memory>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -2387,6 +2388,99 @@ SmBoolean bDebugMe = FALSE;
 } // end SmFilletExecutive::CreateFilletCorners
 
 /*******************************************************************//**
+PURPOSE: SolidCraft change: the stitch of m_pFilletBrep, keeping a fillet's own
+    edge where a corner's patch meets it.
+
+NOTES: A corner's patch is fitted to the edges of the fillets round it: the
+    surfaces SmBSplineSurface::CreateCornerBlend makes interpolate non-rational
+    approximations of them (N_FillNSidedHole takes no rational curves), within
+    the corner's approximation tolerance. A patch of one surface is bounded by
+    those edges' own curves (MakeFaceBrep), so its edges and the fillets' are the
+    same curves. An N-sided patch's faces are bounded by their surfaces' own
+    isoparametric curves, so along each fillet's section the patch's edge is the
+    approximation, as far from the fillet's surface as the fillet's exact edge is
+    from the patch. The default choice keeps the edge nearer the other edge's
+    faces, which between those two near-equal distances is no choice at all: a
+    section came out as the exact arc on one half and the patch's polynomial
+    approximation on the other (tangency-labs/solidcore#1377). The fillet's edge
+    is the geometry the patch was fitted to, so it is the one kept; any other
+    pair takes the default choice.
+***********************************************************************/
+namespace
+{
+class SmFilletPatchStitchCallback : public SmStitchCallback
+{
+public:
+  explicit SmFilletPatchStitchCallback(const std::unordered_set<const SmFace*> & crPatchFaces)
+    : m_rPatchFaces(crPatchFaces) {}
+
+  SmStatus SelectTopologyToKeep
+    (SmTopology * cpTopologyElement1,
+     SmTopology * cpTopologyElement2,
+     double       dDistBetween,
+     double     & rdMaxDistance,
+     SmBoolean  & rbKeepElement1) override
+  {
+    SER( SmStitchCallback::SelectTopologyToKeep( cpTopologyElement1, cpTopologyElement2,
+                                                 dDistBetween, rdMaxDistance, rbKeepElement1 ));
+    SmEdge * pEdge1 = SM_CAST_PTR( SmEdge, cpTopologyElement1 );
+    SmEdge * pEdge2 = SM_CAST_PTR( SmEdge, cpTopologyElement2 );
+    if ( pEdge1 == NULL || pEdge2 == NULL )
+      { return SM_SUCCESS; }
+    PatchSide eSide1 = SideOf( pEdge1 );
+    PatchSide eSide2 = SideOf( pEdge2 );
+    SmEdge * pKeep = NULL;
+    SmEdge * pDrop = NULL;
+    if      ( eSide1 == PATCH_ONLY && eSide2 == NO_PATCH ) { pKeep = pEdge2; pDrop = pEdge1; }
+    else if ( eSide1 == NO_PATCH && eSide2 == PATCH_ONLY ) { pKeep = pEdge1; pDrop = pEdge2; }
+    else
+      { return SM_SUCCESS; }
+
+    // How far the kept edge is from the faces of the one it replaces, measured as
+    // the default choice measures it.
+    SmCurve * pKeepCurve = pKeep->GetCurve();
+    NER( pKeepCurve );
+    SmTArray<SmFace*> sDropFaces;
+    pDrop->GetFaces( sDropFaces );
+    double dMax = dDistBetween;
+    for ( ULONG ii=0; ii<sDropFaces.GetSize(); ii++ )
+      {
+        SmSurface * pSurface = sDropFaces[ii]->GetSurface();
+        NER( pSurface );
+        double dDist = 0.0;
+        SER( pKeepCurve->SurfaceMaxDistanceBetween( pKeep->GetInterval(), *pSurface,
+                                                    sDropFaces[ii]->GetUVDomain(), 0, NULL, dDist ));
+        dMax = smos_Max( dMax, dDist );
+      }
+    rdMaxDistance  = dMax;
+    rbKeepElement1 = ( pKeep == pEdge1 ) ? TRUE : FALSE;
+    return SM_SUCCESS;
+  }
+
+private:
+  enum PatchSide { NO_PATCH, PATCH_ONLY, MIXED };
+
+  // Whether the faces of `pEdge` are all corner patches, none, or some of each (or none at all).
+  PatchSide SideOf( const SmEdge * pEdge ) const
+  {
+    SmTArray<SmFace*> sFaces;
+    pEdge->GetFaces( sFaces );
+    ULONG lPatches = 0;
+    for ( ULONG ii=0; ii<sFaces.GetSize(); ii++ )
+      {
+        if ( m_rPatchFaces.count( sFaces[ii] ) != 0 )
+          { lPatches++; }
+      }
+    if ( sFaces.GetSize() == 0 || ( lPatches > 0 && lPatches < sFaces.GetSize() ))
+      { return MIXED; }
+    return ( lPatches == 0 ) ? NO_PATCH : PATCH_ONLY;
+  }
+
+  const std::unordered_set<const SmFace*> & m_rPatchFaces;
+};
+} // namespace
+
+/*******************************************************************//**
 PURPOSE: This routine create fillets and their topologies in m_pFilletBrep
     for the geometry in m_pTargetBrep. 
 
@@ -3174,6 +3268,22 @@ SmStatus SmFilletExecutive::CreateFilletBrep
   // stitch the fillet faces along edges where they coincide
   if (1)
     {
+      // SolidCraft change: where a corner's patch meets a fillet, the fillet's edge is
+      // kept (SmFilletPatchStitchCallback). The patch faces are those MakeFaceBrep made
+      // on each corner's surfaces.
+      std::unordered_set<const SmFace*> sPatchFaces;
+      for ( ULONG lCorner=0; lCorner<m_vFilletCorners.GetSize(); lCorner++ )
+        {
+          const SmTArray<SmSurface*> & rSurfaces = m_vFilletCorners[lCorner]->m_vSurfaces;
+          for ( ULONG lSurface=0; lSurface<rSurfaces.GetSize(); lSurface++ )
+            {
+              SmObject * pOwner = rSurfaces[lSurface] != NULL ? rSurfaces[lSurface]->GetOwner() : NULL;
+              if ( pOwner != NULL && pOwner->IsKindOf( SmFace_TYPE ))
+                { sPatchFaces.insert( (const SmFace*)pOwner ); }
+            }
+        }
+      SmFilletPatchStitchCallback sPatchCallback( sPatchFaces );
+
       ULONG lNumStitched, lNumLamina;
       double dMaxVGap, dMaxEGap;
       if(SM_SUCCESS != m_pFilletBrep->StitchFaces
@@ -3181,11 +3291,10 @@ SmStatus SmFilletExecutive::CreateFilletBrep
                           lNumStitched,                      // out: number of edges stitched
                           lNumLamina,                    // out: number of lamina edges remaining after stitch
                           dMaxVGap,                      // out: max gap found between coincident vertices considered for glueing
-                          dMaxEGap ))                    // out: max gap found between coincident edges    considered for glueing
-                                                         // in : only stitch topology connected to these faces, NULL=all faces
-                                                         //      default:[NULL]
-                                                         // in : if true this allows formation of spine edges. See c below.
-                                                         //      default:[FALSE]
+                          dMaxEGap,                      // out: max gap found between coincident edges    considered for glueing
+                          NULL,                          // in : only stitch topology connected to these faces, NULL=all faces
+                          FALSE,                         // in : if true this allows formation of spine edges. See c below.
+                          &sPatchCallback ))             // in : keep a fillet's edge where a corner's patch meets it
                                                          // NOTE: some coincident vertex and edge pairs do not get glued due to
                                                          //       a. gaps exceeding tolerances
                                                          //       b. a failure within the glue edge function

@@ -26943,20 +26943,22 @@ SmStatus SmBrep::StitchFaces
    double            & rdMaxEdgeFaceTrimCurveGap, // out: max gap found between coincident edges    considered for glueing
    SmTArray<SmFace*> * pOptFaces,                 // in : only stitch topology connected to these faces, NULL=all faces
                                                   //      default:[NULL]
-   SmBoolean           bAllowSpineEdges)          // in : if true this allows formation of spine edges. See c below.
+   SmBoolean           bAllowSpineEdges,          // in : if true this allows formation of spine edges. See c below.
                                                   //      default:[FALSE]
                                                   // NOTE: some coincident vertex and edge pairs do not get glued due to
                                                   //       a. gaps exceeding tolerances
                                                   //       b. a failure within the glue edge function
                                                   //       c. not being lamina when m_bMakingManifoldSolid == TRUE
+   SmStitchCallback  * pOptCallback)              // in : SolidCraft change: picks which of two coincident vertices or edges
+                                                  //      to keep, NULL = SmStitchCallback's own choice. default:[NULL]
 {
   SmLockBrepBox lockit (this); // lock brep bounding box, until goes out of scope
 
   // StitchCallback has SelectTopologyToKeep(): pick KeepItem and DeleteItem from a glue ItemPair
   SmStitchCallback sCallBack;
 
-  // construct Stitch manager using default coincident keep/delete logic for glue ItemPairs
-  SmStitch sStitch(sCallBack, dXSectTol3d);
+  // construct Stitch manager using the caller's keep/delete logic for glue ItemPairs, else the default coincident one
+  SmStitch sStitch(pOptCallback != NULL ? *pOptCallback : sCallBack, dXSectTol3d);
 
   // Set the SmStitch DoStitch state bits as desired
   //    sStitch.m_bDoRegionNesting        = FALSE;        // default:[TRUE]
