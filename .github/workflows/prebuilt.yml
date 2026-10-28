@@ -31,12 +31,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Blacksmith runners wherever Blacksmith has the platform; Windows ARM64 and Intel macOS stay on
-        # GitHub's, which Blacksmith does not offer.
+        # Linux x86_64 and Windows x64/x86 on Blacksmith; Linux ARM64 and macOS on GitHub's (Blacksmith's
+        # ARM and macOS runners are not yet available to this organisation), Windows ARM64 and Intel
+        # macOS on GitHub's, which Blacksmith does not offer.
         include:
           - { target: x86_64-unknown-linux-gnu, runner: blacksmith-4vcpu-ubuntu-2404 }
-          - { target: aarch64-unknown-linux-gnu, runner: blacksmith-4vcpu-ubuntu-2404-arm }
-          - { target: aarch64-apple-darwin, runner: blacksmith-6vcpu-macos-15, cmake: '-DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0' }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm }
+          - { target: aarch64-apple-darwin, runner: macos-15, cmake: '-DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0' }
           - { target: x86_64-apple-darwin, runner: macos-15-intel, cmake: '-DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0' }
           - { target: x86_64-pc-windows-msvc, runner: blacksmith-8vcpu-windows-2025, cmake: '-A x64' }
           - { target: i686-pc-windows-msvc, runner: blacksmith-8vcpu-windows-2025, cmake: '-A Win32', cross: true }
