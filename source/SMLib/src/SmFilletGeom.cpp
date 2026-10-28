@@ -2044,7 +2044,18 @@ SmBoolean bDebugFVUs=FALSE;
       SmPoint3d         sPnt;
       SmPoint2d         sUV    = rTsectPnt1.UVPos(lRailIndex);
       const SmSurface * pSurf1 = pFilletGeom1->GetOffsetSurface(lRailIndex)->GetBaseSurface();
-      SER( pSurf1->EvaluatePoint( sUV, sPnt ) );
+      {
+        // SolidCraft change: on the base surface continued, as the solve found it
+        // (SmFilletSolver::RailEdgeuseIntersect, over the surface's extended domain). Clamped
+        // to the surface's own domain, a rail meeting a side edge's line just past the edge's
+        // end (a cliff overflow) was placed on the edge's end vertex instead, off the rail by
+        // only the square of that distance over twice the radius, and taken as meeting the
+        // side edge (SmFilletNx1Corner::CalcCornerEdgeGeom).
+        SmBoolean          bTmp = FALSE;
+        SmBSplineSurface * pBSplineSurf1 = SM_CAST_PTR( SmBSplineSurface, pSurf1 );
+        SmTemporaryChangeValue<SmBoolean> sUnclamped( pBSplineSurf1 ? pBSplineSurf1->GetOutOfBoundsEnabled() : bTmp, TRUE );
+        SER( pSurf1->EvaluatePoint( sUV, sPnt ) );
+      }
 
       // let dGap = Projection distance from sPnt to SideEdge->Curve
       SmCurve  * pCurve = pSideEU1->GetEdge()->GetCurve();
