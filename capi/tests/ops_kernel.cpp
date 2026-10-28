@@ -12,6 +12,7 @@
 #include <SmApiPrimitives.h>
 #include <SmApiQueries.h>
 #include <SmBSplineCurve.h>
+#include <SmBSplineSurface.h>
 #include <SmCylinder.h>
 #include <SmExtent3d.h>
 #include <SmEdge.h>
@@ -596,6 +597,66 @@ double end_curvature(SmEdge *e, const SmVertex *v)
     }
     double speed = d[1].Length();
     return (d[1] * d[2]).Length() / (speed * speed * speed);
+}
+
+// The corner patch of a blended corner at `corner`: every B-spline face of `b` whose vertices
+// all lie within `reach` of it. Returns the largest angle (degrees) between the faces either
+// side of the patch's edges, at 31 stations inside each edge (its ends left out: a 3-sided
+// patch's collapsed side is a point where it has no one normal), and sets `n_faces` to the
+// patches found. A tangent seam reads 0.
+double worst_corner_seam_angle(const smlib_brep *b, const SmPoint3d &corner, double reach, int &n_faces)
+{
+    n_faces = 0;
+    double worst = 0.0;
+    SmTArray<SmFace *> faces;
+    b->p->GetFaces(faces);
+    for (ULONG f = 0; f < faces.GetSize(); ++f)
+    {
+        if (faces[f]->GetSurface() == nullptr || !faces[f]->GetSurface()->IsKindOf(SmBSplineSurface_TYPE))
+        {
+            continue;
+        }
+        SmTArray<SmVertex *> vs;
+        faces[f]->GetVertices(vs);
+        bool near_corner = vs.GetSize() > 0;
+        for (ULONG k = 0; k < vs.GetSize(); ++k)
+        {
+            near_corner = near_corner && (vs[k]->GetPoint() - corner).Length() <= reach;
+        }
+        if (!near_corner)
+        {
+            continue;
+        }
+        n_faces++;
+        SmTArray<SmEdge *> es;
+        faces[f]->GetEdges(es);
+        for (ULONG k = 0; k < es.GetSize(); ++k)
+        {
+            SmEdgeuse *a = es[k]->GetPrimaryEdgeuse();
+            SmEdgeuse *o = a != nullptr ? a->GetRadial() : nullptr;
+            if (o == nullptr || o == a)
+            {
+                worst = HUGE_VAL;
+                continue;
+            }
+            SmExtent1d ivl = es[k]->GetInterval();
+            for (int s = 1; s < 32; ++s)
+            {
+                SmPoint3d pa, pb;
+                SmVector3d ba, bb;
+                if (a->EvaluateBinormal(ivl.Evaluate(s / 32.0), FALSE, pa, ba) != SM_SUCCESS ||
+                    o->EvaluateBinormal(ivl.Evaluate(s / 32.0), FALSE, pb, bb) != SM_SUCCESS || ba.Unitize(FALSE) != SM_SUCCESS ||
+                    bb.Unitize(FALSE) != SM_SUCCESS)
+                {
+                    worst = HUGE_VAL;
+                    continue;
+                }
+                // tangent faces' binormals (into each face, square to the edge) are opposed
+                worst = std::max(worst, std::acos(std::min(1.0, -ba.Dot(bb))) * 180.0 / PI);
+            }
+        }
+    }
+    return worst;
 }
 
 // The normal curvature, at the point of `b`'s non-planar faces nearest `p` (within 1e-6), of
@@ -2431,6 +2492,16 @@ int main()
             {
                 double want = volume_of(joined) + added - removed;
                 CHECK(near(volume_of(r), want, 8.0 * rad * rad * rad / want));
+                // The corner patch is tangent to both rounds and to the boss's side along all its
+                // edges. Its Coons construction averaged the corners' twists, which each round's
+                // curvature fixes differently, and left it 15.6 degrees off the bar's round at r 2.
+                int patches = 0;
+                const double angle = worst_corner_seam_angle(r, SmPoint3d(std::sqrt(175.0), -15, 10), 3.0 * rad, patches);
+                CHECK(patches == 1 && angle < 1.0);
+                if (!(angle < 1.0))
+                {
+                    std::fprintf(stderr, "  r %g: corner patch seams %.3g degrees\n", rad, angle);
+                }
                 done(r);
             }
             else
@@ -2439,6 +2510,40 @@ int main()
             }
         }
         smlib_brep_free(joined);
+    }
+
+    // The same 3x2 mixed corner in an L-shaped box, its third edge convex (the riser's front
+    // edge): the 60 x 40 x 20 box less the notch (40, 20, 10)-(70, 50, 30), the notch floor's
+    // concave edge and its convex side edge rounded r 2 and 5. Its patch was 14.7 degrees off the
+    // convex round, and 38 degrees off the side face near the end of its rail.
+    {
+        smlib_brep *part = box(0, 0, 0, 60, 40, 20);
+        smlib_brep *block = box(40, 20, 10, 30, 30, 20);
+        smlib_brep *notched = nullptr;
+        CHECK(smlib_boolean(part, block, SMLIB_BOOLEAN_SUBTRACT, &notched) == SMLIB_OK && notched != nullptr);
+        smlib_brep_free(part);
+        smlib_brep_free(block);
+        for (const double rad : {2.0, 5.0})
+        {
+            const double edges[6] = {50, 20, 10, 60, 30, 10};
+            const double sizes[2] = {rad, rad};
+            if (notched != nullptr && smlib_blend(notched, SMLIB_BLEND_ROUND, edges, sizes, 2, 0.1, &r, nullptr) == SMLIB_OK)
+            {
+                int patches = 0;
+                const double angle = worst_corner_seam_angle(r, SmPoint3d(60, 20, 10), 2.0 * rad, patches);
+                CHECK(patches == 1 && angle < 1.0);
+                if (!(angle < 1.0))
+                {
+                    std::fprintf(stderr, "  L-shaped box r %g: corner patch seams %.3g degrees\n", rad, angle);
+                }
+                done(r);
+            }
+            else
+            {
+                CHECK(!"an L-shaped box's notch floor edges rounded together");
+            }
+        }
+        smlib_brep_free(notched);
     }
 
     // SolidCraft ladder 07-fillets/012: a variable round, r0 at x = 0 to r1 at x = 55, on the top
