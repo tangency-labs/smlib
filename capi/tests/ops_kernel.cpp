@@ -1781,6 +1781,52 @@ int main()
         smlib_brep_free(slab);
     }
 
+    // A round wider than its faces, on the long top edge of a bar whose section is W along the
+    // top by H down the side: the round's rail on each face lies r from the edge, past the
+    // face's far edge where r > W or r > H, a cliff overflow built on the faces continued and
+    // subtracted. Its section takes off, at distance a from the edge along the top (a <= r), the
+    // depth min(H, r - sqrt(r^2 - (a - r)^2)) down the side: in closed form with
+    // D(x) = (x sqrt(r^2 - x^2) + r^2 asin(x / r)) / 2. An 80 x 5 x 5 bar rounded r9, r10 and
+    // r12 (r10 and r12 failed in the fillet surface, with no rail ends: the corners found where
+    // a rail meets the end face's side edge only on the edge itself, or from a guess already on
+    // its line past the end); a 40 x 20 x 10 box's edge on its 10 high side rounded r10.05,
+    // r10.07 and r12 (r10.05 and r10.07 built an end rib off the fillet: the rail's end, just
+    // past the side edge's end, was placed on that end).
+    {
+        auto removed = [](double rr, double w, double h)
+        {
+            const double l = std::min(w, rr);
+            const double a0 = rr > h ? rr - std::sqrt(rr * rr - (rr - h) * (rr - h)) : 0.0;
+            auto d = [rr](double x) { return 0.5 * (x * std::sqrt(std::max(rr * rr - x * x, 0.0)) + rr * rr * std::asin(std::max(-1.0, std::min(1.0, x / rr)))); };
+            auto f = [&](double a) { return rr * a - d(a - rr); };
+            return h * a0 + f(l) - f(a0);
+        };
+        smlib_brep *bar = box(0, 0, 0, 80, 5, 5);
+        const double bar_edge[3] = {40, 0, 5};
+        for (double radius : {9.0, 10.0, 12.0})
+        {
+            CHECK(smlib_fillet(bar, bar_edge, 1, 0.1, radius, &r, nullptr) == SMLIB_OK && sound(r));
+            if (r != nullptr)
+            {
+                CHECK(near(volume_of(r), 80.0 * (25.0 - removed(radius, 5.0, 5.0)), 1e-7));
+                done(r);
+            }
+        }
+        smlib_brep_free(bar);
+        smlib_brep *slab = box(0, 0, 0, 40, 20, 10);
+        const double slab_edge[3] = {20, 0, 10};
+        for (double radius : {10.05, 10.07, 12.0})
+        {
+            CHECK(smlib_fillet(slab, slab_edge, 1, 0.1, radius, &r, nullptr) == SMLIB_OK && sound(r));
+            if (r != nullptr)
+            {
+                CHECK(near(volume_of(r), 40.0 * (200.0 - removed(radius, 20.0, 10.0)), 1e-7));
+                done(r);
+            }
+        }
+        smlib_brep_free(slab);
+    }
+
     // A chamfer of setback 2 on the top edge y = 0 of a prism 20 high on (0,0) (40,0)
     // (40 - 20s, 20) (20s, 20): its end faces slope by s, so the chamfer's contact line on the
     // top leaves it across an end face's top edge (the top's side edge at that end) before the
