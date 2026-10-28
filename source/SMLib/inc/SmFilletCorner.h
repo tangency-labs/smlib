@@ -70,6 +70,11 @@ protected:
   double                    m_dSetBackDist;          // Distance of setback (from the filleted vertex).
                                                      // No setbacks if m_dSetBackDist = 0.0
                                                      // Note, this makes no sense with Bevel.
+  double                    m_dEaseDist;             // SolidCraft change: length along each edge before the setback over which
+                                                     //   each round's cross-section eases, by a C2 law, from its own to the
+                                                     //   curvature-continuous section (SM_FSG_BLEND_CURVE, G2, at thirds), and
+                                                     //   the corner's rail-rail curves meet the rails curvature-continuously.
+                                                     //   0.0 = none (the setback's sections are the round's own).
   double                    m_dThisApproxTol3d;   // 3D tolerance for corner patch creation
   double                    m_dTangencyTolRadians;   // Angle tol for tangent field approximation
                             
@@ -188,6 +193,7 @@ public:
   SmStatus            GetPatchFaces(SmTArray<SmFace*> & rFaces) const;
   const SmVertex    * GetFilletedVertex()                              { return m_cpVertex; }
   double              GetSetBackDist()                                 { return m_dSetBackDist; }
+  double              GetEaseDist()                                    { return m_dEaseDist; } // SolidCraft change
   SmFilStatus         GetStatus()                                      { return m_eStatus; }
   double              GetTangencyTolRadians()                          { SM_ASSERT_TOL(m_dTangencyTolRadians) ; return m_dTangencyTolRadians; }
 
@@ -198,6 +204,7 @@ public:
   // simple assignments
   void SetBevel         ( SmBoolean bIsBevel )  { m_bBevel          = bIsBevel; }
   void SetSetBackDist   ( double dSetBackDist ) { m_dSetBackDist    = dSetBackDist; }
+  void SetEaseDist      ( double dEaseDist )    { m_dEaseDist       = dEaseDist; } // SolidCraft change: see m_dEaseDist
   void SetCalcAsConstRad( SmBoolean bConst )    { m_bCalcAsConstRad = bConst; }
   void SetStatus        ( SmFilStatus eStatus ) { m_eStatus         = eStatus; }
 

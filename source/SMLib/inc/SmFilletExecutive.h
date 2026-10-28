@@ -430,6 +430,7 @@ private:
   SmStatus  CutFilletAtOpenEnd(const SmFilletOpenEnd & crEnd); // cut the fillet off by the end face's surface continued
   SmStatus  CloseRemovalRegion();             // add the faces on the target's surfaces that close m_pFilletBrep
 public:
+  SmStatus EaseSetBackSections();             // SolidCraft change: ease rounds into curvature-continuous sections before eased setbacks (SmFilletCorner::m_dEaseDist)
   SmStatus NoteRadiusCornerSurfaces();        // SolidCraft change: copy fillet surfaces that turn where the radius has a corner
   SmStatus SplitFilletFacesAtRadiusCorners(); // SolidCraft change: split those fillet faces where the radius turns
   SmStatus RemoveTopoEdges           ();

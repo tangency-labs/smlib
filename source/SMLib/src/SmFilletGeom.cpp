@@ -6706,6 +6706,16 @@ SmStatus SmFilletEdge::CalcRailRailInterpolation
         } // end corner has 4 edges check
     } // end when given a corner check
 
+  // SolidCraft change: at a corner whose rounds ease into their curvature-continuous sections
+  // before the setback (SmFilletCorner::m_dEaseDist), the curve meets each rail curvature-
+  // continuously: the G2 interpolation of the rails' ends below, which meets a straight rail with
+  // zero curvature.
+  SmBoolean bMeetRailsG2 = (pCorner != NULL && pCorner->GetEaseDist() > 0.0) ? TRUE : FALSE;
+  if (bMeetRailsG2 && lNumDerivatives < 2)
+    {
+      lNumDerivatives = 2;
+    }
+
   SmFilletVertex   * pStartFV  = (SmFilletVertex*)GetVertex();
   SmFilletVertex   * pEndFV    = (SmFilletVertex*)GetOtherVertex(pStartFV);
 
@@ -6897,7 +6907,8 @@ SmStatus SmFilletEdge::CalcRailRailInterpolation
   SER(pCurve1->Evaluate(dParam1,lNumDerivatives,TRUE,sPntVec1));
   if (!bSameOrient1)
     {
-      for (ULONG ii=1; ii<=lNumDerivatives; ii++)
+      // SolidCraft change: run backwards, the odd derivatives change sign, the even ones do not
+      for (ULONG ii=1; ii<=lNumDerivatives; ii+=2)
         {
           sPntVec1[ii] = -sPntVec1[ii];
         }
@@ -6908,7 +6919,8 @@ SmStatus SmFilletEdge::CalcRailRailInterpolation
   SER(pCurve2->Evaluate(dParam2,lNumDerivatives,TRUE,sPntVec2));
   if (!bSameOrient2)
     {
-      for (ULONG ii=1; ii<=lNumDerivatives; ii++)
+      // SolidCraft change: run backwards, the odd derivatives change sign, the even ones do not
+      for (ULONG ii=1; ii<=lNumDerivatives; ii+=2)
         {
           sPntVec2[ii] = -sPntVec2[ii];
         }
@@ -6942,7 +6954,7 @@ int iDebugLevel = 0;
                                             sEndPnt,
                                             pNewCurve));
     }
-  else if (TRUE/*eFSGType == SM_FSG_CIRCULAR*/)
+  else if (!bMeetRailsG2) // SolidCraft change: was TRUE/*eFSGType == SM_FSG_CIRCULAR*/
     {
       // In G1 cases, we'll create 3d curve and then
       // drop it onto the surface
@@ -6961,10 +6973,27 @@ int iDebugLevel = 0;
   else
     {
       // G1, G2 & G3 cases
+      // SolidCraft change: each end's derivatives run the way the curve does, whatever the
+      // rails' orientation flags say: the start tangent towards where the two tangent lines
+      // meet, the end tangent from there (the conic above takes only the lines, not their sense)
+      {
+        double dT1 = 0.0, dT2 = 0.0;
+        if (   smgu_LineLineClosestPoint(sStartPnt, sPntVec1[1], sEndPnt, sPntVec2[1], dT1, dT2) == SM_SUCCESS
+            && smos_Fabs(dT1) > SM_EFF_ZERO && smos_Fabs(dT2) > SM_EFF_ZERO)
+          {
+            for (ULONG ii=1; ii<=lNumDerivatives; ii+=2)
+              {
+                if (dT1 < 0.0) { sPntVec1[ii] = -sPntVec1[ii]; }
+                if (dT2 > 0.0) { sPntVec2[ii] = -sPntVec2[ii]; }
+              }
+          }
+      }
       // Fair the 3d points & tangents
+      // SolidCraft change: from the vertices themselves, as the curve above (the rail points
+      // dropped there lie on them only to the drop's tolerance)
       SmTArray<SmPoint3d> sPoints;
-      sPoints.Add(sPntVec1[0]);
-      sPoints.Add(sPntVec2[0]);
+      sPoints.Add(sStartPnt);
+      sPoints.Add(sEndPnt);
       SmTArray<SmVector3d> sTangents;
       sTangents.Add(sPntVec1[1]);
       sTangents.Add(sPntVec2[1]);

@@ -1105,6 +1105,7 @@ SmFilletCorner::SmFilletCorner
    m_bTopologyAdjusted(FALSE),
    m_bExtendedSurfacePatch(TRUE),
    m_dSetBackDist(0.0),
+   m_dEaseDist(0.0),
    m_dThisApproxTol3d(dApproxTol3d),
    m_dTangencyTolRadians(dTangencyTolRadians)
 {
