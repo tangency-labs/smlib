@@ -33,7 +33,8 @@ links it) on Windows.
 So far the API covers what's needed to prove the build (init, copy, free, box, volume, counts,
 manifold check and native file read/write), SMLib's own validity check (`smlib_brep_check`),
 exact mass properties (`smlib_brep_mass_properties`, `smlib_brep_area`), the exact box
-(`smlib_brep_bounds`), history and the flat
+(`smlib_brep_bounds`), how far an edge lies from a face's surface
+(`smlib_brep_edge_face_distance`), history and the flat
 arrays below. SolidCraft's kernel adapter adds the rest, one shim at a time, each with a case in
 a fuzz target.
 history, the flat arrays below and the operations. SolidCraft's kernel adapter adds the rest,
@@ -105,7 +106,8 @@ follow the merge (a merged face carries both faces' tags).
 regression cases, both against analytic volumes and `smlib_brep_check` level 2.
 
 exact mass properties (`smlib_brep_mass_properties`, `smlib_brep_area`), the exact box
-(`smlib_brep_bounds`), history, the flat
+(`smlib_brep_bounds`), how far an edge lies from a face's surface
+(`smlib_brep_edge_face_distance`), history, the flat
 arrays and surface/surface intersection below. SolidCraft's kernel adapter adds the rest, one
 shim at a time, each with a case in a fuzz target.
 

@@ -2,13 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // smlib_brep_mass_properties and smlib_brep_area: SMLib's exact (integrated, not tessellated)
-// area, volume, centroid and inertia; smlib_brep_bounds: the exact box.
+// area, volume, centroid and inertia; smlib_brep_bounds: the exact box;
+// smlib_brep_edge_face_distance: how far an edge lies from a face's surface, as SMLib measures it.
 
 #include "smlib_shim.h"
 
 #include <SmAttribute.h>
+#include <SmEdge.h>
 #include <SmExtent3d.h>
 #include <SmFace.h>
+#include <SmGap.h>
+#include <SmSurface.h>
 #include <SmRegion.h>
 #include <SmVertex.h>
 
@@ -228,6 +232,52 @@ extern "C" int32_t smlib_brep_bounds(const smlib_brep *brep, double lo[3], doubl
             }
             std::memcpy(lo, r, 3 * sizeof(double));
             std::memcpy(hi, r + 3, 3 * sizeof(double));
+            return SMLIB_OK;
+        }
+    );
+}
+
+extern "C" int32_t smlib_brep_edge_face_distance(const smlib_brep *brep, int64_t edge, int64_t face, double *out)
+{
+    if (!valid(brep) || out == nullptr || edge < 0 || face < 0)
+    {
+        return SMLIB_ERR_ARG;
+    }
+    Call c("smlib_brep_edge_face_distance", handle(brep) + ", edge=" + std::to_string(edge) + ", face=" + std::to_string(face));
+    c.input("brep", brep);
+    return c.run(
+        [&]
+        {
+            SmTArray<SmEdge *> edges;
+            SmTArray<SmFace *> faces;
+            brep->p->GetEdges(edges);
+            brep->p->GetFaces(faces);
+            if (static_cast<uint64_t>(edge) >= edges.GetSize() || static_cast<uint64_t>(face) >= faces.GetSize())
+            {
+                return static_cast<int32_t>(SMLIB_ERR_ARG);
+            }
+            const SmEdge *e = edges[static_cast<ULONG>(edge)];
+            const SmCurve *curve = e->GetCurve();
+            const SmSurface *surface = faces[static_cast<ULONG>(face)]->GetSurface();
+            SmExtent1d interval = e->GetInterval();
+            if (curve == nullptr || surface == nullptr || !(interval.GetMax() > interval.GetMin()))
+            {
+                return static_cast<int32_t>(SM_ERR_INVALID_INPUT);
+            }
+            // SMLib's own edge/face gap (SmEdgeuse::CalcMaxEdgeFaceGap's): the tolerance only
+            // classifies the samples, it does not change the distances.
+            SmCrvSrfGapFunction gaps(SmTol::GetXSectTol3d(brep->p->GetContext()), curve, interval, surface, 20);
+            SmGapSample *largest = nullptr;
+            int32_t s = status(gaps.GetMaxGapSample(largest));
+            if (s != SMLIB_OK)
+            {
+                return s;
+            }
+            if (largest == nullptr || !std::isfinite(largest->GetLength()))
+            {
+                return static_cast<int32_t>(SM_ERR_INVALID_INPUT);
+            }
+            *out = largest->GetLength();
             return SMLIB_OK;
         }
     );

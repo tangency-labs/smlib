@@ -201,6 +201,19 @@ int32_t smlib_brep_area(const smlib_brep *brep, double relative_accuracy, double
  * geometry (an empty box) is SM_ERR_INVALID_INPUT. */
 int32_t smlib_brep_bounds(const smlib_brep *brep, double lo[3], double hi[3]);
 
+/* How far edge `edge` (its curve over its interval) lies from the surface of face `face`, over that
+ * surface's own parameter domain and not beyond it, into *out in mm: the largest of SMLib's
+ * edge/face gap samples (the exact distance from the edge's point to its nearest surface point,
+ * at both ends of the edge and the ends and middle of each of its knot spans), the gap SMLib sizes
+ * an edge's tolerance by. An edge given past its face's surface (its end a few um beyond the
+ * patch) measures how far it goes. When SMLib makes a UV trim for such an edge it trims the edge
+ * back to the surface (its end moves within its vertex's tolerance) unless the edge's own
+ * tolerance covers the gap: an edge that must keep its interval is given at least this distance
+ * as its zone tolerance (EDGE_TOLERANCE twice it). Indices are positions in the body's edge and
+ * face order (SmBrep::GetEdges and GetFaces, the order smlib_brep_export writes them in); an
+ * index out of range is SMLIB_ERR_ARG. */
+int32_t smlib_brep_edge_face_distance(const smlib_brep *brep, int64_t edge, int64_t face, double *out);
+
 /* SMLib's own check that `brep` is one closed, manifold solid: *out = 1 if so, else 0. */
 int32_t smlib_brep_is_manifold_solid(const smlib_brep *brep, int32_t *out);
 

@@ -898,6 +898,82 @@ void BoundaryRowTrimPace()
     }
 }
 
+// An edge along the patch's v = 0 row whose curve runs 2.5 um past its end vertex (the patch's
+// corner) and the patch's u = 1 side, on the row's extension, with a tolerance of 0.5 um (as
+// Poppy's Congé19 has them). Making its trim, SMLib trims the edge back to the patch, to its
+// vertex: the edge does not lie within its tolerance of the face. smlib_brep_edge_face_distance
+// measures the 2.5 um; given that as its tolerance, the edge keeps its interval, its trim within it.
+void EdgePastPatch()
+{
+    const Patch s = TrimTestPatch();
+    const double past = 2.5e-3; // mm
+    SheetEdge e0;
+    e0.curve.order = 4;
+    e0.curve.knots = {0, 0, 0, 0, 0.04, 0.04, 0.04, 0.3, 0.6, 1, 1, 1, 1};
+    // the row's two lines, the second one carried on past u = 1
+    const double start[3] = {0, 0, 0}, crease[3] = {0.8, 0, 0}, end[3] = {10 + past, 0, 0.92 + 0.1 * past};
+    for (size_t i = 0; i + 4 < e0.curve.knots.size(); ++i)
+    {
+        const double g = (e0.curve.knots[i + 1] + e0.curve.knots[i + 2] + e0.curve.knots[i + 3]) / 3.0;
+        const bool first = g <= 0.04;
+        const double *a = first ? start : crease, *b = first ? crease : end;
+        const double f = first ? g / 0.04 : (g - 0.04) / 0.96;
+        e0.curve.cvs.insert(e0.curve.cvs.end(), {a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1]), a[2] + f * (b[2] - a[2])});
+        e0.curve.weights.push_back(1.0);
+    }
+    e0.from = 0;
+    e0.to = 1;
+    e0.tolerance = 1e-3;
+    std::vector<SheetEdge> edges = {e0};
+    PatchSides(s, edges);
+    const std::vector<double> vertices = {0, 0, 0, 10, 0, 0.92, 10, 10, 2.92, 0, 10, 2};
+    const Arrays given = SheetArrays(s, edges, vertices, {1e-5, 1e-5, 1e-5, 1e-5});
+
+    // how far each edge lies from the face's surface
+    double d[4] = {-1.0, -1.0, -1.0, -1.0};
+    {
+        smlib_flat *f = FromArrays(given);
+        smlib_brep *b = nullptr;
+        CHECK(smlib_brep_import(f, &b) == SMLIB_OK);
+        for (int64_t k = 0; b != nullptr && k < 4; ++k)
+        {
+            CHECK(smlib_brep_edge_face_distance(b, k, 0, &d[k]) == SMLIB_OK);
+        }
+        double x = 0.0;
+        CHECK(smlib_brep_edge_face_distance(b, 4, 0, &x) == SMLIB_ERR_ARG);
+        CHECK(smlib_brep_edge_face_distance(b, 0, 1, &x) == SMLIB_ERR_ARG);
+        CHECK(smlib_brep_edge_face_distance(b, -1, 0, &x) == SMLIB_ERR_ARG);
+        CHECK(smlib_brep_edge_face_distance(b, 0, 0, nullptr) == SMLIB_ERR_ARG);
+        CHECK(smlib_brep_edge_face_distance(nullptr, 0, 0, &x) == SMLIB_ERR_ARG);
+        smlib_brep_free(b);
+        smlib_flat_free(f);
+    }
+    std::printf("edge past its patch: edges %.3g, %.3g, %.3g, %.3g mm from the face's surface\n", d[0], d[1], d[2], d[3]);
+    // the edge's end, 2.5 um along the row's extension: sqrt(1 + 0.1^2) * 2.5 um from the patch's corner
+    CHECK(std::fabs(d[0] - past * std::sqrt(1.01)) <= 1e-9);
+    CHECK(d[1] >= 0.0 && d[1] <= 1e-9 && d[2] >= 0.0 && d[2] <= 1e-9 && d[3] >= 0.0 && d[3] <= 1e-9);
+
+    Arrays x;
+    if (ImportExport(given, "edge past its patch", x))
+    {
+        const TrimFit f = TrimFits(x).at(0);
+        std::printf("edge past its patch, at 0.5 um: range [%.9g, %.9g], its trim %.3g mm off it, tolerance %.3g mm\n", f.t0, f.t1, f.gap, f.tolerance);
+        // trimmed back to the patch, its end to its vertex
+        CHECK(f.t0 == 0.0 && f.t1 < 1.0 && f.t1 > 0.999);
+    }
+    Arrays measured = given;
+    measured.f[SMLIB_FLAT_EDGE_TOLERANCE][0] = 2.0 * d[0] * (1.0 + 1e-6);
+    measured.f[SMLIB_FLAT_TOLERANCE][0] = std::max(measured.f[SMLIB_FLAT_TOLERANCE][0], measured.f[SMLIB_FLAT_EDGE_TOLERANCE][0]);
+    if (ImportExport(measured, "edge past its patch, measured", x))
+    {
+        const TrimFit f = TrimFits(x).at(0);
+        std::printf("edge past its patch, at its distance: range [%.9g, %.9g], its trim %.3g mm off it, tolerance %.3g mm\n", f.t0, f.t1, f.gap,
+                    f.tolerance);
+        CHECK(f.t0 == 0.0 && f.t1 == 1.0);
+        CHECK(f.gap <= f.tolerance);
+    }
+}
+
 // Imports `a`; expects a failure status (and no crash). Returns the status.
 int32_t ExpectReject(const Arrays &a, const char *what)
 {
@@ -1315,6 +1391,7 @@ int main(int argc, char **argv)
 
     NestedShellOrder();
     BoundaryRowTrimPace();
+    EdgePastPatch();
 
     // The accessors' argument checks.
     {
