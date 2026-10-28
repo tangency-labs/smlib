@@ -31,13 +31,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Blacksmith runners wherever Blacksmith has the platform; Windows ARM64 and Intel macOS stay on
-        # GitHub's, which Blacksmith does not offer.
+        # Blacksmith runners for everything but Windows ARM64, which stays on GitHub's (Blacksmith has
+        # none); Intel macOS is cross-built on Apple silicon (its smoke test needs an Intel Mac).
         include:
           - { target: x86_64-unknown-linux-gnu, runner: blacksmith-4vcpu-ubuntu-2404 }
           - { target: aarch64-unknown-linux-gnu, runner: blacksmith-4vcpu-ubuntu-2404-arm }
           - { target: aarch64-apple-darwin, runner: blacksmith-6vcpu-macos-15, cmake: '-DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0' }
-          - { target: x86_64-apple-darwin, runner: macos-15-intel, cmake: '-DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0' }
+          - { target: x86_64-apple-darwin, runner: blacksmith-6vcpu-macos-15, cmake: '-DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0', cross: true }
           - { target: x86_64-pc-windows-msvc, runner: blacksmith-8vcpu-windows-2025, cmake: '-A x64' }
           - { target: i686-pc-windows-msvc, runner: blacksmith-8vcpu-windows-2025, cmake: '-A Win32', cross: true }
           - { target: aarch64-pc-windows-msvc, runner: windows-11-arm, cmake: '-A ARM64' }

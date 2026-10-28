@@ -28,8 +28,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Blacksmith runners wherever Blacksmith has the platform; Windows ARM64 and Intel macOS stay on
-        # GitHub's, which Blacksmith does not offer.
+        # Blacksmith runners for everything but Windows ARM64, which stays on GitHub's (Blacksmith has
+        # none).
         include:
           - { name: Linux x86_64, runner: blacksmith-4vcpu-ubuntu-2404 }
           - { name: Linux aarch64, runner: blacksmith-4vcpu-ubuntu-2404-arm }
