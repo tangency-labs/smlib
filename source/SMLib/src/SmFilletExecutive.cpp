@@ -26,6 +26,7 @@
 #include <SmAssertArray.h>
 #include <SmAttribute.h>
 #include <SmCrvOnSurf.h>
+#include <SmTol.h>
 
 #include <memory>
 #include <unordered_set>
@@ -1976,6 +1977,114 @@ SmStatus SmFilletExecutive::FacesOutlastTheirBlends
 } // end SmFilletExecutive::FacesOutlastTheirBlends
 
 /*******************************************************************//**
+PURPOSE: SolidCraft change. Whether the band each blend takes off a face
+   stays clear of the rails of the other blends on that face.
+
+NOTES: A blend takes off each face it rolls on the band between its
+   filleted edge and its rail there. Two blends rolling on one face from
+   edges that share no vertex (no corner trims them where they meet) must
+   leave the face between their bands: a rail of one inside the other's
+   band means the two bands overlap (both vertical edges of a box end
+   rounded past half its width, each rail beyond the other), and the
+   blends are larger than that face allows (rbClear FALSE). A rail point
+   P is inside the band of blend B when it lies strictly between the
+   points of B's filleted edge and of B's rail nearest it, measured along
+   the chord between those two (the band's section on a planar face is
+   that chord), farther than ten times the solvers' tolerance from both;
+   only points of the rail on the face, and whose nearest point of B's
+   edge is inside the edge, are asked. Rails that meet (the two rounds
+   of a full round, each as wide as half the face) are clear.
+***********************************************************************/
+SmStatus SmFilletExecutive::BandsClearOtherRails
+  (SmBoolean & rbClear) // out: FALSE = a blend's rail runs inside another's band on a face they share
+{
+  rbClear = TRUE;
+  // each solver's rails: the face each rolls on and its curve
+  struct Rail
+  {
+    SmFace  * pFace;
+    SmCurve * pCurve;
+  };
+  std::vector<std::vector<Rail>> vRails( m_vFilletSolvers.GetSize() );
+  double dTol = 0.0;
+  for (ULONG i=0; i<m_vFilletSolvers.GetSize(); i++)
+    {
+      SmFilletSolver * pSolver = m_vFilletSolvers[i];      NER(pSolver);
+      dTol = smos_Max( dTol, pSolver->GetThisApproxTol3d() );
+      SmTArray<SmFilletGeom*> sFGs;
+      pSolver->GetFilletGeoms( sFGs );
+      for (ULONG k=0; k<sFGs.GetSize(); k++)
+        {
+          SmFilletGeom * pFG = sFGs[k];
+          if (pFG == NULL || pFG->GetFilletGeomType() != SM_FG_DEFAULT)
+            { continue; }
+          for (ULONG ii=0; ii<2; ii++)
+            {
+              SmFilletEdge * pRail = pFG->GetRail(ii);     NER(pRail);
+              SmCurve      * pCurve = pRail->GetCurve();   NER(pCurve);
+              SmFace       * pFace = pRail->GetOriginalFace();
+              if (pFace != NULL)
+                { vRails[i].push_back( Rail{ pFace, pCurve } ); }
+            }
+        }
+    }
+  double dApart = 10.0 * dTol;
+  for (ULONG a=0; a<m_vFilletSolvers.GetSize() && rbClear; a++)
+    {
+      SmEdge * pEdgeA = m_vFilletSolvers[a]->GetEdgeuse(0)->GetEdge();   NER(pEdgeA);
+      for (ULONG b=0; b<m_vFilletSolvers.GetSize() && rbClear; b++)
+        {
+          SmEdge * pEdgeB = m_vFilletSolvers[b]->GetEdgeuse(0)->GetEdge();   NER(pEdgeB);
+          if ( a == b || pEdgeA == pEdgeB )
+            { continue; }
+          SmVertex * apA[2] = { pEdgeA->GetStartVertex(), pEdgeA->GetEndVertex() };
+          SmVertex * apB[2] = { pEdgeB->GetStartVertex(), pEdgeB->GetEndVertex() };
+          if ( apA[0] == apB[0] || apA[0] == apB[1] || apA[1] == apB[0] || apA[1] == apB[1] )
+            { continue; }   // a corner trims them where they meet
+          const SmCurve * pEdgeCurveB = pEdgeB->GetCurve();           NER(pEdgeCurveB);
+          SmExtent1d      sEdgeIvlB   = pEdgeB->GetInterval();
+          for (const Rail & rA : vRails[a])
+            {
+              for (const Rail & rB : vRails[b])
+                {
+                  if ( rA.pFace != rB.pFace || !rbClear )
+                    { continue; }
+                  SmExtent1d sIvlA = rA.pCurve->GetNaturalInterval();
+                  SmExtent1d sIvlB = rB.pCurve->GetNaturalInterval();
+                  for (ULONG s=1; s<16 && rbClear; s++)
+                    {
+                      SmPoint3d sP;
+                      SER( rA.pCurve->EvaluatePoint( sIvlA.Evaluate( s / 16.0 ), sP ));
+                      SmPointClassification sOn;
+                      SER( rA.pFace->Point3DClassify( sP, SmTol::GetZoneTol3d( rA.pFace ), TRUE, sOn ));
+                      if ( sOn.GetPointClass() == SM_PC_UNKNOWN )
+                        { continue; }   // off the face
+                      SmBoolean bOnEdge = FALSE, bOnRail = FALSE;
+                      double    dT = 0.0, dU = 0.0, dDist = 0.0;
+                      SER( pEdgeCurveB->DropPoint( sEdgeIvlB, sP, NULL, SM_BIG_DOUBLE, NULL, bOnEdge, dT, dDist ));
+                      SER( rB.pCurve->DropPoint( sIvlB, sP, NULL, SM_BIG_DOUBLE, NULL, bOnRail, dU, dDist ));
+                      if ( !bOnEdge || !bOnRail || dT <= sEdgeIvlB.GetMin() || dT >= sEdgeIvlB.GetMax() )
+                        { continue; }   // beside the band, not across it
+                      SmPoint3d sE, sR;
+                      SER( pEdgeCurveB->EvaluatePoint( dT, sE ));
+                      SER( rB.pCurve->EvaluatePoint( dU, sR ));
+                      SmVector3d sChord = sE - sR;
+                      double     dWidth = sChord.Length();
+                      if ( !( dWidth > 2.0 * dApart ))
+                        { continue; }
+                      sChord = sChord * ( 1.0 / dWidth );
+                      double dFromRail = ( sP - sR ).Dot( sChord );
+                      if ( dFromRail > dApart && dFromRail < dWidth - dApart )
+                        { rbClear = FALSE; }
+                    }
+                }
+            }
+        }
+    }
+  return SM_SUCCESS;
+} // end SmFilletExecutive::BandsClearOtherRails
+
+/*******************************************************************//**
     SolidCraft change: easing a round into its curvature-continuous
     section before a setback (SmFilletCorner::m_dEaseDist).
 ***********************************************************************/
@@ -3487,6 +3596,15 @@ SmStatus SmFilletExecutive::CreateFilletBrep
   if ( !bOutlast )
     {
       GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, _T("Fillet Error: the blends take the whole of a face they roll on, some at an angle to it (the blend is larger than the faces allow)") );
+      return SM_ERR;
+    }
+  // SolidCraft change: blends whose bands on a face they share overlap, away from any corner
+  // that trims them, are larger than that face allows.
+  SmBoolean bClear = TRUE;
+  SER( BandsClearOtherRails( bClear ));
+  if ( !bClear )
+    {
+      GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, _T("Fillet Error: a blend's rail runs inside the band another blend takes off a face they share (the blends are larger than the face allows)") );
       return SM_ERR;
     }
 

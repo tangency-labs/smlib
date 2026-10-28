@@ -2141,6 +2141,30 @@ int main()
         smlib_brep_free(pin);
     }
 
+    // Both vertical edges of the 15 wide end of an 80 x 15 x 20 box rounded r: up to r = 7.5
+    // the two rounds' bands on the end face stay apart (at 7.5 they meet, a full round, removing
+    // 2 (1 - pi/4) r^2 20); past it each rail lies inside the other's band and the rounds are
+    // larger than the face allows, SMLIB_ERR_NO_ROOM (r7.6 and r10 were built as bodies that are
+    // not closed, SMLIB_ERR_NOT_SOLID).
+    {
+        smlib_brep *bar = box(0, 0, 0, 80, 15, 20);
+        const double ends[6] = {80, 0, 10, 80, 15, 10};
+        for (double radius : {7.4, 7.5})
+        {
+            CHECK(smlib_fillet(bar, ends, 2, 0.1, radius, &r, nullptr) == SMLIB_OK && sound(r));
+            if (r != nullptr)
+            {
+                CHECK(near(volume_of(r), 24000.0 - 2.0 * (1.0 - PI / 4.0) * radius * radius * 20.0, 1e-9));
+                done(r);
+            }
+        }
+        for (double radius : {7.6, 10.0})
+        {
+            CHECK(smlib_fillet(bar, ends, 2, 0.1, radius, &r, nullptr) == SMLIB_ERR_NO_ROOM && r == nullptr);
+        }
+        smlib_brep_free(bar);
+    }
+
     // A round run up a box's vertical edge into the corner where two smaller rounds of the top
     // meet (SolidCraft ladder 07-fillets/016): the 60 x 40 x 20 box, its top edge at y = 40
     // rounded r5, 60 25 (1 - pi/4) off, then its top edge at x = 60 rounded r3 (the r5 round

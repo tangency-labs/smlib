@@ -422,6 +422,7 @@ public:
   SmStatus DoPiecewiseMerge          ();                                               // note: increments unlocked mark value
   SmStatus LoadFilletSolver          (SmFilletSolver * pFS);
   SmStatus FacesOutlastTheirBlends(SmBoolean & rbOutlast); // SolidCraft change: whether every face the blends roll on keeps some of itself, or is closed by blends tangent to it
+  SmStatus BandsClearOtherRails(SmBoolean & rbClear); // SolidCraft change: whether no blend's rail runs inside the band another takes off a face they share, away from a corner
   // SolidCraft change: the cliff overflow (SmFilletCliffOverflow.cpp)
   SmBoolean GetCliffOverflow() const { return m_bCliffOverflow; }
   SmStatus  NoteOpenEnd(SmFilletSolver * pSolver, SmVertex * pVertex, SmFace * pEndFace); // an end the Nx1 corner left uncut
