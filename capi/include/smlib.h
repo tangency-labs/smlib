@@ -615,6 +615,11 @@ int32_t smlib_chamfer(const smlib_brep *brep, const double *points, int64_t n_po
 /* An operation SMLib cannot build exactly yet; the call's log line says which. */
 #define SMLIB_ERR_UNSUPPORTED (-1105)
 
+/* A blend whose edges meet at a vertex of a kind no blend corner handles yet (the edges, the
+ * blended ones among them and their convexity there): smlib_fillet, smlib_chamfer, smlib_blend
+ * and the other blends refuse it with this status, the vertex in the call's log line. */
+#define SMLIB_ERR_CORNER_UNSUPPORTED (-1111)
+
 /* What smlib_blend makes of each selected edge. */
 /* Rounded by a circular cross-section at constant radius (as smlib_fillet). */
 #define SMLIB_BLEND_ROUND 0

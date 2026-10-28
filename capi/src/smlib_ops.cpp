@@ -245,7 +245,8 @@ std::string g_blend_why;
 // rail leaves the face it rolls on, a round whose rail runs on into the body's material, a cliff
 // overflow with no room on its faces' continuations) is SMLIB_ERR_NO_ROOM; a convex blend overflowing a
 // cliff that needs a continuation SMLib cannot make exactly (SM_FILERR_NOT_EXACT)
-// SMLIB_ERR_NOT_EXACT; any other failure `s`.
+// SMLIB_ERR_NOT_EXACT; a filleted vertex no corner type handles (SM_FILERR_CORNER_UNSUPPORTED)
+// SMLIB_ERR_CORNER_UNSUPPORTED; any other failure `s`.
 int32_t blend_failure(SmFilletExecutive &exec, int32_t s)
 {
     SmFilletErrorInfo *e = exec.GetFilletErrorInfo();
@@ -268,6 +269,8 @@ int32_t blend_failure(SmFilletExecutive &exec, int32_t s)
         return SMLIB_ERR_NO_ROOM;
     case SM_FILERR_NOT_EXACT:
         return SMLIB_ERR_NOT_EXACT;
+    case SM_FILERR_CORNER_UNSUPPORTED:
+        return SMLIB_ERR_CORNER_UNSUPPORTED;
     default:
         return s;
     }

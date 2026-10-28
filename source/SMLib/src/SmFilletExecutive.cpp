@@ -139,15 +139,19 @@ NOTES:
 ***********************************************************************/
 void SmFilletErrorInfo::NoteError
  (const SmVertex    * pBadVert,       // in :
-  SmFilStatus         eVertexStatus,  // NotUsed: in :
-  SmFilletErrorType   eErrorCode,     // NotUsed: in :
-  const TCHAR       * cComment)       // NotUsed: in :
+  SmFilStatus         eVertexStatus,  // in :
+  SmFilletErrorType   eErrorCode,     // in :
+  const TCHAR       * cComment)       // in :
 {
-  SM_REF3(eVertexStatus, eErrorCode, cComment) ;
-    SM_ASSERT( pBadVert != NULL ); if ( !pBadVert ) { return; }
+  SM_ASSERT( pBadVert != NULL ); if ( !pBadVert ) { return; }
 
-    ULONG lVertNum = pBadVert->GetVertexNumberInBrep();
-    SM_ASSERT( lVertNum >= 0 );
+  // SolidCraft change: recorded as the edge's overload records them (this one recorded nothing,
+  // so a failure at a vertex reached the caller as an unknown error without its comment).
+  m_pFilletedVertex = pBadVert;
+  m_vLocation       = pBadVert->GetPoint();
+  m_eErrorCode      = eErrorCode;
+  m_eFilletStatus   = eVertexStatus;
+  if ( cComment != NULL ) { smos_sprintf( m_cComment, _T("%s"), cComment ); }
 
 } // end SmFilletErrorInfo::NoteError
 
@@ -3047,7 +3051,7 @@ SmBoolean bDebugMe = FALSE;
           // corner; drop it, finish the other corners (they own their arrays) and fail.
           m_vVertexCornerMap.Remove(pVert);
           delete pSolverEUs;
-          m_sErrorInfo.NoteError(pVert, SM_FIL_FAILURE, SM_FILERR_VERTEX_PROBLEM,
+          m_sErrorInfo.NoteError(pVert, SM_FIL_FAILURE, SM_FILERR_CORNER_UNSUPPORTED,
                                  _T("Corner case not implemented"));
           bMissingCorner = TRUE;
           continue;

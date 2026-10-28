@@ -1888,6 +1888,24 @@ int main()
         smlib_brep_free(slab);
     }
 
+    // A 20 cube less a hole of radius 5 down from its top, its axis 5 from the side y = 0, so
+    // its wall touches that side along a line: the top's rim and the side's top edge meet at the
+    // touching point, where they run on tangentially into each other, a vertex no blend corner
+    // handles. Chamfered 3 along the rim and that edge, the blend is refused at that corner,
+    // SMLIB_ERR_CORNER_UNSUPPORTED (it failed with SMLib's generic error, its reason not kept).
+    {
+        smlib_brep *cube = box(0, 0, 0, 20, 20, 20);
+        smlib_brep *rod = cylinder(10, 5, -1, 5, 22);
+        smlib_brep *holed = nullptr;
+        CHECK(smlib_boolean(cube, rod, SMLIB_BOOLEAN_SUBTRACT, &holed) == SMLIB_OK);
+        const double rim[12] = {14.426091400901679, 2.7004358211515118, 20, 5.5730421003354138, 7.2997714423711244, 20, 5, 0, 20, 15, 0, 20};
+        const double sizes[4] = {3, 3, 3, 3};
+        CHECK(holed != nullptr && smlib_blend(holed, SMLIB_BLEND_CHAMFER, rim, sizes, 4, 0.5, &r, nullptr) == SMLIB_ERR_CORNER_UNSUPPORTED && r == nullptr);
+        smlib_brep_free(holed);
+        smlib_brep_free(rod);
+        smlib_brep_free(cube);
+    }
+
     // A chamfer of setback 2 on the top edge y = 0 of a prism 20 high on (0,0) (40,0)
     // (40 - 20s, 20) (20s, 20): its end faces slope by s, so the chamfer's contact line on the
     // top leaves it across an end face's top edge (the top's side edge at that end) before the
