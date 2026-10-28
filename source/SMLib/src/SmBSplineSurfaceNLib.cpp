@@ -2970,6 +2970,295 @@ static SmStatus sm_CreateNonRationalCurve
 } // end sm_CreateNonRationalCurve 
 
 /*******************************************************************//**
+PURPOSE: The unit normal of the surface along a Coons patch's side, at patch
+    parameter dS along that side (crPatchIvl: the side's patch interval),
+    found through the side's UV curve.
+
+NOTES: SolidCraft.
+***********************************************************************/
+static SmStatus sm_CoonsSideNormal
+  (const SmBSplineCurve & crUVCurve,    // in : the side's UV curve on crSurface
+   const SmSurface      & crSurface,    // in : the surface the side lies on
+   const SmExtent1d     & crPatchIvl,   // in : the side's interval in the patch's parameters
+   double                 dS,           // in : patch parameter along the side
+   SmVector3d           & rNormal)      // out: unit surface normal there
+{
+  SmExtent1d sIvl = crUVCurve.GetNaturalInterval();
+  double dT = sIvl.Evaluate((dS - crPatchIvl.GetMin()) / crPatchIvl.GetLength());
+  SmPoint3d sUV;
+  SER(crUVCurve.EvaluatePoint(dT, sUV));
+  SER(crSurface.EvaluateNormal(SmPoint2d(sUV.x, sUV.y), TRUE, TRUE, rNormal));
+  return SM_SUCCESS;
+
+} // end sm_CoonsSideNormal
+
+/*******************************************************************//**
+PURPOSE: The largest angle between a Coons patch's normal and the normals of
+    the surfaces along its sides, at four stations a knot span (33 at least).
+
+NOTES: SolidCraft. Sides are ordered [left (u min), bottom (v min),
+    right (u max), top (v max)]; a side with no surface is skipped, and so is
+    a station where the patch has no normal (a degenerate side's point).
+***********************************************************************/
+static SmStatus sm_CoonsSideAngle
+  (const SmBSplineSurface          & crPatch,     // in : the patch
+   const SmTArray<SmBSplineCurve*> & crUVCurves,  // in : each side's UV curve, NULL for none
+   const SmTArray<SmSurface*>      & crSurfaces,  // in : each side's surface, NULL for none
+   double                          & rdMaxAngle)  // out: largest angle, radians
+{
+  rdMaxAngle = 0.0;
+  SmExtent2d sDomain = crPatch.GetNaturalUVDomain();
+  SmExtent1d sU(sDomain.GetMin().x, sDomain.GetMax().x);
+  SmExtent1d sV(sDomain.GetMin().y, sDomain.GetMax().y);
+  for (ULONG ii=0; ii<4; ii++)
+    {
+      if (crUVCurves[ii] == NULL || crSurfaces[ii] == NULL)
+        { continue; }
+      SmBoolean          bAlongU = (ii == 1 || ii == 3);
+      const SmExtent1d & sAlong  = bAlongU ? sU : sV;
+      // four stations a knot span, so a miss between control points is seen
+      ULONG lSpans    = crPatch.GetNumberControlPoints(bAlongU ? SM_SP_U : SM_SP_V) - crPatch.GetDegree(bAlongU ? SM_SP_U : SM_SP_V);
+      ULONG lStations = 4 * lSpans + 1;
+      if (lStations < 33)
+        { lStations = 33; }
+      for (ULONG k=0; k<lStations; k++)
+        {
+          double dS = sAlong.Evaluate((double)k / (double)(lStations-1));
+          SmPoint2d sUV =   ii == 0 ? SmPoint2d(sU.GetMin(), dS)
+                          : ii == 1 ? SmPoint2d(dS, sV.GetMin())
+                          : ii == 2 ? SmPoint2d(sU.GetMax(), dS)
+                          :           SmPoint2d(dS, sV.GetMax());
+          SmPoint3d  sPnt;
+          SmVector3d sDu, sDv;
+          SER(crPatch.Evaluate1stDerivatives(sUV, sUV.x < sU.GetMax(), sUV.y < sV.GetMax(), sPnt, sDu, sDv));
+          SmVector3d sNormal = sDu * sDv;
+          double     dScale  = sDu.Length() * sDv.Length();
+          if (dScale < SM_EFF_ZERO_SQ || sNormal.Length() <= SM_EFF_ZERO_SQRT * dScale)
+            { continue; }
+          SER(sNormal.Unitize());
+          SmVector3d sSideNormal;
+          SER(sm_CoonsSideNormal(*crUVCurves[ii], *crSurfaces[ii], sAlong, dS, sSideNormal));
+          double dCos = smos_Fabs(sNormal.Dot(sSideNormal));
+          double dAngle = smos_ArcCosine(dCos < 1.0 ? dCos : 1.0);
+          if (dAngle > rdMaxAngle)
+            { rdMaxAngle = dAngle; }
+        }
+    }
+  return SM_SUCCESS;
+
+} // end sm_CoonsSideAngle
+
+/*******************************************************************//**
+PURPOSE: Insert knots in one direction of a surface until no span is longer
+    than 1/lSpans of its domain.
+
+NOTES: SolidCraft. The surface's shape is unchanged.
+***********************************************************************/
+static SmStatus sm_RefineToSpans
+  (SmBSplineSurface & rSurface,   // in/out: the surface
+   SmSurfParamType    eDir,       // in : SM_SP_U or SM_SP_V
+   ULONG              lSpans)     // in : spans the domain is to have at least
+{
+  SmTArray<double> sKnots;
+  SER(rSurface.GetKnots(eDir, sKnots));
+  ULONG lCount = sKnots.GetSize();
+  if (lCount < 2)
+    { SER(SM_ERR); }
+  double dMaxSpan = (sKnots[lCount-1] - sKnots[0]) / (double)lSpans;
+  SmTArray<double> sNewKnots;
+  for (ULONG ii=1; ii<lCount; ii++)
+    {
+      double dLength = sKnots[ii] - sKnots[ii-1];
+      ULONG  lPieces = (ULONG)smos_Ceil(dLength / dMaxSpan - 1.0e-9);
+      for (ULONG k=1; k<lPieces; k++)
+        { sNewKnots.Add(sKnots[ii-1] + dLength * (double)k / (double)lPieces); }
+    }
+  if (sNewKnots.GetSize() > 0)
+    { SER(rSurface.InsertKnots(eDir, sNewKnots)); }
+  return SM_SUCCESS;
+
+} // end sm_RefineToSpans
+
+/*******************************************************************//**
+PURPOSE: Move each control point next to a side of a Coons patch, by the
+    least distance, into the tangent plane of that side's surface at the
+    point's Greville station along the side.
+
+NOTES: SolidCraft. A patch's cross derivative along a side is a combination of
+    the differences between the side's control points and the ones next to
+    them, weighted by B-splines that peak at the Greville stations; with every
+    difference in the surface's tangent plane at its station, the cross
+    derivative lies in the tangent plane along the side to second order in the
+    knot spacing. A control point next to two sides (at a corner) goes onto
+    the mean of their planes. Needs at least 5 control points in each
+    direction, so that no point is next to two opposite sides.
+***********************************************************************/
+static SmStatus sm_ProjectCoonsSideRows
+  (SmBSplineSurface                & rPatch,      // in/out: the patch
+   const SmTArray<SmBSplineCurve*> & crUVCurves,  // in : each side's UV curve, NULL for none
+   const SmTArray<SmSurface*>      & crSurfaces)  // in : each side's surface, NULL for none
+{
+  ULONG lNU = rPatch.GetNumberControlPoints(SM_SP_U);
+  ULONG lNV = rPatch.GetNumberControlPoints(SM_SP_V);
+  ULONG lPU = rPatch.GetDegree(SM_SP_U);
+  ULONG lPV = rPatch.GetDegree(SM_SP_V);
+  if (lNU < 5 || lNV < 5 || lPU < 1 || lPV < 1)
+    { SER(SM_ERR); }
+  ULONG    lKU = 0, lKV = 0;
+  double * pKU = NULL;
+  double * pKV = NULL;
+  SER(rPatch.GetKnotsPointers(lKU, lKV, pKU, pKV));
+  if (lKU != lNU + lPU + 1 || lKV != lNV + lPV + 1)
+    { SER(SM_ERR); }
+  SmExtent1d sU(pKU[0], pKU[lKU-1]);
+  SmExtent1d sV(pKV[0], pKV[lKV-1]);
+
+  // the Greville station of control point lIndex in one direction
+  auto Greville = [](const double * pKnots, ULONG lDegree, ULONG lIndex)
+    {
+      double dSum = 0.0;
+      for (ULONG k=1; k<=lDegree; k++)
+        { dSum += pKnots[lIndex + k]; }
+      return dSum / (double)lDegree;
+    };
+
+  SmTArray<SmPoint3d> sMoved;
+  SmTArray<ULONG>     sMovedU, sMovedV;
+  for (ULONG i=1; i+1<lNU; i++)
+    {
+      for (ULONG j=1; j+1<lNV; j++)
+        {
+          // the sides this control point is next to: [side, anchor u, anchor v]
+          ULONG alSides[2][3];
+          ULONG lSideCount = 0;
+          if (i == 1)       { alSides[lSideCount][0] = 0; alSides[lSideCount][1] = 0;     alSides[lSideCount][2] = j;     lSideCount++; }
+          if (i == lNU-2)   { alSides[lSideCount][0] = 2; alSides[lSideCount][1] = lNU-1; alSides[lSideCount][2] = j;     lSideCount++; }
+          if (j == 1)       { alSides[lSideCount][0] = 1; alSides[lSideCount][1] = i;     alSides[lSideCount][2] = 0;     lSideCount++; }
+          if (j == lNV-2 && lSideCount < 2)
+                            { alSides[lSideCount][0] = 3; alSides[lSideCount][1] = i;     alSides[lSideCount][2] = lNV-1; lSideCount++; }
+          if (lSideCount == 0)
+            { continue; }
+
+          SmPoint3d sPnt;
+          double    dWeight = 1.0;
+          SER(rPatch.GetControlPoint(SM_CP_NON_RATIONAL, i, j, sPnt, dWeight));
+
+          // each side's plane: unit normal and the signed distance of sPnt from it
+          SmVector3d asNormal[2];
+          double     adDist[2];
+          ULONG      lPlanes = 0;
+          for (ULONG k=0; k<lSideCount; k++)
+            {
+              ULONG lSide = alSides[k][0];
+              if (crUVCurves[lSide] == NULL || crSurfaces[lSide] == NULL)
+                { continue; }
+              SmBoolean  bAlongU = (lSide == 1 || lSide == 3);
+              double     dS      = bAlongU ? Greville(pKU, lPU, i) : Greville(pKV, lPV, j);
+              SmPoint3d  sAnchor;
+              double     dAnchorWeight = 1.0;
+              SER(rPatch.GetControlPoint(SM_CP_NON_RATIONAL, alSides[k][1], alSides[k][2], sAnchor, dAnchorWeight));
+              SER(sm_CoonsSideNormal(*crUVCurves[lSide], *crSurfaces[lSide], bAlongU ? sU : sV, dS, asNormal[lPlanes]));
+              adDist[lPlanes] = asNormal[lPlanes].Dot(sPnt - sAnchor);
+              lPlanes++;
+            }
+          if (lPlanes == 0)
+            { continue; }
+
+          if (lPlanes == 1)
+            { sPnt = sPnt - asNormal[0] * adDist[0]; }
+          else
+            {
+              // next to two sides at a corner: both planes are near the corner's tangent plane,
+              // their line far off; onto their mean plane, which leaves each a second-order miss
+              SmVector3d sMean = (asNormal[0].Dot(asNormal[1]) < 0.0) ? asNormal[0] - asNormal[1] : asNormal[0] + asNormal[1];
+              if (sMean.Unitize(FALSE) != SM_SUCCESS)
+                { continue; }
+              SmPoint3d sAnchor0 = sPnt - asNormal[0] * adDist[0];
+              SmPoint3d sAnchor1 = sPnt - asNormal[1] * adDist[1];
+              double    dDist    = 0.5 * (sMean.Dot(sPnt - sAnchor0) + sMean.Dot(sPnt - sAnchor1));
+              sPnt = sPnt - sMean * dDist;
+            }
+          sMoved.Add(sPnt);
+          sMovedU.Add(i);
+          sMovedV.Add(j);
+        }
+    }
+
+  // write the moved points once every plane was read from the unmoved net
+  for (ULONG k=0; k<sMoved.GetSize(); k++)
+    { SER(rPatch.SetControlPoint(SM_CP_NON_RATIONAL, sMovedU[k], sMovedV[k], sMoved[k], 1.0)); }
+  return SM_SUCCESS;
+
+} // end sm_ProjectCoonsSideRows
+
+/*******************************************************************//**
+PURPOSE: A Coons corner patch tangent to the surfaces along its sides, to
+    within SM_CONTINUITY_ANGLE (or dTangencyTolRadians where smaller).
+
+NOTES: SolidCraft. A bicubic Coons patch meets its cross-boundary derivative
+    curves only where their twists agree at the corners. Each derivative
+    curve lies in its own surface's tangent planes, so the part of its twist
+    along the normal at a corner is fixed by that surface's curvature on the
+    two boundary tangents there: where two rounds of different curvature meet
+    (a bar's round and a boss's round on the bar's top), the twists differ
+    along the normal, sm_CreateCoonsSrf takes their mean, and the patch leaves
+    both rounds at an angle along the whole of both sides (15 degrees at r 2).
+    No patch smooth at such a corner is tangent to both sides right up to it,
+    but a B-spline patch is, to any angle, outside a neighbourhood of the
+    corner that shrinks with its knot spacing: a copy of the patch is refined
+    to 8, 16, 32 and 64 spans each way, and the control points next to each
+    side moved into the side's tangent planes (sm_ProjectCoonsSideRows), until
+    every side reads within tolerance. rpTangentPatch is the first copy within
+    it, or else the one nearest it if that is nearer than rPatch; it is NULL
+    when rPatch is within tolerance already or no copy is nearer.
+***********************************************************************/
+static SmStatus sm_MakeCoonsPatchTangentToSides
+  (const SmContext                 & crContext,            // in : context for new object construction
+   const SmBSplineSurface          & crPatch,              // in : the Coons patch
+   const SmTArray<SmBSplineCurve*> & crUVCurves,           // in : each side's UV curve, NULL for none
+   const SmTArray<SmSurface*>      & crSurfaces,           // in : each side's surface, NULL for none
+   double                            dTangencyTolRadians,  // in : largest angle allowed along a side, if below SM_CONTINUITY_ANGLE
+   SmBSplineSurface               *& rpTangentPatch)       // out: the tangent patch (caller owns), or NULL
+{
+  rpTangentPatch = NULL;
+  if (crPatch.IsRational())
+    { return SM_SUCCESS; }
+  // a seam SMLib calls tangent (SmEdgeuse::IsTangentSector) is within SM_CONTINUITY_ANGLE
+  double dTarget = SM_DEG2RAD(SM_CONTINUITY_ANGLE);
+  if (dTangencyTolRadians < dTarget)
+    { dTarget = dTangencyTolRadians; }
+  double dBestAngle = 0.0;
+  SER(sm_CoonsSideAngle(crPatch, crUVCurves, crSurfaces, dBestAngle));
+  SmBSplineSurface * pBest = NULL;
+  SmObjDelete        sCleanBest;
+  for (ULONG lSpans=8; lSpans<=64 && dBestAngle > dTarget; lSpans*=2)
+    {
+      SmSurface * pCopy = NULL;
+      SER(crPatch.Copy(crContext, pCopy));
+      SmObjDelete sCleanCopy(pCopy);
+      SmBSplineSurface * pTry = SM_CAST_PTR(SmBSplineSurface, pCopy); NER(pTry);
+      SER(sm_RefineToSpans(*pTry, SM_SP_U, lSpans));
+      SER(sm_RefineToSpans(*pTry, SM_SP_V, lSpans));
+      SER(sm_ProjectCoonsSideRows(*pTry, crUVCurves, crSurfaces));
+      double dAngle = 0.0;
+      SER(sm_CoonsSideAngle(*pTry, crUVCurves, crSurfaces, dAngle));
+      if (dAngle < dBestAngle)
+        {
+          dBestAngle = dAngle;
+          if (pBest != NULL)
+            { delete pBest; }
+          pBest = pTry;
+          sCleanCopy.Clear();
+          sCleanBest.SetObj(pBest);
+        }
+    }
+  sCleanBest.Clear();
+  rpTangentPatch = pBest;
+  return SM_SUCCESS;
+
+} // end sm_MakeCoonsPatchTangentToSides
+
+/*******************************************************************//**
 PURPOSE: Create a corner blend surface given this ordered and oriented
     set of 3D curves and a set of associated UV curves and Surfaces to define
     the cross tangency requirements. 
@@ -3366,6 +3655,22 @@ SmBoolean bDebugMe = FALSE ;
                                              dTol, bCreateBilinearPatch,
                                              sBounds, sTans,
                                              pCoonsSurface));
+      SmObjDelete sCleanCoons(pCoonsSurface);
+
+      // SolidCraft: the patch tangent to its sides' surfaces, as documented above
+      if (bCreateBilinearPatch == FALSE)
+        {
+          SmBSplineSurface * pTangentSurface = NULL;
+          SER(sm_MakeCoonsPatchTangentToSides(crContext, *pCoonsSurface, sUVCurves, crSurfaces,
+                                              dTangencyTolRadians, pTangentSurface));
+          if (pTangentSurface != NULL)
+            {
+              delete pCoonsSurface;
+              pCoonsSurface = pTangentSurface;
+              sCleanCoons.SetObj(pCoonsSurface);
+            }
+        }
+      sCleanCoons.Clear();
       rBlendSurfaces.Add(pCoonsSurface);
 
       return SM_SUCCESS;
