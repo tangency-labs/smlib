@@ -2322,6 +2322,55 @@ int main()
         }
     }
 
+    // SolidCraft rig case fillets/1207 (tests/data/bar-boss-over-sides.txt, as SolidCraft hands it
+    // to smlib_blend): a bar 100 x 30 x 10 (y -15..15) joined with a boss of diameter 40, 20 tall,
+    // at the origin (seamed at 0.6131 rad), standing out over both of the bar's sides. The bar's
+    // front top edge and the boss's base arc over the bar (two edges, split at the seam) rounded
+    // together meet at the vertex where the top, the front face and the boss meet, whose third
+    // edge, the boss's line on the front face, is concave and runs down from it. The 3x2 mixed
+    // corner there took the concave round's rail to cross that line, as in an L-shaped box, where
+    // the third edge is convex and runs up; it crosses only the line's continuation, and the corner
+    // patch's boundary ran off to the far side of the boss (1001). Away from the corner the body
+    // is the bar and boss, plus the concave round's spandrel over the bar (strips ending on the
+    // side planes), less the convex round's spandrel out to the boss's wall; the corner patch lies
+    // within the cube of side 2 r about the vertex.
+    {
+        smlib_flat *flat = nullptr;
+        smlib_brep *joined = nullptr;
+        CHECK(smlib_flat_read(SMLIB_TEST_DATA "/bar-boss-over-sides.txt", &flat) == SMLIB_OK && smlib_brep_import(flat, &joined) == SMLIB_OK);
+        smlib_flat_free(flat);
+        for (const double rad : {1.0, 2.0})
+        {
+            const int n = 2000;
+            double added = 0.0;
+            for (int i = 0; i < n; ++i)
+            {
+                double rho = 20.0 + (i + 0.5) * rad / n;
+                added += (rad - std::sqrt(rad * rad - (20.0 + rad - rho) * (20.0 + rad - rho))) * rho * 2.0 * std::asin(15.0 / rho) * rad / n;
+            }
+            double removed = 0.0;
+            const double h = rad / n;
+            for (int i = 0; i < n; ++i)
+            {
+                double y = -15.0 + (i + 0.5) * h;
+                removed += (rad - std::sqrt(rad * rad - (y + 15.0 - rad) * (y + 15.0 - rad))) * (100.0 - std::sqrt(400.0 - y * y)) * h;
+            }
+            const double edges[9] = {60, -15, 10, 20 * std::cos(0.73), 20 * std::sin(0.73), 10, 20 * std::cos(-0.12), 20 * std::sin(-0.12), 10};
+            const double sizes[3] = {rad, rad, rad};
+            if (joined != nullptr && smlib_blend(joined, SMLIB_BLEND_ROUND, edges, sizes, 3, 0.1, &r, nullptr) == SMLIB_OK)
+            {
+                double want = volume_of(joined) + added - removed;
+                CHECK(near(volume_of(r), want, 8.0 * rad * rad * rad / want));
+                done(r);
+            }
+            else
+            {
+                CHECK(!"the bar's top edge and the boss's base arc rounded together");
+            }
+        }
+        smlib_brep_free(joined);
+    }
+
     // SolidCraft ladder 07-fillets/012: a variable round, r0 at x = 0 to r1 at x = 55, on the top
     // back edge of a 60 x 40 x 20 box whose vertical edge at (60, 40) is rounded R5. With r1 = 5
     // the rail on the top meets the R5 corner's arc only at its end (60, 35), where the law,
