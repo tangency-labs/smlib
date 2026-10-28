@@ -1273,6 +1273,16 @@ static ULONG lDebugCount = 0 ;
       return FALSE;
     }
 
+  // SolidCraft change: the torus keeps the NURBS tested, as SmCylinder::IsNurbSurfaceCylinder
+  // does. The one built above comes from the circles fitted to it, whose centres and radii carry
+  // the fit's rounding: its weights and control points differ from the tested ones by ~1e-11,
+  // and a face trimmed in the tested NURBS's parameters is the tested surface. SetFromGwNurb
+  // rebuilds the analytic data (frame, radii, domain, GenCurve, polar converter) from it.
+  if (rpTorus->SetFromGwNurb(0, pTestSurface->GetGwNurbPointer()) != SM_SUCCESS)
+    { delete rpTorus; rpTorus = NULL;
+      return FALSE;
+    }
+
   // obsolete - it's a mistake to introduce tol sized variations between the Nurb and Anal reps by copying the m_pNurb object
   // Copy pTestSurface->m_pNurb into newTorus
   //      SM_ASSERT(rpTorus->m_pNurb == NULL) ;

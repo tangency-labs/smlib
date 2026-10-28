@@ -2805,14 +2805,17 @@ static ULONG lDebugCount = 0 ;
   if (!bFoundCirclesV) return FALSE;
 
   // see if we have a U or a V oriented sphere
+  // SolidCraft change: tol compensates for using degrees, as RebuildSTEPFromNURBParameters [B279]:
+  // a half meridian found in a NURBS that SMLib's own sphere made measures 180 degrees to its
+  // rounding (180.0000000000024 on a radius 2 sphere 500 mm out), past 180 + SM_EFF_ZERO.
   SmBoolean bIsSphereWithSwapUV = (   bParallelPlanesU
                                    && ! bSamePlaneU  // [ 080625 ]
                                    && bSameCenterV
-                                   && sAnglesV.GetLength() <= 180.0 + SM_EFF_ZERO) ;
+                                   && sAnglesV.GetLength() <= 180.0 + 360*SM_EFF_ZERO) ;
   SmBoolean bIsSphereNoSwapUV   = (   bParallelPlanesV
                                    && ! bSamePlaneV  // [ 080625 ]
                                    && bSameCenterU
-                                   && sAnglesU.GetLength() <= 180.0+SM_EFF_ZERO) ;
+                                   && sAnglesU.GetLength() <= 180.0 + 360*SM_EFF_ZERO) ;
 
   // quit when not a properly oriented sphere
   if(!bIsSphereWithSwapUV && !bIsSphereNoSwapUV)
@@ -2969,6 +2972,13 @@ static ULONG lDebugCount = 0 ;
   SmStatus eStat = rpSphere->Reparameterize(pTestSurface->GetNaturalUVDomain()) ;
   if ( eStat != SM_SUCCESS )
     { delete rpSphere; rpSphere = NULL; return FALSE; } // [B414]
+
+  // SolidCraft change: the sphere keeps the NURBS tested, as SmCylinder::IsNurbSurfaceCylinder
+  // does: the one built above comes from the circles fitted to it and carries the fit's rounding,
+  // and a face trimmed in the tested NURBS's parameters is the tested surface. SetFromGwNurb
+  // rebuilds the analytic data from it.
+  if ( rpSphere->SetFromGwNurb(0, pTestSurface->GetGwNurbPointer()) != SM_SUCCESS )
+    { delete rpSphere; rpSphere = NULL; return FALSE; }
 
   // arrive here after New Sphere has been constructed. Need to
   //  1. set NewSphere->m_pNurb = inputSurface->m_pNurb

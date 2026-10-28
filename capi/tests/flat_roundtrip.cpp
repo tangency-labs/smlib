@@ -974,6 +974,301 @@ void EdgePastPatch()
     }
 }
 
+// ---- A torus face given as its label, then as SMLib's export of it --------------------------
+
+// A face given as its label, imported and exported (SMLib gives it its NURBS form), then that
+// export imported and exported twice more: the form comes back as it went in, to the bit; the
+// label's reference direction (`refId`) is SMLib's, from the form (the direction to the NURBS's
+// start about the axis `axisId`: IsNurbSurfaceTorus and IsNurbSurfaceSphere find the frame in the
+// form), a unit vector square to the same axis; everything else is the same, and so is the next
+// export.
+void FormRoundTrip(const Arrays &given, const char *kind, const char *name, int32_t axisId, int32_t refId)
+{
+    Arrays first, second, third;
+    if (!(ImportExport(given, name, first) && ImportExport(first, name, second) && ImportExport(second, name, third)))
+    {
+        std::printf("%s %s: its export does not import again\n", kind, name);
+        return;
+    }
+    bool sameForm = true;
+    for (int32_t id : {SMLIB_FLAT_FACE_NURBS_CVS, SMLIB_FLAT_FACE_NURBS_U_KNOTS, SMLIB_FLAT_FACE_NURBS_V_KNOTS, SMLIB_FLAT_FACE_NURBS_WEIGHTS})
+    {
+        sameForm = sameForm && first.f.at(id) == second.f.at(id);
+    }
+    const std::vector<double> &axis = second.f.at(axisId), &xr = second.f.at(refId);
+    const double square = std::fabs(axis[0] * xr[0] + axis[1] * xr[1] + axis[2] * xr[2]);
+    const double unit = std::fabs(std::sqrt(xr[0] * xr[0] + xr[1] * xr[1] + xr[2] * xr[2]) - 1.0);
+    Arrays firstInFrame = first;
+    firstInFrame.f[refId] = xr;
+    const double d = Compare(firstInFrame, second, name), fixed = Compare(second, third, name);
+    std::printf("%s %s: its export imports again, form %s, then the same but the reference direction (worst %.3g), then a fixed point "
+                "(worst %.3g)\n",
+                kind, name, sameForm ? "kept" : "changed", d, fixed);
+    CHECK(sameForm && square <= 1e-12 && unit <= 1e-12 && d <= 1e-9 && fixed <= 1e-12);
+}
+
+// A one-face torus sheet as a STEP reader hands it to SMLib: the torus label (frame o, z, x,
+// radii R, r) over the STEP angles [u0, u1] x [v0, v1] (radians), no NURBS form, bounded by its
+// four iso circles (circle edges, no UV trims). The torus is
+// S(u, v) = o + (R + r cos v)(cos u x + sin u y) + r sin v z, with y = z cross x.
+Arrays TorusSheet(const double o[3], const double z[3], const double x[3], double R, double r, double u0, double u1, double v0, double v1)
+{
+    const double y[3] = {z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]};
+    const auto radial = [&](double u, int k) { return std::cos(u) * x[k] + std::sin(u) * y[k]; };
+    const auto point = [&](double u, double v, int k) { return o[k] + (R + r * std::cos(v)) * radial(u, k) + r * std::sin(v) * z[k]; };
+    Arrays a;
+    a.i[SMLIB_FLAT_REGION_SHELL_COUNT] = {1};
+    a.i[SMLIB_FLAT_REGION_TYPE] = {1};
+    a.i[SMLIB_FLAT_SHELL_FACEUSE_COUNT] = {2};
+    a.i[SMLIB_FLAT_SHELL_WIRE_EDGE_COUNT] = {0};
+    a.i[SMLIB_FLAT_SHELL_POINT_TYPE] = {0};
+    a.i[SMLIB_FLAT_FACEUSE_FACE] = {0, 0};
+    a.i[SMLIB_FLAT_FACEUSE_ORIENTATION] = {1, 0};
+    a.i[SMLIB_FLAT_FACE_LOOP_COUNT] = {1};
+    a.i[SMLIB_FLAT_FACE_SURFACE_TYPE] = {SMLIB_FLAT_SURFACE_TORUS};
+    a.i[SMLIB_FLAT_FACE_TRIM_TYPE] = {0};
+    a.i[SMLIB_FLAT_LOOP_EDGEUSE_COUNT] = {4};
+    a.i[SMLIB_FLAT_LOOP_VERTEX] = {-1};
+    a.i[SMLIB_FLAT_SOURCE] = {1};
+    a.f[SMLIB_FLAT_FACE_TORUS_ORIGIN] = {o[0], o[1], o[2]};
+    a.f[SMLIB_FLAT_FACE_TORUS_AXIS] = {z[0], z[1], z[2]};
+    a.f[SMLIB_FLAT_FACE_TORUS_REF_DIRECTION] = {x[0], x[1], x[2]};
+    a.f[SMLIB_FLAT_FACE_TORUS_MAJOR_RADIUS] = {R};
+    a.f[SMLIB_FLAT_FACE_TORUS_MINOR_RADIUS] = {r};
+    a.f[SMLIB_FLAT_FACE_RANGE] = {u0, v0, u1, v1};
+    // Vertices 0 to 3 at (u0, v0), (u1, v0), (u1, v1), (u0, v1). Edges: the major circles at v0
+    // and v1 (u0 to u1), the minor circles at u1 and u0 (v0 to v1); the loop runs counter-
+    // clockwise in (u, v), along edges 0 and 1, against 2 and 3.
+    const double corner[4][2] = {{u0, v0}, {u1, v0}, {u1, v1}, {u0, v1}};
+    for (const auto &c : corner)
+    {
+        for (int k = 0; k < 3; ++k)
+        {
+            a.f[SMLIB_FLAT_VERTEX_POSITION].push_back(point(c[0], c[1], k));
+        }
+        a.i[SMLIB_FLAT_VERTEX_POINT_TYPE].push_back(1);
+        a.f[SMLIB_FLAT_VERTEX_TOLERANCE].push_back(1e-5);
+    }
+    const auto majorCircle = [&](double v)
+    {
+        for (int k = 0; k < 3; ++k)
+        {
+            a.f[SMLIB_FLAT_EDGE_CIRCLE_CENTER].push_back(o[k] + r * std::sin(v) * z[k]);
+            a.f[SMLIB_FLAT_EDGE_CIRCLE_AXIS].push_back(z[k]);
+            a.f[SMLIB_FLAT_EDGE_CIRCLE_REF_DIRECTION].push_back(x[k]);
+        }
+        a.f[SMLIB_FLAT_EDGE_CIRCLE_RADIUS].push_back(R + r * std::cos(v));
+        a.f[SMLIB_FLAT_EDGE_RANGE].insert(a.f[SMLIB_FLAT_EDGE_RANGE].end(), {u0, u1});
+    };
+    // The minor circle at u: centre o + R radial(u), reference direction radial(u), axis
+    // radial(u) cross z, so that its y axis is z and its angle is v.
+    const auto minorCircle = [&](double u)
+    {
+        const double t[3] = {radial(u, 0), radial(u, 1), radial(u, 2)};
+        const double n[3] = {t[1] * z[2] - t[2] * z[1], t[2] * z[0] - t[0] * z[2], t[0] * z[1] - t[1] * z[0]};
+        for (int k = 0; k < 3; ++k)
+        {
+            a.f[SMLIB_FLAT_EDGE_CIRCLE_CENTER].push_back(o[k] + R * t[k]);
+            a.f[SMLIB_FLAT_EDGE_CIRCLE_AXIS].push_back(n[k]);
+            a.f[SMLIB_FLAT_EDGE_CIRCLE_REF_DIRECTION].push_back(t[k]);
+        }
+        a.f[SMLIB_FLAT_EDGE_CIRCLE_RADIUS].push_back(r);
+        a.f[SMLIB_FLAT_EDGE_RANGE].insert(a.f[SMLIB_FLAT_EDGE_RANGE].end(), {v0, v1});
+    };
+    majorCircle(v0);
+    minorCircle(u1);
+    majorCircle(v1);
+    minorCircle(u0);
+    a.i[SMLIB_FLAT_EDGE_VERTICES] = {0, 1, 1, 2, 3, 2, 0, 3};
+    for (int64_t k = 0; k < 4; ++k)
+    {
+        a.i[SMLIB_FLAT_EDGE_CURVE_TYPE].push_back(SMLIB_FLAT_CURVE_CIRCLE);
+        a.f[SMLIB_FLAT_EDGE_TOLERANCE].push_back(2e-5);
+        a.i[SMLIB_FLAT_EDGEUSE_EDGE].push_back(k);
+        a.i[SMLIB_FLAT_EDGEUSE_ORIENTATION].push_back(k < 2 ? 1 : 0);
+        a.i[SMLIB_FLAT_EDGEUSE_NEXT_RADIAL].push_back(k);
+        a.i[SMLIB_FLAT_EDGEUSE_RADIAL_ENTRY].push_back(0);
+    }
+    a.f[SMLIB_FLAT_TOLERANCE] = {4e-5};
+    return a;
+}
+
+// A torus face SMLib made from its label (SmTorus::CreateCanonical over the face's angles) comes
+// back from export as that label and its NURBS form; the form imported again must be kept, to the
+// bit (the face's trims are in its parameters), and export -> import must be the identity but for
+// the label's reference direction. The torus SMLib rebuilt from the circles it fits to the form
+// was ~1e-11 off it on a small torus far out, and the import refused it. These are the faces a
+// STEP file has, parts of a torus: a quarter, one off the seam and across the minor angle 0, the
+// inner side, a half about the seam, the off-seam one about an axis turned over (its minor
+// circles running the other way in space), and a small one far from the origin.
+void TorusFormRoundTrip()
+{
+    const double pi = 3.14159265358979323846, deg = pi / 180.0;
+    const double o[3] = {1, 2, 3}, up[3] = {0, 0, 1}, down[3] = {0, 0, -1}, ref[3] = {1, 0, 0};
+    // Poppy's Stock-head has a fillet torus R 2.85, r 0.2 about the y axis, 90 mm out: SMLib's
+    // torus rebuilt from the circles it fits to that NURBS had weights 7e-12 off it.
+    const double far[3] = {0, 88.18, -14.75}, side[3] = {0, 1, 0}, across[3] = {-1, 0, 0};
+    struct Case
+    {
+        const char *name;
+        const double *o, *z, *x;
+        double R, r, u0, u1, v0, v1;
+    };
+    const Case cases[] = {
+        {"quarter", o, up, ref, 10.0, 3.0, 0.0, 90.0, 0.0, 90.0},
+        {"off the seam", o, up, ref, 10.0, 3.0, 30.0, 100.0, -50.0, 70.0},
+        {"inner side", o, up, ref, 10.0, 3.0, 17.0, 115.0, 100.0, 260.0},
+        {"half about the seam", o, up, ref, 10.0, 3.0, -90.0, 90.0, -40.0, 40.0},
+        {"axis turned over", o, down, ref, 10.0, 3.0, 30.0, 100.0, -50.0, 70.0},
+        {"small, far out", far, side, across, 2.85, 0.2, 0.0, 90.0, 90.0, 180.0},
+    };
+    // The form SMLib exported for that Stock-head face (its control points are themselves 1e-12
+    // off a plane square to the axis), given as SMLib writes it: the torus label (passed over on
+    // import) and the form, bounded by the form's iso curves, no UV trims. Its first import was
+    // refused; now it is kept to the bit.
+    {
+        Patch f;
+        f.nu = f.nv = 3;
+        f.u.order = f.v.order = 3;
+        f.u.knots = {3, 3, 3, 4, 4, 4};
+        f.v.knots = {4, 4, 4, 5, 5, 5};
+        f.weights = {1, 0.70710678118654757, 1, 0.70710678118654813, 0.50000000000000044, 0.70710678118654813, 1, 0.70710678118654757, 1};
+        f.cvs = {-2.8500000000000139,     91.036626133921814, -14.772670798218494, -2.8500000000000139,     91.024416426014824, -14.573043838534121,
+                 -2.6500000000000137,     91.024416426014838, -14.573043838534121, -2.8500000000011951,     88.191941958423001, -14.946659135892627,
+                 -2.85000000000118,       88.179732250516011, -14.747032176208254, -2.650000000001195,      88.379359210200406, -14.734822468301282,
+                 -4.7201503979908935e-12, 88.191941958421822, -14.946659135892693, -4.7064028649897626e-12, 88.179732250514846, -14.74703217620832,
+                 -4.7202196957604515e-12, 88.379359210199226, -14.734822468301347};
+        std::vector<SheetEdge> edges(1);
+        edges[0].curve = PatchIso(f, true, 0, false);
+        edges[0].from = 0;
+        edges[0].to = 1;
+        PatchSides(f, edges);
+        for (SheetEdge &e : edges)
+        {
+            e.t0 = e.curve.knots.front();
+            e.t1 = e.curve.knots.back();
+        }
+        const std::vector<double> vertices = {f.cvs[0], f.cvs[1], f.cvs[2], f.cvs[18], f.cvs[19], f.cvs[20],
+                                              f.cvs[24], f.cvs[25], f.cvs[26], f.cvs[6], f.cvs[7], f.cvs[8]};
+        Arrays given = SheetArrays(f, edges, vertices, {1e-5, 1e-5, 1e-5, 1e-5});
+        // The label: the sweep's centre and axis from its first row's control triangle.
+        const double c[3] = {f.cvs[0] + f.cvs[18] - f.cvs[9], f.cvs[1] + f.cvs[19] - f.cvs[10], f.cvs[2] + f.cvs[20] - f.cvs[11]};
+        const double p[3] = {f.cvs[0] - c[0], f.cvs[1] - c[1], f.cvs[2] - c[2]}, q[3] = {f.cvs[18] - c[0], f.cvs[19] - c[1], f.cvs[20] - c[2]};
+        double n[3] = {p[1] * q[2] - p[2] * q[1], p[2] * q[0] - p[0] * q[2], p[0] * q[1] - p[1] * q[0]}, x[3] = {p[0], p[1], p[2]};
+        const double nl = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]), R = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+        for (int k = 0; k < 3; ++k)
+        {
+            n[k] /= nl;
+            x[k] /= R;
+        }
+        given.i[SMLIB_FLAT_FACE_SURFACE_TYPE] = {SMLIB_FLAT_SURFACE_TORUS};
+        given.i[SMLIB_FLAT_FACE_NURBS_FORM] = {1};
+        given.f[SMLIB_FLAT_FACE_TORUS_ORIGIN] = {c[0], c[1], c[2]};
+        given.f[SMLIB_FLAT_FACE_TORUS_AXIS] = {n[0], n[1], n[2]};
+        given.f[SMLIB_FLAT_FACE_TORUS_REF_DIRECTION] = {x[0], x[1], x[2]};
+        given.f[SMLIB_FLAT_FACE_TORUS_MAJOR_RADIUS] = {R};
+        given.f[SMLIB_FLAT_FACE_TORUS_MINOR_RADIUS] = {0.2};
+        Arrays first, second;
+        const bool ok = ImportExport(given, "Stock-head torus form", first) && ImportExport(first, "Stock-head torus form", second);
+        bool kept = ok;
+        for (int32_t id : {SMLIB_FLAT_FACE_NURBS_CVS, SMLIB_FLAT_FACE_NURBS_U_KNOTS, SMLIB_FLAT_FACE_NURBS_V_KNOTS, SMLIB_FLAT_FACE_NURBS_WEIGHTS})
+        {
+            kept = kept && given.f.at(id) == first.f.at(id) && first.f.at(id) == second.f.at(id);
+        }
+        const double fixed = ok ? Compare(first, second, "Stock-head torus form") : INFINITY;
+        std::printf("torus face given as Stock-head's form: imports %s, form %s, then a fixed point (worst %.3g)\n", ok ? "ok" : "refused",
+                    kept ? "kept" : "changed", fixed);
+        CHECK(ok && kept && fixed <= 1e-12);
+    }
+    for (const Case &c : cases)
+    {
+        FormRoundTrip(TorusSheet(c.o, c.z, c.x, c.R, c.r, c.u0 * deg, c.u1 * deg, c.v0 * deg, c.v1 * deg), "torus face", c.name,
+                      SMLIB_FLAT_FACE_TORUS_AXIS, SMLIB_FLAT_FACE_TORUS_REF_DIRECTION);
+    }
+}
+
+// A one-face sphere sheet as a STEP reader hands it to SMLib: the sphere label (centre o, frame
+// z, x, radius r) over the longitudes [u0, u1] (radians) from pole to pole, no NURBS form,
+// bounded by its two meridians (circle edges from the south pole to the north one, no UV trims),
+// its other two sides collapsed at the poles. S(u, v) = o + r cos v (cos u x + sin u y) + r sin v z.
+Arrays SphereLune(const double o[3], const double z[3], const double x[3], double r, double u0, double u1)
+{
+    const double pi = 3.14159265358979323846;
+    const double y[3] = {z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]};
+    Arrays a;
+    a.i[SMLIB_FLAT_REGION_SHELL_COUNT] = {1};
+    a.i[SMLIB_FLAT_REGION_TYPE] = {1};
+    a.i[SMLIB_FLAT_SHELL_FACEUSE_COUNT] = {2};
+    a.i[SMLIB_FLAT_SHELL_WIRE_EDGE_COUNT] = {0};
+    a.i[SMLIB_FLAT_SHELL_POINT_TYPE] = {0};
+    a.i[SMLIB_FLAT_FACEUSE_FACE] = {0, 0};
+    a.i[SMLIB_FLAT_FACEUSE_ORIENTATION] = {1, 0};
+    a.i[SMLIB_FLAT_FACE_LOOP_COUNT] = {1};
+    a.i[SMLIB_FLAT_FACE_SURFACE_TYPE] = {SMLIB_FLAT_SURFACE_SPHERE};
+    a.i[SMLIB_FLAT_FACE_TRIM_TYPE] = {0};
+    a.i[SMLIB_FLAT_LOOP_EDGEUSE_COUNT] = {2};
+    a.i[SMLIB_FLAT_LOOP_VERTEX] = {-1};
+    a.i[SMLIB_FLAT_SOURCE] = {1};
+    a.f[SMLIB_FLAT_FACE_SPHERE_CENTER] = {o[0], o[1], o[2]};
+    a.f[SMLIB_FLAT_FACE_SPHERE_AXIS] = {z[0], z[1], z[2]};
+    a.f[SMLIB_FLAT_FACE_SPHERE_REF_DIRECTION] = {x[0], x[1], x[2]};
+    a.f[SMLIB_FLAT_FACE_SPHERE_RADIUS] = {r};
+    a.f[SMLIB_FLAT_FACE_RANGE] = {u0, -0.5 * pi, u1, 0.5 * pi};
+    // Vertices: the south pole, the north pole.
+    for (double side : {-1.0, 1.0})
+    {
+        for (int k = 0; k < 3; ++k)
+        {
+            a.f[SMLIB_FLAT_VERTEX_POSITION].push_back(o[k] + side * r * z[k]);
+        }
+        a.i[SMLIB_FLAT_VERTEX_POINT_TYPE].push_back(1);
+        a.f[SMLIB_FLAT_VERTEX_TOLERANCE].push_back(1e-5);
+    }
+    // The meridian at u: reference direction radial(u), axis radial(u) cross z (its y axis is z),
+    // angle v. The loop runs counter-clockwise in (u, v): north along the meridian at u1, south
+    // along (against) the one at u0.
+    for (double u : {u1, u0})
+    {
+        const double t[3] = {std::cos(u) * x[0] + std::sin(u) * y[0], std::cos(u) * x[1] + std::sin(u) * y[1], std::cos(u) * x[2] + std::sin(u) * y[2]};
+        const double n[3] = {t[1] * z[2] - t[2] * z[1], t[2] * z[0] - t[0] * z[2], t[0] * z[1] - t[1] * z[0]};
+        for (int k = 0; k < 3; ++k)
+        {
+            a.f[SMLIB_FLAT_EDGE_CIRCLE_CENTER].push_back(o[k]);
+            a.f[SMLIB_FLAT_EDGE_CIRCLE_AXIS].push_back(n[k]);
+            a.f[SMLIB_FLAT_EDGE_CIRCLE_REF_DIRECTION].push_back(t[k]);
+        }
+        a.f[SMLIB_FLAT_EDGE_CIRCLE_RADIUS].push_back(r);
+        a.f[SMLIB_FLAT_EDGE_RANGE].insert(a.f[SMLIB_FLAT_EDGE_RANGE].end(), {-0.5 * pi, 0.5 * pi});
+    }
+    a.i[SMLIB_FLAT_EDGE_VERTICES] = {0, 1, 0, 1};
+    for (int64_t k = 0; k < 2; ++k)
+    {
+        a.i[SMLIB_FLAT_EDGE_CURVE_TYPE].push_back(SMLIB_FLAT_CURVE_CIRCLE);
+        a.f[SMLIB_FLAT_EDGE_TOLERANCE].push_back(2e-5);
+        a.i[SMLIB_FLAT_EDGEUSE_EDGE].push_back(k);
+        a.i[SMLIB_FLAT_EDGEUSE_ORIENTATION].push_back(k == 0 ? 1 : 0);
+        a.i[SMLIB_FLAT_EDGEUSE_NEXT_RADIAL].push_back(k);
+        a.i[SMLIB_FLAT_EDGEUSE_RADIAL_ENTRY].push_back(0);
+    }
+    a.f[SMLIB_FLAT_TOLERANCE] = {4e-5};
+    return a;
+}
+
+// The same for a sphere face from pole to pole: SmSphere::IsNurbSurfaceSphere took a half meridian
+// it measured in the form at 180.0000000000024 degrees (a lune of a radius 2 sphere 500 mm out, on
+// an engine's valve cover) for more than a half circle and said no, and the import refused it.
+void SphereFormRoundTrip()
+{
+    const double pi = 3.14159265358979323846, deg = pi / 180.0;
+    const double o[3] = {1, 2, 3}, far[3] = {107.214217174, 350.149503622, -367.5}, up[3] = {0, 0, 1}, ref[3] = {1, 0, 0};
+    FormRoundTrip(SphereLune(o, up, ref, 10.0, 0.0, 90.0 * deg), "sphere face", "quarter lune", SMLIB_FLAT_FACE_SPHERE_AXIS,
+                  SMLIB_FLAT_FACE_SPHERE_REF_DIRECTION);
+    FormRoundTrip(SphereLune(o, up, ref, 10.0, 30.0 * deg, 150.0 * deg), "sphere face", "lune off the seam", SMLIB_FLAT_FACE_SPHERE_AXIS,
+                  SMLIB_FLAT_FACE_SPHERE_REF_DIRECTION);
+    FormRoundTrip(SphereLune(far, up, ref, 2.0, 0.0, 90.0 * deg), "sphere face", "small lune, far out", SMLIB_FLAT_FACE_SPHERE_AXIS,
+                  SMLIB_FLAT_FACE_SPHERE_REF_DIRECTION);
+}
+
 // Imports `a`; expects a failure status (and no crash). Returns the status.
 int32_t ExpectReject(const Arrays &a, const char *what)
 {
@@ -1384,6 +1679,16 @@ int main(int argc, char **argv)
             std::printf("torus, canonical, %s range a turn on: import %d, volume %.12g (want %.12g), failed checks %lld %s\n",
                         shift == 0 ? "no" : shift == 1 ? "major" : shift == 2 ? "minor" : "both", static_cast<int>(s), v, want, static_cast<long long>(bad), buf);
             CHECK(s == SMLIB_OK && std::fabs(v - want) <= 1e-7 * want && bad == 0);
+            // Its export (the label and its NURBS form) imports again.
+            smlib_flat *x = nullptr;
+            smlib_brep *again = nullptr;
+            const int32_t sx = s == SMLIB_OK ? smlib_brep_export(b, &x) : s;
+            const int32_t sa = sx == SMLIB_OK ? smlib_brep_import(x, &again) : sx;
+            std::printf("torus, canonical, %s range a turn on: export %d, imported again %d\n",
+                        shift == 0 ? "no" : shift == 1 ? "major" : shift == 2 ? "minor" : "both", static_cast<int>(sx), static_cast<int>(sa));
+            CHECK(sa == SMLIB_OK);
+            smlib_brep_free(again);
+            smlib_flat_free(x);
             smlib_brep_free(b);
             smlib_flat_free(f);
         }
@@ -1392,6 +1697,8 @@ int main(int argc, char **argv)
     NestedShellOrder();
     BoundaryRowTrimPace();
     EdgePastPatch();
+    TorusFormRoundTrip();
+    SphereFormRoundTrip();
 
     // The accessors' argument checks.
     {
