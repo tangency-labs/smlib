@@ -4872,13 +4872,6 @@ iDebugLevel = DebugLevel();
         SM_SWAP_PTR(SmEdgeuse,pConcaveEdgeuse,pConvexEdgeuse);
     }
 
-    // Get Solvers
-    SmFilletExecutive * pExec = GetFilletExecutive();
-    SmFilletSolver * pConvexSolver = pExec->GetFilletSolverOfEdgeuse(pConvexEdgeuse);
-    SmFilletSolver * pConcaveSolver = pExec->GetFilletSolverOfEdgeuse(pConcaveEdgeuse);
-    SmFilletGeom * pConvexFG = pConvexSolver->GetFirstFilletGeom();
-    SmFilletGeom * pConcaveFG = pConcaveSolver->GetFirstFilletGeom();
-
     SmEdgeuse * pCurrEU = NULL;
     for (ULONG i=0; i<3; i++) {
         SmEdgeuse * pEU = (*m_pAllEUs)[i];
@@ -4889,31 +4882,53 @@ iDebugLevel = DebugLevel();
     }
     NER(pCurrEU);
 
+    // SolidCraft: the roles of the two filleted edges follow the convexity of the unfilleted
+    // edge (pCurrEU). The fillet of the other convexity than pCurrEU has its rail on the face
+    // they share cross pCurrEU itself (pCrossEU); the fillet of the same convexity has its rail
+    // cross pCurrEU extended past the vertex (pExtEU), into the face it shares with pCurrEU, and
+    // the face pCurrEU shares with pCrossEU is extended to meet it. In an L-shaped box pCurrEU is
+    // convex (the riser's front edge, running up from the vertex), so pCrossEU is the concave
+    // edge; where pCurrEU is concave (a boss standing over a box's side face, its line on that
+    // face running down from the vertex), pCrossEU is the convex edge, and taking the concave one
+    // for it put that fillet's rail on a crossing of pCurrEU that does not exist.
+    SmEdgeuse * pCrossEU = pConcaveEdgeuse;
+    SmEdgeuse * pExtEU   = pConvexEdgeuse;
+    if (pCurrEU->IsConvexRadialSector(5) == TRUE) {
+        SM_SWAP_PTR(SmEdgeuse,pCrossEU,pExtEU);
+    }
+
+    // Get Solvers
+    SmFilletExecutive * pExec = GetFilletExecutive();
+    SmFilletSolver * pExtSolver = pExec->GetFilletSolverOfEdgeuse(pExtEU);
+    SmFilletSolver * pCrossSolver = pExec->GetFilletSolverOfEdgeuse(pCrossEU);
+    SmFilletGeom * pExtFG = pExtSolver->GetFirstFilletGeom();
+    SmFilletGeom * pCrossFG = pCrossSolver->GetFirstFilletGeom();
+
     ULONG lRailIndex, lOtherRailIndex;
     // This edgeuse is 'in-between' two filletted edgeuses
     SmFilletVertex * pFV0 = new (m_pPseudoBrep) SmFilletVertex(this);
-    SmEdgeuse * pSideEU = sm_FindSideEdgeuse(pConcaveEdgeuse, pCurrEU, iDebugLevel );
-    lRailIndex = pConcaveSolver->FindIndexOfRailXSideEdgeuse(pSideEU);
+    SmEdgeuse * pSideEU = sm_FindSideEdgeuse(pCrossEU, pCurrEU, iDebugLevel );
+    lRailIndex = pCrossSolver->FindIndexOfRailXSideEdgeuse(pSideEU);
     SmFilletEdgeuse * pNewEdgeuse = NULL;
-    SER(pConcaveFG->MakeRailEdgeuse(m_pPseudoBrep,lRailIndex,pFV0,pNewEdgeuse));
+    SER(pCrossFG->MakeRailEdgeuse(m_pPseudoBrep,lRailIndex,pFV0,pNewEdgeuse));
     pFV0->SetPointClass(SM_PC_EDGEUSE, pSideEU);
     pFV0->SetFilletVertexType(SM_FV_RAIL_X_EDGEUSE);
     m_vVertices.Add(pFV0);
 
     SmFace * pCommonFace = sm_GetFaceByTwoEdgeuses(
-        pConvexEdgeuse,pConcaveEdgeuse,pCurrEU);
+        pExtEU,pCrossEU,pCurrEU);
     SmFilletVertex * pFV1 = new (m_pPseudoBrep) SmFilletVertex(this);
     pFV1->SetPointClass(SM_PC_FACE, pCommonFace);
     pFV1->SetFilletVertexType(SM_FV_RAIL_X_RAIL);
     m_vVertices.Add(pFV1);
 
     // Setup rails of fillet
-    lRailIndex = pConcaveSolver->FindIndexOfRailOnFace(pCommonFace);
-    SER(pConcaveFG->MakeRailEdgeuse(m_pPseudoBrep,lRailIndex,pFV1,pNewEdgeuse));
-    lOtherRailIndex = pConvexSolver->FindIndexOfRailOnFace(pCommonFace);
-    SER(pConvexFG->MakeRailEdgeuse(m_pPseudoBrep,lOtherRailIndex,pFV1,pNewEdgeuse));
+    lRailIndex = pCrossSolver->FindIndexOfRailOnFace(pCommonFace);
+    SER(pCrossFG->MakeRailEdgeuse(m_pPseudoBrep,lRailIndex,pFV1,pNewEdgeuse));
+    lOtherRailIndex = pExtSolver->FindIndexOfRailOnFace(pCommonFace);
+    SER(pExtFG->MakeRailEdgeuse(m_pPseudoBrep,lOtherRailIndex,pFV1,pNewEdgeuse));
 
-    // Make a cross section on the concave fillet
+    // Make a cross section on the crossing fillet
     SmFilletEdge * pFE0 = NULL;
     SER(SmFilletEdge::MakeFilletEdge(m_pPseudoBrep, // in : target Brep to receive new topology objects
                                      pFV0,          // in : start of new FilletEdge
@@ -4923,18 +4938,18 @@ iDebugLevel = DebugLevel();
                                                     //      NULL to ignore, default:[NULL]
     pFE0->SetFilletEdgeType(SM_FE_CROSS_SECTION);
     SmFilletEdgeuse * pPrimEU = (SmFilletEdgeuse*)pFE0->GetPrimaryEdgeuse();
-    pPrimEU->SetFilletGeom(pConcaveFG);
+    pPrimEU->SetFilletGeom(pCrossFG);
     m_vEdges.Add(pFE0);
 
     SmFilletVertex * pFV2 = new (m_pPseudoBrep) SmFilletVertex(this);
     pFV2->SetFilletVertexType(SM_FV_RAIL_X_EXTENDED_EDGEUSE);
-    pSideEU = sm_FindSideEdgeuse(pConvexEdgeuse,pCurrEU, iDebugLevel );
-    lRailIndex = pConvexSolver->FindIndexOfRailXSideEdgeuse(pSideEU);
-    SER(pConvexFG->MakeRailEdgeuse(m_pPseudoBrep,lRailIndex,pFV2,pNewEdgeuse));
+    pSideEU = sm_FindSideEdgeuse(pExtEU,pCurrEU, iDebugLevel );
+    lRailIndex = pExtSolver->FindIndexOfRailXSideEdgeuse(pSideEU);
+    SER(pExtFG->MakeRailEdgeuse(m_pPseudoBrep,lRailIndex,pFV2,pNewEdgeuse));
     pFV2->SetPointClass(SM_PC_EDGEUSE, pSideEU);
     m_vVertices.Add(pFV2);
 
-    // Make a cross section on the conveex fillet
+    // Make a cross section on the extended fillet
     SmFilletEdge * pFE1 = NULL;
     SER(SmFilletEdge::MakeFilletEdge(m_pPseudoBrep, // in : target Brep to receive new topology objects
                                      pFV1,          // in : start of new FilletEdge
@@ -4944,7 +4959,7 @@ iDebugLevel = DebugLevel();
                                                     //      NULL to ignore, default:[NULL]
     pFE1->SetFilletEdgeType(SM_FE_CROSS_SECTION);
     SmFilletEdgeuse * pPrimEU1 = (SmFilletEdgeuse*)pFE1->GetPrimaryEdgeuse();
-    pPrimEU1->SetFilletGeom(pConvexFG);
+    pPrimEU1->SetFilletGeom(pExtFG);
     m_vEdges.Add(pFE1);
 
     SmFilletVertex * pFV3 = new (m_pPseudoBrep) SmFilletVertex(this);
@@ -4953,7 +4968,7 @@ iDebugLevel = DebugLevel();
     m_vVertices.Add(pFV3);
 
     // Find the original face
-    SmFace * pOrigFace = sm_GetFaceByTwoEdgeuses(pCurrEU,pConvexEdgeuse,NULL);
+    SmFace * pOrigFace = sm_GetFaceByTwoEdgeuses(pCurrEU,pExtEU,NULL);
     // Make an extended edge
     SmFilletEdge * pFE2 = NULL;
     SER(SmFilletEdge::MakeFilletEdge(m_pPseudoBrep, // in : target Brep to receive new topology objects
@@ -4982,8 +4997,8 @@ iDebugLevel = DebugLevel();
 
     // Extend the Side Surface if necessary
     double dExtDist = sm_FindSurfaceExtensionDistAtCorner(
-        pConvexEdgeuse,pConvexSolver,m_cpVertex);
-    SmFace * pOrigFace1 = sm_GetFaceByTwoEdgeuses(pCurrEU,pConcaveEdgeuse,NULL);
+        pExtEU,pExtSolver,m_cpVertex);
+    SmFace * pOrigFace1 = sm_GetFaceByTwoEdgeuses(pCurrEU,pCrossEU,NULL);
     SmSurface * pSurface = pOrigFace1->GetSurface(); NER(pSurface);
     SmSurface * pNewSurface = NULL;
     SER(pSurface->CreateExtendedSurface(m_crContext,dExtDist,SM_CT_G1,pNewSurface));
