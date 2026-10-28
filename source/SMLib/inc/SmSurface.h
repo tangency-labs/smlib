@@ -73,7 +73,7 @@ enum SmCreateUVTrimCurvePathType
       SM_CTC_TWOSINGULARENDPTS_RECOVERY,        // CreateUVTrimCurve: DropCurve Fail recovery - Both endPts are singularities
       SM_CTC_SHORTPIECE_SEAMCROSS_RECOVERY,     // CreateUVTrimCurve: CrossSeam recovery - ShortSegment deleted - LongSegment used 
       SM_CTC_PICKONESEAM_RECOVERY,              // CreateUVTrimCurve: DropToSeam - Pick one DropCurve - Discard the other 
-      SM_CTC_10PERCENT_SEAMCROSS_RECOVERY,      // CreateUVTrimCurve: CrossSeam recovery - 10% Segment deleted - LongSegment used 
+      SM_CTC_10PERCENT_SEAMCROSS_RECOVERY,      // CreateUVTrimCurve: CrossSeam/boundary recovery - the longest run of pieces that meet, joined, on its own edge parameters
       SM_CTC_1PERCENT_UVTRIMCURVETRIM_RECOVERY1,// CreateUVTrimCurve: mismatched UVTrimCurve/Curve param ranges - resolved by Trimming UVTrimCurve
       SM_CTC_1PERCENT_UVTRIMCURVETRIM_RECOVERY2,// CreateUVTrimCurve: mismatched UVTrimCurve/Curve param ranges - resolved by Trimming UVTrimCurve
       SM_CTC_1PERCENT_EDGETRIM_RECOVERY1,       // CreateUVTrimCurve: mismatched UVTrimCurve/Curve param ranges - resolved by Trimming Edge

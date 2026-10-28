@@ -521,6 +521,383 @@ void NestedShellOrder()
     std::printf("nested shells: %d of %d region and shell orders import as a valid body of volume %.12g\n", good, orders, want);
 }
 
+// ---- One-face sheets given without UV trims: the trims SMLib makes on export ----------------
+
+// A NURBS curve in flat form: order, full knots, cartesian control points (`dim` coordinates
+// each) and weights.
+struct Spline
+{
+    int order = 0;
+    std::vector<double> knots, cvs, weights;
+};
+
+// The point at `t` (clamped to the knot range) of a rational B-spline with `dim` coordinates per
+// control point: de Boor's algorithm on the homogeneous points.
+std::vector<double> SplinePoint(const Spline &c, int dim, double t)
+{
+    const size_t p = static_cast<size_t>(c.order - 1), n = c.weights.size(), d1 = static_cast<size_t>(dim) + 1;
+    t = std::min(std::max(t, c.knots[p]), c.knots[n]);
+    size_t k = p;
+    while (k + 1 < n && t >= c.knots[k + 1])
+    {
+        k++;
+    }
+    std::vector<std::vector<double>> d(p + 1, std::vector<double>(d1));
+    for (size_t j = 0; j <= p; ++j)
+    {
+        const size_t i = j + k - p;
+        for (size_t a = 0; a + 1 < d1; ++a)
+        {
+            d[j][a] = c.cvs[i * (d1 - 1) + a] * c.weights[i];
+        }
+        d[j][d1 - 1] = c.weights[i];
+    }
+    for (size_t r = 1; r <= p; ++r)
+    {
+        for (size_t j = p; j >= r; --j)
+        {
+            const double lo = c.knots[j + k - p], hi = c.knots[j + 1 + k - r];
+            const double alpha = hi > lo ? (t - lo) / (hi - lo) : 0.0;
+            for (size_t a = 0; a < d1; ++a)
+            {
+                d[j][a] = (1.0 - alpha) * d[j - 1][a] + alpha * d[j][a];
+            }
+        }
+    }
+    std::vector<double> out(d1 - 1);
+    for (size_t a = 0; a + 1 < d1; ++a)
+    {
+        out[a] = d[p][a] / d[p][d1 - 1];
+    }
+    return out;
+}
+
+// A NURBS surface in flat form: control points U-major (point (i, j) at i * nv + j).
+struct Patch
+{
+    int nu = 0, nv = 0;
+    Spline u, v; // orders and knots only
+    std::vector<double> cvs, weights;
+};
+
+// S(u, v): each U row's homogeneous points evaluated in v, then that column in u.
+std::vector<double> PatchPoint(const Patch &s, double u, double v)
+{
+    Spline column;
+    column.order = s.u.order;
+    column.knots = s.u.knots;
+    for (int i = 0; i < s.nu; ++i)
+    {
+        Spline row;
+        row.order = s.v.order;
+        row.knots = s.v.knots;
+        for (int j = 0; j < s.nv; ++j)
+        {
+            const size_t k = static_cast<size_t>(i * s.nv + j);
+            const double w = s.weights[k];
+            row.cvs.insert(row.cvs.end(), {s.cvs[3 * k] * w, s.cvs[3 * k + 1] * w, s.cvs[3 * k + 2] * w, w});
+            row.weights.push_back(1.0);
+        }
+        const std::vector<double> h = SplinePoint(row, 4, v);
+        column.cvs.insert(column.cvs.end(), {h[0] / h[3], h[1] / h[3], h[2] / h[3]});
+        column.weights.push_back(h[3]);
+    }
+    return SplinePoint(column, 3, u);
+}
+
+double Dist(const std::vector<double> &a, const std::vector<double> &b)
+{
+    return std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+}
+
+// One edge of a sheet: its curve, range, end vertices and tolerance (in flat terms: twice its
+// zone tolerance).
+struct SheetEdge
+{
+    Spline curve;
+    double t0 = 0.0, t1 = 1.0;
+    int64_t from = 0, to = 0;
+    double tolerance = 1e-5;
+};
+
+// The flat arrays of a one-face open sheet: `patch` over its whole domain, bounded by one loop of
+// `edges`, each used along its curve and given without a UV trim (SMLib makes them), written as
+// SMLib's own (SOURCE 1: no healing): how SolidCraft hands SMLib a face whose pcurves it needs.
+Arrays SheetArrays(const Patch &patch, const std::vector<SheetEdge> &edges, const std::vector<double> &vertices,
+                   const std::vector<double> &vertexTolerances)
+{
+    Arrays a;
+    const int64_t n = static_cast<int64_t>(edges.size());
+    a.i[SMLIB_FLAT_REGION_SHELL_COUNT] = {1};
+    a.i[SMLIB_FLAT_REGION_TYPE] = {1};
+    a.i[SMLIB_FLAT_SHELL_FACEUSE_COUNT] = {2};
+    a.i[SMLIB_FLAT_SHELL_WIRE_EDGE_COUNT] = {0};
+    a.i[SMLIB_FLAT_SHELL_POINT_TYPE] = {0};
+    a.i[SMLIB_FLAT_FACEUSE_FACE] = {0, 0};
+    a.i[SMLIB_FLAT_FACEUSE_ORIENTATION] = {1, 0};
+    a.i[SMLIB_FLAT_FACE_LOOP_COUNT] = {1};
+    a.i[SMLIB_FLAT_FACE_SURFACE_TYPE] = {SMLIB_FLAT_SURFACE_NURBS};
+    a.i[SMLIB_FLAT_FACE_TRIM_TYPE] = {0};
+    a.i[SMLIB_FLAT_LOOP_EDGEUSE_COUNT] = {n};
+    a.i[SMLIB_FLAT_LOOP_VERTEX] = {-1};
+    a.i[SMLIB_FLAT_SOURCE] = {1};
+    a.i[SMLIB_FLAT_FACE_NURBS_U_VERTEX_COUNT] = {patch.nu};
+    a.i[SMLIB_FLAT_FACE_NURBS_V_VERTEX_COUNT] = {patch.nv};
+    a.i[SMLIB_FLAT_FACE_NURBS_U_ORDER] = {patch.u.order};
+    a.i[SMLIB_FLAT_FACE_NURBS_V_ORDER] = {patch.v.order};
+    a.f[SMLIB_FLAT_FACE_NURBS_CVS] = patch.cvs;
+    a.f[SMLIB_FLAT_FACE_NURBS_U_KNOTS] = patch.u.knots;
+    a.f[SMLIB_FLAT_FACE_NURBS_V_KNOTS] = patch.v.knots;
+    a.f[SMLIB_FLAT_FACE_NURBS_WEIGHTS] = patch.weights;
+    a.f[SMLIB_FLAT_FACE_RANGE] = {patch.u.knots.front(), patch.v.knots.front(), patch.u.knots.back(), patch.v.knots.back()};
+    double tol = 0.0;
+    for (int64_t k = 0; k < n; ++k)
+    {
+        const SheetEdge &e = edges[static_cast<size_t>(k)];
+        a.i[SMLIB_FLAT_EDGEUSE_EDGE].push_back(k);
+        a.i[SMLIB_FLAT_EDGEUSE_ORIENTATION].push_back(1);
+        a.i[SMLIB_FLAT_EDGEUSE_NEXT_RADIAL].push_back(k);
+        a.i[SMLIB_FLAT_EDGEUSE_RADIAL_ENTRY].push_back(0);
+        a.i[SMLIB_FLAT_EDGEUSE_NURBS_VERTEX_COUNT].push_back(0);
+        a.i[SMLIB_FLAT_EDGEUSE_NURBS_ORDER].push_back(0);
+        a.i[SMLIB_FLAT_EDGE_CURVE_TYPE].push_back(SMLIB_FLAT_CURVE_NURBS);
+        a.i[SMLIB_FLAT_EDGE_VERTICES].insert(a.i[SMLIB_FLAT_EDGE_VERTICES].end(), {e.from, e.to});
+        a.i[SMLIB_FLAT_EDGE_NURBS_VERTEX_COUNT].push_back(static_cast<int64_t>(e.curve.weights.size()));
+        a.i[SMLIB_FLAT_EDGE_NURBS_ORDER].push_back(e.curve.order);
+        std::vector<double> &cvs = a.f[SMLIB_FLAT_EDGE_NURBS_CVS], &knots = a.f[SMLIB_FLAT_EDGE_NURBS_KNOTS],
+                            &weights = a.f[SMLIB_FLAT_EDGE_NURBS_WEIGHTS];
+        cvs.insert(cvs.end(), e.curve.cvs.begin(), e.curve.cvs.end());
+        knots.insert(knots.end(), e.curve.knots.begin(), e.curve.knots.end());
+        weights.insert(weights.end(), e.curve.weights.begin(), e.curve.weights.end());
+        a.f[SMLIB_FLAT_EDGE_RANGE].insert(a.f[SMLIB_FLAT_EDGE_RANGE].end(), {e.t0, e.t1});
+        a.f[SMLIB_FLAT_EDGE_TOLERANCE].push_back(e.tolerance);
+        tol = std::max(tol, e.tolerance);
+    }
+    for (size_t k = 0; k < vertices.size() / 3; ++k)
+    {
+        a.i[SMLIB_FLAT_VERTEX_POINT_TYPE].push_back(1);
+        tol = std::max(tol, vertexTolerances[k]);
+    }
+    a.f[SMLIB_FLAT_VERTEX_POSITION] = vertices;
+    a.f[SMLIB_FLAT_VERTEX_TOLERANCE] = vertexTolerances;
+    a.f[SMLIB_FLAT_TOLERANCE] = {tol};
+    return a;
+}
+
+// How an exported use's UV trim lifts onto its face: the largest distance (over 129 samples)
+// between S(trim) and the edge's point at the same place along the edge; the edge's range and its
+// zone tolerance (half its EDGE_TOLERANCE), as exported.
+struct TrimFit
+{
+    double gap = INFINITY, t0 = 0.0, t1 = 0.0, tolerance = 0.0;
+};
+
+// A block of `n` elements of `per` values from `at` (in elements) of `v`.
+std::vector<double> Block(const std::vector<double> &v, size_t at, size_t n, size_t per = 1)
+{
+    return std::vector<double>(v.begin() + static_cast<ptrdiff_t>(at * per), v.begin() + static_cast<ptrdiff_t>((at + n) * per));
+}
+
+std::vector<TrimFit> TrimFits(const Arrays &x)
+{
+    Patch s;
+    s.nu = static_cast<int>(x.i.at(SMLIB_FLAT_FACE_NURBS_U_VERTEX_COUNT).at(0));
+    s.nv = static_cast<int>(x.i.at(SMLIB_FLAT_FACE_NURBS_V_VERTEX_COUNT).at(0));
+    s.u.order = static_cast<int>(x.i.at(SMLIB_FLAT_FACE_NURBS_U_ORDER).at(0));
+    s.v.order = static_cast<int>(x.i.at(SMLIB_FLAT_FACE_NURBS_V_ORDER).at(0));
+    s.u.knots = x.f.at(SMLIB_FLAT_FACE_NURBS_U_KNOTS);
+    s.v.knots = x.f.at(SMLIB_FLAT_FACE_NURBS_V_KNOTS);
+    s.cvs = x.f.at(SMLIB_FLAT_FACE_NURBS_CVS);
+    s.weights = x.f.at(SMLIB_FLAT_FACE_NURBS_WEIGHTS);
+    // every edge's curve (these sheets have NURBS edges only)
+    std::vector<Spline> curves;
+    {
+        size_t cv = 0, kn = 0;
+        const std::vector<int64_t> &count = x.i.at(SMLIB_FLAT_EDGE_NURBS_VERTEX_COUNT), &order = x.i.at(SMLIB_FLAT_EDGE_NURBS_ORDER);
+        for (size_t e = 0; e < count.size(); ++e)
+        {
+            Spline c;
+            c.order = static_cast<int>(order[e]);
+            const size_t m = static_cast<size_t>(count[e]);
+            c.cvs = Block(x.f.at(SMLIB_FLAT_EDGE_NURBS_CVS), cv, m, 3);
+            c.weights = Block(x.f.at(SMLIB_FLAT_EDGE_NURBS_WEIGHTS), cv, m);
+            c.knots = Block(x.f.at(SMLIB_FLAT_EDGE_NURBS_KNOTS), kn, m + static_cast<size_t>(c.order));
+            cv += m;
+            kn += m + static_cast<size_t>(c.order);
+            curves.push_back(c);
+        }
+    }
+    std::vector<TrimFit> out;
+    const std::vector<int64_t> &useEdge = x.i.at(SMLIB_FLAT_EDGEUSE_EDGE), &same = x.i.at(SMLIB_FLAT_EDGEUSE_ORIENTATION);
+    const std::vector<int64_t> &tc = x.i.at(SMLIB_FLAT_EDGEUSE_NURBS_VERTEX_COUNT), &to = x.i.at(SMLIB_FLAT_EDGEUSE_NURBS_ORDER);
+    size_t cv = 0, kn = 0;
+    for (size_t k = 0; k < useEdge.size(); ++k)
+    {
+        TrimFit fit;
+        const size_t e = static_cast<size_t>(useEdge[k]);
+        fit.t0 = x.f.at(SMLIB_FLAT_EDGE_RANGE).at(2 * e);
+        fit.t1 = x.f.at(SMLIB_FLAT_EDGE_RANGE).at(2 * e + 1);
+        fit.tolerance = 0.5 * x.f.at(SMLIB_FLAT_EDGE_TOLERANCE).at(e);
+        const size_t m = static_cast<size_t>(tc.at(k));
+        if (m == 0 || e >= curves.size())
+        {
+            out.push_back(fit);
+            continue;
+        }
+        Spline trim;
+        trim.order = static_cast<int>(to[k]);
+        trim.cvs = Block(x.f.at(SMLIB_FLAT_EDGEUSE_NURBS_CVS), cv, m, 2);
+        trim.weights = Block(x.f.at(SMLIB_FLAT_EDGEUSE_NURBS_WEIGHTS), cv, m);
+        trim.knots = Block(x.f.at(SMLIB_FLAT_EDGEUSE_NURBS_KNOTS), kn, m + static_cast<size_t>(trim.order));
+        cv += m;
+        kn += m + static_cast<size_t>(trim.order);
+        const double s0 = trim.knots[static_cast<size_t>(trim.order - 1)], s1 = trim.knots[m];
+        fit.gap = 0.0;
+        for (int q = 0; q <= 128; ++q)
+        {
+            const double f = q / 128.0;
+            const std::vector<double> uv = SplinePoint(trim, 2, s0 + f * (s1 - s0));
+            const double t = same[k] != 0 ? fit.t0 + f * (fit.t1 - fit.t0) : fit.t1 - f * (fit.t1 - fit.t0);
+            fit.gap = std::max(fit.gap, Dist(PatchPoint(s, uv[0], uv[1]), SplinePoint(curves[e], 3, t)));
+        }
+        out.push_back(fit);
+    }
+    return out;
+}
+
+// Imports `a` and exports it (SMLib makes every trim it was not given) into `exported`.
+bool ImportExport(const Arrays &a, const char *what, Arrays &exported)
+{
+    smlib_flat *f = FromArrays(a), *x = nullptr;
+    smlib_brep *b = nullptr;
+    const int32_t si = smlib_brep_import(f, &b);
+    const int32_t se = si == SMLIB_OK ? smlib_brep_export(b, &x) : si;
+    if (si != SMLIB_OK || se != SMLIB_OK)
+    {
+        std::fprintf(stderr, "%s: import %d, export %d\n", what, static_cast<int>(si), static_cast<int>(se));
+        failures++;
+    }
+    else
+    {
+        exported = Snapshot(x);
+    }
+    smlib_flat_free(x);
+    smlib_brep_free(b);
+    smlib_flat_free(f);
+    return si == SMLIB_OK && se == SMLIB_OK;
+}
+
+// The patch of the trim tests: 10 x 10 mm, rational bicubic, with a crease (a triple u knot) at
+// u = 0.08. On its v = 0 row (weights 1 there) S(u, 0) = (10u, 0, max(0, u - 0.08)): two lines.
+Patch TrimTestPatch()
+{
+    Patch s;
+    s.nu = 7;
+    s.nv = 4;
+    s.u.order = s.v.order = 4;
+    s.u.knots = {0, 0, 0, 0, 0.08, 0.08, 0.08, 1, 1, 1, 1};
+    s.v.knots = {0, 0, 0, 0, 1, 1, 1, 1};
+    // Greville abscissae, so that x = 10u, y = 10v and the row's z are linear in u on each side
+    const double gv[4] = {0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0};
+    const double z[4] = {0.0, 0.0, 2.0 / 3.0, 2.0}, w[4] = {1.0, 0.8, 0.8, 1.0};
+    for (size_t i = 0; i < 7; ++i)
+    {
+        const double gu = (s.u.knots[i + 1] + s.u.knots[i + 2] + s.u.knots[i + 3]) / 3.0;
+        for (int j = 0; j < 4; ++j)
+        {
+            s.cvs.insert(s.cvs.end(), {10.0 * gu, 10.0 * gv[j], std::max(0.0, gu - 0.08) + z[j]});
+            s.weights.push_back(w[j]);
+        }
+    }
+    return s;
+}
+
+// The patch's row `index` (v fixed) or column `index` (u fixed) as a curve, run backwards when
+// `reversed`.
+Spline PatchIso(const Patch &s, bool row, int index, bool reversed)
+{
+    Spline c;
+    c.order = row ? s.u.order : s.v.order;
+    const int n = row ? s.nu : s.nv;
+    const std::vector<double> &k = row ? s.u.knots : s.v.knots;
+    for (int q = 0; q < n; ++q)
+    {
+        const int p = reversed ? n - 1 - q : q;
+        const size_t at = static_cast<size_t>(row ? p * s.nv + index : index * s.nv + p);
+        c.cvs.insert(c.cvs.end(), {s.cvs[3 * at], s.cvs[3 * at + 1], s.cvs[3 * at + 2]});
+        c.weights.push_back(s.weights[at]);
+    }
+    for (size_t q = 0; q < k.size(); ++q)
+    {
+        c.knots.push_back(reversed ? k.front() + k.back() - k[k.size() - 1 - q] : k[q]);
+    }
+    return c;
+}
+
+// The patch's u = 1 column, v = 1 row and u = 0 column, as the loop's edges 1 to 3 (vertex 1 to
+// vertex 2, 2 to 3, 3 to 0).
+void PatchSides(const Patch &s, std::vector<SheetEdge> &edges)
+{
+    SheetEdge e1, e2, e3;
+    e1.curve = PatchIso(s, false, s.nu - 1, false);
+    e1.from = 1;
+    e1.to = 2;
+    e2.curve = PatchIso(s, true, s.nv - 1, true);
+    e2.from = 2;
+    e2.to = 3;
+    e3.curve = PatchIso(s, false, 0, true);
+    e3.from = 3;
+    e3.to = 0;
+    edges.insert(edges.end(), {e1, e2, e3});
+}
+
+// solidcore#1383: an edge along the patch's v = 0 row, creased with it at u = 0.08 (a triple knot),
+// parameterised unlike the surface's u (its control points at s^0.8 of the way along each line
+// for their Greville values s), that starts 0.05 mm past the patch's u = 0 side, on the row's
+// extension, its vertex taking no more tolerance than the file gave it. At the edge's tolerance
+// SMLib's drop does not take that start, and comes back as the pieces on the patch, split at the
+// crease; the longer one covers 96% of the edge and was stretched onto the whole edge: the trim
+// ran at the wrong pace, 0.8 mm off the edge at its start. The trim lifts onto the edge everywhere
+// within the edge's tolerance (as SMLib sizes it); the edge stays whole.
+void BoundaryRowTrimPace()
+{
+    const Patch s = TrimTestPatch();
+    SheetEdge e0;
+    e0.curve.order = 4;
+    e0.curve.knots = {0, 0, 0, 0, 0.04, 0.04, 0.04, 0.3, 0.6, 1, 1, 1, 1};
+    const double start[3] = {-0.05, 0, 0}, crease[3] = {0.8, 0, 0}, end[3] = {10, 0, 0.92};
+    for (size_t i = 0; i + 4 < e0.curve.knots.size(); ++i)
+    {
+        const double g = (e0.curve.knots[i + 1] + e0.curve.knots[i + 2] + e0.curve.knots[i + 3]) / 3.0;
+        const bool first = g <= 0.04;
+        const double *a = first ? start : crease, *b = first ? crease : end;
+        const double f = std::pow(first ? g / 0.04 : (g - 0.04) / 0.96, 0.8);
+        e0.curve.cvs.insert(e0.curve.cvs.end(), {a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1]), a[2] + f * (b[2] - a[2])});
+        e0.curve.weights.push_back(1.0);
+    }
+    e0.from = 0;
+    e0.to = 1;
+    e0.tolerance = 1e-4;
+    std::vector<SheetEdge> edges = {e0};
+    PatchSides(s, edges);
+    const std::vector<double> vertices = {-0.05, 0, 0, 10, 0, 0.92, 10, 10, 2.92, 0, 10, 2};
+    Arrays x;
+    if (!ImportExport(SheetArrays(s, edges, vertices, {1e-5, 1e-5, 1e-5, 1e-5}), "boundary row trim pace", x))
+    {
+        return;
+    }
+    const std::vector<TrimFit> fits = TrimFits(x);
+    CHECK(fits.size() == 4);
+    for (size_t k = 0; k < fits.size(); ++k)
+    {
+        const TrimFit &f = fits[k];
+        std::printf("boundary row trim pace: edge %zu range [%.9g, %.9g], its trim %.3g mm off it, tolerance %.3g mm\n", k, f.t0, f.t1, f.gap,
+                    f.tolerance);
+        CHECK(f.t0 == 0.0 && f.t1 == 1.0);
+        CHECK(f.gap <= f.tolerance);
+    }
+}
+
 // Imports `a`; expects a failure status (and no crash). Returns the status.
 int32_t ExpectReject(const Arrays &a, const char *what)
 {
@@ -937,6 +1314,7 @@ int main(int argc, char **argv)
     }
 
     NestedShellOrder();
+    BoundaryRowTrimPace();
 
     // The accessors' argument checks.
     {
