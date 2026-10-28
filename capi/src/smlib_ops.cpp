@@ -52,6 +52,15 @@ constexpr int64_t MAX_POINTS = 4096;
 // Owns an SmBrep until it is handed on.
 using Owned = std::unique_ptr<SmBrep>;
 
+// A corner set back: its vertex, the setback along each of its edges, and the ease before it
+// (0 for none), as smlib_blend_setback_eased describes.
+struct SetBack
+{
+    SmVertex *vertex;
+    double distance;
+    double ease;
+};
+
 // A mark the shim puts on entities before SMLib runs: on every face of the working body, or on
 // each surface it hands SMLib to move a face onto. SMLib hands an attribute on through every
 // split, merge and copy it makes (SmAObject::Notify, as for the history tags of
@@ -452,14 +461,16 @@ bool closed_nonmanifold(const SmBrep &r)
 // the same contact lines, SMLIB_BLEND_CHORD a circular section at constant width (SMLib's
 // constant-distance solver). `laws` (one per edge, or empty) makes each edge's radius vary.
 // `setbacks` holds corner vertices of `b` with the distance along each of their edges at which
-// the corner's patch starts (SmFilletCorner's setback): each must be a corner where every edge
+// the corner's patch starts (SmFilletCorner's setback) and the ease before it (SmFilletCorner's
+// ease: each round's section eased into the curvature-continuous one over that length, the
+// patch's face curves meeting the rails curvature-continuously): each must be a corner where every edge
 // is rounded, all of one convexity (SMLib's same-convexity N x N corners, the only ones that
 // build a setback). With `patches`, the
 // faces of each setback corner's patch in `b` afterwards (one list per setback, in order): the
 // faces on the surfaces that corner made. A setback refused as SMLIB_ERR_UNSUPPORTED writes its
 // index in `setbacks` to `refused` (when not NULL).
 int32_t round_edges(SmBrep *b, const std::vector<SmEdge *> &edges, const std::vector<double> &sizes, int32_t kind,
-                    const std::vector<SmFilletLaw *> &laws, const std::vector<std::pair<SmVertex *, double>> &setbacks = {},
+                    const std::vector<SmFilletLaw *> &laws, const std::vector<SetBack> &setbacks = {},
                     std::vector<std::vector<SmFace *>> *patches = nullptr, int64_t *refused = nullptr)
 {
     SmTArray<SmEdge *> es;
@@ -522,7 +533,7 @@ int32_t round_edges(SmBrep *b, const std::vector<SmEdge *> &edges, const std::ve
     for (size_t j = 0; j < setbacks.size(); ++j)
     {
         const auto &sb = setbacks[j];
-        SmFilletCorner *corner = exec.GetFilletCornerOfVertex(sb.first);
+        SmFilletCorner *corner = exec.GetFilletCornerOfVertex(sb.vertex);
         if (corner == nullptr)
         {
             return SMLIB_ERR_ARG;
@@ -542,7 +553,8 @@ int32_t round_edges(SmBrep *b, const std::vector<SmEdge *> &edges, const std::ve
             }
             return SMLIB_ERR_UNSUPPORTED;
         }
-        corner->SetSetBackDist(sb.second);
+        corner->SetSetBackDist(sb.distance);
+        corner->SetEaseDist(sb.ease);
         set_back.push_back(corner);
     }
     exec.SetMarkCornerPatches(patches != nullptr ? TRUE : FALSE);
@@ -1165,14 +1177,15 @@ bool size_ok(double x)
     return std::isfinite(x) && x > 0.0 && x <= 1e6;
 }
 
-// Whether each setback fits on the edges of its corner: shorter than every edge there, and
-// where an edge's other end is a setback corner too, the two together shorter than the edge.
-bool setbacks_fit(const std::vector<std::pair<SmVertex *, double>> &setbacks)
+// Whether each setback with its ease fits on the edges of its corner: the two together
+// shorter than every edge there, and where an edge's other end is a setback corner too, the
+// four together shorter than the edge.
+bool setbacks_fit(const std::vector<SetBack> &setbacks)
 {
     for (const auto &sb : setbacks)
     {
         SmTArray<SmEdge *> edges;
-        sb.first->GetEdges(edges);
+        sb.vertex->GetEdges(edges);
         for (ULONG k = 0; k < edges.GetSize(); ++k)
         {
             double length = 0.0;
@@ -1181,15 +1194,15 @@ bool setbacks_fit(const std::vector<std::pair<SmVertex *, double>> &setbacks)
                 return false;
             }
             double other = 0.0;
-            SmVertex *far = edges[k]->GetOtherVertex(sb.first);
+            SmVertex *far = edges[k]->GetOtherVertex(sb.vertex);
             for (const auto &o : setbacks)
             {
-                if (o.first == far && far != sb.first)
+                if (o.vertex == far && far != sb.vertex)
                 {
-                    other = o.second;
+                    other = o.distance + o.ease;
                 }
             }
-            if (sb.second + other >= length)
+            if (sb.distance + sb.ease + other >= length)
             {
                 return false;
             }
@@ -1337,12 +1350,12 @@ struct HoleOut
 };
 
 // smlib_blend's work, logged as `fn`: `sizes` holds one size per point, or one for all;
-// `corners` (n_corners points) and `setbacks` (one each) the corner setbacks, as for
-// smlib_blend_setback.
+// `corners` (n_corners points), `setbacks` (one each) and `eases` (one each, or NULL for none)
+// the corner setbacks, as for smlib_blend_setback_eased.
 int32_t blend_call(const char *fn, const smlib_brep *brep, int32_t kind, const double *points, const double *sizes, bool one_size,
                    int64_t n_points, double tolerance, smlib_brep **out, int64_t *out_failed_point, const double *corners = nullptr,
                    const double *setbacks = nullptr, int64_t n_corners = 0, int64_t *out_failed_corner = nullptr,
-                   const HoleOut *holes = nullptr)
+                   const HoleOut *holes = nullptr, const double *eases = nullptr)
 {
     bool kind_ok = kind == SMLIB_BLEND_ROUND || kind == SMLIB_BLEND_CURVATURE || kind == SMLIB_BLEND_CHORD || kind == SMLIB_BLEND_CHAMFER;
     if (!valid(brep) || out == nullptr || !kind_ok || !points_ok(points, n_points, false) || !tolerance_ok(tolerance) || sizes == nullptr ||
@@ -1361,7 +1374,7 @@ int32_t blend_call(const char *fn, const smlib_brep *brep, int32_t kind, const d
     }
     for (int64_t j = 0; j < n_corners; ++j)
     {
-        if (!size_ok(setbacks[j]))
+        if (!size_ok(setbacks[j]) || (eases != nullptr && !(std::isfinite(eases[j]) && eases[j] >= 0.0 && eases[j] <= 1e6)))
         {
             return SMLIB_ERR_ARG;
         }
@@ -1376,6 +1389,10 @@ int32_t blend_call(const char *fn, const smlib_brep *brep, int32_t kind, const d
     if (n_corners > 0)
     {
         args += ", corners=" + pts(corners, n_corners) + ", setbacks=" + vec(setbacks, static_cast<int>(n_corners));
+        if (eases != nullptr)
+        {
+            args += ", eases=" + vec(eases, static_cast<int>(n_corners));
+        }
     }
     Call c(fn, args);
     c.input("brep", brep);
@@ -1417,10 +1434,11 @@ int32_t blend_call(const char *fn, const smlib_brep *brep, int32_t kind, const d
             {
                 return s;
             }
-            std::vector<std::pair<SmVertex *, double>> back;
+            std::vector<SetBack> back;
             for (size_t k = 0; k < at.size(); ++k)
             {
-                back.emplace_back(at[k], setbacks[first_corner[k]]);
+                int64_t j = first_corner[k];
+                back.push_back({at[k], setbacks[j], eases != nullptr ? eases[j] : 0.0});
             }
             if (!setbacks_fit(back))
             {
@@ -1688,6 +1706,32 @@ extern "C" int32_t smlib_blend_setback_open(const smlib_brep *brep, int32_t kind
     HoleOut where{holes, cap, out_len};
     return blend_call("smlib_blend_setback_open", brep, kind, points, sizes, false, n_points, tolerance, out, out_failed_point, corners,
                       setbacks, n_corners, out_failed_corner, &where);
+}
+
+extern "C" int32_t smlib_blend_setback_eased(const smlib_brep *brep, int32_t kind, const double *points, const double *sizes, int64_t n_points,
+                                             const double *corners, const double *setbacks, const double *eases, int64_t n_corners,
+                                             double tolerance, smlib_brep **out, int64_t *out_failed_point, int64_t *out_failed_corner)
+{
+    if (n_corners < 1 || eases == nullptr)
+    {
+        return SMLIB_ERR_ARG;
+    }
+    return blend_call("smlib_blend_setback_eased", brep, kind, points, sizes, false, n_points, tolerance, out, out_failed_point, corners,
+                      setbacks, n_corners, out_failed_corner, nullptr, eases);
+}
+
+extern "C" int32_t smlib_blend_setback_open_eased(const smlib_brep *brep, int32_t kind, const double *points, const double *sizes,
+                                                  int64_t n_points, const double *corners, const double *setbacks, const double *eases,
+                                                  int64_t n_corners, double tolerance, smlib_brep **out, int64_t *holes, int64_t cap,
+                                                  int64_t *out_len, int64_t *out_failed_point, int64_t *out_failed_corner)
+{
+    if (n_corners < 1 || eases == nullptr)
+    {
+        return SMLIB_ERR_ARG;
+    }
+    HoleOut where{holes, cap, out_len};
+    return blend_call("smlib_blend_setback_open_eased", brep, kind, points, sizes, false, n_points, tolerance, out, out_failed_point,
+                      corners, setbacks, n_corners, out_failed_corner, &where, eases);
 }
 
 extern "C" int32_t smlib_fillet(const smlib_brep *brep, const double *points, int64_t n_points, double tolerance, double radius,
