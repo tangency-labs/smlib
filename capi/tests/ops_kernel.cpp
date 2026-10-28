@@ -21,6 +21,7 @@
 #include <SmFilletExecutive.h>
 #include <SmOffsetGeometryCreation.h>
 #include <SmOffsetSurface.h>
+#include <SmPlane.h>
 #include <SmAxis2Placement.h>
 #include <SmSolutionArray.h>
 #include <SmSphere.h>
@@ -568,6 +569,297 @@ void concave_corner_setback()
         CHECK(s == SMLIB_ERR_UNSUPPORTED && r == nullptr && failed_corner == 1);
     }
     smlib_brep_free(notched);
+}
+
+// The vertex `p` lies on: its index in `vs`, or -1.
+int64_t vertex_at(const SmTArray<SmVertex *> &vs, const SmPoint3d &p)
+{
+    for (ULONG k = 0; k < vs.GetSize(); ++k)
+    {
+        if ((vs[k]->GetPoint() - p).Length() <= 1e-6)
+        {
+            return static_cast<int64_t>(k);
+        }
+    }
+    return -1;
+}
+
+// The curvature of `e`'s curve at its end on `v`.
+double end_curvature(SmEdge *e, const SmVertex *v)
+{
+    SmExtent1d ivl = e->GetInterval();
+    double t = e->GetStartVertex() == v ? ivl.GetMin() : ivl.GetMax();
+    SmVector3d d[3];
+    if (e->GetCurve() == nullptr || e->GetCurve()->Evaluate(t, 2, TRUE, d) != SM_SUCCESS)
+    {
+        return HUGE_VAL;
+    }
+    double speed = d[1].Length();
+    return (d[1] * d[2]).Length() / (speed * speed * speed);
+}
+
+// The normal curvature, at the point of `b`'s non-planar faces nearest `p` (within 1e-6), of
+// the section square to `along` (unit): the round's cross curvature there. HUGE_VAL if no
+// such face.
+double cross_curvature(const SmBrep *b, const SmPoint3d &p, const SmVector3d &along)
+{
+    SmTArray<SmFace *> faces;
+    b->GetFaces(faces);
+    for (ULONG i = 0; i < faces.GetSize(); ++i)
+    {
+        SmSurface *s = faces[i]->GetSurface();
+        if (s == nullptr || SM_CAST_PTR(SmPlane, s) != nullptr)
+        {
+            continue;
+        }
+        SmSolutionArray sols;
+        if (s->GlobalPointSolve(s->GetNaturalUVDomain(), SM_SO_MINIMIZE, p, 1e-7, nullptr, SM_SR_SINGLE, sols) != SM_SUCCESS ||
+            sols.GetSize() < 1)
+        {
+            continue;
+        }
+        SmPoint2d uv(sols[0].m_vStart[0], sols[0].m_vStart[1]);
+        SmPoint3d at;
+        SmVector3d su, sv, suv, suu, svv;
+        if (s->Evaluate2ndDerivatives(uv, TRUE, TRUE, at, su, sv, suv, suu, svv) != SM_SUCCESS || (at - p).Length() > 1e-6)
+        {
+            continue;
+        }
+        SmVector3d n = su * sv;
+        n = n / n.Length();
+        SmVector3d t = along * n;
+        t = t / t.Length();
+        double e = su.Dot(su), f = su.Dot(sv), g = sv.Dot(sv);
+        double det = e * g - f * f;
+        double a = (g * t.Dot(su) - f * t.Dot(sv)) / det;
+        double c = (e * t.Dot(sv) - f * t.Dot(su)) / det;
+        return std::fabs(a * a * suu.Dot(n) + 2.0 * a * c * suv.Dot(n) + c * c * svv.Dot(n));
+    }
+    return HUGE_VAL;
+}
+
+// The corner (40, 40, 40) of a 40 mm box, its three edges rounded r 8 and set back 12 with an
+// ease of 4 (smlib_blend_setback_open_eased; SolidCraft ladder 07/015 with corner: g2). Over
+// the 4 before the setback each round's section eases from the circle into the curvature-
+// continuous quintic: on the top face's contact line of the round along X, at 16 and more from
+// the vertex the cross curvature is the circle's 1/8, at 12 (the setback) 0, falling in between;
+// across where the ease starts the round is curvature-continuous. The hole's six corners (the
+// sections' ends) each meet a section half and a face-curve half, both with zero curvature
+// there. The sheet passes SMLib's check and its only free edges are the hole's. An ease of 0 is
+// today's body exactly; the ease is refused where it does not fit or is no length.
+void corner_setback_eased()
+{
+    smlib_brep *part = box(0, 0, 0, 40, 40, 40);
+    const double edges[9] = {20, 40, 40, 40, 20, 40, 40, 40, 20};
+    const double radii[3] = {8, 8, 8};
+    const double corner[3] = {40, 40, 40};
+    const double setback = 12.0;
+    const double ease = 4.0;
+    const double no_ease = 0.0;
+    // the setback sections' ends, the hole's six corners
+    const double ends[6][3] = {{28, 32, 40}, {28, 40, 32}, {32, 28, 40}, {40, 28, 32}, {32, 40, 28}, {40, 32, 28}};
+    int64_t holes[64], holes0[64];
+    int64_t len = -1, len0 = -1;
+    smlib_brep *r = nullptr;
+    smlib_brep *r0 = nullptr;
+
+    // ease 0: the same sheet and holes as without one, and the same closed body
+    CHECK(smlib_blend_setback_open(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, 1, 0.1, &r0, holes0, 64, &len0, nullptr,
+                                   nullptr) == SMLIB_OK);
+    CHECK(smlib_blend_setback_open_eased(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, &no_ease, 1, 0.1, &r, holes, 64, &len,
+                                         nullptr, nullptr) == SMLIB_OK);
+    if (r != nullptr && r0 != nullptr)
+    {
+        CHECK(len == len0 && std::equal(holes, holes + len, holes0));
+        smlib_flat *f = nullptr;
+        smlib_flat *f0 = nullptr;
+        CHECK(smlib_brep_export(r, &f) == SMLIB_OK && smlib_brep_export(r0, &f0) == SMLIB_OK);
+        const double *vp = nullptr;
+        const double *vp0 = nullptr;
+        int64_t n_vp = 0, n_vp0 = 0;
+        CHECK(smlib_flat_get_f64(f, SMLIB_FLAT_VERTEX_POSITION, &vp, &n_vp) == SMLIB_OK);
+        CHECK(smlib_flat_get_f64(f0, SMLIB_FLAT_VERTEX_POSITION, &vp0, &n_vp0) == SMLIB_OK);
+        CHECK(n_vp == n_vp0 && std::equal(vp, vp + n_vp, vp0));
+        smlib_flat_free(f);
+        smlib_flat_free(f0);
+    }
+    smlib_brep_free(r);
+    smlib_brep_free(r0);
+    r = r0 = nullptr;
+    CHECK(smlib_blend_setback(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, 1, 0.1, &r0, nullptr, nullptr) == SMLIB_OK);
+    CHECK(smlib_blend_setback_eased(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, &no_ease, 1, 0.1, &r, nullptr, nullptr) ==
+          SMLIB_OK);
+    if (r != nullptr && r0 != nullptr)
+    {
+        CHECK(volume_of(r) == volume_of(r0));
+    }
+    smlib_brep_free(r);
+    smlib_brep_free(r0);
+    r = r0 = nullptr;
+
+    // ease 4, open
+    CHECK(smlib_blend_setback_open_eased(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, &ease, 1, 0.1, &r, holes, 64, &len,
+                                         nullptr, nullptr) == SMLIB_OK &&
+          r != nullptr && len == 1 + 3 * 12 && holes[0] == 12);
+    if (r != nullptr)
+    {
+        SmTArray<SmEdge *> es;
+        SmTArray<SmVertex *> vs;
+        r->p->GetEdges(es);
+        r->p->GetVertices(vs);
+        // the sheet's free edges are exactly the hole's
+        std::vector<int64_t> free_edges, hole_edges;
+        for (ULONG k = 0; k < es.GetSize(); ++k)
+        {
+            SmTArray<SmFace *> beside;
+            es[k]->GetFaces(beside);
+            if (beside.GetSize() == 1)
+            {
+                free_edges.push_back(static_cast<int64_t>(k));
+            }
+        }
+        for (int64_t k = 0; k < 12; ++k)
+        {
+            hole_edges.push_back(holes[1 + 3 * k]);
+        }
+        std::sort(hole_edges.begin(), hole_edges.end());
+        CHECK(free_edges == hole_edges);
+        // at each of the hole's six corners a section and a face curve, both flat across there
+        int met = 0;
+        double worst = 0.0;
+        for (const auto &e : ends)
+        {
+            int64_t v = vertex_at(vs, SmPoint3d(e[0], e[1], e[2]));
+            CHECK(v >= 0);
+            for (int64_t k = 0; k < 12 && v >= 0; ++k)
+            {
+                SmEdge *h = es[static_cast<ULONG>(holes[1 + 3 * k])];
+                if (h->GetStartVertex() == vs[static_cast<ULONG>(v)] || h->GetEndVertex() == vs[static_cast<ULONG>(v)])
+                {
+                    worst = std::max(worst, end_curvature(h, vs[static_cast<ULONG>(v)]));
+                    ++met;
+                }
+            }
+        }
+        std::fprintf(stderr, "  eased setback: worst curvature at the hole's corners %.3g\n", worst);
+        CHECK(met == 12 && worst <= 1e-6);
+        // the round along X, on its top contact line y 32, z 40: the circle's curvature up to
+        // the ease, none at the setback, falling between, continuous where the ease starts
+        const SmVector3d x(1, 0, 0);
+        double k[9];
+        const double at[9] = {12, 13, 14, 15, 16 - 1e-4, 16 + 1e-4, 18, 20, 24};
+        for (int i = 0; i < 9; ++i)
+        {
+            k[i] = cross_curvature(r->p, SmPoint3d(40 - at[i], 32, 40), x);
+        }
+        std::fprintf(stderr, "  eased setback: cross curvature at 12..24: %.3g %.3g %.3g %.3g %.6g %.6g %.6g %.6g %.6g\n", k[0], k[1], k[2],
+                     k[3], k[4], k[5], k[6], k[7], k[8]);
+        CHECK(k[0] <= 1e-6);
+        CHECK(k[0] < k[1] && k[1] < k[2] && k[2] < k[3] && k[3] < k[4]);
+        CHECK(std::fabs(k[4] - 0.125) <= 1e-4 && std::fabs(k[5] - 0.125) <= 1e-4);
+        for (int i = 6; i < 9; ++i)
+        {
+            CHECK(std::fabs(k[i] - 0.125) <= 1e-4);
+        }
+        done(r);
+    }
+
+    // ease 4, closed by SMLib's patch: a valid solid
+    CHECK(smlib_blend_setback_eased(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, &ease, 1, 0.1, &r, nullptr, nullptr) ==
+              SMLIB_OK &&
+          r != nullptr);
+    if (r != nullptr)
+    {
+        int32_t closed = -1;
+        CHECK(smlib_brep_is_manifold_solid(r, &closed) == SMLIB_OK && closed == 1);
+        done(r);
+    }
+
+    // the curvature-continuous blend: its sections are the quintic already, and eased its face
+    // curves meet the contact lines curvature-continuously
+    for (int32_t kind : {SMLIB_BLEND_CURVATURE})
+    {
+        CHECK(smlib_blend_setback_open_eased(part, kind, edges, radii, 3, corner, &setback, &ease, 1, 0.1, &r, holes, 64, &len, nullptr,
+                                             nullptr) == SMLIB_OK &&
+              r != nullptr && holes[0] == 12);
+        if (r != nullptr)
+        {
+            SmTArray<SmEdge *> es;
+            SmTArray<SmVertex *> vs;
+            r->p->GetEdges(es);
+            r->p->GetVertices(vs);
+            double worst = 0.0;
+            int met = 0;
+            for (const auto &e : ends)
+            {
+                int64_t v = vertex_at(vs, SmPoint3d(e[0], e[1], e[2]));
+                CHECK(v >= 0);
+                for (int64_t k = 0; k < holes[0] && v >= 0; ++k)
+                {
+                    SmEdge *h = es[static_cast<ULONG>(holes[1 + 3 * k])];
+                    if (h->GetStartVertex() == vs[static_cast<ULONG>(v)] || h->GetEndVertex() == vs[static_cast<ULONG>(v)])
+                    {
+                        worst = std::max(worst, end_curvature(h, vs[static_cast<ULONG>(v)]));
+                        ++met;
+                    }
+                }
+            }
+            CHECK(met == 12);
+            std::fprintf(stderr, "  eased setback, kind %d: worst curvature at the hole's corners %.3g\n", static_cast<int>(kind), worst);
+            CHECK(worst <= 1e-6);
+            done(r);
+        }
+    }
+
+    // every edge rounded and every corner set back 12 with an ease of 3: each round eases at
+    // both of its ends (12 + 3 twice is 30, inside the 40 edge), eight holes. (An ease of 4 on
+    // this model is SMLIB_ERR_NOT_SOLID: the merge's stitch glues the two ends of the bottom
+    // face curve at (40, 40, 0), 5.66 apart; with 3 or 6 it stitches. Open.)
+    const double ease3 = 3.0;
+    const double all_edges[36] = {20, 0, 0, 20, 40, 0, 20, 0, 40, 20, 40, 40, 0, 20, 0, 40, 20, 0,
+                                  0, 20, 40, 40, 20, 40, 0, 0, 20, 40, 0, 20, 0, 40, 20, 40, 40, 20};
+    const double all_radii[12] = {8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8};
+    double all_corners[24];
+    double all_backs[8];
+    double all_eases[8];
+    for (int k = 0; k < 8; ++k)
+    {
+        all_corners[3 * k] = (k & 1) != 0 ? 40 : 0;
+        all_corners[3 * k + 1] = (k & 2) != 0 ? 40 : 0;
+        all_corners[3 * k + 2] = (k & 4) != 0 ? 40 : 0;
+        all_backs[k] = setback;
+        all_eases[k] = ease3;
+    }
+    int64_t all_holes[8 * 64];
+    CHECK(smlib_blend_setback_open_eased(part, SMLIB_BLEND_ROUND, all_edges, all_radii, 12, all_corners, all_backs, all_eases, 8, 0.1, &r,
+                                         all_holes, 8 * 64, &len, nullptr, nullptr) == SMLIB_OK &&
+          r != nullptr && len == 8 * (1 + 3 * 12));
+    if (r != nullptr)
+    {
+        // on the round along X at y 40, z 40, the top contact line: flat across at both
+        // setbacks, the circle's curvature in the middle
+        const SmVector3d x(1, 0, 0);
+        double k0 = cross_curvature(r->p, SmPoint3d(12, 32, 40), x);
+        double k1 = cross_curvature(r->p, SmPoint3d(20, 32, 40), x);
+        double k2 = cross_curvature(r->p, SmPoint3d(28, 32, 40), x);
+        std::fprintf(stderr, "  eased setbacks at both ends: cross curvature %.3g %.6g %.3g\n", k0, k1, k2);
+        CHECK(k0 <= 1e-6 && std::fabs(k1 - 0.125) <= 1e-4 && k2 <= 1e-6);
+        done(r);
+    }
+
+    // refused: no length, too long for the edge (12 + 28 is the whole edge), no eases
+    const double negative = -1.0;
+    const double too_long = 28.0;
+    CHECK(smlib_blend_setback_open_eased(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, &negative, 1, 0.1, &r, holes, 64, &len,
+                                         nullptr, nullptr) == SMLIB_ERR_ARG &&
+          r == nullptr);
+    CHECK(smlib_blend_setback_eased(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, &too_long, 1, 0.1, &r, nullptr, nullptr) ==
+              SMLIB_ERR_NO_ROOM &&
+          r == nullptr);
+    CHECK(smlib_blend_setback_eased(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, nullptr, 1, 0.1, &r, nullptr, nullptr) ==
+              SMLIB_ERR_ARG &&
+          r == nullptr);
+    smlib_brep_free(part);
 }
 
 void shelled_tapered_box_rounds()
@@ -3410,6 +3702,7 @@ int main()
     corner_setback_open();
     setback_sections_are_exact_arcs();
     concave_corner_setback();
+    corner_setback_eased();
     shelled_tapered_box_rounds();
 
     if (failures != 0)
