@@ -3620,6 +3620,28 @@ static SmBoolean sbDumpFVUs=FALSE;
   const SmSurface * pBSP    = GetSurface(lRailIndex)->GetBaseSurface();
   SmExtent2d        sDomain = pBSP->GetNaturalUVDomain();
   SetupOffsetExtension(pBSP,sDomain);
+
+  // SolidCraft change: a straight side edge on a plane continues exactly along its line, as far
+  // as the base surface's domain is extended across the edge (its extension factor, or the
+  // trace's reach, SetTraceReach). A rail that leaves its face across a cliff meets the side
+  // edge's line past the edge's end; bounded to the edge's own interval, the solve found that
+  // point only from a first guess already on it (a round on a 5 x 5 bar's edge found it at
+  // r9, a guess r along the edge, and not at r10, where that guess is not made).
+  SmCurve * pSide3D = pSideEdge->GetCurve();
+  if ( pSide3D != NULL && pSide3D->IsLinear( SM_EFF_ZERO ) && pUVCurve->IsLinear( SM_EFF_ZERO ) && pBSP->IsPlanar( SM_EFF_ZERO ))
+    {
+      SmExtent1d sEdgeIvl = sIntervals[0];
+      SmPoint3d  sFrom, sTo;
+      SER(pSide3D->EvaluatePoint(pSideEdge->GetInterval().GetMin(),sFrom));
+      SER(pSide3D->EvaluatePoint(pSideEdge->GetInterval().GetMax(),sTo));
+      double dLength = sFrom.DistanceBetween(sTo);
+      double dReach  = smos_Max( m_dTraceReach, m_dSurfaceExtensionFactor * dLength );
+      if ( dLength > SM_EFF_ZERO_SQRT )
+        {
+          double dPast = dReach * sEdgeIvl.GetLength() / dLength;
+          sIntervals[0] = SmExtent1d( sEdgeIvl.GetMin() - dPast, sEdgeIvl.GetMax() + dPast );
+        }
+    }
   sIntervals[1] = SmExtent1d(sDomain.GetMin().x,sDomain.GetMax().x);
   sIntervals[2] = SmExtent1d(sDomain.GetMin().y,sDomain.GetMax().y);
 

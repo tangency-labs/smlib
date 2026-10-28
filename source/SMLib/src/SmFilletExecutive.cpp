@@ -1698,7 +1698,7 @@ static SmStatus sm_BlendAddsMaterial
 PURPOSE: SolidCraft change. Let a solver's trace reach as far as its rails
    can lie from the filleted edge, on its surfaces' continuations.
 
-NOTES: For CreateFilletBrep, before CalcFilletGeom. The trace runs over each
+NOTES: For CreateFilletBrep, before the corners' vertices and CalcFilletGeom. The trace runs over each
    base surface's domain extended by half its size (the solver's extension
    factor, SetupOffsetExtension), and along the edge (a variable round) two
    and a half edge lengths past each end. A blend wider than that reach is
@@ -3239,6 +3239,13 @@ SmStatus SmFilletExecutive::CreateFilletBrep
         }
     }
 
+  // SolidCraft change: each solver's base surfaces reach as far as its rails can lie from the
+  // edge before the corners look for where the rails meet the side edges (CalcCornerVertGeom,
+  // SmFilletVertex::CalcRailIntEdgeuse), which search those surfaces' extended domains as the
+  // trace does: a rail past that reach meets no side edge, and the fillet has no rail ends.
+  for(solverIdx=0; solverIdx<m_vFilletSolvers.GetSize(); solverIdx++)
+    { SER( sm_ExtendTraceToItsRails( m_vFilletSolvers[solverIdx] )); }
+
   // Process corners by calculating the vertices first.
   // Those vertices will determine the connectivity between
   // corner surfaces and the adjacent edge fillets.
@@ -3466,9 +3473,6 @@ SmStatus SmFilletExecutive::CreateFilletBrep
           sm_GraphicsLoop();
         }
 #endif // SM_DEBUG_CODE
-
-      // SolidCraft change: a trace that reaches the rails
-      SER( sm_ExtendTraceToItsRails( pFilSolver ));
 
       // Compute untrimmed filletSurface and railCurve geometry
       if(SM_SUCCESS != pFilSolver->CalcFilletGeom())
