@@ -31,15 +31,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Blacksmith runners wherever Blacksmith has the platform; Windows ARM64 and Intel macOS stay on
+        # GitHub's, which Blacksmith does not offer.
         include:
-          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-22.04 }
-          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-22.04-arm }
-          - { target: aarch64-apple-darwin, runner: macos-14, cmake: '-DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0' }
+          - { target: x86_64-unknown-linux-gnu, runner: blacksmith-4vcpu-ubuntu-2204 }
+          - { target: aarch64-unknown-linux-gnu, runner: blacksmith-4vcpu-ubuntu-2204-arm }
+          - { target: aarch64-apple-darwin, runner: blacksmith-6vcpu-macos-15, cmake: '-DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0' }
           - { target: x86_64-apple-darwin, runner: macos-15-intel, cmake: '-DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0' }
-          - { target: x86_64-pc-windows-msvc, runner: windows-latest, cmake: '-A x64' }
-          - { target: i686-pc-windows-msvc, runner: windows-latest, cmake: '-A Win32', cross: true }
+          - { target: x86_64-pc-windows-msvc, runner: blacksmith-8vcpu-windows-2025, cmake: '-A x64' }
+          - { target: i686-pc-windows-msvc, runner: blacksmith-8vcpu-windows-2025, cmake: '-A Win32', cross: true }
           - { target: aarch64-pc-windows-msvc, runner: windows-11-arm, cmake: '-A ARM64' }
-          - { target: wasm32-unknown-unknown, runner: ubuntu-22.04, wasm: true, cross: true }
+          - { target: wasm32-unknown-unknown, runner: blacksmith-4vcpu-ubuntu-2204, wasm: true, cross: true }
     steps:
       - uses: actions/checkout@v4
       - name: wasi-sdk
@@ -99,7 +101,7 @@ jobs:
 
   release:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions:
       contents: write
     steps:
