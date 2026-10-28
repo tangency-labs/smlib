@@ -6105,7 +6105,22 @@ SmStatus SmFilletNx1Corner::CalcCornerEdgeGeom
               SmPoint2d sUV;
               double    dGap = SM_BIG_DOUBLE;
               SER( pFilletSurface->DropPoint( apFV[kk]->GetPoint(), pFilletSurface->GetNaturalUVDomain(), NULL, bDropped, sUV, dGap, bMulti ));
-              if ( !bDropped || dGap > 10.0 * m_dThisApproxTol3d )
+              SmBoolean bMisses = ( !bDropped || dGap > 10.0 * m_dThisApproxTol3d ) ? TRUE : FALSE;
+              // The rail's end found on the side edge's line continued past the edge's end
+              // (SmFilletSolver::RailEdgeuseIntersect continues a straight side edge): the rail
+              // misses the side edge itself, however close past the end.
+              if ( !bMisses && apFV[kk]->GetPointClass() == SM_PC_EDGEUSE )
+                {
+                  SmEdgeuse * pSideEU = (SmEdgeuse*)apFV[kk]->GetPointClassObject();
+                  SmEdge    * pSideEdge = ( pSideEU != NULL ) ? pSideEU->GetEdge() : NULL;
+                  NER(pSideEdge);
+                  NER(pSideEdge->GetCurve());
+                  SmBoolean bOnSide = FALSE;
+                  double    dParam = 0.0, dDist = SM_BIG_DOUBLE;
+                  SER( pSideEdge->GetCurve()->DropPoint( pSideEdge->GetInterval(), apFV[kk]->GetPoint(), NULL, SM_BIG_DOUBLE, NULL, bOnSide, dParam, dDist ));
+                  bMisses = ( !bOnSide || dDist > m_dThisApproxTol3d ) ? TRUE : FALSE;
+                }
+              if ( bMisses )
                 {
                   abMiss[kk] = TRUE;
                   apFV[kk]->SetStatus( SM_FV_NO_INT_RAIL_EU );  // its rail is not trimmed there
