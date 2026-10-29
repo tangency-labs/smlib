@@ -341,6 +341,15 @@ int main()
     b = nullptr;
     expect("extrude annulus", smlib_extrude(ring.kinds.data(), ring.nk(), ring.reals.data(), ring.nr(), Z, 3.0, 0.0, SMLIB_DRAFT_CORNER_TANGENT, 1, &b, nullptr), &b,
            PI * (100.0 - 16.0) * 3.0, 1e-6);
+    // A 3000 x 1000 plate with a hole of radius 0.002 at (30, 20), 2 thick (SolidCraft
+    // display_mesh a_radius_far_below_the_tolerance_keeps_its_chord_facets): a loop 1.5e6 times
+    // smaller than its face.
+    List plate;
+    plate.polygon({0, 0, 0, 3000, 0, 0, 3000, 1000, 0, 0, 1000, 0});
+    plate.append(circle(30, 20, 0, 0, 0, -1, 1, 0, 0, 0.002));
+    b = nullptr;
+    expect("extrude plate with a tiny hole", smlib_extrude(plate.kinds.data(), plate.nk(), plate.reals.data(), plate.nr(), Z, 2.0, 0.0, SMLIB_DRAFT_CORNER_TANGENT, 1, &b, nullptr),
+           &b, 6.0e6 - PI * 0.002 * 0.002 * 2.0, 1e-12);
     // A 10 x 6 plate with a triangular hole whose corner touches its outline at (0, 3), 2 up: the
     // plate touches itself along that corner's line. Each cap is one face of one loop through the
     // corner twice (a face's loops share no vertex); the hole had come out a face of its own,
