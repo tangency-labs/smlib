@@ -119,6 +119,23 @@ class SmNLibStackHandler
   Static function.
 ***********************************************************************/
 
+// SolidCraft: whether the surface's seam in `eSurfParam` (its const-parameter boundary curve)
+// collapses to one point within `dTol`, as a horn torus's does: its minor circles all start at
+// its centre, where they touch the axis.
+static SmBoolean sm_SeamCollapses
+(const SmContext & crContext,
+ const SmSurface & rSurface,
+ SmSurfParamType   eSurfParam,
+ double            dTol)
+{
+  SmCrvOnSurf *pSeam = NULL ;
+  if (rSurface.CreateSeamCurve(crContext, eSurfParam, pSeam, TRUE) != SM_SUCCESS || pSeam == NULL)
+    { return FALSE ; }
+  SmBoolean bCollapses = pSeam->IsDegenerate(dTol) ;
+  delete pSeam ;
+  return bCollapses ;
+}
+
 /*******************************************************************//**
 PURPOSE: Static helper for ComputeLoopOrientation(): See whether the current step
    is crossing a seam, and deal with it.
@@ -15995,6 +16012,13 @@ static ULONG lCount      = 1 ; lCount++ ;
     } // end need to run SetProps_Stage2 check
 
   // arrive here when HasSeamProblems() is called from SetProps_Stage2
+
+  // SolidCraft change: a seam that collapses to a point is no seam an edge could cross or must
+  // lie on, so it is not classified (classifying the point failed the check of a horn torus).
+  if (bPeriodicU && sm_SeamCollapses(*pContext, *pSurface, SM_SP_U, sSurfaceZoneTol3d))
+    { bPeriodicU = FALSE ; }
+  if (bPeriodicV && sm_SeamCollapses(*pContext, *pSurface, SM_SP_V, sSurfaceZoneTol3d))
+    { bPeriodicV = FALSE ; }
   
   // periodic in U
   if(bPeriodicU)
