@@ -8677,6 +8677,9 @@ SmBoolean bDebugMe = FALSE;
                                               bSuccess,                          // out: pOther will fit inside this; see notes above 
                                               dDist,                             // out: max distance found; see notes above 
                                               &sOtherFaceDomain) ) ;             // in : optional: use this subset of pOther 
+      // pBrepB's faces are rebuilt on copies of pSurface1 below: one it does not cover would
+      // carry edges far off its surface.
+      AERN_MSG(bSuccess == TRUE, SM_ERR_INVALID_INPUT, _T("SmPrimitiveCreation::Boolean2D - a coincident plane could not be grown to cover another face"))
     } // end growing pSurface1 domain to be big enough to cover all other face domains
 
   // extend the rest of the surface domains to cover the pSurface1 domain
@@ -8691,6 +8694,7 @@ SmBoolean bDebugMe = FALSE;
                                               bSuccess,                          // out: pOther will fit inside this; see notes above 
                                               dDist,                             // out: max distance found; see notes above 
                                               NULL) ) ;                          // in : optional: use this subset of pOther 
+      AERN_MSG(bSuccess == TRUE, SM_ERR_INVALID_INPUT, _T("SmPrimitiveCreation::Boolean2D - a coincident plane could not be grown to cover the first face"))
     } // end growing all other surfaces to be big enough to cover the pSurface1 domain
 
 // Remove Composites

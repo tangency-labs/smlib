@@ -1296,6 +1296,52 @@ int main()
         }
     }
 
+    // Four r 2 disks in one plane at the corners of a 3 m sheet's hole pattern, joined in pairs and
+    // then all four (SolidCraft display_mesh, a 3 m sheet's 2D boolean). Boolean2D rebuilds the
+    // second operand's faces on copies of the first's plane after growing it to cover them; a
+    // plane only grew 100 face widths (B-spline reach), so faces 1.5 m apart kept a plane 6 mm
+    // wide, their edges up to 1470 off it: tolerances 5875 and 11756, and the four-disk join 1006.
+    {
+        const double centres[4][2] = {{30, 20}, {1500, 20}, {2970, 980}, {30, 980}};
+        smlib_brep *disks[4] = {nullptr, nullptr, nullptr, nullptr};
+        for (int i = 0; i < 4; i++)
+        {
+            const int64_t kind = SMLIB_CURVE_ARC;
+            const double arc[12] = {centres[i][0], centres[i][1], 0, 0, 0, 1, 1, 0, 0, 2, 0, 2 * PI};
+            CHECK(smlib_planar_faces(&kind, 1, arc, 12, &disks[i]) == SMLIB_OK);
+        }
+        smlib_brep *low = nullptr, *high = nullptr, *all = nullptr;
+        CHECK(smlib_boolean2d(disks[0], disks[1], SMLIB_BOOLEAN_UNION, &low) == SMLIB_OK);
+        CHECK(smlib_boolean2d(disks[2], disks[3], SMLIB_BOOLEAN_UNION, &high) == SMLIB_OK);
+        CHECK(low != nullptr && high != nullptr && smlib_boolean2d(low, high, SMLIB_BOOLEAN_UNION, &all) == SMLIB_OK);
+        for (smlib_brep *x : {low, high, all})
+        {
+            if (x == nullptr)
+            {
+                continue;
+            }
+            smlib_flat *f = nullptr;
+            CHECK(smlib_brep_export(x, &f) == SMLIB_OK);
+            const double *tol = nullptr;
+            int64_t n = 0;
+            CHECK(f != nullptr && smlib_flat_get_f64(f, SMLIB_FLAT_EDGE_TOLERANCE, &tol, &n) == SMLIB_OK);
+            double worst = 0.0;
+            for (int64_t i = 0; i < n; i++)
+            {
+                worst = std::max(worst, tol[i]);
+            }
+            std::printf("disks 1.5 m apart joined in 2D: %lld edges, largest tolerance %.3g\n", static_cast<long long>(n), worst);
+            CHECK(worst <= 1e-4);
+            CHECK(worst_pcurve_gap(x) <= 1.0);
+            smlib_flat_free(f);
+        }
+        CHECK(all != nullptr && all->p->GetNumFaces() == 4);
+        for (smlib_brep *x : {disks[0], disks[1], disks[2], disks[3], low, high, all})
+        {
+            smlib_brep_free(x);
+        }
+    }
+
     smlib_brep *rod = cylinder(10, 10, -1, 4, 22);
     CHECK(smlib_boolean(cube, rod, SMLIB_BOOLEAN_SUBTRACT, &r) == SMLIB_OK);
     CHECK(near(volume_of(r), 8000.0 - PI * 16.0 * 20.0, 1e-6));
