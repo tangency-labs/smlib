@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <utility>
 #include <vector>
 
 static int failures = 0;
@@ -1400,49 +1401,99 @@ int main()
 
     // A line projected through a sphere's poles: the plane of its sweep cuts the sphere in a
     // meridian, half of it the face's seam (an exact conic) and half traced into each pole. Every
-    // projected curve stays within the asked tolerance of the sphere, the poles included: the
-    // traced curve keeps the tangent the pole's limit normal gives it (StepBackFromSingularity).
+    // projected curve stays within the asked tolerance of the sphere, the poles included, and the
+    // pieces meeting at a pole meet there smoothly, as the meridian does. The ball is SMLib's own
+    // and the same ball through its flat arrays (as SolidCraft hands it back).
     {
         const double centre[3] = {0, 0, 0};
-        smlib_brep *ball = nullptr;
-        CHECK(smlib_make_sphere(centre, 20.0, &ball) == SMLIB_OK && ball != nullptr);
+        smlib_brep *made = nullptr;
+        CHECK(smlib_make_sphere(centre, 20.0, &made) == SMLIB_OK && made != nullptr);
+        smlib_flat *flat = nullptr;
+        smlib_brep *imported = nullptr;
+        CHECK(made != nullptr && smlib_brep_export(made, &flat) == SMLIB_OK && smlib_brep_import(flat, &imported) == SMLIB_OK);
+        smlib_flat_free(flat);
         List across;
         across.line(-10, 0, 50, 10, 0, 50);
         const double top[3] = {0, 0, 20}, down[3] = {0, 0, -1};
         const double tolerance = 4e-5;
-        smlib_curves *projected = nullptr;
-        CHECK(smlib_project_curves(ball, top, 0.04, across.kinds.data(), across.nk(), across.reals.data(), across.nr(), down,
-                                   tolerance, &projected) == SMLIB_OK);
-        int64_t nk = 0, nr = 0, nc = 0;
-        CHECK(projected != nullptr && smlib_curves_size(projected, &nk, &nr, &nc) == SMLIB_OK && nc > 0);
-        std::vector<int64_t> kinds(static_cast<size_t>(nk));
-        std::vector<double> reals(static_cast<size_t>(nr)), intervals(static_cast<size_t>(2 * nc));
-        CHECK(projected != nullptr
-              && smlib_curves_read(projected, kinds.data(), nk, reals.data(), nr, intervals.data(), 2 * nc) == SMLIB_OK);
-        double worst = 0.0, north = 1e9, south = 1e9;
-        size_t ki = 0, ri = 0;
-        for (int64_t c = 0; c < nc && ki + 3 <= kinds.size(); ++c)
+        for (const auto &[name, ball] : {std::pair<const char *, smlib_brep *>{"made", made}, {"imported", imported}})
         {
-            CHECK(kinds[ki] == SMLIB_CURVE_NURBS);
-            int p = static_cast<int>(kinds[ki + 1]), n = static_cast<int>(kinds[ki + 2]);
-            ki += 3;
-            double t0 = intervals[2 * c], t1 = intervals[2 * c + 1];
-            for (int i = 0; i <= 2000; ++i)
+            if (ball == nullptr)
             {
-                double q[3];
-                nurbs_point(p, n, reals.data() + ri, t0 + (t1 - t0) * i / 2000.0, q);
-                double off = std::fabs(std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]) - 20.0) + std::fabs(q[1]);
-                worst = std::max(worst, off);
-                north = std::min(north, std::hypot(q[0], q[1], q[2] - 20.0));
-                south = std::min(south, std::hypot(q[0], q[1], q[2] + 20.0));
+                continue;
             }
-            ri += static_cast<size_t>(4 * n + n + p + 1);
+            smlib_curves *projected = nullptr;
+            CHECK(smlib_project_curves(ball, top, 0.04, across.kinds.data(), across.nk(), across.reals.data(), across.nr(), down,
+                                       tolerance, &projected) == SMLIB_OK);
+            int64_t nk = 0, nr = 0, nc = 0;
+            CHECK(projected != nullptr && smlib_curves_size(projected, &nk, &nr, &nc) == SMLIB_OK && nc > 0);
+            std::vector<int64_t> kinds(static_cast<size_t>(nk));
+            std::vector<double> reals(static_cast<size_t>(nr)), intervals(static_cast<size_t>(2 * nc));
+            CHECK(projected != nullptr
+                  && smlib_curves_read(projected, kinds.data(), nk, reals.data(), nr, intervals.data(), 2 * nc) == SMLIB_OK);
+            double worst = 0.0, north = 1e9, south = 1e9;
+            // Each curve end at a pole, with the unit tangent there (pointing into the curve).
+            struct End
+            {
+                double pole, t[3];
+            };
+            std::vector<End> ends;
+            size_t ki = 0, ri = 0;
+            for (int64_t c = 0; c < nc && ki + 3 <= kinds.size(); ++c)
+            {
+                CHECK(kinds[ki] == SMLIB_CURVE_NURBS);
+                int p = static_cast<int>(kinds[ki + 1]), n = static_cast<int>(kinds[ki + 2]);
+                ki += 3;
+                const double *r = reals.data() + ri;
+                double t0 = intervals[2 * c], t1 = intervals[2 * c + 1];
+                for (int i = 0; i <= 2000; ++i)
+                {
+                    double q[3];
+                    nurbs_point(p, n, r, t0 + (t1 - t0) * i / 2000.0, q);
+                    double off = std::fabs(std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]) - 20.0) + std::fabs(q[1]);
+                    worst = std::max(worst, off);
+                    north = std::min(north, std::hypot(q[0], q[1], q[2] - 20.0));
+                    south = std::min(south, std::hypot(q[0], q[1], q[2] + 20.0));
+                }
+                for (int side = 0; side < 2; ++side)
+                {
+                    double te = side == 0 ? t0 : t1, ti = te + (side == 0 ? 1e-7 : -1e-7) * (t1 - t0), a[3], b2[3];
+                    nurbs_point(p, n, r, te, a);
+                    nurbs_point(p, n, r, ti, b2);
+                    if (std::hypot(a[0], a[1]) <= tolerance)
+                    {
+                        End e{a[2], {b2[0] - a[0], b2[1] - a[1], b2[2] - a[2]}};
+                        double l = std::hypot(e.t[0], e.t[1], e.t[2]);
+                        for (double &x : e.t)
+                            x /= l;
+                        ends.push_back(e);
+                    }
+                }
+                ri += static_cast<size_t>(4 * n + n + p + 1);
+            }
+            // Two ends at the same pole run opposite ways along the meridian: their tangents
+            // pointing into their curves are opposite.
+            double corner = 0.0;
+            for (size_t i = 0; i < ends.size(); ++i)
+            {
+                for (size_t j = i + 1; j < ends.size(); ++j)
+                {
+                    if (std::fabs(ends[i].pole - ends[j].pole) < 1.0)
+                    {
+                        double d = -(ends[i].t[0] * ends[j].t[0] + ends[i].t[1] * ends[j].t[1] + ends[i].t[2] * ends[j].t[2]);
+                        corner = std::max(corner, std::acos(std::clamp(d, -1.0, 1.0)));
+                    }
+                }
+            }
+            std::printf("line through a sphere's poles (%s): %lld curves, worst %.3g mm off the sphere, %zu ends at the poles meeting at %.3g rad\n",
+                        name, static_cast<long long>(nc), worst, ends.size(), corner);
+            CHECK(worst <= tolerance);
+            CHECK(north <= tolerance && south <= tolerance);
+            CHECK(ends.size() == 4 && corner <= 1e-6);
+            smlib_curves_free(projected);
         }
-        std::printf("line through a sphere's poles: %lld curves, worst %.3g mm off the sphere\n", static_cast<long long>(nc), worst);
-        CHECK(worst <= tolerance);
-        CHECK(north <= tolerance && south <= tolerance);
-        smlib_curves_free(projected);
-        smlib_brep_free(ball);
+        smlib_brep_free(imported);
+        smlib_brep_free(made);
     }
 
     // Hostile lists: nothing is built, nothing crashes.
