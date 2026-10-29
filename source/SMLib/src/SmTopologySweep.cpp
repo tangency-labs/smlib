@@ -2172,6 +2172,16 @@ SmStatus SmTopologySweep::SweepEdgeHigh
   // record EdgeArg <==> NewFace mapping
   SetHigher(pEdgeArg, pNewFace) ;
   
+  // SolidCraft: the face creator may have let the base curve go (a closed profile curve whose
+  // vertex lies on the axis of a rotational sweep: the swept vertex is a point, and the curve's
+  // trim merged away), as it does the swept copy below [B317]; reading the stale pointer crashed.
+  if ( pOrigEdgeCurve )
+    {
+      ULONG lIndex;
+      if ( ! s3DCurves.FindElement( pOrigEdgeCurve, lIndex ) )
+        { pOrigEdgeCurve = NULL; }  // It is stale.
+    }
+
   //
   if (pOrigEdgeCurve) 
     {
