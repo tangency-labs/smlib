@@ -10,9 +10,11 @@
 
 #include <SmApiPrimitives.h>
 #include <SmEdge.h>
+#include <SmEllipse.h>
 #include <SmShell.h>
 #include <SmVertex.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -292,6 +294,38 @@ int main()
     CHECK(smlib_brep_check(bodies[0], 2, buf, -1, &len, &n) == SMLIB_ERR_ARG);
     CHECK(smlib_brep_check(bodies[0], 2, buf, sizeof buf, nullptr, &n) == SMLIB_ERR_ARG);
     CHECK(smlib_brep_check(bodies[0], 2, buf, sizeof buf, &len, nullptr) == SMLIB_ERR_ARG);
+
+    // A cylinder r 16 about z cut by a plane through the origin tilted about y until the cut is
+    // 70.9232 long (a tube's end plane meeting another tube's wall): an ellipse 70.9232 x 16. Its
+    // arc from -90.00136 to -69.45624 degrees trimmed to its first 3.39e-6 of NURBS parameter is
+    // a piece 7e-5 degrees (8.6e-5 mm) long. Every point of it inverts to its own angle and back:
+    // SmExtent1d::ContainsPeriodicValue took any angle within 1e-4 degrees of the arc's start
+    // to be the start, so the piece inverted every point to its start and failed its own check
+    // (SmEllipse test 2: 2.1e-5 off).
+    {
+        const SmContext &ctx = *SmApiGetOrCreateContext();
+        const double a = 70.923209845254902, b = 16.0, c = b / a, sn = std::sqrt(1.0 - c * c);
+        SmEllipse *e = new (ctx) SmEllipse(SmPoint3d(0, 0, 0), SmVector3d(c, 0, sn), SmVector3d(0, 1, 0),
+                                           SmExtent1d(-90.001360025099643, -69.456240994119256), a, b, 3, &ctx, nullptr, FALSE);
+        CHECK(e->AssertValid(nullptr, SM_LEVEL_0, SM_NO_WALK));
+        SmExtent1d piece(0.0, 3.3871206151482126e-06);
+        CHECK(e->Trim(piece) == SM_SUCCESS);
+        CHECK(e->AssertValid(nullptr, SM_LEVEL_0, SM_NO_WALK));
+        const SmExtent1d nurb = e->GetNaturalInterval();
+        double worst = 0.0;
+        for (int i = 0; i <= 8; ++i)
+        {
+            SmPoint3d p, q;
+            double deg = 0.0;
+            CHECK(e->EvaluatePoint(nurb.Evaluate(i / 8.0), p) == SM_SUCCESS);
+            CHECK(e->STEPInversion(p, deg) == SM_SUCCESS);
+            CHECK(e->EvaluateSTEPPoint(deg, q) == SM_SUCCESS);
+            worst = std::max(worst, (p - q).Length());
+        }
+        std::printf("tiny ellipse piece: worst inversion round trip %.3g mm\n", worst);
+        CHECK(worst < 1e-9);
+        delete e;
+    }
 
     for (smlib_brep *b : bodies)
     {

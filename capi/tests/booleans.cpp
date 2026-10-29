@@ -842,7 +842,8 @@ void crescent_on_rim_join()
 // apart to combine, and the stretch's edge was kept whole past the crossing's vertex. The
 // merge's classification then found a vertex that was not the edge's and the join failed
 // (SM_ERR) for gaps from 1e-4 to 1e-3. The join now succeeds; its body is one solid between
-// the larger tube and both together.
+// the larger tube and both together, and sound (an 8.6e-5 piece of the top tube's wall cut by
+// the seat's end plane once failed its own check: SmExtent1d::ContainsPeriodicValue).
 void near_coincident_tube_ends_join()
 {
     // Each tube's circle starts at the side `side` (y = 16 side, -16 the other): the top tube's
@@ -870,6 +871,7 @@ void near_coincident_tube_ends_join()
         {
             const double v = volume(r), vt = volume(top), vs = volume(seat);
             CHECK(v > std::max(vt, vs) && v < vt + vs);
+            CHECK(sound(r));
             int64_t n = -1;
             CHECK(smlib_brep_solid_count(r, &n) == SMLIB_OK && n == 1);
             smlib_brep_free(r);
