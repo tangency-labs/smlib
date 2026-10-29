@@ -22,7 +22,7 @@ namespace
 {
 // Every face counted once (SmApiBrepComputeArea, with the [1e-8, 1e-1] envelope instead of its
 // [1e-4, 1e-1]): the total area and, when `first` is given, the area's first moments about `o`.
-int32_t faces_area(const SmBrep *b, double accuracy, const SmPoint3d &o, double &area, SmVector3d *first)
+int32_t faces_area(const SmBrep *b, double accuracy, const SmPoint3d &o, double &area, SmVector3d *first, bool (*counted)(const SmFace *) = nullptr)
 {
     area = 0.0;
     SmVector3d sum(0.0, 0.0, 0.0);
@@ -32,6 +32,10 @@ int32_t faces_area(const SmBrep *b, double accuracy, const SmPoint3d &o, double 
     for (ULONG i = 0; i < faces.GetSize(); ++i)
     {
         const SmFace *f = faces[i];
+        if (counted != nullptr && !counted(f))
+        {
+            continue;
+        }
         SmExtent3d box;
         int32_t s = status(f->CalculateBoundingBox(box));
         if (s != SMLIB_OK)
@@ -61,6 +65,19 @@ int32_t faces_area(const SmBrep *b, double accuracy, const SmPoint3d &o, double 
         *first = sum;
     }
     return std::isfinite(area) ? SMLIB_OK : static_cast<int32_t>(SM_ERR_INVALID_INPUT);
+}
+// A face with material on neither side: a sheet face, standing free or hung on a solid (a blend
+// sheet stitched between two boxes). SmBrep::ComputePreciseProperties takes its area only from
+// faces between a solid region and a void, so such a face is counted on its own.
+bool sheet_face(const SmFace *f)
+{
+    SmFaceuse *a = nullptr, *b = nullptr;
+    f->GetFaceuses(a, b);
+    auto void_side = [](const SmFaceuse *u) {
+        const SmRegion *r = u != nullptr ? u->GetRegion() : nullptr;
+        return r == nullptr || r->IsVoid() == TRUE;
+    };
+    return void_side(a) && void_side(b);
 }
 } // namespace
 
@@ -156,6 +173,14 @@ extern "C" int32_t smlib_brep_mass_properties(const smlib_brep *brep, double rel
             {
                 return static_cast<int32_t>(SM_ERR_INVALID_INPUT);
             }
+            // The area of every face of the body: the solid's boundary and the sheet faces.
+            double sheets = 0.0;
+            s = faces_area(b, accuracy, o, sheets, nullptr, sheet_face);
+            if (s != SMLIB_OK)
+            {
+                return s;
+            }
+            area += sheets;
             // m[4]: first moments about o; m[7]: (y^2+z^2, z^2+x^2, x^2+y^2) about o; m[6]: (yz, zx, xy)
             // about o. Parallel axes from o to the centroid (unit density: mass = volume).
             const double d[3] = {m[4].x / mass, m[4].y / mass, m[4].z / mass};
