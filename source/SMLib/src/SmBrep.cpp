@@ -29454,7 +29454,14 @@ SmStatus SmBrep::Transform
       }
 
     // Scale Tolerances
-    if(cpOptScale && bScaleTol)
+    // SolidCraft change: a transform that scales by 1 (a rotation, a reflection, the unit stages of
+    // a decomposed 4x4) changes no tolerance, and a scale scales each object's own tolerance with
+    // the model, never below the new Brep tolerance. Every tolerance was set to the Brep's, so an
+    // edge wider than it (a blend's intersection edge, its curve fitted to 8e-5 mm) came out
+    // with the Brep's 1e-5 mm, narrower than its own geometry's gap.
+    const double dTolScale = cpOptScale ? smos_Max(smos_Fabs(cpOptScale->x), smos_Max(smos_Fabs(cpOptScale->y), smos_Fabs(cpOptScale->z)))
+                                        : 1.0 ;
+    if(cpOptScale && bScaleTol && smos_Fabs(dTolScale - 1.0) > SM_EFF_ZERO)
       {
         // set ModelSizeEstimate from Vertex BBox size
 #ifdef SM_USE_NEWTOL
@@ -29492,7 +29499,7 @@ SmBoolean bDebugMe = FALSE ;
           { // GWC: oldTol: keep it simple - set every tol to BrepTol
             //      newTol: store max gaps - compute obj tol from modeling tolerance and maxGap values that exceed XSectTol3d
             // obsolete: SM_OLDTOL_LINE SmZoneTol3d sOldZoneTol3d = sVertices[ii]->GetTolerance() ;
-            SM_OLDTOL_LINE sVertices[ii]->SetTolerance(m_sThisZoneTol3d, // in : Desired New ZoneTol3d Value
+            SM_OLDTOL_LINE sVertices[ii]->SetTolerance(SmZoneTol3d(smos_Max(static_cast<double>(m_sThisZoneTol3d), static_cast<double>(sVertices[ii]->GetTolerance()) * dTolScale)), // in : Desired New ZoneTol3d Value
                                                        FALSE,            // in : default:[TRUE] = set tolerance only if sZoneTol3d > m_sZoneTol3d
                                                                          //      FALSE          = always set tolerance (allow shrinking TolValues)
                                                        FALSE) ;          // NotUsed: in : not used here: default:[TRUE] = Chg VtxTol to be >= EdgeTol (previous behavior)
@@ -29506,7 +29513,7 @@ SmBoolean bDebugMe = FALSE ;
           { // GWC: oldTol: keep it simple - set every tol to BrepTol
             //      newTol: store max gaps - compute obj tol from modeling tolerance and maxGap values that exceed XSectTol3d
             // obsolete: SM_OLDTOL_LINE SmZoneTol3d sOldZoneTol3d = sEdges[ii]->GetTolerance() ;
-            SM_OLDTOL_LINE sEdges[ii]->SetTolerance(m_sThisZoneTol3d, // in : Desired New ZoneTol3d Value
+            SM_OLDTOL_LINE sEdges[ii]->SetTolerance(SmZoneTol3d(smos_Max(static_cast<double>(m_sThisZoneTol3d), static_cast<double>(sEdges[ii]->GetTolerance()) * dTolScale)), // in : Desired New ZoneTol3d Value
                                                     FALSE,            // in : default:[TRUE] = set tolerance only if sZoneTol3d > m_sZoneTol3d
                                                                       //      FALSE          = always set tolerance (allow shrinking TolValues)
                                                     FALSE) ;          // NotUsed: in : not used here: default:[TRUE] = Chg VtxTol to be >= EdgeTol (previous behavior)
@@ -29519,7 +29526,7 @@ SmBoolean bDebugMe = FALSE ;
           { // GWC: oldTol: keep it simple - set every tol to BrepTol
             //      newTol: store max gaps - compute obj tol from modeling tolerance and maxGap values that exceed XSectTol3d
             // obsolete: SM_OLDTOL_LINE SmZoneTol3d sOldZoneTol3d = sFaces[ii]->GetTolerance() ;
-            SM_OLDTOL_LINE sFaces[ii]->SetTolerance(m_sThisZoneTol3d, // in : Desired New ZoneTol3d Value
+            SM_OLDTOL_LINE sFaces[ii]->SetTolerance(SmZoneTol3d(smos_Max(static_cast<double>(m_sThisZoneTol3d), static_cast<double>(sFaces[ii]->GetTolerance()) * dTolScale)), // in : Desired New ZoneTol3d Value
                                                     FALSE,            // in : default:[TRUE] = set tolerance only if sZoneTol3d > m_sZoneTol3d
                                                                       //      FALSE          = always set tolerance (allow shrinking TolValues)
                                                     FALSE) ;          // NotUsed: in : not used here: default:[TRUE] = Chg VtxTol to be >= EdgeTol (previous behavior)
