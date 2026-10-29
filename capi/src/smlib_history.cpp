@@ -22,12 +22,15 @@
 
 #include <SmApiQueries.h>
 #include <SmAttribute.h>
+#include <SmCurve.h>
 #include <SmEdge.h>
 #include <SmFace.h>
 
+#include <cmath>
 #include <map>
 #include <set>
 #include <unordered_map>
+#include <vector>
 
 using namespace smlib_shim;
 
@@ -45,21 +48,25 @@ constexpr long TAG_MAX = 1L << 30;
 
 using Origin = std::pair<long, long>;
 
-// What a face or edge stands for: the operand entities it came from, and for a face tagged
-// directly, its own boundary edges then (to tell a face that is still whole).
+// What a face or edge stands for: the operand entities it came from, for a face tagged
+// directly its own boundary edges then (to tell a face that is still whole), and for an edge
+// tagged directly where it lay then (points along it, ends first: to tell an edge that moved).
 class Tag : public SmAttribute
 {
 public:
     std::set<Origin> origins;
     std::set<long> edges;
+    std::vector<SmPoint3d> at;
 
-    Tag(std::set<Origin> o, std::set<long> e) : SmAttribute(TAG_ID, SM_AB_COPY), origins(std::move(o)), edges(std::move(e))
+    Tag(std::set<Origin> o, std::set<long> e, std::vector<SmPoint3d> p = {})
+        : SmAttribute(TAG_ID, SM_AB_COPY), origins(std::move(o)), edges(std::move(e)), at(std::move(p))
     {
     }
 
+    // A copy is the same entity where it was.
     SmAttribute *MakeCopy(const SmContext &c) const override
     {
-        return new (c) Tag(origins, edges);
+        return new (c) Tag(origins, edges, at);
     }
 
     SM_TYPE GetType() const override
@@ -134,16 +141,72 @@ public:
         x->AddAttribute(new (*x->GetContext()) Tag(o, e));
     }
 
-    // Replaces whatever tag `x` has with exactly `o` and `e`.
-    static void set(SmAObject *x, std::set<Origin> o, std::set<long> e)
+    // Replaces whatever tag `x` has with exactly `o`, `e` and `p`.
+    static void set(SmAObject *x, std::set<Origin> o, std::set<long> e, std::vector<SmPoint3d> p = {})
     {
         if (SmAttribute *old = x->FindAttribute(TAG_ID))
         {
             x->RemoveAttribute(old);
         }
-        x->AddAttribute(new (*x->GetContext()) Tag(std::move(o), std::move(e)));
+        x->AddAttribute(new (*x->GetContext()) Tag(std::move(o), std::move(e), std::move(p)));
     }
 };
+
+// Points along `e`: its two ends, then three between, evenly in its parameter. Empty where it
+// can't be evaluated.
+std::vector<SmPoint3d> samples(const SmEdge *e)
+{
+    const SmCurve *curve = e->GetCurve();
+    if (curve == nullptr)
+    {
+        return {};
+    }
+    SmExtent1d ivl = e->GetInterval();
+    std::vector<SmPoint3d> p;
+    for (double t : {0.0, 1.0, 0.25, 0.5, 0.75})
+    {
+        SmVector3d v[1];
+        if (curve->Evaluate(ivl.GetMin() + t * (ivl.GetMax() - ivl.GetMin()), 0, TRUE, v) != SM_SUCCESS)
+        {
+            return {};
+        }
+        p.push_back(SmPoint3d(v[0].x, v[0].y, v[0].z));
+    }
+    return p;
+}
+
+// Has `e` moved from where its tag says it lay: its ends elsewhere, or a point it ran through
+// off it (by more than `tol`)? An edge with no record of where it lay has not.
+bool moved(SmEdge *e, double tol)
+{
+    Tag *t = Tag::on(e);
+    if (t == nullptr || t->at.size() < 2)
+    {
+        return false;
+    }
+    std::vector<SmPoint3d> now = samples(e);
+    if (now.size() < 2)
+    {
+        return true;
+    }
+    auto near = [&](const SmPoint3d &a, const SmPoint3d &b) { return (a - b).Length() <= tol; };
+    bool ends = (near(now[0], t->at[0]) && near(now[1], t->at[1])) || (near(now[0], t->at[1]) && near(now[1], t->at[0]));
+    if (!ends)
+    {
+        return true;
+    }
+    for (size_t k = 2; k < t->at.size(); ++k)
+    {
+        SmPoint3d q;
+        double param = 0.0;
+        double d = HUGE_VAL;
+        if (SmApiEdgeClosestPoint(e, t->at[k], q, param, d) != SM_SUCCESS || !(d <= tol))
+        {
+            return true;
+        }
+    }
+    return false;
+}
 
 // What `x`'s tag says; false when it has none.
 bool read(const SmAObject *x, std::set<Origin> &o, std::set<long> &e)
@@ -213,7 +276,7 @@ extern "C" int32_t smlib_history_tag(const smlib_brep *brep, int32_t operand, sm
             }
             for (ULONG i = 0; i < edges.GetSize(); ++i)
             {
-                Tag::set(edges[i], {{operand, static_cast<long>(i)}}, {});
+                Tag::set(edges[i], {{operand, static_cast<long>(i)}}, {}, samples(edges[i]));
             }
             return take(r, out);
         }
@@ -238,6 +301,7 @@ extern "C" int32_t smlib_history_read(const smlib_brep *result, int64_t *buf, in
             auto face_at = positions(faces);
             auto edge_at = positions(edges);
             ULONG nf = faces.GetSize(), ne = edges.GetSize();
+            const double tol = result->p->GetTolerance();
 
             std::vector<std::set<Origin>> fo(nf), eo(ne);
             std::vector<std::set<long>> fe(nf);
@@ -278,7 +342,9 @@ extern "C" int32_t smlib_history_read(const smlib_brep *result, int64_t *buf, in
                     else
                     {
                         // Kept when its boundary is still exactly the edges it had, each whole
-                        // (one origin, under no other result edge) and its own operand's.
+                        // (one origin, under no other result edge), its own operand's and where
+                        // it was (an edge an operation moved, as a draft moves a tilted face's
+                        // neighbours' edges, leaves those faces trimmed differently).
                         SmTArray<SmEdge *> bound;
                         faces[i]->GetEdges(bound);
                         std::set<long> now;
@@ -287,7 +353,8 @@ extern "C" int32_t smlib_history_read(const smlib_brep *result, int64_t *buf, in
                         {
                             auto it = edge_at.find(bound[j]);
                             const std::set<Origin> *e = it == edge_at.end() ? nullptr : &eo[static_cast<size_t>(it->second)];
-                            whole = e != nullptr && e->size() == 1 && e->begin()->first == o.first && edge_uses[*e->begin()] == 1;
+                            whole = e != nullptr && e->size() == 1 && e->begin()->first == o.first && edge_uses[*e->begin()] == 1 &&
+                                    !moved(bound[j], tol);
                             if (whole)
                             {
                                 now.insert(e->begin()->second);
