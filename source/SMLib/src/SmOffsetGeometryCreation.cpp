@@ -18,6 +18,9 @@
 #include <SmAssertArray.h>
 #include <SmCrvOnSurf.h>
 
+#include <algorithm>
+#include <vector>
+
 /*******************************************************************//**
 PURPOSE: Destructor for SmOffsetGeometryCreation.
 
@@ -2021,6 +2024,94 @@ static SmStatus sm_ExactPiece
   return SM_SUCCESS;
 
 } // end sm_ExactPiece
+
+/*******************************************************************//**
+PURPOSE: SolidCraft: each edge of pBrep whose curve is a B-spline (an
+    intersection marched and approximated) between two faces on analytic
+    surfaces (planes, cylinders, cones, spheres, tori) is made the exact
+    line or conic those surfaces meet on, over the same span and running the
+    same way, unless that conic fails its own validity check; its faces' UV
+    trim curves are made again.
+
+NOTES: An offset's edges are its offset faces meeting, or meeting a face
+    it keeps (a shell's open face), and the offset executive marches each
+    of those: a cylinder's offset meeting a plane square to its axis came
+    back a cubic within a few tolerances of the circle. Where the exact
+    intersection has no line or conic through the edge's ends and middle
+    (tangent surfaces, a curve of higher order) the edge is left as it is.
+***********************************************************************/
+SmStatus SmOffsetGeometryCreation::MakeEdgesOnAnalyticsExact
+ (const SmContext & crContext,  // in : context for new obj construction
+  SmBrep          * pBrep)      // in : target Brep to modify
+{
+  NER(pBrep);
+  const double  dTol                = pBrep->GetTolerance();
+  SmApproxTol3d sSSITol             = dTol / 4.0;
+  double        d20DegRad           = SM_DEG2RAD(20.0);
+  SmBoolean     bUseSurfaceEdges[2] = { FALSE, FALSE };
+  SmTArray<SmEdge*> sEdges;
+  pBrep->GetEdges(sEdges);
+  std::vector<SmFace*> vChanged;
+  for (ULONG ee = 0; ee < sEdges.GetSize(); ee++)
+    {
+      SmEdge  * pEdge  = sEdges[ee];
+      SmCurve * pCurve = pEdge->GetCurve();
+      if (pCurve == NULL || pCurve->IsAnalytic())
+        { continue; }
+      SmTArray<SmFace*> sFaces;
+      pEdge->GetFaces(sFaces);
+      if (sFaces.GetSize() != 2 || sFaces[0] == sFaces[1])
+        { continue; }
+      const SmSurface * pS1 = sFaces[0]->GetSurface();
+      const SmSurface * pS2 = sFaces[1]->GetSurface();
+      if (pS1 == NULL || pS2 == NULL || !pS1->IsAnalytic() || !pS2->IsAnalytic())
+        { continue; }
+      // The surfaces' own intersection: none found (tangent surfaces) leaves the edge.
+      SmTArray<SmCurve*> sExact, sExactUV1, sExactUV2;
+      SmObjsDelete<SmCurve*> sCleanE(&sExact), sCleanEU1(&sExactUV1), sCleanEU2(&sExactUV2);
+      if (pS1->GlobalSurfaceIntersect(crContext, pS1->GetNaturalUVDomain(), *pS2, pS2->GetNaturalUVDomain(),
+                                      bUseSurfaceEdges, &sSSITol, &d20DegRad,
+                                      &sExact, &sExactUV1, &sExactUV2, NULL, NULL) != SM_SUCCESS)
+        { continue; }
+      SmBSplineCurve * pTrimmed = pEdge->CreateTrimmedNURBSCurve(crContext);
+      if (pTrimmed == NULL)
+        { continue; }
+      SmObjDelete sCleanTrimmed(pTrimmed);
+      SmCurve * pPiece = NULL;
+      SER(sm_ExactPiece(crContext, *pTrimmed, sExact, dTol, pPiece));
+      if (pPiece == NULL)
+        { continue; }
+      SmObjDelete sCleanPiece(pPiece);
+      // The piece runs as the edge does (sm_ExactPiece may give it end to start).
+      SmVector3d sOld[2], sNew[2];
+      SER(pTrimmed->Evaluate(pTrimmed->GetNaturalInterval().Evaluate(0.5), 1, TRUE, sOld));
+      SER(pPiece->Evaluate(pPiece->GetNaturalInterval().Evaluate(0.5), 1, TRUE, sNew));
+      if (sOld[1].Dot(sNew[1]) < 0.0)
+        {
+          SmExtent1d sIvl;
+          SER(pPiece->ReverseParameterization(pPiece->GetNaturalInterval(), sIvl));
+        }
+      // A conic whose own parameters SMLib cannot hold consistently (its polar conversion off
+      // by more than its own zero, far from the origin) fails its validity check: the edge keeps
+      // its marched curve rather than take it.
+      if (!pPiece->AssertValid(NULL, SM_LEVEL_2, SM_NO_WALK))
+        { continue; }
+      sCleanPiece.Clear();
+      SER(pBrep->ReplaceCurve(pEdge, pPiece));
+      for (ULONG ff = 0; ff < 2; ff++)
+        {
+          if (std::find(vChanged.begin(), vChanged.end(), sFaces[ff]) == vChanged.end())
+            { vChanged.push_back(sFaces[ff]); }
+        }
+    }
+  for (size_t ff = 0; ff < vChanged.size(); ff++)
+    {
+      double dMeanGap, dMaxGap, dMeanVGap, dMaxVGap, dMeanPSGap, dMaxPSGap;
+      SER(vChanged[ff]->CreateUVTrimCurves(TRUE, NULL, NULL, dMeanGap, dMaxGap, dMeanVGap, dMaxVGap, dMeanPSGap, dMaxPSGap));
+    }
+  return SM_SUCCESS;
+
+} // end SmOffsetGeometryCreation::MakeEdgesOnAnalyticsExact
 
 /*******************************************************************//**
 PURPOSE:  Mate a couple of edges by extension and intersection.

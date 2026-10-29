@@ -98,6 +98,11 @@ public:
     void SetMakeAnalytics(SmBoolean bMakeAnalytics) 
     { m_bMakeAnalytics = bMakeAnalytics; }
 
+    // SolidCraft: each edge of pBrep whose curve is a B-spline between two faces on analytic
+    // surfaces made the exact line or conic those surfaces meet on, between the same ends.
+    static SmStatus MakeEdgesOnAnalyticsExact(const SmContext & crContext,  // in : context for new obj construction
+                                              SmBrep          * pBrep);     // in : target Brep to modify
+
     SmStatus UpdateFaceSurfaceDomain(SmFace * pFace,
                                      SmSurface * pExtendedSurface);
 
