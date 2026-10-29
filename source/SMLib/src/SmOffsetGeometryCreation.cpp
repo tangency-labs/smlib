@@ -1352,6 +1352,17 @@ SmBoolean bDebugMe2 = FALSE;
         }
 
       // search every solution for the one closest to the BaseVertex to use as the trimPoint
+      // SolidCraft change: an open edge's second trim point is where its other vertex goes, never
+      // the first trim point again. On a closed 3D curve (the whole offset circle lifted for half a
+      // cap's rim) the first point's twin across the curve's seam is another parameter but the
+      // same point: taken, it gave the half edge the whole circle and the loop a gap (a sphere
+      // cap's thicken failed, 1001).
+      SmPoint3d sFirst;
+      SmBoolean bOpenSecond = (i == 1 && !pBaseEdgeuse->GetEdge()->IsClosed());
+      if (bOpenSecond)
+        { SER(p3DCurve->EvaluatePoint(sTrimIvl.GetMin(), sFirst)); }
+      double dSameTol = 10.0 * m_dThisApproxTol3d;
+      auto bFirstAgain = [&](const SmPoint3d &rPnt) { return bOpenSecond && rPnt.DistanceBetween(sFirst) <= dSameTol; };
       for (ULONG ii=0; ii<sSolutions.GetSize(); ii++) 
         {
           SmSolution &rSol = sSolutions[ii];
@@ -1361,7 +1372,8 @@ SmBoolean bDebugMe2 = FALSE;
           // search for the best solution
           double dDistMoved = sPnt.DistanceBetween(pBaseVertex->GetPoint());
           if (   dDistMoved < dFoundDist
-              && !SM_ARE_SAME(rSol.m_vStart[0],sTrimIvl.GetMin())) 
+              && !SM_ARE_SAME(rSol.m_vStart[0],sTrimIvl.GetMin())
+              && !bFirstAgain(sPnt)) 
             {
               dFoundParam      = rSol.m_vStart[0];
               //dOtherFoundParam = rSol.m_vStart[1];
@@ -1376,7 +1388,8 @@ SmBoolean bDebugMe2 = FALSE;
               dDistMoved = sPnt.DistanceBetween(pBaseVertex->GetPoint());
 
             if (   dDistMoved < dFoundDist
-                && !SM_ARE_SAME(rSol.m_vEnd[0],sTrimIvl.GetMin())) 
+                && !SM_ARE_SAME(rSol.m_vEnd[0],sTrimIvl.GetMin())
+                && !bFirstAgain(sPnt)) 
               {
                 dFoundParam      = rSol.m_vEnd[0];
                 dFoundDist       = dDistMoved;

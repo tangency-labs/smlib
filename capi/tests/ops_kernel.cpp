@@ -3979,6 +3979,57 @@ int main()
         smlib_brep_free(sheet);
     }
 
+    // A sphere's cap thickened: the sphere of radius 10 split by the plane z = 5, the face on the
+    // sphere above it copied out alone (its rim two half circles and a seam), thickened out by 1:
+    // the sector of the shell between radii 10 and 11 over solid angle pi, pi/3 * (11^3 - 10^3).
+    // Each half of the rim's offset lies on the whole offset circle, and its second trim point
+    // was taken at that circle's seam, the first point again: each half took the whole circle,
+    // the loop had a gap and the thicken failed (1001).
+    {
+        const double centre[3] = {0, 0, 0};
+        smlib_brep *ball = nullptr;
+        CHECK(smlib_make_sphere(centre, 10.0, &ball) == SMLIB_OK);
+        const double o[3] = {0, 0, 5}, x[3] = {1, 0, 0}, y[3] = {0, 1, 0}, u[2] = {-50, 50};
+        smlib_surface *cut = nullptr;
+        CHECK(smlib_surface_plane(o, x, y, u, u, &cut) == SMLIB_OK);
+        smlib_brep *below = nullptr, *above = nullptr;
+        CHECK(ball != nullptr && cut != nullptr && smlib_split_body(ball, cut, &below, &above) == SMLIB_OK);
+        smlib_surface_free(cut);
+        SmBrep *cap = nullptr;
+        if (above != nullptr)
+        {
+            SmTArray<SmFace *> faces;
+            above->p->GetFaces(faces);
+            SmTArray<SmFace *> one;
+            for (ULONG i = 0; i < faces.GetSize(); ++i)
+            {
+                if (faces[i]->GetSurface()->IsKindOf(SmSphere_TYPE))
+                {
+                    one.Add(faces[i]);
+                }
+            }
+            CHECK(one.GetSize() == 1);
+            cap = new (*SmApiGetOrCreateContext()) SmBrep();
+            cap->SetTolerance(above->p->GetTolerance());
+            SmTArray<SmFace *> copied;
+            CHECK(above->p->CopyFaces(one, cap, &copied, TRUE) == SM_SUCCESS && copied.GetSize() == 1);
+        }
+        smlib_brep sheet{cap};
+        CHECK(cap != nullptr && smlib_thicken(&sheet, 1.0, 0, &r) == SMLIB_OK);
+        if (r != nullptr)
+        {
+            const double want = PI / 3.0 * (1331.0 - 1000.0);
+            std::printf("sphere cap thickened 1: volume %.9f, want %.9f\n", volume_of(r), want);
+            CHECK(near(volume_of(r), want, 1e-6));
+            done(r);
+        }
+        delete cap;
+        for (smlib_brep *b : {ball, below, above})
+        {
+            smlib_brep_free(b);
+        }
+    }
+
     // Two holes 6 apart cut one after the other through a disc: the second hole's wall meets the
     // first's (trimmed to the disc) in two lines. Parallel cylinders are intersected by
     // SmCone::IntersectWithCone, which once took the lines' span from the whole cylinders, so
