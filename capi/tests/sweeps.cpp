@@ -4,7 +4,8 @@
 // The sweeps (src/smlib_sweeps.cpp) against closed-form volumes: extrusions straight and drafted,
 // revolutions whole, partial and touching the axis, sweeps along lines and arcs, lofts, screw
 // sweeps (Pappus) and sweeps through stations (twisted, scaled, round a closed path), each checked
-// as a valid closed solid; then hostile curve lists and station maps.
+// as a valid closed solid; a line projected through a sphere's poles; then hostile curve lists and
+// station maps.
 
 #include "smlib.h"
 
@@ -284,6 +285,41 @@ static double screw_deviation(const smlib_brep *b, const Meridian &m, double pit
 
 static const double Z[3] = {0, 0, 1};
 static const double O[3] = {0, 0, 0};
+
+// The point at `t` of a curve list's NURBS curve of degree `p` with `n` points (x, y, z, weight)
+// followed by its knots, as `reals` holds it (de Boor on the homogeneous points).
+static void nurbs_point(int p, int n, const double *reals, double t, double out[3])
+{
+    const double *knots = reals + 4 * n;
+    int k = p;
+    for (int i = p; i < n; ++i)
+    {
+        if (t >= knots[i] && t < knots[i + 1])
+            k = i;
+    }
+    if (t >= knots[n])
+        k = n - 1;
+    std::vector<double> d(4 * (p + 1));
+    for (int j = 0; j <= p; ++j)
+    {
+        const double *q = reals + 4 * (k - p + j);
+        d[4 * j + 0] = q[0] * q[3];
+        d[4 * j + 1] = q[1] * q[3];
+        d[4 * j + 2] = q[2] * q[3];
+        d[4 * j + 3] = q[3];
+    }
+    for (int r = 1; r <= p; ++r)
+    {
+        for (int j = p; j >= r; --j)
+        {
+            double a = (t - knots[k - p + j]) / (knots[j + 1 + k - r] - knots[k - p + j]);
+            for (int c = 0; c < 4; ++c)
+                d[4 * j + c] = (1 - a) * d[4 * (j - 1) + c] + a * d[4 * j + c];
+        }
+    }
+    for (int c = 0; c < 3; ++c)
+        out[c] = d[4 * p + c] / d[4 * p + 3];
+}
 
 int main()
 {
@@ -1274,6 +1310,53 @@ int main()
         expect("text letter w extruded", smlib_extrude(letter_w.kinds.data(), letter_w.nk(), letter_w.reals.data(), letter_w.nr(), Z, 1.0, 0.0,
                                                   SMLIB_DRAFT_CORNER_TANGENT, 1, &b, nullptr),
                &b, 30.54176411298956, 1e-9);
+    }
+
+    // A line projected through a sphere's poles: the plane of its sweep cuts the sphere in a
+    // meridian, half of it the face's seam (an exact conic) and half traced into each pole. Every
+    // projected curve stays within the asked tolerance of the sphere, the poles included: the
+    // traced curve keeps the tangent the pole's limit normal gives it (StepBackFromSingularity).
+    {
+        const double centre[3] = {0, 0, 0};
+        smlib_brep *ball = nullptr;
+        CHECK(smlib_make_sphere(centre, 20.0, &ball) == SMLIB_OK && ball != nullptr);
+        List across;
+        across.line(-10, 0, 50, 10, 0, 50);
+        const double top[3] = {0, 0, 20}, down[3] = {0, 0, -1};
+        const double tolerance = 4e-5;
+        smlib_curves *projected = nullptr;
+        CHECK(smlib_project_curves(ball, top, 0.04, across.kinds.data(), across.nk(), across.reals.data(), across.nr(), down,
+                                   tolerance, &projected) == SMLIB_OK);
+        int64_t nk = 0, nr = 0, nc = 0;
+        CHECK(projected != nullptr && smlib_curves_size(projected, &nk, &nr, &nc) == SMLIB_OK && nc > 0);
+        std::vector<int64_t> kinds(static_cast<size_t>(nk));
+        std::vector<double> reals(static_cast<size_t>(nr)), intervals(static_cast<size_t>(2 * nc));
+        CHECK(projected != nullptr
+              && smlib_curves_read(projected, kinds.data(), nk, reals.data(), nr, intervals.data(), 2 * nc) == SMLIB_OK);
+        double worst = 0.0, north = 1e9, south = 1e9;
+        size_t ki = 0, ri = 0;
+        for (int64_t c = 0; c < nc && ki + 3 <= kinds.size(); ++c)
+        {
+            CHECK(kinds[ki] == SMLIB_CURVE_NURBS);
+            int p = static_cast<int>(kinds[ki + 1]), n = static_cast<int>(kinds[ki + 2]);
+            ki += 3;
+            double t0 = intervals[2 * c], t1 = intervals[2 * c + 1];
+            for (int i = 0; i <= 2000; ++i)
+            {
+                double q[3];
+                nurbs_point(p, n, reals.data() + ri, t0 + (t1 - t0) * i / 2000.0, q);
+                double off = std::fabs(std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]) - 20.0) + std::fabs(q[1]);
+                worst = std::max(worst, off);
+                north = std::min(north, std::hypot(q[0], q[1], q[2] - 20.0));
+                south = std::min(south, std::hypot(q[0], q[1], q[2] + 20.0));
+            }
+            ri += static_cast<size_t>(4 * n + n + p + 1);
+        }
+        std::printf("line through a sphere's poles: %lld curves, worst %.3g mm off the sphere\n", static_cast<long long>(nc), worst);
+        CHECK(worst <= tolerance);
+        CHECK(north <= tolerance && south <= tolerance);
+        smlib_curves_free(projected);
+        smlib_brep_free(ball);
     }
 
     // Hostile lists: nothing is built, nothing crashes.
