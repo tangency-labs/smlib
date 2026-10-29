@@ -1419,6 +1419,45 @@ struct Profile
     }
 };
 
+// A 50 x 40 x 10 block with its corners rounded r 4.5, and a lip on its top: a 1 x 1 square swept
+// along half the block's rim, flush with it, round two corners (SolidCraft's lip swept flush round
+// a corner). The sweep's walls are B-splines approximating the swept square; its outer bottom edge
+// lies on the block's rim arc within tolerance and crosses it twice, 0.05 apart, at the arc's
+// middle. The union split the rim arc there, and the edge where the two meet along the whole arc
+// was re-pointed to the 0.05 piece in the middle, whose vertices are not its ends: the imprint
+// found no vertex there (SM_ERR_NULL_POINTER). The lip sits on the block: the union is the sum,
+// the block (50 x 40 - (4 - pi) 4.5^2) 10 and the lip 41 + 31 + 41 + 2 pi (4.5^2 - 3.5^2) / 4.
+void lip_swept_flush_round_a_corner()
+{
+    Profile base;
+    base.line(20.5, -20, -20.5, -20, 0).arc(-20.5, -15.5, 0, 1, 4.5, PI, 1.5 * PI).line(-25, -15.5, -25, 15.5, 0);
+    base.arc(-20.5, 15.5, 0, 1, 4.5, 0.5 * PI, PI).line(-20.5, 20, 20.5, 20, 0).arc(20.5, 15.5, 0, 1, 4.5, 0, 0.5 * PI);
+    base.line(25, 15.5, 25, -15.5, 0).arc(20.5, -15.5, 0, 1, 4.5, 1.5 * PI, 2 * PI);
+    smlib_brep *block = base.extrude(10.0), *lip = nullptr, *r = nullptr;
+    // The square in the plane x = 20.5, from (y, z) = (-20, 10) to (-19, 11).
+    const std::vector<int64_t> sk = {SMLIB_CURVE_LINE, SMLIB_CURVE_LINE, SMLIB_CURVE_LINE, SMLIB_CURVE_LINE};
+    const std::vector<double> sr = {20.5, -20, 10, 20.5, -19, 10, 20.5, -19, 10, 20.5, -19, 11,
+                                    20.5, -19, 11, 20.5, -20, 11, 20.5, -20, 11, 20.5, -20, 10};
+    Profile path;
+    path.line(20.5, -20, -20.5, -20, 10).arc(-20.5, -15.5, 10, -1, 4.5, 0.5 * PI, PI).line(-25, -15.5, -25, 15.5, 10);
+    path.arc(-20.5, 15.5, 10, -1, 4.5, PI, 1.5 * PI).line(-20.5, 20, 20.5, 20, 10);
+    CHECK(smlib_sweep(sk.data(), static_cast<int64_t>(sk.size()), sr.data(), static_cast<int64_t>(sr.size()), path.kinds.data(),
+                      static_cast<int64_t>(path.kinds.size()), path.reals.data(), static_cast<int64_t>(path.reals.size()), SMLIB_SWEEP_FOLLOW, 1,
+                      &lip) == SMLIB_OK);
+    CHECK(block != nullptr && lip != nullptr && smlib_boolean(block, lip, SMLIB_BOOLEAN_UNION, &r) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        CHECK(sound(r));
+        const double blk = (2000.0 - (4.0 - PI) * 4.5 * 4.5) * 10.0, ring = 41.0 + 31.0 + 41.0 + 2.0 * PI * (4.5 * 4.5 - 3.5 * 3.5) / 4.0;
+        std::printf("lip swept flush round a corner: %.9f, the block and the lip %.9f\n", volume_of(r), blk + ring);
+        CHECK(near(volume_of(r), blk + ring, 1e-6));
+    }
+    for (smlib_brep *x : {block, lip, r})
+    {
+        smlib_brep_free(x);
+    }
+}
+
 } // namespace
 
 int main()
@@ -4352,6 +4391,7 @@ int main()
     shelled_box_with_a_drilled_hole();
     shell_thicker_than_a_step();
     drafted_cylinders_are_cones();
+    lip_swept_flush_round_a_corner();
     corner_setback();
     corner_setback_open();
     setback_sections_are_exact_arcs();
