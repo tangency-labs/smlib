@@ -1614,6 +1614,33 @@ int main()
         smlib_brep_free(block);
     }
 
+    // A variable round 2 -> w -> 2 (degree 1, a corner at the middle) on the top edge along y of a
+    // 10 x 20 x 30 box. Corners in the rails were found by the solver's 20 degree angle, so a
+    // gentle one (w 3: the rails turn 11 degrees) was skinned over: the round off its law, its
+    // edges kinked inside and refused by the check. Each half is a cone-like round with r linear
+    // along 10: removed about 2 (1 - pi/4) 10 (4 + 2 w + w^2) / 3 (the ball's contact leans off
+    // the cross-section plane as r changes, to 1e-4 of it here).
+    {
+        smlib_brep *block = box(0, 0, 0, 10, 20, 30);
+        const double at[3] = {10, 10, 30}, from[3] = {10, 0, 30};
+        const double knots[5] = {0, 0, 0.5, 1, 1};
+        for (double w : {2.5, 3.0, 3.2, 4.0})
+        {
+            const double law[3] = {2, w, 2};
+            if (smlib_fillet_variable(block, at, 0.1, from, 1, knots, 5, law, 3, &r) == SMLIB_OK)
+            {
+                CHECK(near(6000.0 - volume_of(r), 20.0 * (1.0 - PI / 4.0) * (4.0 + 2.0 * w + w * w) / 3.0, 1e-4));
+                CHECK(r->p->GetNumFaces() == 8);
+                done(r);
+            }
+            else
+            {
+                CHECK(!"a variable round with a corner in its law");
+            }
+        }
+        smlib_brep_free(block);
+    }
+
     // tangency-labs/solidcore#458: a variable round whose law SMLib cannot evaluate past the edge's
     // ends (a constant law curve laid out with no slope, radius 2 as x and 0 as y, as the shim
     // once built it; extending a curve of zero speed fails). SmVariableRadiusFS::SetupOffsetValues

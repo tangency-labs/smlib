@@ -3296,9 +3296,13 @@ SmStatus SmCircularCrossSectionFSG::CreateSurface
     // SolidCraft change: a skinned surface interpolates its cross sections smoothly, so where
     // the center curve or a rail turns (a corner in a variable radius) it would overshoot.
     // The surface is skinned piece by piece between such corners and the pieces joined there.
+    // A turn is a corner past SM_CONTINUITY_ANGLE, the most an edge's curve may turn at a knot
+    // inside it (SmBSplineCurve's check): a gentle corner (2 -> 3 -> 2 over 20 turns the rails
+    // 11 degrees, under the solver's 20 degree tolerance) would otherwise be skinned over, the
+    // round off its radius and its edges kinked inside.
     SmTArray<double> sCorners;
     SER(sm_FilletCurveCorners(*pCenterLine, *pRail1Curve, *pRail2Curve,
-                              rFilletSolver.GetThisAngTolRad(), sCorners));
+                              smos_Min(rFilletSolver.GetThisAngTolRad(), SM_DEG2RAD(SM_CONTINUITY_ANGLE)), sCorners));
     if (sCorners.GetSize() == 0)
     {
         SER(CreateSurfaceFromCurves(rFilletSolver.GetCreationContext(),
