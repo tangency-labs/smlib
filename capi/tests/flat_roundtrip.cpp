@@ -1494,6 +1494,48 @@ void TransformKeepsEdgeTolerance()
     smlib_brep_free(box);
 }
 
+// A body with no vertices scaled: a lone torus (R 6, r 2 about (10, 5, 3)) scaled by 2 and by 0.5,
+// then a ball of radius 1.5 (scaled alike) cut out of its tube, inside it. SmBrep::Transform took
+// the model size from the box of the vertices, empty here, and set the Brep tolerance to zero:
+// the cut failed (SMLIB_ERR 1001). The size is now the Brep's box: the cut leaves the torus less
+// the ball, k^3 (2 pi^2 R r^2 - 4/3 pi 1.5^3), and the tolerance is at least that of the same
+// torus made at the scaled size.
+void ScaledBodyWithoutVertices()
+{
+    const double pi = 3.14159265358979323846, c[3] = {10, 5, 3};
+    for (double k : {2.0, 0.5})
+    {
+        const double m[4][4] = {{k, 0, 0, 0}, {0, k, 0, 0}, {0, 0, k, 0}, {0, 0, 0, 1}};
+        const double ck[3] = {c[0] * k, c[1] * k, c[2] * k}, inTube[3] = {ck[0] + 6 * k, ck[1], ck[2]};
+        smlib_brep *torus = nullptr, *made = nullptr, *scaled = nullptr, *ball = nullptr, *cut = nullptr;
+        smlib_flat *x = nullptr, *y = nullptr;
+        CHECK(smlib_make_torus(c, 6, 2, &torus) == SMLIB_OK);
+        CHECK(smlib_make_torus(ck, 6 * k, 2 * k, &made) == SMLIB_OK);
+        CHECK(smlib_make_sphere(inTube, 1.5 * k, &ball) == SMLIB_OK);
+        const int32_t st = torus != nullptr ? smlib_brep_transform(torus, m, &scaled) : SMLIB_ERR_ARG;
+        const int32_t sx = st == SMLIB_OK ? smlib_brep_export(scaled, &x) : st;
+        const int32_t sy = made != nullptr ? smlib_brep_export(made, &y) : SMLIB_ERR_ARG;
+        const int32_t sc = st == SMLIB_OK ? smlib_boolean(scaled, ball, SMLIB_BOOLEAN_SUBTRACT, &cut) : st;
+        double v = 0.0;
+        if (sc == SMLIB_OK)
+        {
+            CHECK(smlib_brep_volume(cut, 1e-8, &v) == SMLIB_OK);
+        }
+        const double tol = sx == SMLIB_OK ? Snapshot(x).f.at(SMLIB_FLAT_TOLERANCE).at(0) : 0.0;
+        const double own = sy == SMLIB_OK ? Snapshot(y).f.at(SMLIB_FLAT_TOLERANCE).at(0) : INFINITY;
+        const double want = k * k * k * (2 * pi * pi * 6 * 4 - 4.0 / 3.0 * pi * 1.5 * 1.5 * 1.5);
+        std::printf("lone torus scaled by %g: transform %d, tolerance %g (made at that size %g), ball cut out %d, volume %.12g (want %.12g)\n", k,
+                    static_cast<int>(st), tol, own, static_cast<int>(sc), v, want);
+        CHECK(sx == SMLIB_OK && tol >= own && sc == SMLIB_OK && std::fabs(v - want) <= 1e-7 * want);
+        smlib_flat_free(y);
+        smlib_flat_free(x);
+        for (smlib_brep *b : {torus, made, scaled, ball, cut})
+        {
+            smlib_brep_free(b);
+        }
+    }
+}
+
 // Imports `a`; expects a failure status (and no crash). Returns the status.
 int32_t ExpectReject(const Arrays &a, const char *what)
 {
@@ -1926,6 +1968,7 @@ int main(int argc, char **argv)
     SphereFormRoundTrip();
     MirroredCylinderRoundTrip();
     TransformKeepsEdgeTolerance();
+    ScaledBodyWithoutVertices();
 
     // The accessors' argument checks.
     {
