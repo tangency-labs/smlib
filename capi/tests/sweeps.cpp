@@ -374,6 +374,18 @@ int main()
         expect(name, smlib_revolve(off.kinds.data(), off.nk(), off.reals.data(), off.nr(), O, Z, 2 * PI * turn, 1, &b), &b,
                2 * PI * turn * 7.0 * 4.0, 1e-5);
     }
+    // A square with a square hole, turned a quarter, three quarters and a whole turn: a ring
+    // with a ring-shaped void or channel inside it (Pappus: turn 2 pi (50 * 15 - 2 * 13)).
+    List holed;
+    holed.polygon({10, 0, 0, 20, 0, 0, 20, 0, 5, 10, 0, 5}).polygon({12, 0, 1, 12, 0, 2, 14, 0, 2, 14, 0, 1});
+    for (double turn : {0.25, 0.75, 1.0})
+    {
+        char name[64];
+        std::snprintf(name, sizeof name, "revolve holed square %.2f turn", turn);
+        b = nullptr;
+        expect(name, smlib_revolve(holed.kinds.data(), holed.nk(), holed.reals.data(), holed.nr(), O, Z, 2 * PI * turn, 1, &b), &b,
+               turn * 2 * PI * (50.0 * 15.0 - 2.0 * 13.0), 1e-5);
+    }
     // A quarter disc of radius 20 turned a whole turn: a dome. Its arc is a sketch's arc through
     // (20, 0), a rounded (14.142136, 14.142136) and (0, 20), so its centre is 1.28e-6 off the axis
     // and its radius 1.28e-6 short of 20 (SolidCraft rig shell/4847). Within tolerance of the

@@ -2370,7 +2370,27 @@ static SmStatus sm_NestRevolvedShells(SmBrep *pBrep)
   pInfinite->GetShells(sOuter);
   const ULONG n = sOuter.GetSize();
   if (n < 2)
-    { return SM_SUCCESS; }
+    {
+      // StitchAndOrient may have nested the shells itself (a hole in the profile: the ring it
+      // turns into lies inside the ring around it, in that ring's region) and left the region
+      // inside the inner shell marked as material, so the void counted as solid. Where every
+      // shell is closed the regions alternate material and void from the infinite region in.
+      SmTArray<SmRegion*> sRegions;
+      pBrep->GetRegions(sRegions);
+      if (sRegions.GetSize() <= 2)
+        { return SM_SUCCESS; }
+      for (ULONG i=0; i<sRegions.GetSize(); i++)
+        {
+          SmTArray<SmShell*> sShells;
+          sRegions[i]->GetShells(sShells);
+          for (ULONG j=0; j<sShells.GetSize(); j++)
+            {
+              if (!sShells[j]->IsFaceuseShell() || !sShells[j]->IsClosed())
+                { return SM_SUCCESS; }
+            }
+        }
+      return pBrep->SetRegionIsVoidFlagsForNestedSolids();
+    }
 
   // Each shell of the infinite region is closed, its mate the boundary of the region inside it.
   SmTArray<SmShell*> sMates;
