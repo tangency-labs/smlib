@@ -704,7 +704,33 @@ int main()
         expect(h.name,
                smlib_sweep(h.profile->kinds.data(), h.profile->nk(), h.profile->reals.data(), h.profile->nr(), h.path->kinds.data(), h.path->nk(),
                            h.path->reals.data(), h.path->nr(), SMLIB_SWEEP_FOLLOW, 1, &b),
-               &b, h.area * h.length, 1e-4);
+               &b, h.area * h.length, 1e-7);
+    }
+    // A disc r 5 up 20, round a quarter of radius 5 and on 20 (SolidCraft's reference case 50):
+    // the bend's inner side pinches to a point on its axis, a horn torus between two cylinders.
+    // Swept piece by piece the walls are exact (no NURBS: the joined path's fitted walls were
+    // near singular there and failed the check) and the volume is Pappus': pi r^2 times the
+    // path's length.
+    {
+        List tight;
+        tight.line(0, 0, 0, 0, 0, 20).arc(5, 0, 20, 0, 1, 0, -1, 0, 0, 5, 0, PI / 2).line(5, 0, 25, 25, 0, 25);
+        List d5 = circle(0, 0, 0, 0, 0, 1, 1, 0, 0, 5);
+        b = nullptr;
+        int32_t s = smlib_sweep(d5.kinds.data(), d5.nk(), d5.reals.data(), d5.nr(), tight.kinds.data(), tight.nk(), tight.reals.data(), tight.nr(),
+                                SMLIB_SWEEP_FOLLOW, 1, &b);
+        smlib_flat *f = nullptr;
+        const int64_t *types = nullptr;
+        int64_t n = 0, nurbs = 0;
+        CHECK(s == SMLIB_OK && b != nullptr && smlib_brep_export(b, &f) == SMLIB_OK);
+        CHECK(f != nullptr && smlib_flat_get_i64(f, SMLIB_FLAT_FACE_SURFACE_TYPE, &types, &n) == SMLIB_OK);
+        for (int64_t i = 0; i < n; ++i)
+        {
+            nurbs += types[i] == SMLIB_FLAT_SURFACE_NURBS;
+        }
+        smlib_flat_free(f);
+        std::printf("%-34s faces %lld, nurbs %lld\n", "sweep disc round a tight bend", static_cast<long long>(n), static_cast<long long>(nurbs));
+        CHECK(n == 5 && nurbs == 0);
+        expect("sweep disc round a tight bend", s, &b, PI * 25.0 * (40.0 + 2.5 * PI), 1e-7);
     }
 
     // Lofts: square to square (a box), circle to circle (a frustum, ruled).
