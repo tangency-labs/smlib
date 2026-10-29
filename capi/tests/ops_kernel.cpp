@@ -1214,6 +1214,13 @@ void shelled_rounded_box_rim()
 // on that extension comes back an SmCone, R3 to 1e-12. Both sides extended in one call left a
 // single knot at the far end, which SmCone::IsNurbSurfaceCone does not take for a circle, and
 // the face stayed a surface of revolution.
+// That wall, in the shell as SolidCraft hands it back (rounded-corner-box-shelled.txt), moved 0.5
+// into the cavity (R3 to R2.5) steps in from the two planes it was tangent to. The step walls
+// are ruled between those planes' edges and the moved wall's: one of these lines came off the
+// extended cylinder with its weight there, 0.99998828, and ruled against a line of weight 1 the
+// wall was rational across, so the plane it became put its trims 5.9e-6 off, past the 5e-6
+// tolerance. The result now passes SMLib's check, and the cavity loses the quarter ring between
+// the radii, pi/4 (3^2 - 2.5^2) 18.
 void shelled_single_round_stays_a_cylinder()
 {
     auto read = [](const char *path)
@@ -1246,7 +1253,15 @@ void shelled_single_round_stays_a_cylinder()
         std::printf("shelled single round: %d inner round(s), radius 3 %+.3g\n", inner, radius - 3.0);
         CHECK(inner == 1 && std::fabs(radius - 3.0) < 1e-12);
     }
-    for (smlib_brep *b : {round, shell})
+    smlib_brep *handed = read(SMLIB_TEST_DATA "/rounded-corner-box-shelled.txt"), *moved = nullptr;
+    const double wall[3] = {35.0 + 3.0 / std::sqrt(2.0), 35.0 + 3.0 / std::sqrt(2.0), 10.0};
+    CHECK(handed != nullptr && sound(handed) && smlib_offset_faces(handed, wall, 1, 0.1, 0.5, &moved, nullptr) == SMLIB_OK);
+    if (moved != nullptr)
+    {
+        CHECK(sound(moved));
+        CHECK(near(volume_of(moved) - volume_of(handed), PI / 4.0 * (9.0 - 6.25) * 18.0, 1e-6));
+    }
+    for (smlib_brep *b : {round, shell, handed, moved})
     {
         smlib_brep_free(b);
     }

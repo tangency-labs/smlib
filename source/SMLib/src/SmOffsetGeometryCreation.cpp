@@ -19,6 +19,7 @@
 #include <SmCrvOnSurf.h>
 
 #include <algorithm>
+#include <initializer_list>
 #include <vector>
 
 /*******************************************************************//**
@@ -2662,6 +2663,15 @@ PURPOSE: The ruled wall between two offset edgeuses of one edge whose
 NOTES: The rails are the two edges' curves; the second runs the way the
    first does (its edgeuse runs the other way round its face), judged at
    interior points so that closed rails are judged too.
+
+   A rail whose weights are all one value is the polynomial curve of its
+   points, and is ruled as that: the ruled surface takes the rails'
+   homogeneous control points, so two lines stored with different weights
+   (a line taken off a rational surface carries that surface's weight
+   there, 0.99998828 on an extended cylinder's end) made a wall rational
+   across, its parameter not linear there. Its plane (CopyAndAddAnalytics,
+   parameterized linearly) then put the face's trims 5.9e-6 off its edges,
+   past a 5e-6 tolerance.
 ***********************************************************************/
 SmStatus SmOffsetGeometryCreation::CreateStepWall
   (const SmContext & crContext,            // in : context for new object construction
@@ -2679,6 +2689,22 @@ SmStatus SmOffsetGeometryCreation::CreateStepWall
   SmObjDelete sClean2(pRail2);
   NER(pRail1);
   NER(pRail2);
+  for (SmBSplineCurve * pRail : { pRail1, pRail2 })
+    {
+      if (!pRail->IsRational())
+        { continue; }
+      SmBoolean bEqual = TRUE;
+      SmPoint3d sCP;
+      double    dFirst = 0.0, dW = 0.0;
+      SER(pRail->GetControlPoint(SM_CP_EUCLIDIAN_RATIONAL, 0, sCP, dFirst));
+      for (ULONG kk = 1; kk < pRail->GetNumberControlPoints() && bEqual; kk++)
+        {
+          SER(pRail->GetControlPoint(SM_CP_EUCLIDIAN_RATIONAL, kk, sCP, dW));
+          bEqual = (smos_Fabs(dW - dFirst) <= SM_EFF_ZERO * smos_Fabs(dFirst));
+        }
+      if (bEqual)
+        { SER(pRail->MakeNonRational()); }
+    }
 
   // The second rail runs the way the first does when its points at a quarter, half and three
   // quarters of the way along lie nearer the first's than the reversed ones do. Interior points,
