@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <SmOffsetExecutive.h>
+#include <SmCone.h>
 #include <SmSurfaceCache.h>
 #include <SmCopyBrepMap.h>
 #include <SmMerge.h>
@@ -2514,6 +2515,48 @@ SmStatus SmOffsetExecutive::RemoveExcessFaces(SmBrep * pResult)
 } // end RemoveExcessFaces
 
 /*******************************************************************//**
+PURPOSE: A cone (or cylinder) extended by dDist along its rulings and around
+   its axis, as itself: each direction's end spans carried on (SM_CT_CINFINITY).
+
+NOTES: SolidCraft change. Around the axis it goes no farther than half the
+   turn the cone leaves open on each side, so it never laps itself; a closed
+   cone is extended along its rulings only. The result is an SmBSplineSurface
+   with the cone's parameterization over the cone's domain.
+***********************************************************************/
+static SmStatus sm_ExtendConeAsItself
+ (const SmContext & crContext,   // in : context for new object construction
+  SmCone          & crCone,      // in : cone to extend
+  double            dDist,       // in : distance to extend by
+  SmSurface      *& rpExtended)  // out: the extended surface
+{
+  rpExtended = NULL;
+  const SmSurfParamType eAround = crCone.GetSwapUV() ? SM_SP_V : SM_SP_U;
+  const SmSurfParamType eAlong  = crCone.GetSwapUV() ? SM_SP_U : SM_SP_V;
+
+  SmSurface * pAlong = NULL;
+  SER(crCone.CreateExtendedSurface(crContext, eAlong, dDist, SM_CT_CINFINITY, pAlong));
+  NER(pAlong);
+  SmObjDelete sCleanAlong(pAlong);
+
+  // around: half the open turn on each side, in arc length on the smaller end circle
+  const double dSweepRad = crCone.GetSTEPUVDomain().GetUInterval().GetLength() * SM_PI / 180.0;
+  const double dRadius   = smos_Min(crCone.GetBotRadius(), crCone.GetTopRadius());
+  const double dOpen     = 2.0 * SM_PI - dSweepRad;
+  const double dAround   = smos_Min(dDist, 0.5 * 0.5 * dOpen * dRadius);
+  SmBSplineSurface * pAlongBS = SM_CAST_PTR(SmBSplineSurface, pAlong);
+  if (pAlongBS == NULL || dOpen <= 0.0 || dAround <= SM_EFF_ZERO_SQRT * (1.0 + dRadius))
+    {
+      sCleanAlong.Clear();
+      rpExtended = pAlong;
+      return SM_SUCCESS;
+    }
+  SER(pAlongBS->CreateExtendedSurface(crContext, eAround, dAround, SM_CT_CINFINITY, rpExtended));
+  NER(rpExtended);
+  return SM_SUCCESS;
+
+} // end sm_ExtendConeAsItself
+
+/*******************************************************************//**
 PURPOSE: Get (with creation if necessary) the extended surface of this face.
 
 NOTES: 
@@ -2554,11 +2597,24 @@ SmStatus SmOffsetExecutive::GetCreateExtendedSurface
   if (pOrigSurf != NULL)
     {
       SmSurface * pNewExtSurf = NULL ;
-      // create the ExtendedSurface
-      SER(pOrigSurf->CreateExtendedSurface(m_crContext,
-                                           dDistanceToExtend,
-                                           SM_CT_G1R,
-                                           pNewExtSurf));
+      // SolidCraft change: a cone or cylinder is extended as itself: its rational arcs and
+      // straight rulings carried on (SM_CT_CINFINITY continues each end span's polynomial, which
+      // stays on the circle), around by no more than half the turn it leaves open each side, so
+      // the extension never laps itself. A tangent extension (SM_CT_G1R) leaves the surface: a
+      // face that crosses a hair into it (a shell's rim) took a surface off the cylinder, and
+      // made back into one (SmMerge, CopyAndAddAnalytics) a cylinder 3e-10 off its radius by an
+      // amount that depends on the platform's rounding.
+      SmCone * pCone = SM_CAST_PTR(SmCone, pOrigSurf);
+      if (pCone != NULL)
+        { SER(sm_ExtendConeAsItself(m_crContext, *pCone, dDistanceToExtend, pNewExtSurf)); }
+      else
+        {
+          // create the ExtendedSurface
+          SER(pOrigSurf->CreateExtendedSurface(m_crContext,
+                                               dDistanceToExtend,
+                                               SM_CT_G1R,
+                                               pNewExtSurf));
+        }
       NER(pNewExtSurf);
 
       // set output
