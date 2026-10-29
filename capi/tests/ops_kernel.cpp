@@ -35,6 +35,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <functional>
@@ -1654,6 +1655,69 @@ int main()
         {
             smlib_brep_free(x);
         }
+    }
+
+    // A plate perforated by k x k r 2 holes on a 20 mm pitch, the holes united in balanced rounds
+    // and cut from the plate in 2D (SolidCraft's perforated sheet, a thousand holes). Boolean2D
+    // grows every face's plane to cover the whole sheet, so the coincident-surface check passed
+    // for every pair of faces and each pair classified its edges on the other face, and each
+    // hole imprinted in the plate classified every hole imprinted before it: time in n^2 (a
+    // thousand holes over 20 minutes in SolidCraft, 256 here 14 times as long as 64). Four times
+    // the holes must take well under sixteen times as long, and the plate keeps its exact area.
+    {
+        const double radius = 2.0, pitch = 20.0;
+        auto plate_seconds = [&](int k) -> double {
+            const auto t0 = std::chrono::steady_clock::now();
+            std::vector<smlib_brep *> holes;
+            for (int i = 0; i < k; i++)
+            {
+                for (int j = 0; j < k; j++)
+                {
+                    const int64_t kind = SMLIB_CURVE_ARC;
+                    const double arc[12] = {pitch * (i + 1), pitch * (j + 1), 0, 0, 0, 1, 1, 0, 0, radius, 0, 2 * PI};
+                    smlib_brep *d = nullptr;
+                    CHECK(smlib_planar_faces(&kind, 1, arc, 12, &d) == SMLIB_OK);
+                    holes.push_back(d);
+                }
+            }
+            while (holes.size() > 1)
+            {
+                std::vector<smlib_brep *> next;
+                for (size_t h = 0; h + 1 < holes.size(); h += 2)
+                {
+                    smlib_brep *u = nullptr;
+                    CHECK(smlib_boolean2d(holes[h], holes[h + 1], SMLIB_BOOLEAN_UNION, &u) == SMLIB_OK);
+                    smlib_brep_free(holes[h]);
+                    smlib_brep_free(holes[h + 1]);
+                    next.push_back(u);
+                }
+                if (holes.size() % 2 == 1)
+                {
+                    next.push_back(holes.back());
+                }
+                holes = next;
+            }
+            const double w = pitch * (k + 1);
+            const int64_t kinds[4] = {SMLIB_CURVE_LINE, SMLIB_CURVE_LINE, SMLIB_CURVE_LINE, SMLIB_CURVE_LINE};
+            const double sides[24] = {0, 0, 0, w, 0, 0, w, 0, 0, w, w, 0, w, w, 0, 0, w, 0, 0, w, 0, 0, 0, 0};
+            smlib_brep *plate = nullptr, *cut = nullptr;
+            CHECK(smlib_planar_faces(kinds, 4, sides, 24, &plate) == SMLIB_OK);
+            CHECK(holes.size() == 1 && holes[0] != nullptr && holes[0]->p->GetNumFaces() == static_cast<ULONG>(k * k));
+            CHECK(plate != nullptr && smlib_boolean2d(plate, holes[0], SMLIB_BOOLEAN_SUBTRACT, &cut) == SMLIB_OK);
+            const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            double area = 0.0;
+            CHECK(cut != nullptr && smlib_brep_area(cut, 1e-9, &area) == SMLIB_OK);
+            const double exact = w * w - k * k * PI * radius * radius;
+            std::printf("plate with %d holes in 2D: %.3f s, area %.6f, exact %.6f\n", k * k, seconds, area, exact);
+            CHECK(near(area, exact, 1e-7));
+            for (smlib_brep *x : {holes[0], plate, cut})
+            {
+                smlib_brep_free(x);
+            }
+            return seconds;
+        };
+        const double t64 = plate_seconds(8), t256 = plate_seconds(16);
+        CHECK(t256 <= 8.0 * t64 + 0.1);
     }
 
     smlib_brep *rod = cylinder(10, 10, -1, 4, 22);
