@@ -1877,6 +1877,36 @@ SmBoolean bDebugMe8 = FALSE;
   // squeeze above: the offset of an edge along a collapsed face's end runs from a corner back to
   // it and is no gap.
   SER(CloseLoopGaps());
+
+  // SolidCraft change: a vertex where one face closes on itself to a point (a cone's apex, the tip
+  // of a drilled hole: the seam is its only edge) has no edges whose offsets could meet there, and
+  // its face's offset ends short of the point, on the circle the point's normals sweep out; the
+  // offset was left open there and the shell refused (not a closed solid). The point's offset
+  // is the sphere about it through that circle, as the unextended offset builds it
+  // (BuildOffsetOfVertex: a strut vertex with one arc to blend).
+  {
+    SmTArray<SmVertex*> sVertices;
+    m_pOriginalBrep->GetVertices(sVertices);
+    for (ULONG ii=0; ii<sVertices.GetSize(); ii++)
+      {
+        SmTArray<SmEdge*> sVEdges;
+        sVertices[ii]->GetEdges(sVEdges);
+        if (sVEdges.GetSize() != 1)
+          { continue; }
+        SmTArray<SmCurve*>     s3DCurves;
+        SmTArray<SmOrientType> sOrients;
+        SmSurface *pNewSurface = NULL;
+        SER(BuildOffsetOfVertex(sVertices[ii], s3DCurves, sOrients, pNewSurface));
+        if (pNewSurface == NULL)
+          { continue; }
+        // The cap is the sphere's zone bounded by the circle (VertexOffset: the arc from the
+        // circle to the point's offset along the axis, turned about it): a face of its whole
+        // surface, joined to the offset face along the circle by the merge.
+        SmFace *pNewFace = NULL;
+        SER(m_pOffsetBrep->CreateFaceFromSurface(pNewSurface, pNewSurface->GetNaturalUVDomain(), pNewFace));
+        SER( m_vVToF.RelatePair( sVertices[ii], pNewFace ) );
+      }
+  }
   if (m_eOffsetOperation == SM_OO_LOCAL_OPERATION)
     { SER(SplitEdgesAtStepCorners()); }
 
