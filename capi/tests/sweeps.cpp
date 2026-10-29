@@ -498,6 +498,31 @@ int main()
         expect(name, smlib_revolve(horn.kinds.data(), horn.nk(), horn.reals.data(), horn.nr(), O, Z, 2 * PI * turn, 1, &b), &b,
                2 * PI * turn * (14.0 + 56.0 / (3.0 * PI)) * PI * 98.0, 1e-6);
     }
+    // A barrel: a closed profile on the axis whose outer side is an arc of radius 24 centred 10
+    // on the far side of the axis (the whole circle turned would be a spindle torus; the arc is
+    // its inner, lemon zone), from z 0 to 26.8, turned half and a whole turn (SolidCraft shell_barrel,
+    // oracle 04-revolve-vase). Volume: pi * integral over z of (c + sqrt(r^2 - (z - h)^2))^2,
+    // c = -10, r = 24, h = 13.4.
+    {
+        const double r = 24.0, c = -10.0, h = 13.4;
+        const double a = std::asin(h / r);
+        const double rim = c + r * std::cos(a);
+        auto integral = [&](double z)
+        {
+            double u = z - h;
+            return PI * ((c * c + r * r) * u - u * u * u / 3.0 + c * (u * std::sqrt(r * r - u * u) + r * r * std::asin(u / r)));
+        };
+        List barrel;
+        barrel.line(0, 0, 0, rim, 0, 0).arc(c, 0, h, 0, -1, 0, 1, 0, 0, r, -a, a).line(rim, 0, 2 * h, 0, 0, 2 * h).line(0, 0, 2 * h, 0, 0, 0);
+        for (double turn : {0.5, 1.0})
+        {
+            char name[64];
+            std::snprintf(name, sizeof name, "revolve barrel %.2f turn", turn);
+            b = nullptr;
+            expect(name, smlib_revolve(barrel.kinds.data(), barrel.nk(), barrel.reals.data(), barrel.nr(), O, Z, 2 * PI * turn, 1, &b), &b,
+                   turn * (integral(2 * h) - integral(0)), 1e-6);
+        }
+    }
     // An open chain of two curves (a line out from r 6 to 8, then up 2) turned part way into a
     // sheet (cap 0): the two curves share their meeting vertex, so the sweep gives two faces
     // joined along one edge (SolidCraft rig booleans/4879). Area: turn * (8^2 - 6^2) / 2 for the

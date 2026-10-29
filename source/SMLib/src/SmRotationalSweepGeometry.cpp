@@ -1081,7 +1081,10 @@ PURPOSE: The analytic surface a curve sweeps turning dAngleDeg about the axis th
                                       the caller),
       an arc centred on the axis    - an SmSphere,
       an arc in a plane through the
-      axis, its centre off the axis - an SmTorus.
+      axis, its centre off the axis
+      on the arc's side of it       - an SmTorus (an arc with its centre across the axis, the
+                                      lemon zone of a spindle torus, is a B-spline surface of
+                                      revolution).
     Each surface's frame has Z along the axis and X from the axis into the curve's half-plane,
     so the sweep runs from angle 0 to dAngleDeg counter-clockwise about Z, as the topology
     sweep turns; its other parameter is bounded to the curve's extent (height along the axis
@@ -1195,6 +1198,15 @@ SmStatus SmRotationalSweepGeometry::AnalyticSurface
     }
   // A torus: the generating circle about origin + major X, its angle from X toward Z.
   SmVector3d sTX = (1.0 / dMajor) * sCenterOff;
+  // An arc on the far side of the axis from its centre (a barrel's side, the centre across the
+  // axis) sweeps the inner, lemon zone of a spindle torus: every point of it lies at a negative
+  // distance R + r cos(v) along the meridian's X. SmTorus describes the meridian on the side of
+  // X (its polar conversion takes the sweep's iso circles to start at angle 0 there), and a
+  // whole turn of the lemon fails to build there (SM_ERR from RebuildPolarConverter). It is
+  // swept as the exact rational surface of revolution of the arc, as every curve was upstream.
+  // A profile never crosses the axis, so the arc's middle says the side of all of it.
+  if (sTX.Dot(sX) < 0.0)
+    { return SM_SUCCESS; }
   SmPoint3d  sOrigin = crBasePt + axial(sCenter) * crAxis;
   auto tube = [&](const SmPoint3d & p)
     { SmVector3d d(p - sCenter); return SM_RAD2DEG(atan2(d.Dot(crAxis), d.Dot(sTX))); };
