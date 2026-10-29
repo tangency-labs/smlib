@@ -23,6 +23,7 @@
 #include <SmOffsetGeometryCreation.h>
 #include <SmOffsetSurface.h>
 #include <SmPlane.h>
+#include <SmRegion.h>
 #include <SmAxis2Placement.h>
 #include <SmSolutionArray.h>
 #include <SmSphere.h>
@@ -4173,6 +4174,38 @@ int main()
     concave_corner_setback();
     corner_setback_eased();
     shelled_tapered_box_rounds();
+
+    // SolidCraft surface.offset of a ball's one face: the face taken off as a sheet is a closed
+    // shell whose regions are all voids, which smlib_offset_sheet refused as a solid
+    // (IsManifoldSolid). Offset 2 out it is the sphere of radius 22, area 4 pi 22^2. (The ball
+    // itself offsets too: see the sphere's one face above.)
+    {
+        const double c[3] = {0, 0, 0};
+        smlib_brep *ball = nullptr, *sheet = nullptr, *moved = nullptr;
+        CHECK(smlib_make_sphere(c, 20.0, &ball) == SMLIB_OK && ball != nullptr);
+        CHECK(ball != nullptr && smlib_brep_copy(ball, &sheet) == SMLIB_OK && sheet != nullptr);
+        if (sheet != nullptr)
+        {
+            SmTArray<SmRegion *> regions;
+            sheet->p->GetRegions(regions);
+            for (ULONG i = 0; i < regions.GetSize(); ++i)
+            {
+                regions[i]->SetIsVoid(TRUE);
+            }
+        }
+        CHECK(sheet != nullptr && smlib_offset_sheet(sheet, 2.0, &moved) == SMLIB_OK && moved != nullptr);
+        if (moved != nullptr)
+        {
+            double area = 0.0;
+            CHECK(smlib_brep_area(moved, 1e-8, &area) == SMLIB_OK);
+            std::printf("closed sheet of a ball offset 2: area %.9f, expected %.9f\n", area, 4.0 * PI * 22.0 * 22.0);
+            CHECK(near(area, 4.0 * PI * 22.0 * 22.0, 1e-7));
+        }
+        for (smlib_brep *x : {ball, sheet, moved})
+        {
+            smlib_brep_free(x);
+        }
+    }
 
     if (failures != 0)
     {
