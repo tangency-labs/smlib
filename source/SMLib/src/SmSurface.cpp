@@ -8039,6 +8039,28 @@ SmBoolean bDebugMe = FALSE;
                               ? *pOtherDomain
                               : pOther->GetNaturalUVDomain();
 
+  // A plane is unbounded and its STEP parameterization affine, so it can grow to cover the other
+  // surface however far that lies from this face (two holes 1.5 m apart on a 3 m sheet, each
+  // face a few millimetres wide). GetMaxAnalyticDomain's fixed reach of 100 widths is for
+  // B-splines, whose extension degrades with distance; for a plane, grow the search domain to
+  // the orthogonal projection of the other surface's bounding box, which holds every point the
+  // checks below drop.
+  if ( this->GetType() == SmPlane_TYPE )
+    {
+      const SmPlane * pPlane = static_cast<const SmPlane *>( this );
+      SmExtent3d sOtherBox;
+      SER( pOther->CalculateTightBoundingBox( sOtherDomain, &sOtherBox ) );
+      sOtherBox.ExpandAbsolute( dTol );
+      SmTArray<SmPoint3d> sBoxCorners;
+      sOtherBox.GetCorners( sBoxCorners );
+      for ( ULONG cc=0; cc<sBoxCorners.GetSize(); cc++ )
+        {
+          SmPoint2d sCornerUV;
+          SER( pPlane->ProjectPointToUVDomain( sBoxCorners[cc], sCornerUV ) );
+          sBigDomain.AddPoint2d( sCornerUV );
+        }
+    }
+
   SmPoint2d sUVThis, sUVOther;
   SmPoint3d sPt, sPt2;
   double dDist, dMaxDist = -1.0;
