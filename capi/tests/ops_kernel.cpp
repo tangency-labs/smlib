@@ -1274,6 +1274,39 @@ void shell_thicker_than_a_step()
     }
 }
 
+// A pin r 10, 20 tall, its side drafted 5 degrees about its base circle (neutral z = 0, pull +z):
+// the frustum from r 10 to 10 - 20 tan 5. A 30 x 30 x 10 block's through hole r 5 drafted the
+// same way widens to 5 + 10 tan 5 at the top. (SolidCraft draft_on_a_cylinder_side_makes_a_frustum,
+// draft_takes_a_cylinders_side_by_name.)
+void drafted_cylinders_are_cones()
+{
+    const double neutral[3] = {0, 0, 0}, up[3] = {0, 0, 1}, a = 5.0 * PI / 180.0;
+    auto frustum = [](double h, double r0, double r1) { return PI * h / 3.0 * (r0 * r0 + r0 * r1 + r1 * r1); };
+    smlib_brep *pin = cylinder(0, 0, 0, 10, 20), *r = nullptr;
+    const double side[3] = {0, 10, 10};
+    CHECK(smlib_draft(pin, side, 1, 0.1, neutral, up, up, a, &r, nullptr) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        CHECK(sound(r));
+        CHECK(near(volume_of(r), frustum(20, 10, 10 - 20 * std::tan(a)), 1e-7));
+    }
+    smlib_brep_free(r);
+    r = nullptr;
+    smlib_brep *b = box(-15, -15, 0, 30, 30, 10), *c = cylinder(0, 0, -1, 5, 12), *holed = nullptr;
+    CHECK(smlib_boolean(b, c, SMLIB_BOOLEAN_SUBTRACT, &holed) == SMLIB_OK);
+    const double wall[3] = {0, 5, 5};
+    CHECK(holed != nullptr && smlib_draft(holed, wall, 1, 0.1, neutral, up, up, a, &r, nullptr) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        CHECK(sound(r));
+        CHECK(near(volume_of(r), 9000.0 - frustum(10, 5, 5 + 10 * std::tan(a)), 1e-7));
+    }
+    for (smlib_brep *x : {pin, b, c, holed, r})
+    {
+        smlib_brep_free(x);
+    }
+}
+
 // The analytic STEPInversion() answers: SM_SUCCESS on the surface, SM_ERR_OUTSIDE_OF_DOMAIN
 // outside a cylinder's sweep, SM_ERR_NOT_WITHIN_TOLERANCE off the surface (a sphere's with the
 // dropped point's parameters), each with its location; SMLib's callers pass any other status on.
@@ -3599,7 +3632,8 @@ int main()
 
     // Draft: the cube's side x = 20 tilted 5 degrees about its line on z = 0, leaning in going
     // up (+z): a wedge of 20 x 20 tan(5 deg) / 2 x 20 comes off; -5 degrees adds it. The top
-    // isn't parallel to the pull and the rod's wall isn't flat: not supported.
+    // isn't parallel to the pull: not supported. The rod's wall (r 4, z -1 to 21) becomes the
+    // frustum from r 4 + tan 5 at its foot to 4 - 21 tan 5 at its top.
     {
         const double side[3] = {20, 10, 10};
         const double origin[3] = {0, 0, 0};
@@ -3621,7 +3655,13 @@ int main()
         const double top[3] = {10, 10, 20};
         CHECK(smlib_draft(cube, top, 1, 0.1, origin, up, up, 5.0 * deg, &r, nullptr) == SMLIB_ERR_UNSUPPORTED);
         const double wall[3] = {14, 10, 5};
-        CHECK(smlib_draft(rod, wall, 1, 0.1, origin, up, up, 5.0 * deg, &r, nullptr) == SMLIB_ERR_UNSUPPORTED);
+        CHECK(smlib_draft(rod, wall, 1, 0.1, origin, up, up, 5.0 * deg, &r, nullptr) == SMLIB_OK);
+        if (r != nullptr)
+        {
+            const double r0 = 4.0 + std::tan(5.0 * deg), r1 = 4.0 - 21.0 * std::tan(5.0 * deg);
+            CHECK(std::fabs(volume_of(r) - 3.14159265358979323846 * 22.0 / 3.0 * (r0 * r0 + r0 * r1 + r1 * r1)) < 1e-6);
+            done(r);
+        }
         const double flat[3] = {1, 0, 0};
         CHECK(smlib_draft(cube, side, 1, 0.1, origin, flat, up, 5.0 * deg, &r, nullptr) == SMLIB_ERR_ARG);
         CHECK(smlib_draft(cube, side, 1, 0.1, origin, up, up, 0.0, &r, nullptr) == SMLIB_ERR_ARG);
@@ -4311,6 +4351,7 @@ int main()
     shelled_rounded_box_rim();
     shelled_box_with_a_drilled_hole();
     shell_thicker_than_a_step();
+    drafted_cylinders_are_cones();
     corner_setback();
     corner_setback_open();
     setback_sections_are_exact_arcs();
