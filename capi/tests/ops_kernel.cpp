@@ -1873,6 +1873,69 @@ int main()
         }
     }
 
+    // SolidCraft issue 851's part: a 41 1/6 x 21 plate and the corner a circle of radius 21
+    // leaves, 10 high, the arc wall running out into the back face in a knife edge. Its top front
+    // edge rounded R2, then the arc wall's top edge R2: that round ends on the front round where
+    // both are tangent to the top face, a singular point of their intersection with four
+    // directions out of it. The start direction kept the first of them, not the one pointing
+    // into both surfaces nearest the given direction, unless it was found later in the list: on
+    // the part read back through the flat arrays the first one ran along the top face square to
+    // the round's end, the end came out a point, and the round failed (1001). Natively the
+    // first direction happened to be the right one reversed. Both bodies now give the round, the
+    // same.
+    {
+        const double tip = 62.0 + 1.0 / 6.0, wall = 21.0, x0 = tip - wall;
+        auto read_back = [](const smlib_brep *b) {
+            smlib_flat *f = nullptr;
+            CHECK(smlib_brep_export(b, &f) == SMLIB_OK);
+            smlib_brep *out = nullptr;
+            CHECK(smlib_brep_import(f, &out) == SMLIB_OK);
+            smlib_flat_free(f);
+            return out;
+        };
+        smlib_brep *plate = box(0, -wall, 0, x0, wall, 10);
+        smlib_brep *corner = box(x0, -wall, 0, wall, wall, 10);
+        const double axis[3] = {tip, -wall, 0};
+        smlib_brep *disc = nullptr;
+        CHECK(smlib_make_cylinder(axis, wall, 10, &disc) == SMLIB_OK);
+        smlib_brep *cut = nullptr;
+        CHECK(smlib_boolean(corner, disc, SMLIB_BOOLEAN_SUBTRACT, &cut) == SMLIB_OK);
+        smlib_brep *part = nullptr;
+        CHECK(cut != nullptr && smlib_boolean(plate, cut, SMLIB_BOOLEAN_UNION, &part) == SMLIB_OK);
+        // SolidCraft's pick tolerance for the part, and the points it picks the edges by
+        const double tol = 3.3197702709152845;
+        const double front[3] = {20.583333333333332, -21, 10};
+        const double arc[3] = {48.045114044109852, -5.4635486396119797, 10};
+        const double size = 2.0;
+        double volumes[2] = {0.0, 0.0};
+        for (int read = 0; read < 2 && part != nullptr; ++read)
+        {
+            smlib_brep *rounded = nullptr;
+            CHECK(smlib_blend(part, SMLIB_BLEND_ROUND, front, &size, 1, tol, &rounded, nullptr) == SMLIB_OK);
+            smlib_brep *start = rounded != nullptr && read == 1 ? read_back(rounded) : rounded;
+            if (start != nullptr && smlib_blend(start, SMLIB_BLEND_ROUND, arc, &size, 1, tol, &r, nullptr) == SMLIB_OK)
+            {
+                volumes[read] = volume_of(r);
+                CHECK(volumes[read] < volume_of(start));
+                done(r);
+            }
+            else
+            {
+                CHECK(!"the arc wall's top edge rounded R2 after the top front edge");
+            }
+            if (start != rounded)
+            {
+                smlib_brep_free(start);
+            }
+            smlib_brep_free(rounded);
+        }
+        CHECK(near(volumes[1], volumes[0], 1e-7));
+        for (smlib_brep *b : {part, cut, disc, corner, plate})
+        {
+            smlib_brep_free(b);
+        }
+    }
+
     // tangency-labs/solidcore#453: a 20 cube with a hole r5 along y whose wall touches the
     // bottom face along one line, its back rim chamfered 3. With the rim's tangent chain the
     // bottom edge came too, four filleted edges met at the touching point among five, a corner
