@@ -3419,13 +3419,26 @@ static ULONG lDebugCount = 0 ;
               return SM_SUCCESS;  // Intersections do not exist
             }
 
-          // when plane is tangent to cylinder wall: within tolerance of it along a line.
-          // SolidCraft change: the plane was taken as tangent only when the two crossing lines
-          // were within dTol of each other, so a plane turned 1e-13 rad off a wall it touches
-          // (a flange plate under a box with rounded corners) cut the cylinder 1e-11 deep in two
-          // lines 5e-6 apart, a sliver of face between them; the plane lies within dTol of the
-          // cylinder over that whole band, which is a tangency to tolerance.
-          if( smos_Fabs(dDistPlaneToCenterBot) > dBotRadius-dTol )
+          // when plane is tangent to cylinder wall
+          //  or close enough that two solutions are too close together
+          //  or (SolidCraft change) within the zone tolerance of a face either surface bounds.
+          // dTol is the approximation tolerance: one line stands for the two crossing lines only
+          // when it lies within dTol of both. A plane sunk a hair into a bare cylinder still cuts
+          // it in two lines sqrt(2 R depth) apart (sunk 5e-7 into a unit cylinder, 2e-3 apart),
+          // and one line there would be off the intersection by a thousand times dTol. On faces,
+          // points within the faces' zone tolerance are one point: a plane turned 1e-9 rad off
+          // the wall it touches (a flange plate under a box with rounded corners, the plate's
+          // planes coincident with the box's to that tolerance) dips 4e-8 into the corner
+          // cylinder, and its two crossing lines 1e-3 apart left a sliver face or an unsound
+          // body; the band between them is within the zone of both faces, a tangency.
+          const SmFace *pConeFace  = GetFace();
+          const SmFace *pPlaneFace = crPlane.GetFace();
+          double dZoneTol = smos_Max(pConeFace  ? (double)pConeFace->GetTolerance()  : 0.0,
+                                     pPlaneFace ? (double)pPlaneFace->GetTolerance() : 0.0);
+          if(   smos_Fabs(dDistPlaneToCenterBot) >= dBotRadius
+             || (   smos_Fabs(dDistPlaneToCenterBot) > dBotRadius-dTol
+                 && (dBotRadius*dBotRadius - dDistPlaneToCenterBot*dDistPlaneToCenterBot) < dTol*dTol)
+             || smos_Fabs(dDistPlaneToCenterBot) > dBotRadius-dZoneTol)
             {
               // should have one intersection line, if it exists
 
