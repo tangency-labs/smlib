@@ -3820,7 +3820,11 @@ SmBoolean bDebugMe = FALSE ;
       // at U = sUniqueKnots[ii]
       // one additional basis function becomes zero for each multiplicity at sMults[ii]
       NL_INDEX lRowCntU  = iDegreeU - (sMultsU[ii] - 1) ;
-      NL_INDEX lCPIndexU = lKntCntU - lRowCntU - 1 ;
+      // SolidCraft change: the first of those rows is the one whose basis function starts at
+      // the knot's last copy (upstream's index was one row on for each repeated copy: at the
+      // double knots of a circle it tested a corner row, not the row through the knot, and
+      // took a horn torus's corner rows on its axis for an internal pole).
+      NL_INDEX lCPIndexU = lKntCntU - 1 - iDegreeU ;
 
       // to get a pole - all the control points with non-zero basis funtions 
       //  for the U = PatchUMin boundary within one patch must be coincident
@@ -3886,7 +3890,8 @@ SmBoolean bDebugMe = FALSE ;
       // at V = sUniqueKnotsV[ii]
       // one additional basis function becomes zero for each multiplicity at sMultsV[ii]
       NL_INDEX lRowCntV  = iDegreeV - (sMultsV[ii] - 1) ;
-      NL_INDEX lCPIndexV = lKntCntV - lRowCntV - 1 ;
+      // SolidCraft change: as for U above.
+      NL_INDEX lCPIndexV = lKntCntV - 1 - iDegreeV ;
 
       // to get a pole - all the control points with non-zero basis funtions 
       //  for the V = PatchVMin boundary within one patch must be coincident

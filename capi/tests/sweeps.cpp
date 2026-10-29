@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 static int failures = 0;
@@ -528,7 +529,8 @@ int main()
     // centre. Volume (Pappus): the disc's area times the path of its centre, 25 pi * 2 pi 5 * turn.
     // The sweep once read a base curve the face creator had let go and crashed; then the torus's
     // minor circle starting on the axis got no direction, the face had no trims and the sweep
-    // reported no solid.
+    // reported no solid; then the check took the corner rows of its control net, on the axis
+    // next to the boundary pole, for an internal pole.
     {
         List touching = circle(0, 0, 20, 0, 0, 1, 1, 0, 0, 5);
         const double hinge[3] = {5, 0, 20};
@@ -546,6 +548,7 @@ int main()
                 int64_t len = 0, bad = -1;
                 char buf[4096] = {0};
                 CHECK(smlib_brep_check(b, 2, buf, sizeof buf, &len, &bad) == SMLIB_OK);
+                CHECK(std::strstr(buf, "Internal Pole") == nullptr);
                 std::printf("%-34s volume %.6f check %s\n", "revolve horn torus", got, bad == 0 ? "valid" : buf);
                 smlib_brep_free(b);
                 b = nullptr;
