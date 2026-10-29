@@ -523,22 +523,33 @@ int main()
                    turn * (integral(2 * h) - integral(0)), 1e-6);
         }
     }
-    // A disc touching the axis at its seam vertex (radius 5, centred 5 from the axis), a quarter
-    // turn: the swept vertex is a point and the face creator lets the base curve go; the sweep
-    // read that curve afterwards and crashed (SIGSEGV in SmTopologySweep::SweepEdgeHigh). It
-    // reports that it builds no solid. The horn torus itself is not built yet.
+    // A disc touching the axis at its seam vertex (radius 5, centred 5 from the axis) turned a
+    // quarter, a half and a whole turn: a horn torus, its minor circles all starting at its
+    // centre. Volume (Pappus): the disc's area times the path of its centre, 25 pi * 2 pi 5 * turn.
+    // The sweep once read a base curve the face creator had let go and crashed; then the torus's
+    // minor circle starting on the axis got no direction, the face had no trims and the sweep
+    // reported no solid.
     {
         List touching = circle(0, 0, 20, 0, 0, 1, 1, 0, 0, 5);
         const double hinge[3] = {5, 0, 20};
         const double Y1[3] = {0, 1, 0};
-        b = nullptr;
-        int32_t st = smlib_revolve(touching.kinds.data(), touching.nk(), touching.reals.data(), touching.nr(), hinge, Y1, PI / 2, 1, &b);
-        std::printf("%-34s status %d\n", "revolve disc touching the axis", static_cast<int>(st));
-        CHECK(st != SMLIB_OK || b != nullptr);
-        if (b != nullptr)
+        for (double turn : {0.25, 0.5, 1.0})
         {
-            smlib_brep_free(b);
             b = nullptr;
+            int32_t st = smlib_revolve(touching.kinds.data(), touching.nk(), touching.reals.data(), touching.nr(), hinge, Y1, 2 * PI * turn, 1, &b);
+            CHECK(st == SMLIB_OK && b != nullptr);
+            if (b != nullptr)
+            {
+                double got = 0.0;
+                CHECK(smlib_brep_volume(b, 1e-6, &got) == SMLIB_OK);
+                CHECK(std::fabs(got - 250.0 * PI * PI * turn) <= 1e-7 * 250.0 * PI * PI * turn);
+                int64_t len = 0, bad = -1;
+                char buf[4096] = {0};
+                CHECK(smlib_brep_check(b, 2, buf, sizeof buf, &len, &bad) == SMLIB_OK);
+                std::printf("%-34s volume %.6f check %s\n", "revolve horn torus", got, bad == 0 ? "valid" : buf);
+                smlib_brep_free(b);
+                b = nullptr;
+            }
         }
     }
     // An open chain of two curves (a line out from r 6 to 8, then up 2) turned part way into a

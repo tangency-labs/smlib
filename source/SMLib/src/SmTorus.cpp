@@ -886,7 +886,10 @@ SmStatus SmTorus::CreateIsoParametricCurve
           SmPoint3d sNurbMidPoint ;
           SER( pIsoCurve->EvaluatePoint(sNurbIvl.Evaluate(.5), sNurbMidPoint)  );
           SmVector3d sNurbMidVec = sNurbMidPoint - rTorusOrigin ;
-          sXAxis = sTorusZAxis * sNurbMinVec * sTorusZAxis ;
+          // SolidCraft change: the direction is the midpoint's (upstream took the start point's
+          // again, the one found on the axis): a horn torus's minor circle starting at the
+          // centre, where it touches the axis, got no direction and no analytic domain.
+          sXAxis = sTorusZAxis * (sNurbMidVec * sTorusZAxis) ;
           dLength = sXAxis.Length() ;
         }
       SM_ASSERT(sXAxis.Length() > SM_EFF_ZERO_SQRT) ;
