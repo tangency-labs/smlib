@@ -1206,6 +1206,51 @@ void shelled_rounded_box_rim()
     smlib_brep_free(b);
 }
 
+// A 60 x 40 x 15 box with a blind drilled hole (diameter 5, 8 deep from the top, its tip a 118
+// degree cone) at (30, 20), shelled 2 inward, open at the side y = 0 and then at the top
+// (SolidCraft robustness shell_after_a_drilled_hole). The cone's offset ends on the circle its
+// apex's normals sweep out (r 2 cos 59 deg); the apex itself, a vertex with only the seam, had no
+// offset and the cavity was open there, so the shell failed (1001). Its offset is the sphere of
+// radius 2 about the tip.
+void shelled_box_with_a_drilled_hole()
+{
+    const double tip = 2.5 / std::tan(59.0 * PI / 180.0);
+    std::vector<int64_t> kinds = {SMLIB_CURVE_LINE, SMLIB_CURVE_LINE, SMLIB_CURVE_LINE, SMLIB_CURVE_LINE};
+    std::vector<double> reals = {30, 20, 16, 32.5, 20, 16, 32.5, 20, 16, 32.5, 20, 7,
+                                 32.5, 20, 7, 30, 20, 7 - tip, 30, 20, 7 - tip, 30, 20, 16};
+    const double origin[3] = {30, 20, 0}, up[3] = {0, 0, 1};
+    smlib_brep *b = box(0, 0, 0, 60, 40, 15), *drill = nullptr, *holed = nullptr;
+    CHECK(smlib_revolve(kinds.data(), 4, reals.data(), static_cast<int64_t>(reals.size()), origin, up, 2 * PI, 1, &drill) == SMLIB_OK);
+    CHECK(drill != nullptr && smlib_boolean(b, drill, SMLIB_BOOLEAN_SUBTRACT, &holed) == SMLIB_OK);
+    if (holed != nullptr)
+    {
+        const double opens[2][3] = {{30, 0, 7.5}, {10, 10, 15}};
+        for (const double *open : opens)
+        {
+            smlib_brep *r = nullptr;
+            CHECK(smlib_shell(holed, open, 1, 0.1, -2.0, &r, nullptr) == SMLIB_OK);
+            CHECK(r != nullptr && sound(r));
+            // The tip's offset: the sphere of radius 2 about it.
+            int caps = 0;
+            if (r != nullptr)
+            {
+                SmTArray<SmFace *> faces;
+                r->p->GetFaces(faces);
+                for (ULONG i = 0; i < faces.GetSize(); i++)
+                {
+                    const SmSphere *sphere = SM_CAST_PTR(SmSphere, faces[i]->GetSurface());
+                    caps += sphere != nullptr && std::fabs(sphere->GetRadius() - 2.0) < 1e-9 ? 1 : 0;
+                }
+            }
+            CHECK(caps == 1);
+            smlib_brep_free(r);
+        }
+    }
+    smlib_brep_free(holed);
+    smlib_brep_free(drill);
+    smlib_brep_free(b);
+}
+
 // The analytic STEPInversion() answers: SM_SUCCESS on the surface, SM_ERR_OUTSIDE_OF_DOMAIN
 // outside a cylinder's sweep, SM_ERR_NOT_WITHIN_TOLERANCE off the surface (a sphere's with the
 // dropped point's parameters), each with its location; SMLib's callers pass any other status on.
@@ -4241,6 +4286,7 @@ int main()
     shelled_dome_rim();
     chamfered_hole_rim_is_a_cone();
     shelled_rounded_box_rim();
+    shelled_box_with_a_drilled_hole();
     corner_setback();
     corner_setback_open();
     setback_sections_are_exact_arcs();
