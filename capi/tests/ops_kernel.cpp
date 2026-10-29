@@ -1207,6 +1207,51 @@ void shelled_rounded_box_rim()
     smlib_brep_free(b);
 }
 
+// A 40 x 40 x 20 box with one upright edge rounded R5, as SolidCraft hands it over
+// (tests/data/rounded-corner-box.txt: the round an SmCylinder in one rational span), shelled 2
+// inward, open at its top. The round's offset is the cylinder R3 about the same axis, which the
+// shell extends round its axis as itself (SmOffsetExecutive::GetCreateExtendedSurface): the face
+// on that extension comes back an SmCone, R3 to 1e-12. Both sides extended in one call left a
+// single knot at the far end, which SmCone::IsNurbSurfaceCone does not take for a circle, and
+// the face stayed a surface of revolution.
+void shelled_single_round_stays_a_cylinder()
+{
+    auto read = [](const char *path)
+    {
+        smlib_flat *f = nullptr;
+        smlib_brep *b = nullptr;
+        CHECK(smlib_flat_read(path, &f) == SMLIB_OK && smlib_brep_import(f, &b) == SMLIB_OK);
+        smlib_flat_free(f);
+        return b;
+    };
+    smlib_brep *round = read(SMLIB_TEST_DATA "/rounded-corner-box.txt"), *shell = nullptr;
+    const double top[3] = {20, 20, 20};
+    CHECK(round != nullptr && smlib_shell(round, top, 1, 0.1, -2.0, &shell, nullptr) == SMLIB_OK);
+    if (shell != nullptr)
+    {
+        CHECK(sound(shell));
+        int inner = 0;
+        double radius = 0.0;
+        SmTArray<SmFace *> faces;
+        shell->p->GetFaces(faces);
+        for (ULONG i = 0; i < faces.GetSize(); i++)
+        {
+            const SmCone *c = SM_CAST_PTR(SmCone, faces[i]->GetSurface());
+            if (c != nullptr && std::fabs(c->GetBotRadius() - 3.0) < 1e-3)
+            {
+                inner++;
+                radius = c->GetBotRadius();
+            }
+        }
+        std::printf("shelled single round: %d inner round(s), radius 3 %+.3g\n", inner, radius - 3.0);
+        CHECK(inner == 1 && std::fabs(radius - 3.0) < 1e-12);
+    }
+    for (smlib_brep *b : {round, shell})
+    {
+        smlib_brep_free(b);
+    }
+}
+
 // A 60 x 40 x 15 box with a blind drilled hole (diameter 5, 8 deep from the top, its tip a 118
 // degree cone) at (30, 20), shelled 2 inward, open at the side y = 0 and then at the top
 // (SolidCraft robustness shell_after_a_drilled_hole). The cone's offset ends on the circle its
@@ -4665,6 +4710,7 @@ int main()
     shelled_dome_rim();
     chamfered_hole_rim_is_a_cone();
     shelled_rounded_box_rim();
+    shelled_single_round_stays_a_cylinder();
     shelled_box_with_a_drilled_hole();
     shell_thicker_than_a_step();
     drafted_cylinders_are_cones();

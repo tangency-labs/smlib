@@ -2552,6 +2552,15 @@ NOTES: SolidCraft change. Around the axis it goes no farther than half the
    turn the cone leaves open on each side, so it never laps itself; a closed
    cone is extended along its rulings only. The result is an SmBSplineSurface
    with the cone's parameterization over the cone's domain.
+
+   Around the axis each side is extended on its own, and each old end is
+   then a knot of multiplicity equal to the degree again: SMLib's own form
+   for a circle (SmCone::IsNurbSurfaceCone takes only a circle direction
+   with a triple knot at each end and double knots inside). Both sides in
+   one call extend the first side's extended span again, which no single
+   rational span reaches, and NLib leaves a single knot at the far end: a
+   face on that surface, shrunk to its trims, was no longer found to be a
+   cone (SmMerge, CopyAndAddAnalytics) and stayed a surface of revolution.
 ***********************************************************************/
 static SmStatus sm_ExtendConeAsItself
  (const SmContext & crContext,   // in : context for new object construction
@@ -2580,8 +2589,44 @@ static SmStatus sm_ExtendConeAsItself
       rpExtended = pAlong;
       return SM_SUCCESS;
     }
-  SER(pAlongBS->CreateExtendedSurface(crContext, eAround, dAround, SM_CT_CINFINITY, rpExtended));
-  NER(rpExtended);
+  // The knot at dAt in direction eDir of crSurf made of multiplicity equal to the degree.
+  auto sFullKnot = [](SmBSplineSurface & crSurf, SmSurfParamType eDir, double dAt) -> SmStatus
+    {
+      SmTArray<double> sKnots;
+      SmTArray<ULONG>  sMults;
+      SER(crSurf.GetKnots(eDir, sKnots, &sMults));
+      const SmExtent1d sIvl  = (eDir == SM_SP_U) ? crSurf.GetNaturalUVDomain().GetUInterval()
+                                                 : crSurf.GetNaturalUVDomain().GetVInterval();
+      const double     dSame = SM_EFF_ZERO * (1.0 + sIvl.GetLength());
+      ULONG lHave = 0;
+      for (ULONG kk = 0; kk < sKnots.GetSize(); kk++)
+        {
+          if (smos_Fabs(sKnots[kk] - dAt) <= dSame)
+            { lHave = sMults[kk]; }
+        }
+      const ULONG lDegree = crSurf.GetDegree(eDir);
+      if (lHave < lDegree)
+        { SER(crSurf.InsertOneKnot(dAt, lDegree - lHave, eDir)); }
+      return SM_SUCCESS;
+    };
+  const SmExtent1d sAround = (eAround == SM_SP_U) ? pAlongBS->GetNaturalUVDomain().GetUInterval()
+                                                  : pAlongBS->GetNaturalUVDomain().GetVInterval();
+  SmSurface * pMin = NULL;
+  SER(pAlongBS->CreateExtendedSurface(crContext, (eAround == SM_SP_U) ? SM_SP_UMIN : SM_SP_VMIN, dAround, SM_CT_CINFINITY, pMin));
+  NER(pMin);
+  SmObjDelete sCleanMin(pMin);
+  SmBSplineSurface * pMinBS = SM_CAST_PTR(SmBSplineSurface, pMin);
+  NER(pMinBS);
+  SER(sFullKnot(*pMinBS, eAround, sAround.GetMin()));
+  SmSurface * pBoth = NULL;
+  SER(pMinBS->CreateExtendedSurface(crContext, (eAround == SM_SP_U) ? SM_SP_UMAX : SM_SP_VMAX, dAround, SM_CT_CINFINITY, pBoth));
+  NER(pBoth);
+  SmObjDelete sCleanBoth(pBoth);
+  SmBSplineSurface * pBothBS = SM_CAST_PTR(SmBSplineSurface, pBoth);
+  NER(pBothBS);
+  SER(sFullKnot(*pBothBS, eAround, sAround.GetMax()));
+  sCleanBoth.Clear();
+  rpExtended = pBoth;
   return SM_SUCCESS;
 
 } // end sm_ExtendConeAsItself
