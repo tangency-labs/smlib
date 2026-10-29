@@ -386,6 +386,28 @@ void apart_boxes_union()
     drop(ops);
 }
 
+void draft_moves_the_neighbours_edges()
+{
+    // The cube's side x = 10 tilted 5 degrees about its line on z = 0, leaning in going up: the
+    // side tilts, and the top and the two faces beside it lose a wedge along their moved edges
+    // (each edge still tagged, the face's boundary its own edges: trimmed differently all the
+    // same). The bottom, where the hinge lies, and the opposite side are untouched.
+    smlib_brep *a = box(0, 0, 0, 10, 10, 10), *t = nullptr, *r = nullptr;
+    CHECK(smlib_history_tag(a, 0, &t) == SMLIB_OK);
+    const double side[3] = {10, 5, 5}, origin[3] = {0, 0, 0}, up[3] = {0, 0, 1};
+    CHECK(smlib_draft(t, side, 1, 0.1, origin, up, up, 5.0 * 3.14159265358979323846 / 180.0, &r, nullptr) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        History h = read(r);
+        CHECK(h.faces.size() == 6);
+        CHECK(h.count(SMLIB_CHANGE_KEPT) == 2);
+        CHECK(h.count(SMLIB_CHANGE_MODIFIED) == 4);
+        smlib_brep_free(r);
+    }
+    smlib_brep_free(a);
+    smlib_brep_free(t);
+}
+
 void retag_and_hostile_arguments()
 {
     smlib_brep *a = box(0, 0, 0, 1, 1, 1), *t = nullptr, *tt = nullptr;
@@ -426,6 +448,7 @@ int main()
     pocket();
     slot_splits_box();
     apart_boxes_union();
+    draft_moves_the_neighbours_edges();
     retag_and_hostile_arguments();
     if (g_failed != 0)
     {
