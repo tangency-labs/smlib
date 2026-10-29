@@ -156,6 +156,41 @@ SmEdge *side_edge(const SmSurface *surf, const SmExtent2d &dom, const Side &s, c
     return nearest_edge(edges, m, &e) <= on ? e : nullptr;
 }
 
+// How far the surface `ext` (the face's surface extended past side `s` of its box `dom`, on the
+// same parameters) runs past that side, measured across it: the length of the parameter line
+// through the side's middle from the side to `ext`'s own bound, by 16-point Gauss–Legendre
+// quadrature on 64 pieces. Negative when it can't be evaluated.
+double across(const SmSurface *ext, const SmExtent2d &dom, const Side &s)
+{
+    static const double X[8] = {0.0950125098376374, 0.2816035507792589, 0.4580167776572274, 0.6178762444026438,
+                                0.7554044083550030, 0.8656312023878318, 0.9445750230732326, 0.9894009349916499};
+    static const double W[8] = {0.1894506104550685, 0.1826034150449236, 0.1691565193950025, 0.1495959888165767,
+                                0.1246289712555339, 0.0951585116824928, 0.0622535239386479, 0.0271524594117541};
+    const SmExtent2d box = ext->GetNaturalUVDomain();
+    const SmPoint2d mid = on_side(dom, s, 0.5);
+    const double from = s.u ? mid.x : mid.y;
+    const double to = s.u ? (s.high ? box.GetMax().x : box.GetMin().x) : (s.high ? box.GetMax().y : box.GetMin().y);
+    constexpr int PIECES = 64;
+    const double h = (to - from) / PIECES;
+    double length = 0.0;
+    for (int k = 0; k < PIECES; ++k)
+    {
+        const double c = from + (k + 0.5) * h;
+        for (int i = 0; i < 16; ++i)
+        {
+            const double t = c + 0.5 * h * (i < 8 ? -X[i] : X[i - 8]);
+            const SmPoint2d uv = s.u ? SmPoint2d(t, mid.y) : SmPoint2d(mid.x, t);
+            SmVector3d p, du, dv;
+            if (!eval(ext, uv, p, &du, &dv))
+            {
+                return -1.0;
+            }
+            length += 0.5 * std::fabs(h) * W[i % 8] * (s.u ? du : dv).Length();
+        }
+    }
+    return length;
+}
+
 // `to` takes a copy of each attribute of `from` (as SMLib's copies pass them on).
 void copy_attributes(const SmAObject *from, SmAObject *to, const SmContext &ctx)
 {
@@ -250,10 +285,39 @@ extern "C" int32_t smlib_extend_sheet(const smlib_brep *sheet, const double *poi
                 return SMLIB_ERR_UNSUPPORTED;
             }
             SmContinuityType ct = mode == SMLIB_EXTEND_TANGENT ? SM_CT_G1 : mode == SMLIB_EXTEND_CURVATURE ? SM_CT_G1_G2 : SM_CT_CINFINITY;
+            // CreateExtendedSurface takes its distance as an estimate (a natural parabola falls 2.5%
+            // short): the distance asked of it is corrected until the extension measures
+            // `distance` across the side's middle, keeping the surface's parameters on the face.
             SmSurface *extended = nullptr;
-            int32_t s = status(static_cast<SmBSplineSurface *>(surf)->CreateExtendedSurface(ctx, grow->which, distance, ct, extended));
+            double ask = distance;
+            int32_t s = SMLIB_OK;
+            for (int round = 0; round < 12; ++round)
+            {
+                SmSurface *tried = nullptr;
+                s = status(static_cast<SmBSplineSurface *>(surf)->CreateExtendedSurface(ctx, grow->which, ask, ct, tried));
+                if (s != SMLIB_OK || tried == nullptr)
+                {
+                    delete tried;
+                    break;
+                }
+                delete extended;
+                extended = tried;
+                // The face's side stays where it was on the extended surface's parameters.
+                SmVector3d was, now;
+                const SmPoint2d mid = on_side(dom, *grow, 0.5);
+                if (!eval(surf, mid, was, nullptr, nullptr) || !eval(extended, mid, now, nullptr, nullptr) || (was - now).Length() > model_tol)
+                {
+                    break;
+                }
+                const double got = across(extended, dom, *grow);
+                if (!(got > 0.0) || std::fabs(got - distance) <= 1e-9 * distance)
+                {
+                    break;
+                }
+                ask *= distance / got;
+            }
             std::unique_ptr<SmSurface> clean(extended);
-            if (s != SMLIB_OK || extended == nullptr)
+            if (extended == nullptr)
             {
                 return s != SMLIB_OK ? s : SMLIB_ERR_EMPTY;
             }
