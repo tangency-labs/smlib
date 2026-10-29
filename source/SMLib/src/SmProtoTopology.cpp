@@ -21,6 +21,7 @@
 #include <SmAssertArray.h>
 
 #include <SmProtoTopology.h>
+#include <SmTools.h>
 
 #include <algorithm>
 #include <vector>
@@ -1940,7 +1941,32 @@ static int iDebugMe2=0;
   SmFace *pNewF2 = NULL;
   SmFace *pOldF2 = NULL;
 
-  if(eType2 == SM_PC_FACE )
+  // SolidCraft change: in Brep2 the Face may already have an Edge between this Edge's two
+  // Vertices that lies along the curve within tolerance (the intersection curve runs along the
+  // Face's own boundary there: a tube's end circle within tolerance of another tube's wall over
+  // a short stretch). That Edge is this Edge in Brep2. Imprinted again, the Face had two
+  // coincident Edges, and merging Brep2's boundary Edge, which nothing related to Brep1, put a
+  // second copy beside this one in Brep1 (SmFace tests 33 and 34).
+  SmEdge *pAlongEdge2 = NULL;
+  if(eType2 == SM_PC_FACE && pStartVtx2 != pEndVtx2 && m_pXSectCurve3d != NULL )
+  {
+      SmFace *pFace2 = SM_CAST_PTR( SmFace, GetSrcTopo(2)) ; NER( pFace2) ;
+      SmTArray<SmEdge*> sFaceEdges;
+      pFace2->GetEdges( sFaceEdges) ;
+      SmBoolean bFound = FALSE, bSame = FALSE;
+      ULONG     lFound = 0;
+      double    dDev   = SM_BIG_DOUBLE;
+      double    dAlongTol = smos_Max( (double)pFace2->GetTolerance(), this->m_dTol) ;
+      SER( SmTools::FindCoincidentEdge( pStartVtx2, pEndVtx2, m_pXSectCurve3d, m_pXSectInterval, dAlongTol,
+                                        sFaceEdges, bFound, bSame, lFound, dDev) );
+      if( bFound && dDev <= dAlongTol && lFound < sFaceEdges.GetSize() )
+        { pAlongEdge2 = sFaceEdges[lFound]; }
+  }
+  if(pAlongEdge2 != NULL )
+  {
+      m_pFinalEdge2 = pAlongEdge2;
+  }
+  else if(eType2 == SM_PC_FACE )
   {
       // m_pXSectCurve3d went into Brep1.  Make a copy for the other Brep.
       SmCurve *pCopyCurve = NULL;

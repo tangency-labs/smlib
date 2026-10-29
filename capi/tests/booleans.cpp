@@ -879,6 +879,68 @@ void near_coincident_tube_ends_join()
     }
     smlib_brep_free(top);
     smlib_brep_free(seat);
+
+    // The same two tubes as SolidCraft's bench builds them: each axis rounded to 1e-6 and its
+    // height to 1e-3, the circle started 0.6131 rad round from its frame's x (Z x axis, or X
+    // for an axis within 0.9 of Z). The top tube's wall cut by the seat's end plane runs
+    // within the tolerance of the seat's end circle between two of the joint's vertices; the
+    // intersection curve was imprinted on the seat's end cap beside that circle, which merging
+    // then copied into the top tube's wall beside the curve's own edge (SmFace tests 33, 34).
+    auto bench_tube = [](const double a[3], const double b[3], double r)
+    {
+        auto r6 = [](double v) { return std::round(v * 1e6) / 1e6; };
+        auto r3 = [](double v) { return std::round(v * 1e3) / 1e3; };
+        const double d[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        const double l = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        double n[3] = {r6(d[0] / l), r6(d[1] / l), r6(d[2] / l)};
+        const double nl = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        for (double &c : n)
+        {
+            c /= nl;
+        }
+        // x: Z x n (or X), made square to n; y = n x x; the seam 0.6131 rad from x.
+        double x[3] = {1, 0, 0};
+        if (std::fabs(n[2]) <= 0.9)
+        {
+            x[0] = -n[1];
+            x[1] = n[0];
+            x[2] = 0;
+        }
+        const double xn = x[0] * n[0] + x[1] * n[1] + x[2] * n[2];
+        for (int i = 0; i < 3; ++i)
+        {
+            x[i] -= n[i] * xn;
+        }
+        const double xl = std::sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]);
+        for (double &c : x)
+        {
+            c /= xl;
+        }
+        const double y[3] = {n[1] * x[2] - n[2] * x[1], n[2] * x[0] - n[0] * x[2], n[0] * x[1] - n[1] * x[0]};
+        const double cs = std::cos(0.6131), sn = std::sin(0.6131);
+        const int64_t kinds[1] = {SMLIB_CURVE_ARC};
+        const double reals[12] = {r3(a[0]), r3(a[1]), r3(a[2]), n[0], n[1], n[2],
+                                  x[0] * cs + y[0] * sn, x[1] * cs + y[1] * sn, x[2] * cs + y[2] * sn, r, 0, 2 * PI};
+        smlib_brep *out = nullptr;
+        CHECK(smlib_extrude(kinds, 1, reals, 12, n, r3(l), 0.0, SMLIB_DRAFT_CORNER_TANGENT, 1, &out, nullptr) == SMLIB_OK);
+        return out;
+    };
+    top = bench_tube(st, ht, 16);
+    seat = bench_tube(bb, st, 16);
+    if (top != nullptr && seat != nullptr)
+    {
+        smlib_brep *r = nullptr;
+        CHECK(smlib_boolean(top, seat, SMLIB_BOOLEAN_UNION, &r) == SMLIB_OK && r != nullptr);
+        if (r != nullptr)
+        {
+            CHECK(sound(r));
+            int64_t n = -1;
+            CHECK(smlib_brep_solid_count(r, &n) == SMLIB_OK && n == 1);
+            smlib_brep_free(r);
+        }
+    }
+    smlib_brep_free(top);
+    smlib_brep_free(seat);
 }
 
 // The other caller of sm_GetEllipseTrimIntervals, SmCone::IntersectWithPlane (a cone cut
