@@ -1181,9 +1181,9 @@ void shelled_rounded_box_rim()
     if (shell != nullptr)
     {
         CHECK(sound(shell));
-        // The rounds' offsets, as SMLib holds them: 4 within 1e-9 (the shell's working copy of
-        // the rounds re-derives their cylinders from their NURBS forms, 3.2e-10 out). The rim's
-        // arcs lie on them.
+        // The rounds' offsets: R4 to 1e-12. The shell extends them as cylinders; a tangent
+        // extension, into which the rim's faces reached a hair, came back as cylinders 3.2e-10
+        // off R4 by an amount that depended on the platform. The rim's arcs lie on them.
         double radius = 0.0;
         SmTArray<SmFace *> faces;
         shell->p->GetFaces(faces);
@@ -1198,7 +1198,7 @@ void shelled_rounded_box_rim()
         int n_shell = 0;
         const double w_shell = arcs(shell, radius, n_shell);
         std::printf("shelled rounded box rim: arcs %.3g off radius 4 %+.3g\n", w_shell, radius - 4.0);
-        CHECK(n_shell == 4 && std::fabs(radius - 4.0) < 1e-9);
+        CHECK(n_shell == 4 && std::fabs(radius - 4.0) < 1e-12);
         CHECK(w_shell < 1e-12);
     }
     smlib_brep_free(shell);
