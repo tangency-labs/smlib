@@ -1361,6 +1361,80 @@ void SphereFormRoundTrip()
                   SMLIB_FLAT_FACE_SPHERE_REF_DIRECTION);
 }
 
+// A cylinder mirrored in a plane (r 5 x 30 on (20, 20, -5) up z, mirrored in x = 30): its NURBS
+// sweeps clockwise about its linear direction, so the cylinder is inside out, its STEP origin on
+// the NURBS's top circle (40, 20, 25) and its STEP z axis -z. Its export imports again as the same
+// cylinder: SmCylinder::IsNurbSurfaceCylinder put the origin on the bottom circle with z along the
+// linear direction, a cylinder sweeping clockwise about its own z whose generator ran 30 mm off
+// the NURBS, and SMLib's check refused it.
+void MirroredCylinderRoundTrip()
+{
+    const double pi = 3.14159265358979323846;
+    const double o[3] = {20, 20, -5};
+    const double mirror[4][4] = {{-1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {60, 0, 0, 1}};
+    smlib_brep *cyl = nullptr, *mirrored = nullptr, *again = nullptr;
+    smlib_flat *x = nullptr, *y = nullptr;
+    CHECK(smlib_make_cylinder(o, 5, 30, &cyl) == SMLIB_OK);
+    CHECK(smlib_brep_transform(cyl, mirror, &mirrored) == SMLIB_OK);
+    const int32_t sx = smlib_brep_export(mirrored, &x);
+    // SMLib's primitive side is a cone of semi-angle 0; it goes back labelled a cylinder, as
+    // SolidCraft's records and STEP name it.
+    Arrays first = sx == SMLIB_OK ? Snapshot(x) : Arrays{};
+    for (int64_t &t : first.i[SMLIB_FLAT_FACE_SURFACE_TYPE])
+    {
+        t = t == SMLIB_FLAT_SURFACE_CONE ? SMLIB_FLAT_SURFACE_CYLINDER : t;
+    }
+    for (const auto &[cone, cylinder] : {std::pair{SMLIB_FLAT_FACE_CONE_ORIGIN, SMLIB_FLAT_FACE_CYLINDER_ORIGIN},
+                                         std::pair{SMLIB_FLAT_FACE_CONE_AXIS, SMLIB_FLAT_FACE_CYLINDER_AXIS},
+                                         std::pair{SMLIB_FLAT_FACE_CONE_REF_DIRECTION, SMLIB_FLAT_FACE_CYLINDER_REF_DIRECTION},
+                                         std::pair{SMLIB_FLAT_FACE_CONE_RADIUS, SMLIB_FLAT_FACE_CYLINDER_RADIUS}})
+    {
+        first.f[cylinder] = first.f[cone];
+        first.f[cone].clear();
+    }
+    first.f[SMLIB_FLAT_FACE_CONE_SEMI_ANGLE].clear();
+    smlib_flat *given = FromArrays(first);
+    const int32_t sa = sx == SMLIB_OK ? smlib_brep_import(given, &again) : sx;
+    const int32_t sy = sa == SMLIB_OK ? smlib_brep_export(again, &y) : sa;
+    char buf[4096] = {0};
+    int64_t len = 0, bad = -1;
+    double v = 0.0;
+    if (sy == SMLIB_OK)
+    {
+        CHECK(smlib_brep_check(again, 2, buf, sizeof buf, &len, &bad) == SMLIB_OK);
+        CHECK(smlib_brep_volume(again, 1e-8, &v) == SMLIB_OK);
+    }
+    const Arrays second = sy == SMLIB_OK ? Snapshot(y) : Arrays{};
+    const std::vector<double> want_origin = {40, 20, 25}, want_axis = {0, 0, -1};
+    double frame = sy == SMLIB_OK ? 0.0 : INFINITY;
+    for (const Arrays *a : {static_cast<const Arrays *>(&first), &second})
+    {
+        for (const auto &[id, want] : {std::pair{SMLIB_FLAT_FACE_CYLINDER_ORIGIN, want_origin}, std::pair{SMLIB_FLAT_FACE_CYLINDER_AXIS, want_axis}})
+        {
+            // Every face of the cylinder's side, each its own entry.
+            const auto at = a->f.find(id);
+            const bool some = at != a->f.end() && !at->second.empty() && at->second.size() % 3 == 0;
+            frame = some ? frame : INFINITY;
+            for (size_t k = 0; some && k < at->second.size(); ++k)
+            {
+                frame = std::max(frame, std::fabs(at->second[k] - want[k % 3]));
+            }
+        }
+    }
+    const double want = pi * 25.0 * 30.0;
+    std::printf("mirrored cylinder: export %d, imported again %d, exported again %d, failed checks %lld %s, volume %.12g (want %.12g), "
+                "STEP frame off by %.3g\n",
+                static_cast<int>(sx), static_cast<int>(sa), static_cast<int>(sy), static_cast<long long>(bad), buf, v, want, frame);
+    CHECK(sy == SMLIB_OK && bad == 0 && std::fabs(v - want) <= 1e-8 * want && frame <= 1e-12);
+    smlib_flat_free(y);
+    smlib_flat_free(given);
+    smlib_flat_free(x);
+    for (smlib_brep *b : {cyl, mirrored, again})
+    {
+        smlib_brep_free(b);
+    }
+}
+
 // Imports `a`; expects a failure status (and no crash). Returns the status.
 int32_t ExpectReject(const Arrays &a, const char *what)
 {
@@ -1791,6 +1865,7 @@ int main(int argc, char **argv)
     EdgePastPatch();
     TorusFormRoundTrip();
     SphereFormRoundTrip();
+    MirroredCylinderRoundTrip();
 
     // The accessors' argument checks.
     {

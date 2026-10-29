@@ -327,14 +327,23 @@ SmBoolean SmCylinder::IsNurbSurfaceCylinder
 
     SmBoolean bInsideOut = FALSE;
     if (sZAxis.Dot(sBotRefFrame.GetZAxis()) < 0.0) {
-        // Do some correction here
         bInsideOut = TRUE;
     }
+
+    // SolidCraft change: the circles' rotation sets the STEP Z axis, as in
+    // SmCone::IsNurbSurfaceCone. An inside-out NURB (its linear direction against the rotation,
+    // as a mirrored cylinder's is) has its STEP origin on the NURB's top circle and its STEP Z
+    // axis against the linear direction, so the u sweep is counter-clockwise about STEP Z and the
+    // generator line runs from the STEP origin down the NURB. Built on the bottom circle with the
+    // linear direction as Z, it swept clockwise about its Z and its generator ran the height off
+    // the NURB (SmCone check #3, SmSurfOfRevolution check #10).
+    const SmPoint3d &rStepOrigin = bInsideOut ? rCenterTop : rCenterBot;
+    SmVector3d       sStepZAxis  = bInsideOut ? -sZAxis : sZAxis;
 
 //    if (dEndAng1 < 360.0 - SM_EFF_ZERO) {
 //        SER(SM_ERR);
 //    }
-    SmVector3d sYAxis = sZAxis * rXAxis;
+    SmVector3d sYAxis = sStepZAxis * rXAxis;
 //    SmExtent2d sAnalUVDomain(SmPoint2d(dStartAng1,0.0),
 //                             SmPoint2d(dEndAng1,dHeight));
     if (smos_Fabs(dBotRad-dTopRad) < dPtTol) {
@@ -345,7 +354,7 @@ SmBoolean SmCylinder::IsNurbSurfaceCylinder
         return FALSE;
     }
 
-    rpCylinder = new (crContext) SmCylinder(rCenterBot, rXAxis, sYAxis,
+    rpCylinder = new (crContext) SmCylinder(rStepOrigin, rXAxis, sYAxis,
                                             dBotRad,  dStartAng1,
                                             dEndAng1, dHeight,
                                             bSwapUV, bInsideOut, FALSE); // NULL);
