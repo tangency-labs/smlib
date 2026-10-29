@@ -482,7 +482,9 @@ extern "C" int32_t smlib_untrim_face(const smlib_brep *body, const double *point
             }
             if (in_place != 0)
             {
-                // The old face goes, with the edges and vertices only it used.
+                // The old face goes, with the edges and vertices only it used: an edit of the
+                // brep, which SMLib allows only in edit mode (DeleteFace refuses otherwise).
+                SmTemporaryChangeValue<SmBoolean> editing(w->m_bEditingEnabled, TRUE);
                 s = status(w->DeleteFace(f, TRUE));
                 if (s != SMLIB_OK)
                 {

@@ -3955,6 +3955,30 @@ int main()
         smlib_brep_free(wave);
     }
 
+    // smlib_untrim_face in place on a sheet: a triangle's planar face back to the box of its span,
+    // the face replaced in the body. Deleting the old face is an edit of the brep, which SMLib
+    // refused outside edit mode (1001); the face is the one the copy out gives.
+    {
+        const int64_t kinds[3] = {SMLIB_CURVE_LINE, SMLIB_CURVE_LINE, SMLIB_CURVE_LINE};
+        const double tri[18] = {0, 0, 0, 4, 0, 0, 4, 0, 0, 0, 3, 0, 0, 3, 0, 0, 0, 0};
+        smlib_brep *sheet = nullptr;
+        CHECK(smlib_planar_faces(kinds, 3, tri, 18, &sheet) == SMLIB_OK);
+        const double inside[3] = {1.0, 1.0, 0.0};
+        smlib_brep *apart = nullptr;
+        smlib_brep *placed = nullptr;
+        CHECK(sheet != nullptr && smlib_untrim_face(sheet, inside, 0.1, nullptr, -1, 1, 0, &apart) == SMLIB_OK);
+        CHECK(sheet != nullptr && smlib_untrim_face(sheet, inside, 0.1, nullptr, -1, 1, 1, &placed) == SMLIB_OK);
+        double a_apart = -1.0, a_placed = -2.0;
+        int64_t counts[3] = {0, 0, 0};
+        CHECK(apart != nullptr && smlib_brep_area(apart, 1e-9, &a_apart) == SMLIB_OK);
+        CHECK(placed != nullptr && smlib_brep_area(placed, 1e-9, &a_placed) == SMLIB_OK && smlib_brep_counts(placed, counts) == SMLIB_OK);
+        std::printf("triangle untrimmed: copied out %.9f, in place %.9f\n", a_apart, a_placed);
+        CHECK(counts[0] == 1 && a_apart > 6.0 && near(a_placed, a_apart, 1e-12));
+        smlib_brep_free(apart);
+        smlib_brep_free(placed);
+        smlib_brep_free(sheet);
+    }
+
     // Two holes 6 apart cut one after the other through a disc: the second hole's wall meets the
     // first's (trimmed to the disc) in two lines. Parallel cylinders are intersected by
     // SmCone::IntersectWithCone, which once took the lines' span from the whole cylinders, so
