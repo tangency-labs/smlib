@@ -523,6 +523,24 @@ int main()
                    turn * (integral(2 * h) - integral(0)), 1e-6);
         }
     }
+    // A disc touching the axis at its seam vertex (radius 5, centred 5 from the axis), a quarter
+    // turn: the swept vertex is a point and the face creator lets the base curve go; the sweep
+    // read that curve afterwards and crashed (SIGSEGV in SmTopologySweep::SweepEdgeHigh). It
+    // reports that it builds no solid. The horn torus itself is not built yet.
+    {
+        List touching = circle(0, 0, 20, 0, 0, 1, 1, 0, 0, 5);
+        const double hinge[3] = {5, 0, 20};
+        const double Y1[3] = {0, 1, 0};
+        b = nullptr;
+        int32_t st = smlib_revolve(touching.kinds.data(), touching.nk(), touching.reals.data(), touching.nr(), hinge, Y1, PI / 2, 1, &b);
+        std::printf("%-34s status %d\n", "revolve disc touching the axis", static_cast<int>(st));
+        CHECK(st != SMLIB_OK || b != nullptr);
+        if (b != nullptr)
+        {
+            smlib_brep_free(b);
+            b = nullptr;
+        }
+    }
     // An open chain of two curves (a line out from r 6 to 8, then up 2) turned part way into a
     // sheet (cap 0): the two curves share their meeting vertex, so the sweep gives two faces
     // joined along one edge (SolidCraft rig booleans/4879). Area: turn * (8^2 - 6^2) / 2 for the
