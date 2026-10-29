@@ -1283,6 +1283,20 @@ SmStatus SmPrimitiveCreation::CreateTorus
 } // end SmPrimitiveCreation::CreateTorus
 
 /*******************************************************************/ /**
+ PURPOSE: SolidCraft: the zero a linear sweep tests a generating curve's arc to, the one an
+          SmCylinder's own check holds its generating curve to (SmSurfOfRevolution test #9,
+          1000 SM_EFF_ZERO scaled by the size): a curve that is an arc only to the body's
+          tolerance (a quadratic Bezier, a parabola) is swept as itself, not as a cylinder its
+          edges are off.
+ ***********************************************************************/
+static double ArcZero(const SmCurve* pCurve)
+{
+    SmPoint3d sStart, sEnd;
+    pCurve->GetEnds(sStart, sEnd);
+    return SM_EFF_ZERO * 1000.0 * (1.0 + smos_Max(sStart.GetMaxDimension(), sEnd.GetMaxDimension()));
+}
+
+/*******************************************************************/ /**
  PURPOSE: Creates a planar face from each of the given curves,
              and extrudes them, possibly into a solid.
 
@@ -1434,7 +1448,8 @@ SmStatus SmPrimitiveCreation::CreateLinearSweep(SmTArray<SmCurve*>& cr3DCurves, 
             }
         }
         // If the generation curve is a circle or an arc, then create an SmCylinder
-        else if (pCrvToExtrude->IsArc(8, dTol, sFrame, dRadius, dStartAngleDeg, dEndAngleDeg))
+        // (SolidCraft: an arc to ArcZero, not to the body's tolerance).
+        else if (pCrvToExtrude->IsArc(8, ArcZero(pCrvToExtrude), sFrame, dRadius, dStartAngleDeg, dEndAngleDeg))
         {
             SER( ArcSweepCylinder(*pContext, sFrame, dRadius, dStartAngleDeg, dEndAngleDeg, sSweepDir, dSweepDist, dTol, pExtSurface) );
         }
@@ -1737,7 +1752,8 @@ SmBoolean bDebugMe = FALSE ;
           }
       }
       // If the generation curve is a circle or an arc, then create an SmCylinder
-      else if (pCrvToExtrude->IsArc(8, dTol, sFrame, dRadius, dStartAngleDeg, dEndAngleDeg))
+      // (SolidCraft: an arc to ArcZero, not to the body's tolerance).
+      else if (pCrvToExtrude->IsArc(8, ArcZero(pCrvToExtrude), sFrame, dRadius, dStartAngleDeg, dEndAngleDeg))
       {
           SER( ArcSweepCylinder(*pContext, sFrame, dRadius, dStartAngleDeg, dEndAngleDeg, crSweepVec, dSweepDist, dTol, pExtSurface) );
       }

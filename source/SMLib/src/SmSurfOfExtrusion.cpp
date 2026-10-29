@@ -4153,11 +4153,14 @@ SmBoolean SmSurfOfExtrusion::AssertValid
   bRtn &= SM_ASSERT_VALUE_REPORT(7, SM_LEVEL_0, (m_vAnalUVDomain.GetUInterval().AreEqual(m_pGenCurve->GetSTEPInterval(),dTolU)), dTolU, SM_UNDEF_DOUBLE, _T("") ) ;
 
   // 4. check that m_vOrigin is a point on m_pGenCurve
+  // SolidCraft: to the scaled zero (SM_EFF_ZERO times one plus the point's size), as the other
+  // point tests here: the origin is evaluated on the curve, and the point solve resolves it to a
+  // few 1e-12 at coordinates of 10 (a text outline's quadratic Bezier), past an unscaled 1e-12.
   SmSolutionArray sSolutions ;
   (void)m_pGenCurve->GlobalPointSolve(m_pGenCurve->GetNaturalInterval(), // SolidCraft: a validity check reads what it computed
                                 SM_SO_INTERSECT,
                                 m_vOrigin,
-                                SM_EFF_ZERO,
+                                SM_EFF_ZERO * (1.0 + m_vOrigin.GetMaxDimension()),
                                 NULL, NULL,
                                 SM_SR_ALL,
                                 sSolutions) ;
