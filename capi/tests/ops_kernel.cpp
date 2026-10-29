@@ -1098,6 +1098,41 @@ void shelled_dome_rim()
     smlib_brep_free(dome);
 }
 
+// A 20 x 20 x 10 box with a through hole of radius 3 at (10, 10), its top rim chamfered 0.5 (picked
+// a quarter turn from the hole's seam): the
+// chamfer is the cone between the circles r 3.5 on the top and r 3 half a millimetre down, an
+// SmCone (it was a surface of revolution, which SolidCraft read back as a rational B-spline), and
+// it takes the frustum less the hole's piece, pi (0.5 / 3) (3.5^2 + 3.5 * 3 + 3^2) - 9 pi 0.5.
+void chamfered_hole_rim_is_a_cone()
+{
+    smlib_brep *b = box(0, 0, 0, 20, 20, 10), *c = cylinder(10, 10, -1, 3, 12), *holed = nullptr, *r = nullptr;
+    CHECK(smlib_boolean(b, c, SMLIB_BOOLEAN_SUBTRACT, &holed) == SMLIB_OK);
+    const double rim[3] = {10, 13, 10};
+    CHECK(holed != nullptr && smlib_chamfer(holed, rim, 1, 0.1, 0.5, &r, nullptr) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        CHECK(sound(r));
+        int cones = 0;
+        SmTArray<SmFace *> faces;
+        r->p->GetFaces(faces);
+        for (ULONG i = 0; i < faces.GetSize(); i++)
+        {
+            const SmCone *cone = SM_CAST_PTR(SmCone, faces[i]->GetSurface());
+            if (cone != nullptr && std::fabs(cone->GetBotRadius() - cone->GetTopRadius()) > 0.1)
+            {
+                cones++;
+            }
+        }
+        CHECK(cones == 1);
+        const double removed = PI * 0.5 / 3.0 * (3.5 * 3.5 + 3.5 * 3.0 + 9.0) - 9.0 * PI * 0.5;
+        CHECK(near(volume_of(r), 4000.0 - 9.0 * PI * 10.0 - removed, 1e-7));
+    }
+    for (smlib_brep *x : {b, c, holed, r})
+    {
+        smlib_brep_free(x);
+    }
+}
+
 // The analytic STEPInversion() answers: SM_SUCCESS on the surface, SM_ERR_OUTSIDE_OF_DOMAIN
 // outside a cylinder's sweep, SM_ERR_NOT_WITHIN_TOLERANCE off the surface (a sphere's with the
 // dropped point's parameters), each with its location; SMLib's callers pass any other status on.
@@ -3940,6 +3975,7 @@ int main()
 
     analytic_step_inversion();
     shelled_dome_rim();
+    chamfered_hole_rim_is_a_cone();
     corner_setback();
     corner_setback_open();
     setback_sections_are_exact_arcs();

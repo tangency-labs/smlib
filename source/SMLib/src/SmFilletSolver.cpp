@@ -28,6 +28,7 @@
 #include <SmGraphicsExtern.h>
 #include <SmGeomUtility.h>
 #include <SmIsoCurve.h>
+#include <SmCone.h>
 #include <SmCylinder.h>
 #include <SmSurfOfRevolution.h>
 #include <SmPlane.h>
@@ -1413,18 +1414,44 @@ SmStatus SmFilletSolver::CalcTorusFilletGeom
       SER(pTorus->Transform(sTrans,NULL));
     }
 
-  // store the new fillet surface
-  pFilletGeom->m_pFilletSurface = pTorus;
+  // SolidCraft change: a linear section revolved is a cone, and is stored as one (SmCone), as a
+  // straight edge's round is stored as its cylinder: SMLib's own test finds the cone in the
+  // revolution's NURBS form (CopyAndAddAnalytics), with the same parameters, or the revolution
+  // stays. A chamfer round a hole's rim was a surface of revolution, which reads back as a
+  // rational B-spline, not the cone it is.
+  if ( eSection == SM_FSG_LINEAR )
+    {
+      SmSurface * pNurb = NULL;
+      SER_DELETE( pTorus->SmBSplineSurface::Copy( m_crContext, pNurb ), pTorus );
+      SmObjDelete sCleanNurb( pNurb );
+      SmBSplineSurface * pNurbBSS = SM_CAST_PTR( SmBSplineSurface, pNurb );
+      SmSurface * pCone = NULL;
+      if ( pNurbBSS != NULL )
+        { SER_DELETE( pNurbBSS->CopyAndAddAnalytics( m_crContext, pCone ), pTorus ); }
+      if ( pCone != NULL && pCone->IsKindOf( SmCone_TYPE ) )
+        {
+          pFilletGeom->m_pFilletSurface = pCone;
+          delete pTorus;
+          pTorus = NULL;
+        }
+      else
+        { delete pCone; }
+    }
 
-  // Calc rails
+  // store the new fillet surface
+  if ( pTorus != NULL )
+    { pFilletGeom->m_pFilletSurface = pTorus; }
+
+  // Calc rails (on the surface stored: the cone, or the revolution)
+  SM_FILLETSURF_TYPE * pStored = pFilletGeom->m_pFilletSurface;
   SmFilletEdge   * pRail0 = pFilletGeom->GetRail(0);
   SmFilletEdge   * pRail1 = pFilletGeom->GetRail(1);
   SmBSplineCurve * pRailCrv0 = NULL ;
   SmBSplineCurve * pRailCrv1 = NULL ;
-  SmExtent2d       sUVDomain = pTorus->GetNaturalUVDomain();
+  SmExtent2d       sUVDomain = pStored->GetNaturalUVDomain();
 
   // create and store railCurve0 min SM_SP_V isoParameter curve
-  SER(pTorus->CreateIsoParametricCurve(m_crContext, 
+  SER(pStored->CreateIsoParametricCurve(m_crContext, 
                                        SM_SP_V,
                                        sUVDomain.GetMin().y,
                                        0.0,
@@ -1436,7 +1463,7 @@ SmStatus SmFilletSolver::CalcTorusFilletGeom
   pRail0->SetInterval(sCrvIvl);
 
   // create and store railCurve1 max SM_SP_V isoParameter curve
-  SER(pTorus->CreateIsoParametricCurve(m_crContext,
+  SER(pStored->CreateIsoParametricCurve(m_crContext,
                                        SM_SP_V,
                                        sUVDomain.GetMax().y,
                                        0.0,
@@ -1451,7 +1478,7 @@ SmStatus SmFilletSolver::CalcTorusFilletGeom
   if ( DebugLevel() > 0 ) 
     {
       smgfx_SetLook(1,3, 0,0,1); pEdge->GetBrep()->Draw(); sm_GraphicsLoop();
-      smgfx_SetLook(1,3, 0,1,0); pTorus->DrawUV(5,5); sm_GraphicsLoop();
+      smgfx_SetLook(1,3, 0,1,0); pStored->DrawUV(5,5); sm_GraphicsLoop();
       smgfx_SetLook(3,5, 1,0,0); pRailCrv0->Draw(); sm_GraphicsLoop();
       smgfx_SetLook(3,5, 1,0,0); pRailCrv1->Draw(); sm_GraphicsLoop();
       sm_GraphicsLoop();
