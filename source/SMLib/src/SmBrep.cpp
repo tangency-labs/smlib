@@ -29365,8 +29365,6 @@ SmStatus SmBrep::Transform
 
   // We can scale and rotate a brep by transforming all of its 3D geometry
   // (points on vertices, curves on edges, and surfaces on faces.
-  SmExtent3d sVertBBox ;
-  
   // vertices
   SmTArray<SmVertex *> sVertices;
   GetVertices(sVertices);
@@ -29382,7 +29380,6 @@ SmStatus SmBrep::Transform
         }
       crRotateNMove.TransformPoint(sVertPnt,sVertPnt);
       sVertices[ii]->SetPoint(sVertPnt ) ;
-      sVertBBox.AddPoint3d(sVertPnt) ;
     } // end iter ii, scale and rotate all vertex->positions
   
   // curves
@@ -29463,15 +29460,19 @@ SmStatus SmBrep::Transform
                                         : 1.0 ;
     if(cpOptScale && bScaleTol && smos_Fabs(dTolScale - 1.0) > SM_EFF_ZERO)
       {
-        // set ModelSizeEstimate from Vertex BBox size
+        // set ModelSizeEstimate from the Brep's box: its vertices', edges' and faces' boxes.
+        // SolidCraft change: it was the box of the vertices alone, empty for a Brep with none (a
+        // lone torus or a closed spline face), which made the Brep tolerance zero.
+        SmExtent3d sModelBBox ;
+        SER( CalculateBoundingBox(sModelBBox, FALSE, FALSE, FALSE) );
 #ifdef SM_USE_NEWTOL
-        SM_NEWTOL_LINE SmTol::SetModelSizeEstimate(this, sVertBBox.GetSize().Length());
+        SM_NEWTOL_LINE SmTol::SetModelSizeEstimate(this, sModelBBox.GetSize().Length());
 #else // SM_USE_OLDTOL
         // double dOldModelSize                         = m_dThisModelSizeEstimate ;     
         // SM_OLDTOL_LINE SmZoneTol3d sOldBrepZoneTol3d = SmTol::SizeEstimateToZoneTol3d(dOldModelSize) ;
 
-        SmTol::SetModelSizeEstimate(*this, sVertBBox.GetSize().Length()) ;                      // set this->m_dThisModelSizeEstimate and this->m_sThisZoneTol3d
-        SmTol::SetModelSizeEstimate(*(SmContext *)GetContext(), sVertBBox.GetSize().Length()) ; // set this->pContext->m_dThisModelSizeEstimate and this->pContext->m_sThisZoneTol3d
+        SmTol::SetModelSizeEstimate(*this, sModelBBox.GetSize().Length()) ;                      // set this->m_dThisModelSizeEstimate and this->m_sThisZoneTol3d
+        SmTol::SetModelSizeEstimate(*(SmContext *)GetContext(), sModelBBox.GetSize().Length()) ; // set this->pContext->m_dThisModelSizeEstimate and this->pContext->m_sThisZoneTol3d
 #endif // SM_USE_OLDTOL 
 
 #ifdef SM_DEBUG_CODE
