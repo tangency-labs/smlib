@@ -838,6 +838,54 @@ void oblique_cone_cuts()
     }
 }
 
+// SolidCraft inspect.interference: a pin of radius 3 a hair (1e-6, inside the tolerance) off the
+// axis of a hole of its own radius through a 20 x 20 x 5 plate, both cylinders extruded from a
+// circle whose seam is at 0.6131 rad (SolidCraft's cylinders), so the two seams lie a micrometre
+// apart. Their walls are one surface to the tolerance: the plate and the pin share no material,
+// their intersection is empty. It failed (SM_ERR) where a breakpoint on one seam, classified onto
+// the other wall right at its seam, solved to both ends of that wall's period and was dropped as
+// unclassified (SmPointClassification::ComputePointParameters). 0.01 off they share the crescent
+// left of the lens of two circles, 5 high.
+void hair_off_pin_at_a_seam()
+{
+    const double seam = 0.6131;
+    auto pin = [&](double x) {
+        const int64_t kinds[1] = {SMLIB_CURVE_ARC};
+        const double reals[12] = {x, 0, -2, 0, 0, 1, std::cos(seam), std::sin(seam), 0, 3, 0, 2 * PI};
+        const double up[3] = {0, 0, 1};
+        smlib_brep *b = nullptr;
+        CHECK(smlib_extrude(kinds, 1, reals, 12, up, 9.0, 0.0, SMLIB_DRAFT_CORNER_TANGENT, 1, &b, nullptr) == SMLIB_OK);
+        return b;
+    };
+    smlib_brep *plate = box(-10, -10, 0, 10, 10, 5);
+    smlib_brep *drill = pin(0.0);
+    smlib_brep *holed = nullptr;
+    CHECK(plate != nullptr && drill != nullptr && smlib_boolean(plate, drill, SMLIB_BOOLEAN_SUBTRACT, &holed) == SMLIB_OK);
+    for (double e : {1e-6, 1e-2})
+    {
+        smlib_brep *p = pin(e);
+        smlib_brep *shared = nullptr;
+        int32_t s = holed != nullptr && p != nullptr ? smlib_boolean(holed, p, SMLIB_BOOLEAN_INTERSECT, &shared) : SMLIB_ERR_ARG;
+        std::printf("pin %g off its hole, seams at %g rad: status %d\n", e, seam, static_cast<int>(s));
+        if (e < 1e-5)
+        {
+            CHECK(s == SMLIB_ERR_EMPTY && shared == nullptr);
+        }
+        else
+        {
+            const double r = 3.0;
+            const double lens = 2.0 * r * r * std::acos(e / (2.0 * r)) - e / 2.0 * std::sqrt(4.0 * r * r - e * e);
+            CHECK(s == SMLIB_OK && shared != nullptr && sound(shared) && near(volume(shared), 5.0 * (PI * r * r - lens), 1e-6));
+        }
+        smlib_brep_free(shared);
+        smlib_brep_free(p);
+    }
+    for (smlib_brep *x : {plate, drill, holed})
+    {
+        smlib_brep_free(x);
+    }
+}
+
 int main(int argc, char **argv)
 {
     struct Case
@@ -858,6 +906,7 @@ int main(int argc, char **argv)
         {"equal_rods_join", equal_rods_join},
         {"equal_tubes_join", equal_tubes_join},
         {"oblique_cone_cuts", oblique_cone_cuts},
+        {"hair_off_pin_at_a_seam", hair_off_pin_at_a_seam},
     };
     for (const Case &c : cases)
     {
