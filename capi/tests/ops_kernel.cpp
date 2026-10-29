@@ -1797,6 +1797,82 @@ int main()
         smlib_brep_free(tray);
     }
 
+    // The same tray as SolidCraft hands it over (rig fillets/1557): extruded from its outline and
+    // read back through the flat arrays, its bottom rounds read back as cylinders (SMLib's own
+    // cone of semi-angle 0, as the record keeps it), which puts the rounds' axes a rounding apart
+    // from SMLib's own. At the bottom face's corner, where the contact circles of the corner's
+    // ball meet, the trace's point on the seam had its centre 2.8e-4 off where the axes meet,
+    // so the ball was not made, and the traced seam round failed (1001). The ball's centre is
+    // where the axes meet: the same tray, the same volume.
+    {
+        // `b` written to the flat arrays and read back, its cones of semi-angle 0 as cylinders
+        auto read_back = [](const smlib_brep *b, bool cylinders) {
+            smlib_flat *f = nullptr;
+            CHECK(smlib_brep_export(b, &f) == SMLIB_OK);
+            const int64_t *k = nullptr;
+            int64_t n = 0;
+            CHECK(smlib_flat_get_i64(f, SMLIB_FLAT_FACE_SURFACE_TYPE, &k, &n) == SMLIB_OK);
+            std::vector<int64_t> kinds(k, k + n);
+            if (cylinders && std::find(kinds.begin(), kinds.end(), int64_t{SMLIB_FLAT_SURFACE_CONE}) != kinds.end())
+            {
+                std::replace(kinds.begin(), kinds.end(), int64_t{SMLIB_FLAT_SURFACE_CONE}, int64_t{SMLIB_FLAT_SURFACE_CYLINDER});
+                const int cone[4] = {SMLIB_FLAT_FACE_CONE_ORIGIN, SMLIB_FLAT_FACE_CONE_AXIS, SMLIB_FLAT_FACE_CONE_REF_DIRECTION, SMLIB_FLAT_FACE_CONE_RADIUS};
+                const int cylinder[4] = {SMLIB_FLAT_FACE_CYLINDER_ORIGIN, SMLIB_FLAT_FACE_CYLINDER_AXIS, SMLIB_FLAT_FACE_CYLINDER_REF_DIRECTION,
+                                         SMLIB_FLAT_FACE_CYLINDER_RADIUS};
+                for (int i = 0; i < 4; ++i)
+                {
+                    const double *d = nullptr;
+                    int64_t len = 0;
+                    CHECK(smlib_flat_get_f64(f, cone[i], &d, &len) == SMLIB_OK);
+                    std::vector<double> v(d, d + len);
+                    CHECK(smlib_flat_set_f64(f, cylinder[i], v.data(), len) == SMLIB_OK);
+                    CHECK(smlib_flat_set_f64(f, cone[i], nullptr, 0) == SMLIB_OK);
+                }
+                CHECK(smlib_flat_set_f64(f, SMLIB_FLAT_FACE_CONE_SEMI_ANGLE, nullptr, 0) == SMLIB_OK);
+                CHECK(smlib_flat_set_i64(f, SMLIB_FLAT_FACE_SURFACE_TYPE, kinds.data(), n) == SMLIB_OK);
+            }
+            smlib_brep *out = nullptr;
+            CHECK(smlib_brep_import(f, &out) == SMLIB_OK);
+            smlib_flat_free(f);
+            return out;
+        };
+        const int64_t kinds[4] = {SMLIB_CURVE_LINE, SMLIB_CURVE_LINE, SMLIB_CURVE_LINE, SMLIB_CURVE_LINE};
+        const double outline[24] = {0, 0, 0, 25, 0, 0, 25, 0, 0, 25, 25, 0, 25, 25, 0, 0, 25, 0, 0, 25, 0, 0, 0, 0};
+        const double up[3] = {0, 0, 1};
+        smlib_brep *extruded = nullptr;
+        CHECK(smlib_extrude(kinds, 4, outline, 24, up, 10.0, 0.0, 0, 1, &extruded, nullptr) == SMLIB_OK);
+        smlib_brep *tray = extruded != nullptr ? read_back(extruded, false) : nullptr;
+        // SolidCraft's pick tolerance for the tray, and the points it picks the seams by
+        const double tol = 1.8381173070873837;
+        const double bottom[12] = {12.5, 0, 0, 25, 12.5, 0, 12.5, 25, 0, 0, 12.5, 0};
+        const double sizes[8] = {2, 2, 2, 2, 2, 2, 2, 2};
+        smlib_brep *rounded = nullptr;
+        CHECK(tray != nullptr && smlib_blend(tray, SMLIB_BLEND_ROUND, bottom, sizes, 4, tol, &rounded, nullptr) == SMLIB_OK);
+        smlib_brep *handed = rounded != nullptr ? read_back(rounded, true) : nullptr;
+        const double vertical[24] = {0, 0, 6, 25, 0, 6, 25, 25, 6, 0, 25, 6,
+                                     0.71320933207705417, 0.71320933207757631, 0.47032672374040252,
+                                     24.286791299790224, 0.71320870020977245, 0.47032422391299583,
+                                     24.28679129979017, 24.286791299790359, 0.47032422391295658,
+                                     0.7132087002097981, 24.286791299790536, 0.47032422391285106};
+        if (handed != nullptr && smlib_blend(handed, SMLIB_BLEND_ROUND, vertical, sizes, 8, tol, &r, nullptr) == SMLIB_OK)
+        {
+            // the inner 21 x 21 x 12 box grown by a ball of R2, cut at z = 10: the slab up to
+            // z = 2 (the core 21 x 21 x 2, quarter discs along its 84 of edges, corners a hemisphere) and the
+            // rounded square above it, 8 high
+            const double want = 21.0 * 21.0 * 2.0 + 42.0 * PI * 2.0 + 16.0 * PI / 3.0 + 8.0 * (625.0 - (4.0 - PI) * 4.0);
+            CHECK(near(volume_of(r), want, 1e-7));
+            done(r);
+        }
+        else
+        {
+            CHECK(!"the vertical edges of the extruded tray with R2 bottom rounds as cylinders rounded R2");
+        }
+        for (smlib_brep *b : {handed, rounded, tray, extruded})
+        {
+            smlib_brep_free(b);
+        }
+    }
+
     // tangency-labs/solidcore#453: a 20 cube with a hole r5 along y whose wall touches the
     // bottom face along one line, its back rim chamfered 3. With the rim's tangent chain the
     // bottom edge came too, four filleted edges met at the touching point among five, a corner
