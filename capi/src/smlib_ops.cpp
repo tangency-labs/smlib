@@ -886,19 +886,21 @@ bool outward_normal(const SmBrep *b, const SmFace *f, const SmPoint3d &at, SmVec
     return true;
 }
 
-// The cone a cylindrical face (on `cyl`, its outward normal `n` at `inside`) becomes drafted by
-// `angle` radians about its circle on the neutral plane (through `origin`, normal `normal`) so
-// that it leans in going along `pull`, which runs along the cylinder's axis: its radius
-// R - s h tan(angle) at height h along the pull from that circle, s = 1 where the face looks away
-// from the axis (a pin), -1 where it looks towards it (a hole). It is the cylinder's own NURBS
-// with each control point moved radially by that factor at its height (exact: the cylinder's
-// points are its circles' control polygons stacked along the axis, its rulings straight), so it
-// keeps the cylinder's parameters and the face's UV trims stay where they were; then the SmCone
-// SMLib's own test finds in it (CopyAndAddAnalytics). `out` NULL (with SMLIB_OK) when the pull
-// does not run along the axis; SMLIB_ERR_UNSUPPORTED when the cone would close within the
-// cylinder's span.
-int32_t drafted_cylinder(const SmContext &ctx, const SmCone *cyl, const SmVector3d &n, const SmPoint3d &inside, const SmPoint3d &origin,
-                         const SmVector3d &normal, const SmVector3d &pull, double angle, SmSurface *&out)
+// The cone a face on the cone or cylinder `cyl` about the pull (its outward normal `n` at
+// `inside`) becomes drafted by `angle` radians about its circle on the neutral plane (through
+// `origin`, normal `normal`), so that it leans in going along `pull`, which runs along the axis:
+// its generators turned by `angle` in their planes through the axis, about that circle. With R0
+// the radius on the neutral plane and t the slope of the radius going along the pull (0 for a
+// cylinder), the radius h along the pull from that circle is R0 + h tan(atan(t) - s angle), s = 1
+// where the face looks away from the axis (a pin), -1 where it looks towards it (a hole). It is
+// the surface's own NURBS with each control point moved radially by the new radius over the old
+// at its height (exact: the cone's points are its circles' control polygons stacked along the
+// axis, its rulings straight), so it keeps the surface's parameters and the face's UV trims stay
+// where they were; then the SmCone SMLib's own test finds in it (CopyAndAddAnalytics). `out`
+// NULL (with SMLIB_OK) when the pull does not run along the axis; SMLIB_ERR_UNSUPPORTED when the
+// cone would close within the face's span.
+int32_t drafted_cone(const SmContext &ctx, const SmCone *cyl, const SmVector3d &n, const SmPoint3d &inside, const SmPoint3d &origin,
+                     const SmVector3d &normal, const SmVector3d &pull, double angle, SmSurface *&out)
 {
     out = nullptr;
     const SmAxis2Placement &pos = cyl->GetPosition();
@@ -913,10 +915,19 @@ int32_t drafted_cylinder(const SmContext &ctx, const SmCone *cyl, const SmVector
     {
         return SMLIB_ERR_UNSUPPORTED;
     }
-    // The hinge circle's centre: the axis on the neutral plane.
-    const SmPoint3d centre = axis + z * ((origin - axis).Dot(normal) / along);
+    // The hinge circle's centre: the axis on the neutral plane, at the cone's height v0.
+    const double v0 = (origin - axis).Dot(normal) / along;
+    const SmPoint3d centre = axis + z * v0;
     const SmVector3d radial = (inside - centre) - pull * (inside - centre).Dot(pull);
-    const double s = radial.Dot(n) >= 0.0 ? 1.0 : -1.0, t = std::tan(angle);
+    const double s = radial.Dot(n) >= 0.0 ? 1.0 : -1.0;
+    // The cone's radius is linear in its height v along z; along the pull it changes by
+    // `slope` per unit, and drafted by `turned`.
+    const double r0 = cyl->GetRadius(v0), slope = (cyl->GetRadius(1.0) - cyl->GetRadius(0.0)) * z.Dot(pull);
+    const double turned = std::tan(std::atan(slope) - s * angle);
+    if (!(r0 > 0.0) || !std::isfinite(turned))
+    {
+        return SMLIB_ERR_UNSUPPORTED;
+    }
     SmSurface *nurb = nullptr;
     if (cyl->SmBSplineSurface::Copy(ctx, nurb) != SM_SUCCESS || nurb == nullptr)
     {
@@ -925,8 +936,7 @@ int32_t drafted_cylinder(const SmContext &ctx, const SmCone *cyl, const SmVector
     }
     std::unique_ptr<SmSurface> own(nurb);
     SmBSplineSurface *net = SM_CAST_PTR(SmBSplineSurface, nurb);
-    const double r = cyl->GetBotRadius();
-    if (net == nullptr || !(r > 0.0))
+    if (net == nullptr)
     {
         return SMLIB_ERR_UNSUPPORTED;
     }
@@ -942,13 +952,13 @@ int32_t drafted_cylinder(const SmContext &ctx, const SmCone *cyl, const SmVector
                 return SMLIB_ERR_UNSUPPORTED;
             }
             const double h = (p - centre).Dot(pull);
-            const double k = (r - s * t * h) / r;
-            if (!(k > 0.0))
+            const double was = cyl->GetRadius(v0 + h * z.Dot(pull)), now = r0 + h * turned;
+            if (!(was > 0.0) || !(now > 0.0))
             {
                 return SMLIB_ERR_UNSUPPORTED;
             }
             const SmPoint3d foot = centre + pull * h;
-            if (net->SetControlPoint(SM_CP_EUCLIDIAN_RATIONAL, i, j, foot + (p - foot) * k, w) != SM_SUCCESS)
+            if (net->SetControlPoint(SM_CP_EUCLIDIAN_RATIONAL, i, j, foot + (p - foot) * (now / was), w) != SM_SUCCESS)
             {
                 return SMLIB_ERR_UNSUPPORTED;
             }
@@ -964,11 +974,12 @@ int32_t drafted_cylinder(const SmContext &ctx, const SmCone *cyl, const SmVector
     return SMLIB_OK;
 }
 
-// Tilts each face of `picked` (planes only) by `angle` radians about its line on the neutral
-// plane (through `origin`, normal `normal`), so that it leans in going along `pull`, then lets
-// SMLib's local operation extend or trim the faces around it to meet the tilted planes. A face
-// must be parallel to the pull (its normal square to it); the hinge is where a line from a point
-// inside the face, along the pull, meets the neutral plane.
+// Tilts each face of `picked` by `angle` radians about its line on the neutral plane (through
+// `origin`, normal `normal`), so that it leans in going along `pull`, then lets SMLib's local
+// operation extend or trim the faces around it to meet the tilted surfaces. A plane must be
+// parallel to the pull (its normal square to it); the hinge is where a line from a point inside
+// the face, along the pull, meets the neutral plane. A cylinder or cone must run about the pull,
+// and turns about its circle on the neutral plane (drafted_cone).
 int32_t draft_faces(SmBrep *b, const std::vector<SmFace *> &picked, const SmPoint3d &origin, const SmVector3d &normal, const SmVector3d &pull,
                     double angle)
 {
@@ -991,9 +1002,9 @@ int32_t draft_faces(SmBrep *b, const std::vector<SmFace *> &picked, const SmPoin
         {
             return give_up(static_cast<int32_t>(SM_ERR_INVALID_INPUT));
         }
-        // A cylinder drafted becomes a cone (drafted_cylinder).
+        // A cylinder or cone about the pull drafted becomes a cone (drafted_cone).
         const SmCone *cyl = surf->IsKindOf(SmCone_TYPE) ? static_cast<const SmCone *>(surf) : nullptr;
-        if (cyl != nullptr && std::fabs(cyl->GetBotRadius() - cyl->GetTopRadius()) <= 1e-12 * (1.0 + cyl->GetBotRadius()))
+        if (cyl != nullptr)
         {
             SmPoint3d inside;
             SmVector3d n;
@@ -1002,7 +1013,7 @@ int32_t draft_faces(SmBrep *b, const std::vector<SmFace *> &picked, const SmPoin
                 return give_up(static_cast<int32_t>(SM_ERR_INVALID_INPUT));
             }
             SmSurface *cone = nullptr;
-            const int32_t st = drafted_cylinder(ctx, cyl, n, inside, origin, normal, pull, angle, cone);
+            const int32_t st = drafted_cone(ctx, cyl, n, inside, origin, normal, pull, angle, cone);
             if (st != SMLIB_OK || cone == nullptr)
             {
                 return give_up(st != SMLIB_OK ? st : SMLIB_ERR_UNSUPPORTED);
