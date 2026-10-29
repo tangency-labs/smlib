@@ -896,34 +896,35 @@ SmStatus SmFilletSolver::CalcSphereFilletGeom
       || smos_Fabs(pCyl1->GetBotRadius() - dRadius) > dTol )
     { return SM_ERR; }
 
-  // the ball's center: every TsectPnt's, where the axes meet
-  SmPoint3d sCenter;
-  SER(pSurf0->EvaluatePoint(rTsectPnts[0]->UVPos(0), sCenter));
-  for ( ULONG ii=0; ii<=lMaxIndex; ii++ )
-    {
-      SmPoint3d sC0, sC1;
-      SER(pSurf0->EvaluatePoint(rTsectPnts[ii]->UVPos(0), sC0));
-      SER(pSurf1->EvaluatePoint(rTsectPnts[ii]->UVPos(1), sC1));
-      if (   sC0.DistanceBetween(sCenter) > dTol
-          || sC1.DistanceBetween(sCenter) > dTol )
-        { return SM_ERR; }
-    }
+  // the ball's center: where the axes meet. Not the trace's points: at the edge's end where the
+  // contact circles meet (the corner of the bottom face) both offset cylinders collapse onto
+  // their axes, so a point of their intersection fixes neither base parameter round its axis,
+  // and its solve stops a step short of the axes' crossing (2.8e-4 off along the axis for
+  // SolidCraft rig fillets/1557's tray, its rounds' axes a rounding apart from SMLib's own).
   SmVector3d sAxis0( pCyl0->GetZAxis() );
   SmVector3d sAxis1( pCyl1->GetZAxis() );
   SER( sAxis0.Unitize() );
   SER( sAxis1.Unitize() );
-  const SmCone * pCyls[2] = { pCyl0, pCyl1 };
+  SmPoint3d sCenter;
+  {
+    // the axes' nearest points, within the tolerance of each other
+    const SmPoint3d  sO0 = pCyl0->GetOrigin();
+    const SmPoint3d  sO1 = pCyl1->GetOrigin();
+    const SmVector3d sW( sO0 - sO1 );
+    const double     dB = sAxis0.Dot( sAxis1 );
+    const double     dDen = 1.0 - dB * dB;
+    if ( dDen < SM_EFF_ZERO_SQRT )
+      { return SM_ERR; }  // parallel cylinders: the centers fill a line, not this case
+    const double dD = sAxis0.Dot( sW );
+    const double dE = sAxis1.Dot( sW );
+    const SmPoint3d sP0 = sO0 + sAxis0 * (( dB * dE - dD ) / dDen );
+    const SmPoint3d sP1 = sO1 + sAxis1 * (( dE - dB * dD ) / dDen );
+    if ( sP0.DistanceBetween( sP1 ) > dTol )
+      { return SM_ERR; }  // the axes miss each other: no ball touches both all along
+    sCenter = sP0 + ( sP1 - sP0 ) * 0.5;
+  }
   const SmVector3d * pAxes[2] = { &sAxis0, &sAxis1 };
-  for ( ULONG kk=0; kk<2; kk++ )
-    {
-      SmVector3d sOff( sCenter - pCyls[kk]->GetOrigin() );
-      SmVector3d sRad( sOff - (*pAxes[kk])*sOff.Dot(*pAxes[kk]) );
-      if ( sRad.Length() > dTol )
-        { return SM_ERR; }
-    }
   SmVector3d sTurnAxis( sAxis0 * sAxis1 );
-  if ( sTurnAxis.Length() < SM_EFF_ZERO_SQRT )
-    { return SM_ERR; }  // parallel cylinders: the centers fill a line, not this case
   SER( sTurnAxis.Unitize() );
 
   // the edge's ends, and where the ball touches each cylinder in their cross-sections
