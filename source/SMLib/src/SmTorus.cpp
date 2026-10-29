@@ -1174,17 +1174,10 @@ static ULONG lDebugCount = 0 ;
       sCommonVec   = sCommonVecV ;   // from frame where all circle planes intersect on a common line
     }
 
-  // get torus orientation and size
-  SmVector3d       sMajorVec          = pOtherFrame->GetOriginRef() - pRefFrame->GetOriginRef() ;
-  double           dMajRad            = sMajorVec.Length() ;
+  // get torus orientation
   const SmPoint3d &crTorusXAxis       = pRefFrame->GetXAxisRef() ; // the frame where all circles are parallel
   const SmPoint3d &crTorusYAxis       = pRefFrame->GetYAxisRef() ;
   SmVector3d       sTorusZAxis        = pRefFrame->GetZAxis() ;
-
-  // torus must have positive radii
-  if(   dMinRad <= SM_EFF_ZERO
-     || dMajRad <= SM_EFF_ZERO)
-    { return(FALSE) ; }
 
   // get torus origin = MinorCircleCenter projected onto common line
   //   a MinorCircleCenter is stored in pOtherFrame->GetOriginRef()
@@ -1193,6 +1186,21 @@ static ULONG lDebugCount = 0 ;
   SmPoint3d sTorusOrigin =   sCommonPoint
                            + sCommonVec.Dot(pOtherFrame->GetOriginRef() - sCommonPoint)
                            * sCommonVec ;
+
+  // get torus size: the major radius runs from the torus origin to a minor circle's centre.
+  // SolidCraft: upstream measured it from pRefFrame's origin, the centre of the NURB's first
+  // sweep circle, which is the torus origin only when that circle lies on the equator. One at
+  // tube angle v is r sin(v) along the axis from it, so the radius came out sqrt(R^2 + (r sin v)^2)
+  // (13.2525 for R 13.1934, r 1.25 and a NURB starting at the bottom of the tube) and the tube
+  // angles measured with it were off (-92.7 degrees for -90). RebuildSTEPFromNURBParameters
+  // installs the origin in pRefFrame first [B328].
+  SmVector3d sMajorVec = pOtherFrame->GetOriginRef() - sTorusOrigin ;
+  double     dMajRad   = sMajorVec.Length() ;
+
+  // torus must have positive radii
+  if(   dMinRad <= SM_EFF_ZERO
+     || dMajRad <= SM_EFF_ZERO)
+    { return(FALSE) ; }
 
   // Check GenCurve minor circle rotation direction, its y axis is either +/- sweepCircle z
   // assumes: OterhFrame is valid for 1st Nurb isoparameter GenCurve
