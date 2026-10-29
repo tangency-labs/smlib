@@ -182,7 +182,8 @@ int32_t smlib_brep_check(const smlib_brep *brep, int32_t level, char *buf, int64
  *           relative to it. The inertia tensor's off-diagonal terms are their negatives.
  * For a density rho, the mass is rho * volume and the inertia scales by rho. The measure is the
  * sum over the body's material (non-void) regions, so several lumps, or lumps touching along
- * edges or at points, are measured too; the area is that of the faces between material and void.
+ * edges or at points, are measured too; the area is that of the faces between material and void
+ * plus every sheet face (material on neither side, as a sheet stitched onto a solid), each once.
  * A body with no material region (a sheet, an open shell) has volume 0 and no inertia: its area
  * is every face's, counted once, and its centroid is the area's. Material of no positive total
  * volume (turned inside out), a non-finite result, or an SM_AI_MASS_PROPERTIES attribute on a

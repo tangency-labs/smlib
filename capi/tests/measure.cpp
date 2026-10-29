@@ -7,6 +7,7 @@
 
 #include "../src/smlib_shim.h"
 
+#include <SmApiBrep.h>
 #include <SmApiPrimitives.h>
 #include <SmAxis2Placement.h>
 #include <SmCircle.h>
@@ -188,6 +189,27 @@ int main()
     }
     CHECK(smlib_brep_area(&sb, 1e-4, &a) == SMLIB_OK && std::fabs(a - 200.0) < 1e-9);
     delete sheet;
+
+    // A sheet hung on a solid (SolidCraft's blend sheet stitched between two boxes): a 10 mm cube
+    // and a 10 x 10 sheet on from its top front edge, merged into one body. Its area is every
+    // face's, the cube's 600 and the sheet's 100, not the cube's boundary alone; its volume the
+    // cube's.
+    {
+        SmBrep *cube = nullptr, *flap = nullptr, *both = nullptr;
+        CHECK(SmApiCreateBox(SmVector3d(0, 0, 0), 10.0, 10.0, 10.0, cube) == SM_SUCCESS && cube != nullptr);
+        CHECK(SmApiCreatePlane(SmVector3d(10, 0, 10), 10.0, 10.0, flap) == SM_SUCCESS && flap != nullptr);
+        CHECK(cube != nullptr && flap != nullptr && SmApiBooleanMerge(cube, flap, both) == SM_SUCCESS && both != nullptr);
+        if (both != nullptr)
+        {
+            smlib_brep merged{both};
+            double hm[11];
+            CHECK(smlib_brep_mass_properties(&merged, 1e-8, hm) == SMLIB_OK);
+            std::printf("cube with a sheet hung on it: area %.9f volume %.9f\n", hm[0], hm[1]);
+            CHECK(std::fabs(hm[0] - 700.0) < 1e-6 && std::fabs(hm[1] - 1000.0) < 1e-6);
+            merged.p = nullptr;
+            delete both;
+        }
+    }
 
     // The tight box of part of a NURBS arc is the part's: a quarter circle of radius 50 over the
     // first third of its parameter reaches y = 25 or so, not the arc's last knot at (0, 50). (An
