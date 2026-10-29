@@ -710,10 +710,14 @@ int main()
     // the bend's inner side pinches to a point on its axis, a horn torus between two cylinders.
     // Swept piece by piece the walls are exact (no NURBS: the joined path's fitted walls were
     // near singular there and failed the check) and the volume is Pappus': pi r^2 times the
-    // path's length.
+    // path's length. Again with the bend a hair (2.3e-10) tighter, as SolidCraft's sketch solves
+    // the reference case's three-point arc: the disc reaches the axis within the tolerance and
+    // sweeps the horn torus all the same (as it lay, a spindle torus's trims turned its loop over).
+    for (double tighter : {0.0, 2.2965e-10})
     {
+        const double R = 5.0 - tighter;
         List tight;
-        tight.line(0, 0, 0, 0, 0, 20).arc(5, 0, 20, 0, 1, 0, -1, 0, 0, 5, 0, PI / 2).line(5, 0, 25, 25, 0, 25);
+        tight.line(0, 0, 0, 0, 0, 20).arc(5 - tighter, 0, 20 + tighter, 0, 1, 0, -1, 0, 0, R, 0, PI / 2).line(5, 0, 25, 25, 0, 25);
         List d5 = circle(0, 0, 0, 0, 0, 1, 1, 0, 0, 5);
         b = nullptr;
         int32_t s = smlib_sweep(d5.kinds.data(), d5.nk(), d5.reals.data(), d5.nr(), tight.kinds.data(), tight.nk(), tight.reals.data(), tight.nr(),
@@ -728,9 +732,10 @@ int main()
             nurbs += types[i] == SMLIB_FLAT_SURFACE_NURBS;
         }
         smlib_flat_free(f);
-        std::printf("%-34s faces %lld, nurbs %lld\n", "sweep disc round a tight bend", static_cast<long long>(n), static_cast<long long>(nurbs));
+        const char *name = tighter > 0.0 ? "sweep disc round a hair-tight bend" : "sweep disc round a tight bend";
+        std::printf("%-34s faces %lld, nurbs %lld\n", name, static_cast<long long>(n), static_cast<long long>(nurbs));
         CHECK(n == 5 && nurbs == 0);
-        expect("sweep disc round a tight bend", s, &b, PI * 25.0 * (40.0 + 2.5 * PI), 1e-7);
+        expect(name, s, &b, PI * 25.0 * (40.0 + PI / 2 * R), 1e-7);
     }
 
     // Lofts: square to square (a box), circle to circle (a frustum, ruled).

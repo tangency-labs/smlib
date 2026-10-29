@@ -1208,6 +1208,13 @@ SmStatus SmRotationalSweepGeometry::AnalyticSurface
   if (sTX.Dot(sX) < 0.0)
     { return SM_SUCCESS; }
   SmPoint3d  sOrigin = crBasePt + axial(sCenter) * crAxis;
+  // SolidCraft change: a circle that reaches the axis to within dEps, as the sweep takes a vertex
+  // there to be on it (sm_CheckEdgeVerticesOnAxis), sweeps a horn torus, its tube through the
+  // axis there. Swept as it lay (a hair inside, a spindle torus; or outside, a ring one), the
+  // surface's minor circles crossed or missed the axis at the point the topology collapses,
+  // and the face's trims there came out with the loop turned over.
+  if (smos_Fabs(dMajor - dRadius) <= dEps)
+    { dMajor = dRadius; }
   auto tube = [&](const SmPoint3d & p)
     { SmVector3d d(p - sCenter); return SM_RAD2DEG(atan2(d.Dot(crAxis), d.Dot(sTX))); };
   double dV0 = tube(sStart), dVm = tube(sMid);
