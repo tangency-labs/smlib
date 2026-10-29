@@ -5816,6 +5816,42 @@ static constexpr SmBoolean cbiDoSplit = FALSE;
       if(pEdge != pOldEdge)
         { continue ; }
 
+      // SolidCraft change: a coincident EdgeDefinition that runs across the split point (an edge
+      // along the whole of an arc that another edge's ends split twice in its middle) is split
+      // there too, with its ProtoEdge (SmProtoEdge::Split, which finds the calling ProtoVertex
+      // at that point), so each part lies on one of the two pieces of the edge. Re-pointed whole
+      // to the piece under its midpoint, its ends were not that piece's vertices, and Imprint
+      // found no vertex for them (SM_ERR_NULL_POINTER). The upper part, a new EdgeDefinition
+      // still on pOldEdge, is classified below in its turn.
+      {
+        SmVertex    * pSplitVtx = pCallingVD->GetFinalVertex( iWhichBrep) ;
+        SmXSectTol3d  sTol3d    = SmTol::GetXSectTol3d( pOldEdge, pSplitVtx) ;
+        SmExtent1d    sEDIvl    = pED->GetXSectInterval() ;
+        SmPoint3d     sEDStart, sEDEnd ;
+        SER( pED->GetEndPosition( TRUE,  sEDStart) );
+        SER( pED->GetEndPosition( FALSE, sEDEnd) );
+        double    dGuess = sEDIvl.GetMid(), dAt = dGuess, dDropDist = SM_BIG_DOUBLE ;
+        SmBoolean bDropped = FALSE ;
+        if(   sSplitPt.DistanceBetween( sEDStart) > sTol3d
+           && sSplitPt.DistanceBetween( sEDEnd)   > sTol3d
+           && pED->GetXSectCurve3d()->DropPoint( sEDIvl, sSplitPt, NULL, sTol3d, &dGuess, bDropped, dAt, dDropDist, SM_SO_MINIMIZE) == SM_SUCCESS
+           && bDropped
+           && dDropDist <= sTol3d
+           && sEDIvl.ContainsValue( dAt, -SM_EFF_ZERO) )
+          {
+            ULONG lFound = 0 ;
+            SmProtoVertex * pNewPV = NULL ;
+            SmProtoEdge   * pNewPE = NULL ;
+            SER( pThisPE->Split( dAt, pNewPV, pNewPE) );
+            if( pNewPE != NULL )
+              {
+                SmTArray<SmEdgeDefinition*> & rUpper = pNewPE->GetEdgeDefinitions() ;
+                for(ULONG jj=0; jj<rUpper.GetSize(); jj++)
+                  { if( sEdgeDefs.FindElement( rUpper[jj], lFound) == FALSE ) { sEdgeDefs.Add( rUpper[jj] ) ; } }
+              }
+          }
+      }
+
       // Found a ProtoEdge on the edge that was split.
       // (Must be a coincident case.)
       // We have to do a geometric test here.
