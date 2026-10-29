@@ -1017,6 +1017,26 @@ if ( bDebugMeDump )
 
       // Update pApproxSurf using cubic Bezier approximations to each patch.
 
+      // SolidCraft change: the patches below are the cubic Bezier pieces between knots, which
+      // needs every inner knot of full multiplicity (control points 3 apart per span). A starter
+      // copied from a root B-spline with simple inner knots (the offset of a fitted bicubic
+      // patch) is put in that form first, exactly, by knot insertion; it was left as it was, its
+      // spans overran its control points and the approximation returned success with no surface.
+      for (int dir = 0; dir < 2; dir++)
+        {
+          const SmSurfParamType eDir = dir == 0 ? SM_SP_U : SM_SP_V;
+          const ULONG lDeg = dir == 0 ? lUDeg : lVDeg;
+          SmTArray<double> &rKnots = dir == 0 ? sUKnots : sVKnots;
+          SmTArray<ULONG> &rMult = dir == 0 ? sUMult : sVMult;
+          SER( pApproxSurf->GetKnots( eDir, rKnots, &rMult ) );
+          sMoreKnots.ReSet();
+          for ( ii=1; ii+1<rKnots.GetSize(); ii++ )
+            {
+              for ( kk=rMult[ii]; kk<lDeg; kk++ ) { sMoreKnots.Add( rKnots[ii] ); }
+            }
+          if ( sMoreKnots.GetSize() > 0 ) { SER( pApproxSurf->InsertKnots( eDir, sMoreKnots ) ); }
+        }
+
       // get knots of the subdivided surface
       SER( pApproxSurf->GetKnots( SM_SP_U, sUKnots, &sUMult ) );
       SER( pApproxSurf->GetKnots( SM_SP_V, sVKnots, &sVMult ) );
@@ -1054,8 +1074,8 @@ if ( bDebugMeDump )
                       if (   lUMin+iub >= lNumCtrlU
                           || lVMin+ivb >= lNumCtrlV)
                         {
-                          SE(SM_ERR); // Some problem here with knots
-                          return SM_SUCCESS;
+                          // SolidCraft change: an error, not success with no surface.
+                          SER_MSG(SM_ERR, _T("ApproximateSurface: a patch runs past the control points")) ;
                         }
                       SER( pApproxSurf->GetControlPoint( eForm, lUMin+iub, lVMin+ivb, sPnt, dWeight ) );
                       dWeight = 1.0;
