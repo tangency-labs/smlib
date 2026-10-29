@@ -1216,9 +1216,9 @@ int32_t smlib_untrim_face(const smlib_brep *body, const double point[3], double 
  * faces, and a glued edge stands for both edges it was glued from. */
 int32_t smlib_stitch(const smlib_brep *brep, double tolerance, int32_t *out_closed, smlib_brep **out);
 
-/* A new sheet: the sheet `sheet` (not a closed solid: SMLIB_ERR_ARG) with every face moved onto
- * its surface's offset by `distance` (non-zero, |distance| <= 1e6) along its normal (negative:
- * against it), by SM_API's offset (SmApiOffsetBrepFull, extended at convex edges, with
+/* A new sheet: the sheet `sheet` with every face moved onto its surface's offset by `distance`
+ * (non-zero, |distance| <= 1e6) along its normal (negative: against it); faces that close into a
+ * solid (a sphere's one face) give the offset solid, by SM_API's offset (SmApiOffsetBrepFull, extended at convex edges, with
  * self-intersections handled). Tags travel to each face's offset. */
 int32_t smlib_offset_sheet(const smlib_brep *sheet, double distance, smlib_brep **out);
 

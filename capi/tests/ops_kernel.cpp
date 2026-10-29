@@ -3912,6 +3912,26 @@ int main()
         }
     }
 
+    // smlib_offset_sheet of faces that close on themselves: a sphere's one face (radius 10) moved
+    // out by 2 is the sphere of radius 12, a closed solid (it was refused as not a sheet); moved in
+    // to its centre, refused.
+    {
+        const double centre[3] = {0, 0, 0};
+        smlib_brep *ball = nullptr;
+        CHECK(smlib_make_sphere(centre, 10.0, &ball) == SMLIB_OK);
+        CHECK(ball != nullptr && smlib_offset_sheet(ball, 2.0, &r) == SMLIB_OK);
+        if (r != nullptr)
+        {
+            int32_t closed = 0;
+            CHECK(smlib_brep_is_manifold_solid(r, &closed) == SMLIB_OK && closed == 1);
+            std::printf("sphere offset out by 2: volume %.9f\n", volume_of(r));
+            CHECK(near(volume_of(r), 4.0 / 3.0 * PI * 1728.0, 1e-6));
+            done(r);
+        }
+        CHECK(smlib_offset_sheet(ball, -10.0, &r) != SMLIB_OK && r == nullptr);
+        smlib_brep_free(ball);
+    }
+
     // Two holes 6 apart cut one after the other through a disc: the second hole's wall meets the
     // first's (trimmed to the disc) in two lines. Parallel cylinders are intersected by
     // SmCone::IntersectWithCone, which once took the lines' span from the whole cylinders, so

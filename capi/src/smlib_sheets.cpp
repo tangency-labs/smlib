@@ -12,8 +12,9 @@
 // caller's tolerance would not be the one that decides.
 //
 // smlib_offset_sheet is SM_API's offset (SmApiOffsetBrepFull, through
-// SmOffsetExecutive::OffsetBrep) of a sheet: every face onto its surface's offset along its
-// normal, as smlib_thicken moves a sheet back by half before a symmetric thicken.
+// SmOffsetExecutive::OffsetBrep) of a sheet, or of faces that close on themselves (a sphere's one
+// face): every face onto its surface's offset along its normal, as smlib_thicken moves a sheet
+// back by half before a symmetric thicken.
 
 #include "smlib_shim.h"
 
@@ -102,10 +103,6 @@ extern "C" int32_t smlib_offset_sheet(const smlib_brep *sheet, double distance, 
             if (s != SMLIB_OK)
             {
                 return s;
-            }
-            if (w->IsManifoldSolid())
-            {
-                return SMLIB_ERR_ARG;
             }
             SmBrep *moved = nullptr;
             s = status(SmApiOffsetBrepFull(w.get(), distance, TRUE, TRUE, moved));
