@@ -1227,9 +1227,15 @@ static ULONG lDebugCount = 0 ;
   SmVector3d sVecMax = sNurbMaxPoint - sMaxOrigin ; 
 
   // get GenCurve min and max angles measured from each GenCurve's origin and start vector
+  // SolidCraft: to SMLib's zero for angles in degrees, as RebuildSTEPFromNURBParameters measures
+  // them (SetFromGwNurb below rebuilds this torus from the same NURB). Upstream passed
+  // SM_EFF_ZERO, 1e-12 degrees: each angle is read from a point of the NURB, which carries the
+  // rounding of its coordinates, |P| eps / r radians (8e-13 degrees for a tube of r 1.25 80 mm
+  // out), so a tube closing on itself had ends -90.0000000000008 and -89.9999999999991 apart and
+  // was taken for a sliver 2e-12 degrees long instead of a whole turn.
   double dGenAngleMin, dGenAngleMax;
   if (sm_TorusGenCurveInterval(sStartForMinAngle, sVecMin, sStartForMaxAngle, sVecMax, sTorusZAxis, bInsideOut,
-                               SM_EFF_ZERO, dGenAngleMin, dGenAngleMax) != SM_SUCCESS)
+                               SM_EFF_ZERO_DEG, dGenAngleMin, dGenAngleMax) != SM_SUCCESS)
     { return FALSE ; }
 
   // define Torus domain
