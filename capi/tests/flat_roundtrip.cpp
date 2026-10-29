@@ -1435,6 +1435,65 @@ void MirroredCylinderRoundTrip()
     }
 }
 
+// An edge's own tolerance through smlib_brep_transform: a box (10 x 20 x 30 at (1, 2, 3)) whose
+// first edge and its vertices are given 1e-3 mm, far above the box's own. Mirrored in x = 30 and
+// turned a quarter about z the edge keeps 1e-3 mm, and scaled by 2 it has 2e-3 mm. SmBrep::Transform
+// set every tolerance to the Brep's whenever it was given a scale, a unit one included (a 4x4
+// always is), so a mirrored blend's intersection edge came out narrower than its own gap.
+void TransformKeepsEdgeTolerance()
+{
+    const double o[3] = {1, 2, 3}, size[3] = {10, 20, 30}, wide = 1e-3;
+    smlib_brep *box = nullptr, *given = nullptr;
+    smlib_flat *x = nullptr;
+    CHECK(smlib_make_box(o, size, &box) == SMLIB_OK);
+    CHECK(smlib_brep_export(box, &x) == SMLIB_OK);
+    Arrays a = Snapshot(x);
+    a.f[SMLIB_FLAT_EDGE_TOLERANCE].at(0) = wide;
+    for (size_t end : {0, 1})
+    {
+        a.f[SMLIB_FLAT_VERTEX_TOLERANCE].at(static_cast<size_t>(a.i[SMLIB_FLAT_EDGE_VERTICES].at(end))) = wide;
+    }
+    smlib_flat *f = FromArrays(a);
+    CHECK(smlib_brep_import(f, &given) == SMLIB_OK);
+    struct Move
+    {
+        const char *name;
+        double m[4][4];
+        double scale;
+    };
+    const Move moves[] = {
+        {"as given", {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}}, 1.0},
+        {"mirrored", {{-1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {60, 0, 0, 1}}, 1.0},
+        {"turned", {{0, 1, 0, 0}, {-1, 0, 0, 0}, {0, 0, 1, 0}, {5, 6, 7, 1}}, 1.0},
+        {"scaled", {{2, 0, 0, 0}, {0, 2, 0, 0}, {0, 0, 2, 0}, {0, 0, 0, 1}}, 2.0},
+    };
+    for (const Move &mv : moves)
+    {
+        smlib_brep *t = nullptr;
+        smlib_flat *y = nullptr;
+        const int32_t st = given != nullptr ? smlib_brep_transform(given, mv.m, &t) : SMLIB_ERR_ARG;
+        const int32_t sy = st == SMLIB_OK ? smlib_brep_export(t, &y) : st;
+        double widest = 0.0;
+        if (sy == SMLIB_OK)
+        {
+            const Arrays out = Snapshot(y);
+            for (double e : out.f.at(SMLIB_FLAT_EDGE_TOLERANCE))
+            {
+                widest = std::max(widest, e);
+            }
+        }
+        std::printf("box edge of tolerance %g, %s: transform %d, export %d, widest edge tolerance %.17g (want %g)\n", wide, mv.name,
+                    static_cast<int>(st), static_cast<int>(sy), widest, wide * mv.scale);
+        CHECK(sy == SMLIB_OK && std::fabs(widest - wide * mv.scale) <= 1e-15 * mv.scale);
+        smlib_flat_free(y);
+        smlib_brep_free(t);
+    }
+    smlib_brep_free(given);
+    smlib_flat_free(f);
+    smlib_flat_free(x);
+    smlib_brep_free(box);
+}
+
 // Imports `a`; expects a failure status (and no crash). Returns the status.
 int32_t ExpectReject(const Arrays &a, const char *what)
 {
@@ -1866,6 +1925,7 @@ int main(int argc, char **argv)
     TorusFormRoundTrip();
     SphereFormRoundTrip();
     MirroredCylinderRoundTrip();
+    TransformKeepsEdgeTolerance();
 
     // The accessors' argument checks.
     {
