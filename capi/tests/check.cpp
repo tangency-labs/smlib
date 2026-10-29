@@ -1,14 +1,16 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 SolidCraft contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// smlib_brep_check: SMLib's primitives pass every test at every level; a vertex moved off its
-// edges fails, with a report; the buffer protocol and the argument checks hold; the check of a
+// smlib_brep_check: SMLib's primitives pass every test at every level, and so do faces apart,
+// one shell each (SMLib's warning test is no failure); a vertex moved off its edges fails, with a
+// report; the buffer protocol and the argument checks hold; the check of a
 // body of many faces takes time about linear in them (tangency-labs/solidcore#431).
 
 #include "../src/smlib_shim.h"
 
 #include <SmApiPrimitives.h>
 #include <SmEdge.h>
+#include <SmShell.h>
 #include <SmVertex.h>
 
 #include <chrono>
@@ -154,6 +156,44 @@ int main()
         }
         CHECK(r.status == SMLIB_OK && r.failures == 0);
         smlib_brep_free(ring);
+    }
+
+    // Two squares apart in one plane: two faces, each its own shell. SmBrep's test 21 ("Suspicious
+    // Shell Count") is SMLib's warning, not a failure: such a body passes.
+    {
+        std::vector<int64_t> kinds;
+        std::vector<double> reals;
+        auto square = [&](double x0)
+        {
+            const double c[5][2] = {{x0, 0}, {x0 + 4, 0}, {x0 + 4, 4}, {x0, 4}, {x0, 0}};
+            for (int i = 0; i < 4; ++i)
+            {
+                kinds.push_back(SMLIB_CURVE_LINE);
+                const double r[6] = {c[i][0], c[i][1], 0.0, c[i + 1][0], c[i + 1][1], 0.0};
+                reals.insert(reals.end(), r, r + 6);
+            }
+        };
+        square(0.0);
+        square(10.0);
+        smlib_brep *apart = nullptr;
+        CHECK(smlib_planar_faces(kinds.data(), static_cast<int64_t>(kinds.size()), reals.data(), static_cast<int64_t>(reals.size()), &apart) ==
+              SMLIB_OK);
+        int64_t counts[3] = {0, 0, 0};
+        CHECK(apart != nullptr && smlib_brep_counts(apart, counts) == SMLIB_OK && counts[0] == 2);
+        SmTArray<SmShell *> shells;
+        if (apart != nullptr)
+        {
+            apart->p->GetShells(shells);
+        }
+        ULONG faceuse_shells = 0;
+        for (ULONG i = 0; i < shells.GetSize(); ++i)
+        {
+            faceuse_shells += shells[i]->IsFaceuseShell() ? 1 : 0;
+        }
+        CHECK(faceuse_shells == 2);
+        Report r = check(apart, 2);
+        CHECK(r.status == SMLIB_OK && r.failures == 0 && r.text.empty());
+        smlib_brep_free(apart);
     }
 
     // A box with one corner pulled 1 mm off its three edges and faces.

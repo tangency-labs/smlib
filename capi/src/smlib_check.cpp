@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // smlib_brep_check: SMLib's own validity checks (SmBrep::ValidatePointers, then AssertValid over
-// the whole topology graph), with every failed test as one line of text.
+// the whole topology graph), with every failed test as one line of text; SMLib's warning is none.
 
 #include "smlib_shim.h"
 
@@ -40,13 +40,21 @@ std::string line(const SmAssertReport &r)
     return s;
 }
 
-// Appends the failed reports in `list` to `out`, counting them.
+// SmBrep test 21, "Suspicious Shell Count" (a body of several faces with one shell each), is a
+// warning: SmBrep::AssertValid reports it without failing, and faces that meet nowhere (a sheet's
+// faces offset apart across a sharp edge) rightly make such a body.
+bool advisory(const SmAssertReport &r)
+{
+    return r.m_lReportingType == SmBrep_TYPE && r.m_lListIndex == 0 && r.m_lTestIndex == 21;
+}
+
+// Appends the failed reports in `list` to `out`, counting them; SMLib's warnings are neither.
 void collect(const SmAssertArray &list, std::string &out, int64_t &failures)
 {
     for (ULONG i = 0; i < list.GetSize(); ++i)
     {
         const SmAssertReport *r = list[i];
-        if (r == nullptr || r->m_bOK)
+        if (r == nullptr || r->m_bOK || advisory(*r))
         {
             continue;
         }
