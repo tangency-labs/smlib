@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // smlib_extend_sheet: a square plane sheet continued past one side in each mode, a bilinear
-// B-spline sheet and a parabolic one continued naturally (by the distance along the surface),
-// and the shapes and arguments it refuses.
+// B-spline sheet and a parabolic one continued naturally (by the distance along the surface), a
+// cylinder's strip continued round its axis as the cylinder, and the shapes and arguments it
+// refuses.
 
 #include "../src/smlib_shim.h"
 
@@ -11,6 +12,8 @@
 #include <SmApiPrimitives.h>
 #include <SmApiSurfaces.h>
 #include <SmBrep.h>
+#include <SmCone.h>
+#include <SmFace.h>
 #include <SmSurface.h>
 
 #include <cmath>
@@ -95,6 +98,32 @@ int main()
         CHECK(std::fabs(area_of(longer) - want) < 1e-5);
         smlib_brep_free(parabola);
         smlib_brep_free(longer);
+    }
+
+    // A quarter of a cylinder's side (radius 10 about z, heights 0..20: an arc extruded)
+    // continued naturally 5 round its axis past its side at angle 90 degrees: the cylinder itself,
+    // a cone face of SMLib's again (the extended B-spline's parameters are past what a cone holds),
+    // 10 * (pi/2 + 1/2) * 20.
+    {
+        const int64_t kinds[1] = {SMLIB_CURVE_ARC};
+        const double arc[12] = {0, 0, 0, 0, 0, 1, 1, 0, 0, 10, 0, 1.5707963267948966};
+        const double up[3] = {0.0, 0.0, 1.0};
+        smlib_brep *strip = nullptr;
+        CHECK(smlib_extrude(kinds, 1, arc, 12, up, 20.0, 0.0, 0, 0, &strip, nullptr) == SMLIB_OK);
+        const double straight[3] = {0.0, 10.0, 10.0};
+        smlib_brep *round = nullptr;
+        CHECK(smlib_extend_sheet(strip, straight, 1e-3, 5.0, SMLIB_EXTEND_NATURAL, &round) == SMLIB_OK);
+        const double want = 10.0 * (1.5707963267948966 + 0.5) * 20.0;
+        std::printf("cylinder strip continued 5 round its axis: area %.9f, want %.9f\n", area_of(round), want);
+        CHECK(std::fabs(area_of(round) - want) < 1e-5);
+        SmTArray<SmFace *> faces;
+        if (round != nullptr)
+        {
+            round->p->GetFaces(faces);
+        }
+        CHECK(faces.GetSize() == 1 && faces[0]->GetSurface()->IsKindOf(SmCone_TYPE));
+        smlib_brep_free(strip);
+        smlib_brep_free(round);
     }
 
     // Refused: a box (not one face), a pick on no edge, bad arguments.
