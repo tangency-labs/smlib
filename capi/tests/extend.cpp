@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // smlib_extend_sheet: a square plane sheet continued past one side in each mode, a bilinear
-// B-spline sheet continued naturally, and the shapes and arguments it refuses.
+// B-spline sheet and a parabolic one continued naturally (by the distance along the surface),
+// and the shapes and arguments it refuses.
 
 #include "../src/smlib_shim.h"
 
@@ -73,6 +74,28 @@ int main()
     smlib_brep *grown = nullptr;
     CHECK(smlib_extend_sheet(spline, top, 1e-3, 4.0, SMLIB_EXTEND_NATURAL, &grown) == SMLIB_OK);
     CHECK(std::fabs(area_of(grown) - 140.0) < 1e-4);
+
+    // The parabolic sheet z = x²/20 (0 <= x, y <= 10: a quadratic Bézier extruded 10 along y)
+    // continued naturally 5 past its side x = 10: the parabola itself, 5 further along its arc
+    // (CreateExtendedSurface alone stops about 2.5% short), area 10 · (s(10) + 5), s the arc
+    // length from x = 0.
+    {
+        const int64_t kinds[3] = {SMLIB_CURVE_NURBS, 2, 3};
+        const double reals[18] = {0, 0, 0, 1, 5, 0, 0, 1, 10, 0, 5, 1, 0, 0, 0, 1, 1, 1};
+        const double along[3] = {0.0, 1.0, 0.0};
+        smlib_brep *parabola = nullptr;
+        CHECK(smlib_extrude(kinds, 3, reals, 18, along, 10.0, 0.0, 0, 0, &parabola, nullptr) == SMLIB_OK);
+        auto arc = [](double x) { return 0.5 * x * std::sqrt(1.0 + x * x / 100.0) + 5.0 * std::asinh(x / 10.0); };
+        CHECK(std::fabs(area_of(parabola) - 10.0 * arc(10.0)) < 1e-5);
+        const double edge[3] = {10.0, 5.0, 5.0};
+        smlib_brep *longer = nullptr;
+        CHECK(smlib_extend_sheet(parabola, edge, 1e-3, 5.0, SMLIB_EXTEND_NATURAL, &longer) == SMLIB_OK);
+        const double want = 10.0 * (arc(10.0) + 5.0);
+        std::printf("parabola continued 5 along its arc: area %.9f, want %.9f\n", area_of(longer), want);
+        CHECK(std::fabs(area_of(longer) - want) < 1e-5);
+        smlib_brep_free(parabola);
+        smlib_brep_free(longer);
+    }
 
     // Refused: a box (not one face), a pick on no edge, bad arguments.
     const double o[3] = {0, 0, 0}, sz[3] = {10, 10, 10};
