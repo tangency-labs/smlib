@@ -3413,6 +3413,14 @@ int main()
             CHECK(std::fabs(volume_of(r) - 22.0 * 20.0 * 22.0) < 1e-6);
             done(r);
         }
+        // Up by three times the cube's height: the sides are extended far enough to meet
+        // the moved top (they were sized from the cube alone and stopped short of it).
+        CHECK(smlib_offset_faces(cube, top, 1, 0.1, 60.0, &r, nullptr) == SMLIB_OK);
+        if (r != nullptr)
+        {
+            CHECK(std::fabs(volume_of(r) - 20.0 * 20.0 * 80.0) < 1e-6);
+            done(r);
+        }
         CHECK(smlib_offset_faces(cube, top, 1, 0.1, -20.0, &r, nullptr) == SMLIB_ERR_NO_ROOM);
         CHECK(smlib_offset_faces(cube, top, 1, 0.1, 0.0, &r, nullptr) == SMLIB_ERR_ARG);
         const double wall[3] = {14, 10, 5};
