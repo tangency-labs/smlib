@@ -1513,6 +1513,58 @@ int main()
         }
     }
 
+    // A box 80 x 79 x 32.5 and a flange plate 100 x 79 x 2.5 under it, both with their upright
+    // corners rounded r 3, joined (SolidCraft boolean_regression step_export_of_a_flanged_enclosure).
+    // The plate's long sides lie along the box's planes y = 0 and y = 79 and touch its corner
+    // cylinders along their ends' lines. SolidCraft's plate came with its planes turned 1e-13 rad;
+    // SmCone::IntersectWithPlane took a plane as tangent to a cylinder only when its two crossing
+    // lines were within tolerance of each other, so the plane cut each corner cylinder in two lines
+    // a few microns apart: a sliver face (turned 1e-11) or an unsound body (1e-9). Turned about z
+    // through its centre, the plate stays within 1e-7 of its planes. Volume: the box's section
+    // (80 x 79 less (4 - pi) 9) 30 high on the plate's (100 x 79 less the same) 2.5 high.
+    {
+        auto rounded_rect = [](double x0, double x1, double y1, double h)
+        {
+            const double r = 3.0;
+            Profile p;
+            p.line(x0 + r, 0, x1 - r, 0, 0).arc(x1 - r, r, 0, 1, r, -PI / 2, 0).line(x1, r, x1, y1 - r, 0).arc(x1 - r, y1 - r, 0, 1, r, 0, PI / 2);
+            p.line(x1 - r, y1, x0 + r, y1, 0).arc(x0 + r, y1 - r, 0, 1, r, PI / 2, PI).line(x0, y1 - r, x0, r, 0).arc(x0 + r, r, 0, 1, r, PI, 1.5 * PI);
+            return p.extrude(h);
+        };
+        smlib_brep *box_ = rounded_rect(0, 80, 79, 32.5), *plate = rounded_rect(-10, 90, 79, 2.5);
+        const double corners = (4.0 - PI) * 9.0;
+        const double want = (80.0 * 79.0 - corners) * 30.0 + (100.0 * 79.0 - corners) * 2.5;
+        for (double turn : {0.0, 1e-13, 1e-11, 1e-9})
+        {
+            const double c = std::cos(turn), sn = std::sin(turn);
+            const double m[4][4] = {{c, -sn, 0, 40 - 40 * c + 39.5 * sn}, {sn, c, 0, 39.5 - 40 * sn - 39.5 * c}, {0, 0, 1, 0}, {0, 0, 0, 1}};
+            smlib_brep *turned = nullptr, *joined = nullptr;
+            CHECK(smlib_brep_transform(plate, m, &turned) == SMLIB_OK);
+            CHECK(turned != nullptr && smlib_boolean(box_, turned, SMLIB_BOOLEAN_UNION, &joined) == SMLIB_OK);
+            if (joined != nullptr)
+            {
+                CHECK(near(volume_of(joined), want, 1e-9));
+                // no sliver: every face spans more than 1e-3 in two directions
+                SmTArray<SmFace *> faces;
+                joined->p->GetFaces(faces);
+                int slivers = 0;
+                for (ULONG i = 0; i < faces.GetSize(); i++)
+                {
+                    SmExtent3d fb;
+                    faces[i]->CalculateBoundingBox(fb);
+                    SmVector3d d = fb.GetMax() - fb.GetMin();
+                    slivers += (d.x > 1e-3) + (d.y > 1e-3) + (d.z > 1e-3) < 2 ? 1 : 0;
+                }
+                std::printf("flange plate turned %g: %lu faces, %d slivers\n", turn, static_cast<unsigned long>(faces.GetSize()), slivers);
+                CHECK(slivers == 0);
+                done(joined);
+            }
+            smlib_brep_free(turned);
+        }
+        smlib_brep_free(box_);
+        smlib_brep_free(plate);
+    }
+
     // A revolved hub (r 8..30, flange 6 tall, boss r 8..18 to 22) and its flange's top annulus
     // extruded 5 up from its edges, each circle two half arcs (SolidCraft rig sweeps/494), joined.
     // The ring's outer wall halves merge into the flange's cylinder; the line between them at 180

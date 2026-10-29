@@ -3419,11 +3419,13 @@ static ULONG lDebugCount = 0 ;
               return SM_SUCCESS;  // Intersections do not exist
             }
 
-          // when plane is tangent to cylinder wall
-          //  or close enough that two solutions are too close together
-          if(   smos_Fabs(dDistPlaneToCenterBot) >= dBotRadius
-             || (   smos_Fabs(dDistPlaneToCenterBot) > dBotRadius-dTol
-                 && (dBotRadius*dBotRadius - dDistPlaneToCenterBot*dDistPlaneToCenterBot) < dTol*dTol))
+          // when plane is tangent to cylinder wall: within tolerance of it along a line.
+          // SolidCraft change: the plane was taken as tangent only when the two crossing lines
+          // were within dTol of each other, so a plane turned 1e-13 rad off a wall it touches
+          // (a flange plate under a box with rounded corners) cut the cylinder 1e-11 deep in two
+          // lines 5e-6 apart, a sliver of face between them; the plane lies within dTol of the
+          // cylinder over that whole band, which is a tangency to tolerance.
+          if( smos_Fabs(dDistPlaneToCenterBot) > dBotRadius-dTol )
             {
               // should have one intersection line, if it exists
 
