@@ -2023,6 +2023,11 @@ SmBoolean bDebugMe = FALSE ;
 
   // Use dimensionless UV area, translated near the loop to avoid cancellation.
   // Error estimates below are refinement differences, not certified bounds.
+  // The floor is relative to the loop's own bounding box (dimensionless too):
+  // a loop's area is a fraction of its box whatever its size, so a small
+  // hole in a large face (0.002 mm across a 3 m plate, 1e-12 of the face's
+  // domain) is oriented as a large one is. A box with no width or no height
+  // bounds no area.
   const double dAreaFloor = 1e-8;
   for(double dAngle = 10.0; dAngle >= 0.1; dAngle /= 10.0)
     {
@@ -2108,7 +2113,10 @@ SmBoolean bDebugMe = FALSE ;
          || (sSampler.m_bClosedV && smos_Fabs(sPrevious.m_sUV.y-sFirst.m_sUV.y) > 0.5*sSampler.m_sSurfDomain.YLength()))
         { return SM_SUCCESS; }
       sSampler.m_dArea += sSampler.SignedArea(sPrevious, sFirst);
-      if(smos_Fabs(sSampler.m_dArea) > 8.0*sSampler.m_dError+dAreaFloor)
+      const double dBoxU = sSampler.m_sBounds.XLength()/dWidth, dBoxV = sSampler.m_sBounds.YLength()/dHeight;
+      if(!(dBoxU > SM_EFF_ZERO && dBoxV > SM_EFF_ZERO))
+        { continue; }
+      if(smos_Fabs(sSampler.m_dArea) > 8.0*sSampler.m_dError+dAreaFloor*dBoxU*dBoxV)
         {
           reLoopOrient = sSampler.m_dArea > 0.0 ? SM_OT_SAME : SM_OT_OPPOSITE;
           return SM_SUCCESS;
