@@ -10,6 +10,7 @@
 #include <SmApiPrimitives.h>
 #include <SmVector3d.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -832,6 +833,52 @@ void crescent_on_rim_join()
     smlib_brep_free(cyl);
 }
 
+// A bicycle frame's seat tube (r 16, from (0, 0, 300) towards the seat top (-150, 0, 820)) one
+// end of it 3.7e-4 short of the seat top, where the top tube (r 16, on to (600, 0, 860)) starts:
+// the seat tube's length rounded to the micrometre, as SolidCraft's bench rounds an agent's
+// numbers. At the side where the two walls touch, the seat's end circle runs within the
+// tolerance of the top tube's wall for a stretch and crosses it there too: the crossing and the
+// stretch's ends fell in one ProtoVertex (its capture ball) as three VertexDefinitions too far
+// apart to combine, and the stretch's edge was kept whole past the crossing's vertex. The
+// merge's classification then found a vertex that was not the edge's and the join failed
+// (SM_ERR) for gaps from 1e-4 to 1e-3. The join now succeeds; its body is one solid between
+// the larger tube and both together.
+void near_coincident_tube_ends_join()
+{
+    // Each tube's circle starts at the side `side` (y = 16 side, -16 the other): the top tube's
+    // seam on the side where the walls touch.
+    auto tube = [](const double a[3], const double b[3], double r, double side)
+    {
+        const double d[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        const double l = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        const double n[3] = {d[0] / l, d[1] / l, d[2] / l};
+        const int64_t kinds[1] = {SMLIB_CURVE_ARC};
+        const double reals[12] = {a[0], a[1], a[2], n[0], n[1], n[2], 0, side, 0, r, 0, 2 * PI};
+        smlib_brep *out = nullptr;
+        CHECK(smlib_extrude(kinds, 1, reals, 12, n, l, 0.0, SMLIB_DRAFT_CORNER_TANGENT, 1, &out, nullptr) == SMLIB_OK);
+        return out;
+    };
+    const double bb[3] = {0, 0, 300}, st[3] = {-150, 0, 820}, ht[3] = {600, 0, 860};
+    const double L = std::sqrt(150.0 * 150.0 + 520.0 * 520.0), l = L - 3.7e-4;
+    const double end[3] = {bb[0] + (st[0] - bb[0]) * l / L, 0, bb[2] + (st[2] - bb[2]) * l / L};
+    smlib_brep *top = tube(st, ht, 16, -1.0), *seat = tube(bb, end, 16, 1.0);
+    if (top != nullptr && seat != nullptr)
+    {
+        smlib_brep *r = nullptr;
+        CHECK(smlib_boolean(top, seat, SMLIB_BOOLEAN_UNION, &r) == SMLIB_OK && r != nullptr);
+        if (r != nullptr)
+        {
+            const double v = volume(r), vt = volume(top), vs = volume(seat);
+            CHECK(v > std::max(vt, vs) && v < vt + vs);
+            int64_t n = -1;
+            CHECK(smlib_brep_solid_count(r, &n) == SMLIB_OK && n == 1);
+            smlib_brep_free(r);
+        }
+    }
+    smlib_brep_free(top);
+    smlib_brep_free(seat);
+}
+
 // The other caller of sm_GetEllipseTrimIntervals, SmCone::IntersectWithPlane (a cone cut
 // obliquely by a plane), with the cone's natural domain and with a trimmed one: a cylinder
 // r 10 x 100 and a cone r 20 -> 10 x 100 (axis z) less everything above a plane through
@@ -941,6 +988,7 @@ int main(int argc, char **argv)
         {"oblique_cone_cuts", oblique_cone_cuts},
         {"hair_off_pin_at_a_seam", hair_off_pin_at_a_seam},
         {"crescent_on_rim_join", crescent_on_rim_join},
+        {"near_coincident_tube_ends_join", near_coincident_tube_ends_join},
     };
     for (const Case &c : cases)
     {

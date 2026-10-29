@@ -22,6 +22,9 @@
 
 #include <SmProtoTopology.h>
 
+#include <algorithm>
+#include <vector>
+
 /* Tolerance considerations:
 - tol stored in SmTopologySolver: I'm pretty sure it adds that tol to the
   Topology's tol.  But sometimes it appears to ignore the topology tol,
@@ -3944,6 +3947,48 @@ SmStatus SmProtoEdge::Resolve()
               SER( eDestruct ); // SolidCraft change: freed first, it is ours either way
             }
           m_sEdgeDefs.ReSet();
+        }
+      else if ( pVD0 != m_pStartPV->GetClosestVertexDefinition( sPt1) )
+        {
+          // SolidCraft change: the curve joins two of the ProtoVertex's VertexDefinitions, which
+          // become two Vertices. Another of its VertexDefinitions, further than its tolerance
+          // from both ends, is a third Vertex: where it lies on the curve (within the curve's
+          // and its own tolerance), the curve runs through that Vertex and is split there, as a
+          // Vertex on an Edge splits it. Kept whole, the Edge ran past a Vertex of its own Face
+          // (a crossing point of two near-tangent circles that also run within tolerance of each
+          // other, the ProtoVertex's capture ball holding all three points).
+          std::vector<double> sSplits;
+          SmTArray<SmVertexDefinition*> & rVDs = m_pStartPV->GetVertexDefinitions();
+          for(ii=0;ii<rVDs.GetSize();ii++)
+            {
+              SmVertexDefinition *pVD = rVDs[ii];
+              if (   pVD == NULL
+                  || pVD == pVD0
+                  || pVD == m_pStartPV->GetClosestVertexDefinition( sPt1) )
+                { continue; }
+              const SmPoint3d & rPos = pVD->GetPosition();
+              const double dOnTol = smos_Max( (double)m_dTol, (double)pVD->GetTolerance() );
+              if (   rPos.DistanceBetween( sPt0 ) <= 2*dOnTol
+                  || rPos.DistanceBetween( sPt1 ) <= 2*dOnTol )
+                { continue; }
+              SmBoolean bOn = FALSE;
+              double dT = 0.0, dDist = 0.0;
+              SER( pIntCurve->DropPoint( m_pXSectInterval, rPos, NULL, dOnTol, NULL, bOn, dT, dDist ) );
+              if ( bOn && dDist <= dOnTol && m_pXSectInterval.ContainsValue( dT, -SM_EFF_ZERO ) )
+                { sSplits.push_back( dT ); }
+            }
+          // Split from the far end back, so that this ProtoEdge stays the piece from the start.
+          std::sort( sSplits.begin(), sSplits.end() );
+          for(jj=static_cast<ULONG>(sSplits.size());jj>0;jj--)
+            {
+              SmProtoVertex *pSplitPV = NULL;
+              SmProtoEdge   *pUpperPE = NULL;
+              SER( this->Split( sSplits[jj-1], pSplitPV, pUpperPE ) );
+            }
+          // Each split left a VertexDefinition of its own at the Vertex's point: combined with
+          // the Vertex's there.
+          if ( !sSplits.empty() )
+            { SER( m_pStartPV->Resolve() ); }
         }
       else
         {
