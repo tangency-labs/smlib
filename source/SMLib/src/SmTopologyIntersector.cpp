@@ -1744,6 +1744,22 @@ TCHAR     sDebugBuff[SM_TBLOCK_SIZE] ;
       });
 #endif // SM_USE_TBB
 
+  // Each face's bounding box, for skipping the pairs below that lie apart. The surface checks
+  // there see whole surfaces, not faces: Boolean2D grows every plane to cover the whole sheet,
+  // so every pair of a sheet's faces passed the coincidence check and classified its edges on
+  // the other face, n^2 work for a sheet of n holes. A box that cannot be computed, or holds
+  // nothing (a face with no edges on a surface linear in one direction), rules nothing out.
+  SmTArray< SmExtent3d > sFaceBoxes1, sFaceBoxes2;
+  for(ii=0;ii<lNumFaces1+lNumFaces2;ii++)
+    {
+      SmFace     * pF   = ii < lNumFaces1 ? sFaces1[ii] : sFaces2[ii-lNumFaces1];
+      SmExtent3d   sBox;
+      if ( pF->CalculateBoundingBox( sBox ) != SM_SUCCESS || sBox.HasNegativeVolume() )
+        { sBox.SetUnbounded(); }
+      if ( ii < lNumFaces1 ) { sFaceBoxes1.Add( sBox ); }
+      else                   { sFaceBoxes2.Add( sBox ); }
+    }
+
   // for every m_pBrep/m_pOther face pair - find and store coincidences and XSections
   for(ii=0;ii<lNumFaces1;ii++)
     {
@@ -1811,9 +1827,13 @@ TCHAR     sDebugBuff[SM_TBLOCK_SIZE] ;
           SM_OLDTOL_LINE double dTol = this->GetThisApproxTol3d();
 #endif // SM_USE_OLDTOL
 
+          // no work - faces farther apart than the intersection tolerance cannot meet
+          if ( sFaceBoxes1[ii].AreDisjoint( sFaceBoxes2[jj], dTol ) )
+            { continue; }
+
           // For coincident surfaces, all we have to do is Relate() them,
           // the rest is already done.  Create a ProtoFace.
-          
+
           // Check for coincident surfaces -- partial coincidence is ok.
           // Tol: sum of Faces' tols (or default min).
           bAreCoincident = FALSE;

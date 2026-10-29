@@ -13367,6 +13367,30 @@ SmBoolean bDebugMe=FALSE;
           pFace->GetLoops(sFaceLoops) ;
           // SmLoop  * pFaceOuterLoop = sFaceLoops[0] ;
 
+          // On a plane the region a loop bounds lies within the loop's box, so an inner loop
+          // sampled outside the box of pNewF's outer loop is not in pNewF and stays in pFace:
+          // without this every closed loop imprinted in a face classified each of its inner
+          // loops, n^2 work for a sheet of n holes. Only when every edge has a box.
+          SmExtent3d sNewFOuterBox ;
+          SmBoolean  bHaveNewFOuterBox = pFace->GetSurface()->IsKindOf(SmPlane_TYPE)
+                                      && pNewF->GetSurface()->IsKindOf(SmPlane_TYPE) ;
+          if (bHaveNewFOuterBox)
+            {
+              SmTArray<SmEdge*> sNewFOuterEdges ;
+              pNewF->GetOuterLoopEdges(sNewFOuterEdges) ;
+              bHaveNewFOuterBox = sNewFOuterEdges.GetSize() > 0 ;
+              for (ULONG e=0; bHaveNewFOuterBox && e<sNewFOuterEdges.GetSize(); e++)
+                {
+                  SmEdge     * pE = sNewFOuterEdges[e] ;
+                  SmExtent3d   sEdgeBox ;
+                  if (   pE->GetCurve() == NULL
+                      || pE->GetCurve()->CalculateBoundingBox(pE->GetInterval(), &sEdgeBox) != SM_SUCCESS)
+                    { bHaveNewFOuterBox = FALSE ; break ; }
+                  sEdgeBox.ExpandAbsolute(pE->GetTolerance()) ;
+                  sNewFOuterBox.Union(sEdgeBox, sNewFOuterBox) ;
+                }
+            }
+
           // for every pFace->InnerLoop - move nested inner loops from pFace to pNewF as needed
           for (ULONG i=1; i<sFaceLoops.GetSize();i++)
             {
@@ -13399,6 +13423,10 @@ SmBoolean bDebugMe=FALSE;
 
                   SER(pEdge->GetCurve()->EvaluatePoint(sIvl.Evaluate(0.34567),sTestPoint)) ;
                 }
+
+              // no move - TestPoint is outside pNewF->OuterLoop's box, even at the retry tolerance below
+              if (bHaveNewFOuterBox && !sNewFOuterBox.ContainsPoint3d(sTestPoint, dPointTol*100.0))
+                { continue ; }
 
 #ifdef SM_DEBUG_CODE
               // draw TestPoint(red), LoopBeingClassified(blue), pNewF(green)
