@@ -3932,6 +3932,29 @@ int main()
         smlib_brep_free(ball);
     }
 
+    // A sheet on a B-spline with simple inner knots (a gentle cubic wave of 6 control points,
+    // knots 0 0 0 0 1/3 2/3 1 1 1 1, extruded 10 along y) offset by 0.5: its faces are on SMLib's offset
+    // surface, which export approximates as cubic Bezier patches. The approximation took the
+    // root B-spline's simple knots for full ones, ran its patches past the control points and
+    // answered success with no surface: the export failed (1001).
+    {
+        const int64_t kinds[3] = {SMLIB_CURVE_NURBS, 3, 6};
+        const double reals[34] = {0, 0, 0, 1, 2, 0, 0.4, 1, 4, 0, -0.4, 1, 6, 0, 0.4, 1, 8, 0, -0.4, 1, 10, 0, 0, 1,
+                                       0, 0, 0, 0, 1.0 / 3.0, 2.0 / 3.0, 1, 1, 1, 1};
+        const double along[3] = {0, 1, 0};
+        smlib_brep *wave = nullptr;
+        CHECK(smlib_extrude(kinds, 3, reals, 34, along, 10.0, 0.0, 0, 0, &wave, nullptr) == SMLIB_OK);
+        CHECK(wave != nullptr && smlib_offset_sheet(wave, 0.5, &r) == SMLIB_OK);
+        if (r != nullptr)
+        {
+            smlib_flat *flat = nullptr;
+            CHECK(smlib_brep_export(r, &flat) == SMLIB_OK && flat != nullptr);
+            smlib_flat_free(flat);
+            done(r);
+        }
+        smlib_brep_free(wave);
+    }
+
     // Two holes 6 apart cut one after the other through a disc: the second hole's wall meets the
     // first's (trimmed to the disc) in two lines. Parallel cylinders are intersected by
     // SmCone::IntersectWithCone, which once took the lines' span from the whole cylinders, so
