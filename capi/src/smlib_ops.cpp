@@ -19,6 +19,7 @@
 #include <SmApiQueries.h>
 #include <SmAttribute.h>
 #include <SmBSplineCurve.h>
+#include <SmCone.h>
 #include <SmEdge.h>
 #include <SmEdgeuse.h>
 #include <SmFace.h>
@@ -861,6 +862,108 @@ int32_t move_faces(SmBrep *b, const std::vector<SmFace *> &picked, double distan
     }
 }
 
+// The outward normal of face `f` of `b` at `at` (a point on it): its surface's normal there,
+// turned with the outer faceuse. False where SMLib cannot place the point on the surface.
+bool outward_normal(const SmBrep *b, const SmFace *f, const SmPoint3d &at, SmVector3d &n)
+{
+    const SmSurface *surf = f->GetSurface();
+    SmFaceuse *fu = outer_faceuse(b, f);
+    if (surf == nullptr || fu == nullptr)
+    {
+        return false;
+    }
+    SmPoint2d step, nurb;
+    SmLocationType loc;
+    if (!SmSurface::STEPInversionAnswered(surf->STEPInversion(surf->GetSTEPUVDomain(), at, 1e6, step, loc)) ||
+        surf->ConvertUVFromSTEPToNURBS(step, nurb) != SM_SUCCESS || surf->EvaluateNormal(nurb, TRUE, TRUE, n) != SM_SUCCESS)
+    {
+        return false;
+    }
+    if (fu->GetOrientation() != SM_OT_SAME)
+    {
+        n = -n;
+    }
+    return true;
+}
+
+// The cone a cylindrical face (on `cyl`, its outward normal `n` at `inside`) becomes drafted by
+// `angle` radians about its circle on the neutral plane (through `origin`, normal `normal`) so
+// that it leans in going along `pull`, which runs along the cylinder's axis: its radius
+// R - s h tan(angle) at height h along the pull from that circle, s = 1 where the face looks away
+// from the axis (a pin), -1 where it looks towards it (a hole). It is the cylinder's own NURBS
+// with each control point moved radially by that factor at its height (exact: the cylinder's
+// points are its circles' control polygons stacked along the axis, its rulings straight), so it
+// keeps the cylinder's parameters and the face's UV trims stay where they were; then the SmCone
+// SMLib's own test finds in it (CopyAndAddAnalytics). `out` NULL (with SMLIB_OK) when the pull
+// does not run along the axis; SMLIB_ERR_UNSUPPORTED when the cone would close within the
+// cylinder's span.
+int32_t drafted_cylinder(const SmContext &ctx, const SmCone *cyl, const SmVector3d &n, const SmPoint3d &inside, const SmPoint3d &origin,
+                         const SmVector3d &normal, const SmVector3d &pull, double angle, SmSurface *&out)
+{
+    out = nullptr;
+    const SmAxis2Placement &pos = cyl->GetPosition();
+    SmVector3d z = pos.GetZAxis();
+    if (z.Unitize() != SM_SUCCESS || std::fabs(std::fabs(z.Dot(pull)) - 1.0) > 1e-9)
+    {
+        return SMLIB_OK;
+    }
+    const SmPoint3d axis = pos.GetOrigin();
+    const double along = z.Dot(normal);
+    if (std::fabs(along) < 1e-12)
+    {
+        return SMLIB_ERR_UNSUPPORTED;
+    }
+    // The hinge circle's centre: the axis on the neutral plane.
+    const SmPoint3d centre = axis + z * ((origin - axis).Dot(normal) / along);
+    const SmVector3d radial = (inside - centre) - pull * (inside - centre).Dot(pull);
+    const double s = radial.Dot(n) >= 0.0 ? 1.0 : -1.0, t = std::tan(angle);
+    SmSurface *nurb = nullptr;
+    if (cyl->SmBSplineSurface::Copy(ctx, nurb) != SM_SUCCESS || nurb == nullptr)
+    {
+        delete nurb;
+        return SMLIB_ERR_UNSUPPORTED;
+    }
+    std::unique_ptr<SmSurface> own(nurb);
+    SmBSplineSurface *net = SM_CAST_PTR(SmBSplineSurface, nurb);
+    const double r = cyl->GetBotRadius();
+    if (net == nullptr || !(r > 0.0))
+    {
+        return SMLIB_ERR_UNSUPPORTED;
+    }
+    const ULONG nu = net->GetNumberControlPoints(SM_SP_U), nv = net->GetNumberControlPoints(SM_SP_V);
+    for (ULONG i = 0; i < nu; i++)
+    {
+        for (ULONG j = 0; j < nv; j++)
+        {
+            SmPoint3d p;
+            double w = 1.0;
+            if (net->GetControlPoint(SM_CP_EUCLIDIAN_RATIONAL, i, j, p, w) != SM_SUCCESS)
+            {
+                return SMLIB_ERR_UNSUPPORTED;
+            }
+            const double h = (p - centre).Dot(pull);
+            const double k = (r - s * t * h) / r;
+            if (!(k > 0.0))
+            {
+                return SMLIB_ERR_UNSUPPORTED;
+            }
+            const SmPoint3d foot = centre + pull * h;
+            if (net->SetControlPoint(SM_CP_EUCLIDIAN_RATIONAL, i, j, foot + (p - foot) * k, w) != SM_SUCCESS)
+            {
+                return SMLIB_ERR_UNSUPPORTED;
+            }
+        }
+    }
+    SmSurface *cone = nullptr;
+    if (net->CopyAndAddAnalytics(ctx, cone) != SM_SUCCESS || cone == nullptr)
+    {
+        delete cone;
+        return SMLIB_ERR_UNSUPPORTED;
+    }
+    out = cone;
+    return SMLIB_OK;
+}
+
 // Tilts each face of `picked` (planes only) by `angle` radians about its line on the neutral
 // plane (through `origin`, normal `normal`), so that it leans in going along `pull`, then lets
 // SMLib's local operation extend or trim the faces around it to meet the tilted planes. A face
@@ -887,6 +990,26 @@ int32_t draft_faces(SmBrep *b, const std::vector<SmFace *> &picked, const SmPoin
         if (surf == nullptr || fu == nullptr)
         {
             return give_up(static_cast<int32_t>(SM_ERR_INVALID_INPUT));
+        }
+        // A cylinder drafted becomes a cone (drafted_cylinder).
+        const SmCone *cyl = surf->IsKindOf(SmCone_TYPE) ? static_cast<const SmCone *>(surf) : nullptr;
+        if (cyl != nullptr && std::fabs(cyl->GetBotRadius() - cyl->GetTopRadius()) <= 1e-12 * (1.0 + cyl->GetBotRadius()))
+        {
+            SmPoint3d inside;
+            SmVector3d n;
+            if (SmApiFaceInternalPoint(f, inside) != SM_SUCCESS || !outward_normal(b, f, inside, n))
+            {
+                return give_up(static_cast<int32_t>(SM_ERR_INVALID_INPUT));
+            }
+            SmSurface *cone = nullptr;
+            const int32_t st = drafted_cylinder(ctx, cyl, n, inside, origin, normal, pull, angle, cone);
+            if (st != SMLIB_OK || cone == nullptr)
+            {
+                return give_up(st != SMLIB_OK ? st : SMLIB_ERR_UNSUPPORTED);
+            }
+            faces.Add(f);
+            surfaces.Add(cone);
+            continue;
         }
         if (!surf->IsKindOf(SmPlane_TYPE))
         {
