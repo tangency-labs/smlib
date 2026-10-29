@@ -21,6 +21,7 @@
 #include <SmEdge.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -1179,6 +1180,97 @@ void TorusFormRoundTrip()
         std::printf("torus face given as Stock-head's form: imports %s, form %s, then a fixed point (worst %.3g)\n", ok ? "ok" : "refused",
                     kept ? "kept" : "changed", fixed);
         CHECK(ok && kept && fixed <= 1e-12);
+    }
+    // A torus face given with a form that runs once round the tube from its bottom (tube angle
+    // -90 degrees: SolidCraft forms a face covering most of its tube so), the face half of it, 80 mm
+    // from the origin (an alternator's fillet, R 13.1934, r 1.25). Recognising the torus in the
+    // form reads the tube's ends from the form's first and last points, each to the rounding of
+    // its coordinates (8e-13 degrees here): the whole turn was taken for a sliver 2e-12 degrees
+    // long, and the face refused.
+    {
+        const double R = 13.1934, r = 1.25, h = std::sqrt(0.5);
+        const double c[3] = {-28.640080455029999, 39.419688939149999, -63.4255};
+        const double z[3] = {-0.58778525229251344, 0.80901699437491859, 0}, x[3] = {0, 0, -1};
+        // The sweep: a quarter turn from x to y = z cross x. The tube: a whole turn from -90
+        // degrees, in four quarters. The control points are the alternator's, to the bit (the
+        // ends' rounding decides): c + rho (x or y, or x + y in the middle) + height z, with rho
+        // and height R, -r; R + r, -r; R + r, 0; ... about the tube's centre circle.
+        Patch f;
+        f.nu = 3;
+        f.nv = 9;
+        f.u.order = f.v.order = 3;
+        f.u.knots = {3, 3, 3, 4, 4, 4};
+        f.v.knots = {-1, -1, -1, 0, 0, 1, 1, 2, 2, 3, 3, 3};
+        f.cvs = {-27.905348889664353, 38.408417696181353, -76.618899999999996, -27.905348889664353, 38.408417696181353, -77.868899999999996,
+                 -28.640080455029995, 39.419688939149999, -77.868899999999996, -29.374812020395638, 40.430960182118646, -77.868899999999996,
+                 -29.374812020395638, 40.430960182118646, -76.618899999999996, -29.374812020395641, 40.430960182118646, -75.368899999999996,
+                 -28.640080455029999, 39.419688939149999, -75.368899999999996, -27.905348889664356, 38.408417696181353, -75.368899999999996,
+                 -27.905348889664353, 38.408417696181353, -76.618899999999996, -38.579033703250403, 30.653531748585308, -76.618899999999996,
+                 -39.590304946219049, 29.918800183219666, -77.868899999999996, -40.325036511584692, 30.930071426188313, -77.868899999999996,
+                 -41.059768076950334, 31.94134266915696, -77.868899999999996, -40.048496833981687, 32.676074234522602, -76.618899999999996,
+                 -39.037225591013041, 33.410805799888244, -75.368899999999996, -38.302494025647398, 32.399534556919598, -75.368899999999996,
+                 -37.567762460281756, 31.388263313950951, -75.368899999999996, -38.579033703250403, 30.653531748585308, -76.618899999999996,
+                 -38.579033703250403, 30.653531748585308, -63.4255, -39.590304946219057, 29.918800183219666, -63.4255,
+                 -40.325036511584699, 30.930071426188313, -63.4255, -41.059768076950341, 31.941342669156956, -63.4255,
+                 -40.048496833981687, 32.676074234522602, -63.4255, -39.037225591013041, 33.410805799888244, -63.4255,
+                 -38.302494025647398, 32.399534556919598, -63.4255, -37.567762460281756, 31.388263313950951, -63.4255,
+                 -38.579033703250403, 30.653531748585308, -63.4255};
+        for (double ws : {1.0, h, 1.0})
+        {
+            for (int j = 0; j < 9; ++j)
+            {
+                f.weights.push_back(ws * (j % 2 == 0 ? 1.0 : h));
+            }
+        }
+        // Bounded by the tube circles at the sweep's ends (v 0 to 2: the tube from its outer
+        // equator over the top to its inner one) and the sweep arcs on those equators (control
+        // rows 2 and 6).
+        std::vector<SheetEdge> edges(4);
+        edges[0].curve = PatchIso(f, true, 2, false);
+        edges[0].from = 0;
+        edges[0].to = 1;
+        edges[1].curve = PatchIso(f, false, f.nu - 1, false);
+        edges[1].from = 1;
+        edges[1].to = 2;
+        edges[2].curve = PatchIso(f, true, 6, true);
+        edges[2].from = 2;
+        edges[2].to = 3;
+        edges[3].curve = PatchIso(f, false, 0, true);
+        edges[3].from = 3;
+        edges[3].to = 0;
+        for (SheetEdge &e : edges)
+        {
+            const bool tubeCircle = e.curve.knots.size() == f.v.knots.size();
+            e.t0 = tubeCircle ? 0.0 : e.curve.knots.front();
+            e.t1 = tubeCircle ? 2.0 : e.curve.knots.back();
+        }
+        std::vector<double> vertices;
+        for (const auto &uv : {std::array<double, 2>{3, 0}, {4, 0}, {4, 2}, {3, 2}})
+        {
+            const std::vector<double> p = PatchPoint(f, uv[0], uv[1]);
+            vertices.insert(vertices.end(), p.begin(), p.end());
+        }
+        Arrays given = SheetArrays(f, edges, vertices, {1e-5, 1e-5, 1e-5, 1e-5});
+        given.f[SMLIB_FLAT_FACE_RANGE] = {3, 0, 4, 2};
+        given.i[SMLIB_FLAT_FACE_SURFACE_TYPE] = {SMLIB_FLAT_SURFACE_TORUS};
+        given.i[SMLIB_FLAT_FACE_NURBS_FORM] = {1};
+        given.f[SMLIB_FLAT_FACE_TORUS_ORIGIN] = {c[0], c[1], c[2]};
+        given.f[SMLIB_FLAT_FACE_TORUS_AXIS] = {z[0], z[1], z[2]};
+        given.f[SMLIB_FLAT_FACE_TORUS_REF_DIRECTION] = {x[0], x[1], x[2]};
+        given.f[SMLIB_FLAT_FACE_TORUS_MAJOR_RADIUS] = {R};
+        given.f[SMLIB_FLAT_FACE_TORUS_MINOR_RADIUS] = {r};
+        Arrays first;
+        const bool ok = ImportExport(given, "whole-tube torus form", first);
+        bool kept = ok;
+        for (int32_t id : {SMLIB_FLAT_FACE_NURBS_CVS, SMLIB_FLAT_FACE_NURBS_U_KNOTS, SMLIB_FLAT_FACE_NURBS_V_KNOTS, SMLIB_FLAT_FACE_NURBS_WEIGHTS})
+        {
+            kept = kept && given.f.at(id) == first.f.at(id);
+        }
+        const double dR = ok ? std::fabs(first.f.at(SMLIB_FLAT_FACE_TORUS_MAJOR_RADIUS).at(0) - R) : INFINITY;
+        const double dr = ok ? std::fabs(first.f.at(SMLIB_FLAT_FACE_TORUS_MINOR_RADIUS).at(0) - r) : INFINITY;
+        std::printf("torus face on a form once round its tube from the bottom, 80 mm out: imports %s, form %s, radii off by %.3g and %.3g\n",
+                    ok ? "ok" : "refused", kept ? "kept" : "changed", dR, dr);
+        CHECK(ok && kept && dR <= 1e-9 && dr <= 1e-9);
     }
     for (const Case &c : cases)
     {
