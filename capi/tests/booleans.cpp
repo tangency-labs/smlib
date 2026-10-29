@@ -799,6 +799,39 @@ void equal_tubes_join()
     }
 }
 
+// A cylinder r 10, z 0..10, joined to a crescent prism z 10..15 standing on its rim from outside:
+// the crescent is the disc r 6 about (10, 0) less the cylinder's circle, so the two touch only
+// along the arc of the rim. The arc runs across the cylinder's seam at (10, 0, 10); turned a
+// quarter turn it does not. Across the seam, closing the intersection loop related the rim's
+// long arc to the crescent's r 6 arc, which only shares its ends, and the r 6 wall was built
+// on the rim's circle (an edge 37.9 off its face). Two solids touching along the arc.
+void crescent_on_rim_join()
+{
+    const double x = (100.0 - 36.0 + 100.0) / 20.0, y = std::sqrt(100.0 - x * x);
+    const double th = std::atan2(y, x), ph = std::atan2(y, x - 10.0);
+    const double lens = 100.0 * std::acos(0.82) + 36.0 * std::acos(0.3) - 0.5 * std::sqrt(6.0 * 14.0 * 6.0 * 26.0);
+    const double want = PI * 100.0 * 10.0 + (PI * 36.0 - lens) * 5.0;
+    smlib_brep *cyl = cylinder(2, 0, 0, 0, 10, 10);
+    for (int turned = 0; turned < 2; ++turned)
+    {
+        // The r 6 arc from the lower corner round through the far side to the upper one, then the
+        // rim's arc back (counter-clockwise about -z).
+        const int64_t kinds[2] = {SMLIB_CURVE_ARC, SMLIB_CURVE_ARC};
+        const double c = turned ? 0.0 : 1.0, sn = turned ? 1.0 : 0.0;
+        const double reals[24] = {10 * c, 10 * sn, 10, 0, 0, 1, c, sn, 0, 6, -ph, ph,
+                                  0, 0, 10, 0, 0, -1, c * std::cos(th) - sn * std::sin(th), sn * std::cos(th) + c * std::sin(th), 0, 10, 0, 2 * th};
+        const double up[3] = {0, 0, 1};
+        smlib_brep *cres = nullptr;
+        CHECK(smlib_extrude(kinds, 2, reals, 24, up, 5.0, 0.0, SMLIB_DRAFT_CORNER_TANGENT, 1, &cres, nullptr) == SMLIB_OK);
+        if (cres != nullptr)
+        {
+            expect(turned ? "crescent clear of the seam" : "crescent across the seam", cyl, cres, SMLIB_BOOLEAN_UNION, want, 1e-9, 2);
+            smlib_brep_free(cres);
+        }
+    }
+    smlib_brep_free(cyl);
+}
+
 // The other caller of sm_GetEllipseTrimIntervals, SmCone::IntersectWithPlane (a cone cut
 // obliquely by a plane), with the cone's natural domain and with a trimmed one: a cylinder
 // r 10 x 100 and a cone r 20 -> 10 x 100 (axis z) less everything above a plane through
@@ -907,6 +940,7 @@ int main(int argc, char **argv)
         {"equal_tubes_join", equal_tubes_join},
         {"oblique_cone_cuts", oblique_cone_cuts},
         {"hair_off_pin_at_a_seam", hair_off_pin_at_a_seam},
+        {"crescent_on_rim_join", crescent_on_rim_join},
     };
     for (const Case &c : cases)
     {

@@ -6237,7 +6237,14 @@ SmBoolean bDebugMe = FALSE;
                   SER(pBE->GetPrimaryEdgeuse()->NormalizedEvaluate(0.5,FALSE,sMidPnt));  // TRUE = UV Eval, FALSE = 3d Eval
 
                   // drop midPoint to sole other m_pOther Brep edge connected to mated vertex
+                  // SolidCraft change: the closest point must lie within the edges' tolerance (the
+                  // closest-point drop always succeeds, and its success alone was taken): two
+                  // different edges between the same pair of vertices, such as a circle's long
+                  // arc and another solid's arc that only shares its ends, were related as one.
                   SmEdge *pOEdge = sOCommonEdges[0];
+                  const double dBETol = pBE->GetTolerance();
+                  const double dOETol = pOEdge->GetTolerance();
+                  const double dOnTol = smos_Max(dMaxDist*2.0, smos_Max(dBETol, dOETol));
                   SmBoolean bSuccess;
                   double dParam = 0.0, dDistToCurve = 0.0;
                   SER(pOEdge->GetCurve()->DropPoint
@@ -6260,7 +6267,7 @@ SmBoolean bDebugMe = FALSE;
                                                        //      default:[SM_SO_MINIMIZE] to preserve original behavior
 
                   // when point dropped to curve within tolerance
-                  if (bSuccess)
+                  if (bSuccess && dDistToCurve <= dOnTol)
                     {
                       // add the edge pair to the list of mated object
                       // thus filling a potential intersection loop gap
