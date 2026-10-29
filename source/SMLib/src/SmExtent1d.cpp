@@ -1226,14 +1226,20 @@ SmBoolean SmExtent1d::ContainsPeriodicValue
           && dMapValue < m_dMax + dScaledZero);
 
   // If our interval is smaller than dPeriod, and dMapValue is very near
-  // the top of the period (sIvl), it should be at the start of the interval.
+  // the top of the period (sIvl), it belongs a period down, at the start of the interval.
+  // SolidCraft change: moved down by the period, not set to the interval's start. Set there, a
+  // value up to the tolerance (1e-4 degrees) past it was taken back to it: an arc's point that
+  // far along was inverted to the arc's start, and an ellipse arc shorter than that inverted
+  // every point of it to its start (SmEllipse test 2 failed on a piece 7e-5 degrees long).
   if ( ! bRtn )
     {
       if ( SM_ARE_SAME_TO_TOL( dMapValue, sIvl.GetMax(), dScaledZero ) )
         {
-          if ( SM_ARE_SAME_TO_TOL( dMapValue-dPeriod, m_dMin, dScaledZero ) )
+          double dDown = dMapValue - dPeriod;
+          if (   dDown > m_dMin - dScaledZero
+              && dDown < m_dMax + dScaledZero )
             {
-              dMapValue = m_dMin;
+              dMapValue = dDown;
               bRtn = TRUE;
             }
         }
