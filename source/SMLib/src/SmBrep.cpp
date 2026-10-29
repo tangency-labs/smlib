@@ -12107,6 +12107,20 @@ SmStatus SmBrep::LocalOperation
   // get Brep Bounding box and that box's sphere center and radius
   SmExtent3d sBBox;
   SER( CalculateBoundingBox( sBBox)  );
+
+  // SolidCraft change: the box also holds the replacement surfaces. Their faces' edges are
+  // found by extending the neighbouring surfaces to meet them, by a distance sized from this
+  // box: sized from the original body alone, a face moved further than about its size away
+  // left the extended neighbours short of it and the edge was not found.
+  for ( ULONG j=0; j<rNewSurfaces.GetSize(); j++ )
+    {
+      SmSurface *pNewSurf = rNewSurfaces[j];
+      if ( pNewSurf == NULL ) { continue; }
+      SmExtent3d sSurfBox;
+      SER( pNewSurf->CalculateBoundingBox( pNewSurf->GetNaturalUVDomain(), &sSurfBox) );
+      sBBox.Union( sSurfBox, sBBox );
+    }
+
   SmPoint3d sCenter;
   double dSphRadius;
   sBBox.ComputeSphereBound( sCenter, dSphRadius) ;
