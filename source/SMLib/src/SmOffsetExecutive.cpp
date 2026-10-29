@@ -505,6 +505,12 @@ SmStatus SmOffsetExecutive::ShellBrep
       rbInputOwnershipTransferred = TRUE;
       rpShellBrep = pResult;
     }
+  // SolidCraft change: the shell's edges between analytic faces are their exact lines and
+  // conics, not the marched intersections of the offset and the boolean (a round's offset met
+  // the open face's plane on a cubic 2.4e-6 off the circle, so the rim of a shelled rounded box
+  // was no arcs).
+  if (rpShellBrep != NULL)
+    { SER( SmOffsetGeometryCreation::MakeEdgesOnAnalyticsExact( crContext, rpShellBrep )); }
 #ifdef SM_DEBUG_CODE
   if (bDebugMe)
   {

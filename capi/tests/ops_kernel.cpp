@@ -13,6 +13,7 @@
 #include <SmApiQueries.h>
 #include <SmBSplineCurve.h>
 #include <SmBSplineSurface.h>
+#include <SmCone.h>
 #include <SmCylinder.h>
 #include <SmExtent3d.h>
 #include <SmEdge.h>
@@ -1132,6 +1133,77 @@ void chamfered_hole_rim_is_a_cone()
     {
         smlib_brep_free(x);
     }
+}
+
+// An 80 x 60 x 30 box, its four upright edges rounded R6 and shelled 2 inward, open at its top
+// (SolidCraft's enclosure rim: robustness lip_on_a_rounded_shelled_rim). The inner walls are the
+// planes 2 in and the rounds' offsets, cylinders R4 about the same axes: the rim's inner edges
+// on the top are those lines and quarter circles, exact conics on the offsets. They used to be
+// cubics marched over the offset surfaces, 2.4e-6 off the circles, so a sketch projected from the rim came apart at its corners and the
+// lip refused the rim's edges.
+void shelled_rounded_box_rim()
+{
+    smlib_brep *b = box(-40, -30, 0, 80, 60, 30), *round = nullptr, *shell = nullptr;
+    const double edges[12] = {40, 30, 15, -40, 30, 15, -40, -30, 15, 40, -30, 15};
+    CHECK(smlib_fillet(b, edges, 4, 0.1, 6.0, &round, nullptr) == SMLIB_OK);
+    const double top[3] = {0, 0, 30};
+    CHECK(round != nullptr && smlib_shell(round, top, 1, 0.1, -2.0, &shell, nullptr) == SMLIB_OK);
+    // The worst distance from the top rim's arcs of `body` (on circles of radius r about
+    // (+-34, +-24)) to their ideal circles, and how many arcs there are; each must be an SMLib
+    // circle.
+    auto arcs = [](const smlib_brep *body, double r, int &count)
+    {
+        double worst = 0;
+        count = 0;
+        SmTArray<SmEdge *> all;
+        body->p->GetEdges(all);
+        for (ULONG i = 0; i < all.GetSize(); i++)
+        {
+            SmExtent1d ivl = all[i]->GetInterval();
+            SmPoint3d mid;
+            CHECK(all[i]->GetCurve()->EvaluatePoint(ivl.Evaluate(0.5), mid) == SM_SUCCESS);
+            const double off = std::fabs(std::hypot(std::fabs(mid.x) - 34.0, std::fabs(mid.y) - 24.0) - r);
+            if (std::fabs(mid.z - 30.0) > 1e-6 || std::fabs(mid.x) < 34.0 || std::fabs(mid.y) < 24.0 || off > 1e-3)
+            {
+                continue;
+            }
+            count++;
+            CHECK(all[i]->GetCurve()->IsKindOf(SmCircle_TYPE));
+            for (int k = 0; k <= 256; k++)
+            {
+                SmPoint3d p;
+                CHECK(all[i]->GetCurve()->EvaluatePoint(ivl.Evaluate(k / 256.0), p) == SM_SUCCESS);
+                worst = std::max(worst, std::fabs(std::hypot(std::fabs(p.x) - 34.0, std::fabs(p.y) - 24.0) - r) + std::fabs(p.z - 30.0));
+            }
+        }
+        return worst;
+    };
+    if (shell != nullptr)
+    {
+        CHECK(sound(shell));
+        // The rounds' offsets, as SMLib holds them: 4 within 1e-9 (the shell's working copy of
+        // the rounds re-derives their cylinders from their NURBS forms, 3.2e-10 out). The rim's
+        // arcs lie on them.
+        double radius = 0.0;
+        SmTArray<SmFace *> faces;
+        shell->p->GetFaces(faces);
+        for (ULONG i = 0; i < faces.GetSize(); i++)
+        {
+            const SmCone *c = SM_CAST_PTR(SmCone, faces[i]->GetSurface());
+            if (c != nullptr && std::fabs(c->GetBotRadius() - 4.0) < 1e-3)
+            {
+                radius = c->GetBotRadius();
+            }
+        }
+        int n_shell = 0;
+        const double w_shell = arcs(shell, radius, n_shell);
+        std::printf("shelled rounded box rim: arcs %.3g off radius 4 %+.3g\n", w_shell, radius - 4.0);
+        CHECK(n_shell == 4 && std::fabs(radius - 4.0) < 1e-9);
+        CHECK(w_shell < 1e-12);
+    }
+    smlib_brep_free(shell);
+    smlib_brep_free(round);
+    smlib_brep_free(b);
 }
 
 // The analytic STEPInversion() answers: SM_SUCCESS on the surface, SM_ERR_OUTSIDE_OF_DOMAIN
@@ -4168,6 +4240,7 @@ int main()
     analytic_step_inversion();
     shelled_dome_rim();
     chamfered_hole_rim_is_a_cone();
+    shelled_rounded_box_rim();
     corner_setback();
     corner_setback_open();
     setback_sections_are_exact_arcs();
