@@ -1277,7 +1277,8 @@ void shell_thicker_than_a_step()
 // A pin r 10, 20 tall, its side drafted 5 degrees about its base circle (neutral z = 0, pull +z):
 // the frustum from r 10 to 10 - 20 tan 5. A 30 x 30 x 10 block's through hole r 5 drafted the
 // same way widens to 5 + 10 tan 5 at the top. (SolidCraft draft_on_a_cylinder_side_makes_a_frustum,
-// draft_takes_a_cylinders_side_by_name.)
+// draft_takes_a_cylinders_side_by_name.) A cone r 10 at its base to 8 at its top, 20 tall, drafted
+// the same way turns its generators 5 degrees more: r 10 + 20 tan(atan(-0.1) - 5 deg) at the top.
 void drafted_cylinders_are_cones()
 {
     const double neutral[3] = {0, 0, 0}, up[3] = {0, 0, 1}, a = 5.0 * PI / 180.0;
@@ -1301,7 +1302,20 @@ void drafted_cylinders_are_cones()
         CHECK(sound(r));
         CHECK(near(volume_of(r), 9000.0 - frustum(10, 5, 5 + 10 * std::tan(a)), 1e-7));
     }
-    for (smlib_brep *x : {pin, b, c, holed, r})
+    smlib_brep_free(r);
+    r = nullptr;
+    const double base[3] = {0, 0, 0}, flank[3] = {0, 9, 10};
+    smlib_brep *cone = nullptr;
+    CHECK(smlib_make_cone(base, 10, 8, 20, &cone) == SMLIB_OK);
+    CHECK(cone != nullptr && smlib_draft(cone, flank, 1, 0.1, neutral, up, up, a, &r, nullptr) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        CHECK(sound(r));
+        const double top = 10 + 20 * std::tan(std::atan(-0.1) - a);
+        std::printf("drafted cone: volume %.12g vs %.12g\n", volume_of(r), frustum(20, 10, top));
+        CHECK(near(volume_of(r), frustum(20, 10, top), 1e-7));
+    }
+    for (smlib_brep *x : {pin, b, c, holed, cone, r})
     {
         smlib_brep_free(x);
     }
