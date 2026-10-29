@@ -3541,8 +3541,10 @@ SmStatus SmOffsetExecutive::CloseLoopGap
       {
         double dAt = sTSolutions[0].m_vStart[0];
         SmExtent1d sKeep = (lCrvEnd == 0) ? SmExtent1d(dAt, sIvl.GetMax()) : SmExtent1d(sIvl.GetMin(), dAt);
+        // The vertex moved to the edge's other end or past it: the edge vanishes, the face turns
+        // inside out (a shell thicker than a step beside it).
         if (!(sKeep.GetLength() > SM_EFF_ZERO * (1.0 + sIvl.GetMaxDimension())))
-          { SER(SM_ERR); }
+          { SER(SM_ERR_OFFSET_EDGE_VANISHES); }
         SER(pCurve->Trim(sKeep));
         sCleanCurve.Clear();
         pEdge->SetCurve(pCurve, TRUE);

@@ -1251,6 +1251,29 @@ void shelled_box_with_a_drilled_hole()
     smlib_brep_free(b);
 }
 
+// A 30 x 35 x 7.5 box notched 22.5 x 5 down to z = 2.5 at its far corner, shelled 1.5 inward
+// open at the far side's strip under the notch (SolidCraft robustness
+// shell_thicker_than_a_step_says_so): the wall would move the strip's top corner past the
+// end of its edge, turning the strip inside out; that is SMLIB_ERR_UNSUPPORTED. Open at the
+// notch's floor it shells.
+void shell_thicker_than_a_step()
+{
+    smlib_brep *b = box(0, 0, 0, 30, 35, 7.5), *notch = box(0, 30, 2.5, 22.5, 20, 22.5), *stepped = nullptr;
+    CHECK(smlib_boolean(b, notch, SMLIB_BOOLEAN_SUBTRACT, &stepped) == SMLIB_OK);
+    if (stepped != nullptr)
+    {
+        const double strip[3] = {18.75, 35, 1.25}, floor[3] = {18.75, 32.5, 2.5};
+        smlib_brep *r = nullptr;
+        CHECK(smlib_shell(stepped, strip, 1, 0.1, -1.5, &r, nullptr) == SMLIB_ERR_UNSUPPORTED && r == nullptr);
+        CHECK(smlib_shell(stepped, floor, 1, 0.1, -1.5, &r, nullptr) == SMLIB_OK && r != nullptr && sound(r));
+        smlib_brep_free(r);
+    }
+    for (smlib_brep *x : {b, notch, stepped})
+    {
+        smlib_brep_free(x);
+    }
+}
+
 // The analytic STEPInversion() answers: SM_SUCCESS on the surface, SM_ERR_OUTSIDE_OF_DOMAIN
 // outside a cylinder's sweep, SM_ERR_NOT_WITHIN_TOLERANCE off the surface (a sphere's with the
 // dropped point's parameters), each with its location; SMLib's callers pass any other status on.
@@ -4287,6 +4310,7 @@ int main()
     chamfered_hole_rim_is_a_cone();
     shelled_rounded_box_rim();
     shelled_box_with_a_drilled_hole();
+    shell_thicker_than_a_step();
     corner_setback();
     corner_setback_open();
     setback_sections_are_exact_arcs();

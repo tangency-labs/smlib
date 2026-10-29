@@ -72,6 +72,10 @@ class SmExtent3d ;
 // face touch without crossing (SmOffsetExecutive::ResolveCrossingLoopsOfFace), so the offset
 // would pinch to nothing along a line, which bounds no solid.
 #define SM_ERR_OFFSET_WALLS_TOUCH        1042L
+// SolidCraft fork: an offset (a local operation's step, a shell's wall) that moves a vertex along
+// an edge past the edge's other end (SmOffsetExecutive::CloseLoopGap): the face would turn inside
+// out there, a change of topology the offset does not make.
+#define SM_ERR_OFFSET_EDGE_VANISHES      1043L
 
 /***********************************************************************
 Control Output File and Stream output for smos_WriteBuffer()
