@@ -745,7 +745,9 @@ int32_t smlib_chamfer_sides(const smlib_brep *brep, const double *points, int64_
  * the solid (no point of it farther than the wall from every face but the open ones, by a
  * margin of 0.1% of the wall or ten times the body's tolerance) is SMLIB_ERR_NO_ROOM. A wall whose
  * offsets touch without crossing anywhere (a hole exactly twice the wall from a side) is
- * SMLIB_ERR_WALLS_TOUCH. */
+ * SMLIB_ERR_WALLS_TOUCH. One that would move a vertex along an edge past the edge's other end,
+ * turning a face inside out (a wall thicker than a step beside the open face), is
+ * SMLIB_ERR_UNSUPPORTED. */
 int32_t smlib_shell(const smlib_brep *brep, const double *points, int64_t n_points, double tolerance, double thickness,
                     smlib_brep **out, int64_t *out_failed_point);
 
