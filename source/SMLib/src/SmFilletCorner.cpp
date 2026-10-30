@@ -6007,7 +6007,13 @@ SmBoolean SmFilletNx1Corner::CheckNx1Degeneracy
         sm_GraphicsLoop();
     }
 #endif // SM_DEBUG_CODE
-    if (sFaceuseNormal1.IsParallelTo(sFaceuseNormal2,SM_EFF_ZERO_SQRT)) {
+    // SolidCraft change: the side faces are tangent at the corner and continue each other (their
+    // normals parallel, the edge smooth there): the fillet runs out to the vertex. Normals
+    // anti-parallel are a cusp, the faces folded back on each other (a knife edge): the ball
+    // touches them back from the vertex and the fillet ends there as at any other corner.
+    SmBoolean bAntiParallel = FALSE;
+    if (   sFaceuseNormal1.IsParallelTo(sFaceuseNormal2,SM_EFF_ZERO_SQRT,&bAntiParallel)
+        && !bAntiParallel) {
         return TRUE;
     }
     return FALSE;

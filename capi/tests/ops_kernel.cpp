@@ -1578,6 +1578,49 @@ void lip_swept_flush_round_a_corner()
     }
 }
 
+// A 41 1/6 x 21 plate and, beside it, the corner a circle of radius 21 about (TIP, -21) leaves
+// against the plate's back line y = 0, extruded 10 (SolidCraft's knife-edge part, #851): the arc
+// wall meets the back face tangentially at x = TIP, a knife edge (a cusp, the faces folded back
+// on each other). SmEdge::GetBlendEdgeuse took the edge for a smooth one (faces tangent), the
+// solver could not tell which way to offset its faces, and the corners at its ends were taken
+// for corners where the faces run smoothly into each other (the fillet shrinking to a point).
+// Rounded r, the ball 2 r wide touches the back face sqrt(4 R r) back from the tip: it takes
+// off the quadrilateral tip - wall centre - ball centre - back contact, less the wall's sector
+// and the ball's, all the way up. Mirrored, the edge and its faces' uses reverse: the same.
+void knife_edge_rounds()
+{
+    const double R = 21.0, TIP = 62.0 + 1.0 / 6.0, H = 10.0;
+    Profile p;
+    p.line(0, 0, 0, -R, 0).line(0, -R, TIP - R, -R, 0).arc(TIP, -R, 0, -1, R, PI, 1.5 * PI).line(TIP, 0, 0, 0, 0);
+    smlib_brep *part = p.extrude(H);
+    const double before = (TIP - R) * R * H + R * R * (1.0 - PI / 4.0) * H;
+    for (double r : {0.5, 2.0, 5.0})
+    {
+        const double beta = std::acos((R - r) / (R + r)), ox = TIP - std::sqrt(4.0 * R * r);
+        const double quad = 0.5 * (TIP - ox) * (R + r);
+        const double off = quad - 0.5 * R * R * beta - 0.5 * r * r * (PI - beta);
+        for (int mirrored = 0; mirrored < 2; ++mirrored)
+        {
+            const double m[4][4] = {{mirrored ? -1.0 : 1.0, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}};
+            smlib_brep *b = nullptr, *round = nullptr;
+            CHECK(part != nullptr && smlib_brep_transform(part, m, &b) == SMLIB_OK);
+            const double tip[3] = {mirrored ? -TIP : TIP, 0, H / 2};
+            CHECK(b != nullptr && smlib_fillet(b, tip, 1, 0.01, r, &round, nullptr) == SMLIB_OK);
+            if (round != nullptr)
+            {
+                int64_t counts[3] = {0, 0, 0};
+                CHECK(smlib_brep_counts(round, counts) == SMLIB_OK && counts[0] == 7);
+                CHECK(sound(round));
+                std::printf("knife edge rounded r%g%s: %.9f, expected %.9f\n", r, mirrored ? " (mirrored)" : "", volume_of(round), before - off * H);
+                CHECK(near(volume_of(round), before - off * H, 1e-9));
+            }
+            smlib_brep_free(round);
+            smlib_brep_free(b);
+        }
+    }
+    smlib_brep_free(part);
+}
+
 // The 60 x 40 x 20 box, its top edge at y = 40 rounded r5, its top edge at x = 60 rounded r3,
 // then the vertical edge at x = 60, y = 40 rounded `radius` with the edges tangent to it up into
 // the corner (main has the case), or null.
@@ -4973,6 +5016,7 @@ int main(int argc, char **argv)
     offset_faces_close_a_step_wall();
     drafted_cylinders_are_cones();
     lip_swept_flush_round_a_corner();
+    knife_edge_rounds();
     corner_setback();
     corner_setback_open();
     setback_sections_are_exact_arcs();
