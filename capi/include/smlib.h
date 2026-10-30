@@ -747,8 +747,10 @@ int32_t smlib_blend_setback_eased(const smlib_brep *brep, int32_t kind, const do
  * smlib_blend_setback_eased: the hole's sections are the curvature-continuous ones (zero cross
  * curvature where they meet planar faces) and its face curves meet the contact lines
  * curvature-continuously, so a fill that is curvature-continuous with the rounds and the faces
- * can meet both at the hole's corners. An ease of 0 gives the sheet and holes
- * smlib_blend_setback_open gives. */
+ * can meet both at the hole's corners. Each face curve is split at its middle, and each half is
+ * the face curve itself on half its interval: on a planar face one polynomial span of degree 5,
+ * curvature-continuous to its contact line and to the other half. An ease of 0 gives the sheet
+ * and holes smlib_blend_setback_open gives. */
 int32_t smlib_blend_setback_open_eased(const smlib_brep *brep, int32_t kind, const double *points, const double *sizes, int64_t n_points,
                                        const double *corners, const double *setbacks, const double *eases, int64_t n_corners,
                                        double tolerance, smlib_brep **out, int64_t *holes, int64_t cap, int64_t *out_len,

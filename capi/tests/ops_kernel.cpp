@@ -752,6 +752,162 @@ void corner_setback_eased_long_setbacks()
     smlib_brep_free(part);
 }
 
+// The unit tangent and the curvature vector of `e`'s curve at its end on `v`, as the curve
+// leaves `v` (the tangent pointing away from it). False if it cannot be evaluated.
+bool leaving(SmEdge *e, const SmVertex *v, SmVector3d &tangent, SmVector3d &curvature)
+{
+    SmExtent1d ivl = e->GetInterval();
+    bool at_start = e->GetStartVertex() == v;
+    SmVector3d d[3];
+    if (e->GetCurve() == nullptr || e->GetCurve()->Evaluate(at_start ? ivl.GetMin() : ivl.GetMax(), 2, TRUE, d) != SM_SUCCESS)
+    {
+        return false;
+    }
+    double speed = d[1].Length();
+    if (!(speed > 0.0))
+    {
+        return false;
+    }
+    tangent = d[1] / (at_start ? speed : -speed);
+    // the curvature vector, the second derivative in arc length: square to the tangent, the
+    // same whichever way the curve runs
+    curvature = (d[2] - d[1] * (d[1].Dot(d[2]) / (speed * speed))) / (speed * speed);
+    return true;
+}
+
+// The corner (60, 40, 20) of a 60 x 40 x 20 box, its three edges rounded r5, set back 8 to 15
+// and eased 0.5 to 5 (smlib_blend_setback_open_eased; SolidCraft's explicit G2 corner patch, a
+// biquintic net per patch, holds a hole edge exactly only as one quintic span). Each face curve
+// between two sections is split at its middle, and each half is one Bezier span of degree 5 at
+// most: the half of the side's own quintic, not the corner patch's iso-curve (degree 6 with
+// interior knots, from the patch's cross-derivative fields). At the hole's corner a half meets
+// the round's contact line on that face curvature-continuously (tangent along it, no curvature
+// in the plane, as the straight contact line), and the two halves meet so at the middle. The
+// sheet is valid and its only free edges are the hole's; closed by SMLib's patch the body is a
+// valid closed solid.
+void corner_setback_eased_face_curves_are_quintics()
+{
+    smlib_brep *part = box(0, 0, 0, 60, 40, 20);
+    const double edges[9] = {30, 40, 20, 60, 20, 20, 60, 40, 10};
+    const double radii[3] = {5, 5, 5};
+    const double corner[3] = {60, 40, 20};
+    for (double setback : {8.0, 10.0, 12.0, 13.0, 15.0})
+    {
+        for (double ease : {0.5, 1.25, 3.0, 5.0})
+        {
+            if (setback + ease >= 20.0)
+            {
+                continue; // the 20 edge has no room (SMLIB_ERR_NO_ROOM)
+            }
+            int64_t holes[64];
+            int64_t len = -1;
+            smlib_brep *r = nullptr;
+            const int32_t s = smlib_blend_setback_open_eased(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, &ease, 1, 0.1, &r,
+                                                             holes, 64, &len, nullptr, nullptr);
+            CHECK(s == SMLIB_OK && r != nullptr && len == 1 + 3 * 12 && holes[0] == 12);
+            if (s != SMLIB_OK || r == nullptr || len != 1 + 3 * 12)
+            {
+                std::printf("set back %g, eased %g: status %d\n", setback, ease, static_cast<int>(s));
+                smlib_brep_free(r);
+                continue;
+            }
+            SmTArray<SmEdge *> es;
+            SmTArray<SmFace *> fs;
+            r->p->GetEdges(es);
+            r->p->GetFaces(fs);
+            std::vector<SmEdge *> hole;
+            for (int64_t k = 0; k < 12; ++k)
+            {
+                hole.push_back(es[static_cast<ULONG>(holes[1 + 3 * k])]);
+            }
+            int face_curves = 0, not_quintic = 0, met_rail = 0, met_half = 0;
+            double worst_turn = 0.0, worst_bend = 0.0;
+            for (int64_t k = 0; k < 12; ++k)
+            {
+                SmEdge *h = hole[static_cast<size_t>(k)];
+                SmFace *f = fs[static_cast<ULONG>(holes[2 + 3 * k])];
+                if (f->GetSurface() == nullptr || SM_CAST_PTR(SmPlane, f->GetSurface()) == nullptr)
+                {
+                    continue; // a section, on its round
+                }
+                ++face_curves;
+                const SmBSplineCurve *c = SM_CAST_PTR(SmBSplineCurve, h->GetCurve());
+                ULONG degree = c != nullptr ? c->GetDegree() : 0;
+                ULONG spans = c != nullptr ? c->GetNumberOfUniqueKnots() - 1 : 0;
+                if (c == nullptr || c->IsRational() || degree > 5 || spans != 1)
+                {
+                    ++not_quintic;
+                    std::printf("set back %g, eased %g: a face curve of degree %lu, %lu spans, %lu points\n", setback, ease,
+                                static_cast<unsigned long>(degree), static_cast<unsigned long>(spans),
+                                static_cast<unsigned long>(c != nullptr ? c->GetNumberControlPoints() : 0));
+                }
+                // at each end, the other edge on this face there: the contact line (at the hole's
+                // corner) or the face curve's other half (at the middle)
+                for (SmVertex *v : {h->GetStartVertex(), h->GetEndVertex()})
+                {
+                    SmTArray<SmEdge *> at;
+                    v->GetEdges(at);
+                    for (ULONG j = 0; j < at.GetSize(); ++j)
+                    {
+                        SmEdge *o = at[j];
+                        SmTArray<SmFace *> beside;
+                        o->GetFaces(beside);
+                        ULONG where = 0;
+                        if (o == h || !beside.FindElement(f, where))
+                        {
+                            continue;
+                        }
+                        SmVector3d t1, k1, t2, k2;
+                        CHECK(leaving(h, v, t1, k1) && leaving(o, v, t2, k2));
+                        // continuing across v: opposed tangents, one curvature vector
+                        worst_turn = std::max(worst_turn, (t1 + t2).Length());
+                        worst_bend = std::max(worst_bend, (k1 - k2).Length());
+                        bool half = std::find(hole.begin(), hole.end(), o) != hole.end();
+                        ++(half ? met_half : met_rail);
+                        if (!half)
+                        {
+                            // the contact line is straight: the face curve leaves it unturned
+                            CHECK(k1.Length() <= 1e-9);
+                        }
+                    }
+                }
+            }
+            CHECK(face_curves == 6 && not_quintic == 0);
+            CHECK(met_rail == 6 && met_half == 6);
+            if (worst_turn > 1e-9 || worst_bend > 1e-9)
+            {
+                std::printf("set back %g, eased %g: face curves meet their neighbours %.3g off in tangent, %.3g in curvature\n", setback, ease,
+                            worst_turn, worst_bend);
+            }
+            CHECK(worst_turn <= 1e-9 && worst_bend <= 1e-9);
+            // the sheet's free edges are exactly the hole's
+            int free_edges = 0;
+            for (ULONG k = 0; k < es.GetSize(); ++k)
+            {
+                SmTArray<SmFace *> beside;
+                es[k]->GetFaces(beside);
+                if (beside.GetSize() == 1)
+                {
+                    CHECK(std::find(hole.begin(), hole.end(), es[k]) != hole.end());
+                    ++free_edges;
+                }
+            }
+            CHECK(free_edges == 12);
+            done(r);
+            CHECK(smlib_blend_setback_eased(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, &ease, 1, 0.1, &r, nullptr, nullptr) ==
+                      SMLIB_OK &&
+                  r != nullptr);
+            if (r != nullptr)
+            {
+                int32_t closed = -1;
+                CHECK(smlib_brep_is_manifold_solid(r, &closed) == SMLIB_OK && closed == 1);
+                done(r);
+            }
+        }
+    }
+    smlib_brep_free(part);
+}
+
 void corner_setback_eased()
 {
     smlib_brep *part = box(0, 0, 0, 40, 40, 40);
@@ -5903,6 +6059,7 @@ int main(int argc, char **argv)
     concave_corner_setback();
     corner_setback_eased();
     corner_setback_eased_long_setbacks();
+    corner_setback_eased_face_curves_are_quintics();
     shelled_tapered_box_rounds();
     shelled_disc_round_thinner_than_the_wall();
     groove_arc_round_ends_in_the_top();
