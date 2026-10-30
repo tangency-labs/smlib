@@ -7659,6 +7659,76 @@ SmStatus SmBrep::DeleteFace
 } // end SmBrep::DeleteFace
 
 /*******************************************************************//**
+PURPOSE: SolidCraft fork: the exact B-spline form of an edge's curve over the
+  edge's interval, running the curve's way, for joining it with a neighbour:
+  a B-spline curve (lines included) copied and trimmed; a curve on a B-spline
+  surface whose UV curve is a line of constant u or v (the seam an extrusion
+  leaves on its wall) the surface's iso curve over that stretch, which is the
+  same curve exactly. Anything else: rpNewCurve stays NULL.
+***********************************************************************/
+static SmStatus sm_ExactBSplineOfEdge
+  (const SmContext  & crContext,
+   const SmEdge     * pEdge,
+   SmBSplineCurve  *& rpNewCurve)
+{
+  rpNewCurve = NULL;
+  const SmCurve * pCurve = pEdge->GetCurve();
+  NER( pCurve );
+  SmExtent1d sIvl = pEdge->GetInterval();
+
+  if ( pCurve->IsKindOf( SmBSplineCurve_TYPE ) )
+    {
+      SmCurve * pCopy = NULL;
+      SER( pCurve->Copy( crContext, pCopy ));
+      SmBSplineCurve * pBS = SM_CAST_PTR( SmBSplineCurve, pCopy );
+      if ( pBS == NULL )
+        { delete pCopy; return SM_SUCCESS; }
+      SmObjDelete sClean( pBS );
+      SER( pBS->Trim( sIvl ));   // may snap sIvl by tol to existing knots
+      sClean.Clear();
+      rpNewCurve = pBS;
+      return SM_SUCCESS;
+    }
+
+  const SmCrvOnSurf * pCOS = ( pCurve->IsKindOf( SmCrvOnSurf_TYPE ) ? static_cast<const SmCrvOnSurf *>( pCurve ) : NULL );
+  if ( pCOS == NULL || pCOS->GetUVCurve() == NULL || ! pCOS->GetUVCurve()->IsKindOf( SmLine_TYPE ) )
+    { return SM_SUCCESS; }
+  const SmBSplineSurface * pSurf = ( pCOS->GetBaseSurface() != NULL && pCOS->GetBaseSurface()->IsKindOf( SmBSplineSurface_TYPE ) ? static_cast<const SmBSplineSurface *>( pCOS->GetBaseSurface() ) : NULL );
+  if ( pSurf == NULL )
+    { return SM_SUCCESS; }
+
+  SmPoint3d sA, sB;
+  SER( pCOS->GetUVCurve()->EvaluatePoint( sIvl.GetMin(), sA ));
+  SER( pCOS->GetUVCurve()->EvaluatePoint( sIvl.GetMax(), sB ));
+  SmExtent2d sDom = pSurf->GetNaturalUVDomain();
+  double dZeroU = SM_EFF_ZERO * sDom.GetUInterval().GetLength();
+  double dZeroV = SM_EFF_ZERO * sDom.GetVInterval().GetLength();
+  SmSurfParamType eIso;
+  double dIso, dFrom, dTo;
+  if ( smos_Fabs( sA.x - sB.x ) <= dZeroU )      { eIso = SM_SP_U; dIso = sA.x; dFrom = sA.y; dTo = sB.y; }
+  else if ( smos_Fabs( sA.y - sB.y ) <= dZeroV ) { eIso = SM_SP_V; dIso = sA.y; dFrom = sA.x; dTo = sB.x; }
+  else
+    { return SM_SUCCESS; }
+
+  SmExtent2d sTrim = ( eIso == SM_SP_U )
+                       ? SmExtent2d( dIso, smos_Min( dFrom, dTo ), dIso, smos_Max( dFrom, dTo ) )
+                       : SmExtent2d( smos_Min( dFrom, dTo ), dIso, smos_Max( dFrom, dTo ), dIso );
+  SmBSplineCurve * pIso = NULL;
+  SER( pSurf->CreateIsoParametricCurve( crContext, eIso, dIso, 0.0, pIso, &sTrim ));
+  NER( pIso );
+  SmObjDelete sClean( pIso );
+  if ( dTo < dFrom )
+    {
+      SmExtent1d sNewIvl;
+      SER( pIso->ReverseParameterization( pIso->GetNaturalInterval(), sNewIvl ));
+    }
+  sClean.Clear();
+  rpNewCurve = pIso;
+  return SM_SUCCESS;
+
+} // end sm_ExactBSplineOfEdge
+
+/*******************************************************************//**
 PURPOSE: Delete a topological vertex.
 
 NOTES: A topological vertex is a vertex that could be removed without
@@ -7812,18 +7882,23 @@ SmBoolean bDebugMe=FALSE;
       // Combine the curves.
       // Make copies of the two curves, and trim the copies to their Edge's domains.
       const SmContext *pContext = GetContext();
-      SmCurve *pCopy;
-      SER( pCurveDelete->Copy( *pContext, pCopy ));
-      SmBSplineCurve *pTrimmedCurve = SM_CAST_PTR( SmBSplineCurve, pCopy) ;
+      // SolidCraft fork: each curve as its exact B-spline over its edge (sm_ExactBSplineOfEdge):
+      // the seam of a periodic face whose seam the merge ran on through a covered face is an
+      // SmLine and the extrusion's SmCrvOnSurf iso line, both exactly B-splines. The cast of the
+      // SmCrvOnSurf copy to SmBSplineCurve failed and was dereferenced (a crash). A curve with
+      // no exact B-spline form is not joined: the silent error below, with nothing changed yet,
+      // leaves the vertex in place.
+      SmBSplineCurve *pTrimmedCurve = NULL;
+      SER( sm_ExactBSplineOfEdge( *pContext, pEdgeToDelete, pTrimmedCurve ));
+      if ( pTrimmedCurve == NULL )
+        { return SM_ERR; }
       SmObjDelete sClean( pTrimmedCurve) ;
-      SmExtent1d sIvl = pEdgeToDelete->GetInterval();
-      SER( pTrimmedCurve->Trim( sIvl ));   // may snap sIvl by tol to existing knots
 
-      sIvl = pSurvivingEdge->GetInterval();
-      SER( pCurveSurvive->Copy (*pContext, pCopy ));
-      SmBSplineCurve *pCurveSurviveCopy = SM_CAST_PTR( SmBSplineCurve, pCopy) ;
+      SmBSplineCurve *pCurveSurviveCopy = NULL;
+      SER( sm_ExactBSplineOfEdge( *pContext, pSurvivingEdge, pCurveSurviveCopy ));
+      if ( pCurveSurviveCopy == NULL )
+        { return SM_ERR; }
       SmObjDelete sClean2( pCurveSurviveCopy) ;
-      SER( pCurveSurviveCopy->Trim( sIvl ));  // may snap sIvl by tol to existing knots
 
       // Do the join.
       if(pCurveSurviveCopy->JoinWith( lJoinEndSurvive, pTrimmedCurve, lJoinEndDelete, &dMaxEdgeGap ) != SM_SUCCESS )
