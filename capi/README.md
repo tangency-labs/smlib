@@ -67,7 +67,8 @@ tangentially and closes it smoothly: a cylinder's top rim rounded (`smlib_fillet
 curvature blend and the variable round are not refused for taking the face either, but SMLib
 cannot build them that wide yet (`SM_ERR`). A chamfer's distance is the setback along each face
 at the edge's midpoint; it is cut by SMLib's constant-radius solver with a linear section, whose ball radius
-is the setback times tan(a/2), a being the angle between the faces there. A shell's thickness
+is the setback times tan(a/2), a being the angle between the faces there (at a cusp, whose faces meet at
+no angle, the ball of radius the setback: the chord between its contacts). A shell's thickness
 is negative inward, positive outward. An inward wall that leaves no room inside the body is
 `SMLIB_ERR_NO_ROOM`, refused before SMLib's offset sees it (which corrupts memory there,
 tangency-labs/solidcore#380): the shim looks for a point inside the solid farther than the wall

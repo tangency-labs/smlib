@@ -622,7 +622,9 @@ int32_t smlib_fillet(const smlib_brep *brep, const double *points, int64_t n_poi
  * equal-distance chamfer, `distance` (> 0) back from the edge along each face, with
  * bevelled corners. The setback is measured at each edge's midpoint; SMLib keeps the chord
  * across the chamfer constant along an edge, so on an edge whose dihedral angle varies the
- * setback varies with it. */
+ * setback varies with it. At a cusp (a knife edge: faces tangent at the edge and folded back on
+ * each other) no point lies `distance` back along both; the chamfer there is the chord between
+ * the contacts of the ball of radius `distance`. */
 int32_t smlib_chamfer(const smlib_brep *brep, const double *points, int64_t n_points, double tolerance, double distance,
                       smlib_brep **out, int64_t *out_failed_point);
 
