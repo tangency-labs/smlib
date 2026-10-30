@@ -53,6 +53,7 @@
 #include <SmOffsetGeometryCreation.h>
 #include <SmMatrix.h>
 #include <SmBoxSearch.h>
+#include <SmWorkCounters.h>
 
 #include <unordered_set>
 #include <cmath>
@@ -14143,6 +14144,9 @@ SmStatus SmBrep::MakeEdgeTopology
         }
       else
         {
+          // SolidCraft fork: work count
+          SmWorkCounters::Add(SmWorkCounters::eShellFaceusesMoved,
+                              pEndShell->IsFaceuseShell() ? pEndShell->GetSize() : 0);
           SER(pEndShell->TransferChildrenTo(pStartShell,NULL));
         }
       if (pEndShell != NULL)

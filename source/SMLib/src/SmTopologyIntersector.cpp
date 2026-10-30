@@ -50,6 +50,7 @@
 #include <SmProtoTopology.h>
 #include <SmAssertArray.h>
 #include <SmBoxSearch.h>
+#include <SmWorkCounters.h>
 #include <cmath>
 #include <vector>
 
@@ -1801,6 +1802,7 @@ TCHAR     sDebugBuff[SM_TBLOCK_SIZE] ;
         {
           jj = sPairs2[lPair];
           SmFace *pF2 = sFaces2[jj];
+          SmWorkCounters::Add(SmWorkCounters::eFacePairs); // SolidCraft fork: work count
 
 #ifdef SM_DEBUG_CODE
           if ( bDebugMe ) 

@@ -66,6 +66,18 @@ int32_t smlib_set_dump_dir(const char *dir);
  * Takes no lock and allocates nothing, so a crash handler may call it. */
 int64_t smlib_current_call(char *buf, int64_t cap);
 
+/* Work counters, for tests and profiling: process-wide counts of the work done by three steps of
+ * a boolean whose cost once grew with the square of the body's size, so a test can check how the
+ * work grows with the body on any machine. `out` gets, since the last reset (or the start):
+ *   [0] faceuses visited by the closure test of each new face (SmBrep::TestClosureSplitRegion);
+ *   [1] pairs of faces of the two bodies examined for intersection
+ *       (SmTopologyIntersector::IntersectTopology);
+ *   [2] faceuses moved between shells as new edges join them (SmBrep::MakeEdgeTopology).
+ * The counts are shared by every thread and every call, not kept per thread or per call. Neither
+ * function takes the lock. `smlib_work_counters` is SMLIB_ERR_ARG for a NULL `out`. */
+int32_t smlib_work_counters_reset(void);
+int32_t smlib_work_counters(int64_t out[3]);
+
 /* ---- Native files (for replaying dumps) --------------------------------------------------- */
 
 /* Reads a native SMLib .smb file (binary unless `ascii`). */
