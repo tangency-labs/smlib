@@ -668,15 +668,62 @@ SmStatus SmOffsetFacesExecutive::OffsetFaces( const SmTArray<SmFace*> & crFaces,
     // Some face must lie on one of the surfaces, or the operation moved none.
     SmTArray<SmFace*> sAll;
     m_pBrep->GetFaces( sAll );
-    SmBoolean bMoved = FALSE;
+    SmTArray<SmFace*> sOnTarget;
     for ( ULONG ff = 0; ff < sAll.GetSize(); ff++ )
       {
         if ( SmFollowedBlendMark::Has( sAll[ff]->GetSurface(), s_lTarget ) )
-          { bMoved = TRUE; }
-        SmFollowedBlendMark::Clear( sAll[ff]->GetSurface() );
+          { sOnTarget.Add( sAll[ff] ); }
       }
-    if ( !bMoved )
+
+    // A face the move closed to nothing (a step wall whose low top moved onto the high top's
+    // plane, which SmOffsetExecutive::CloseLoopGaps removes) leaves the faces on either side of
+    // it meeting on one surface, a moved face and one that stayed. The edge between them is the
+    // move's own making, and goes, as SMLib's operations leave no topological edge of their own
+    // (booleans remove theirs in SmMerge::BooleanPostProcess): the tops are one face. Every other
+    // edge and vertex stays, the body's own splits of a face among them.
+    SmTArray<SmEdge*> sJoins;
+    for ( ULONG ff = 0; ff < sOnTarget.GetSize(); ff++ )
+      {
+        SmTArray<SmEdge*> sEdges;
+        sOnTarget[ff]->GetEdges( sEdges );
+        for ( ULONG ee = 0; ee < sEdges.GetSize(); ee++ )
+          {
+            SmTArray<SmFace*> sBeside;
+            sEdges[ee]->GetFaces( sBeside );
+            SmBoolean bToStayed = FALSE;
+            for ( ULONG bb = 0; bb < sBeside.GetSize(); bb++ )
+              {
+                if ( sBeside[bb] != sOnTarget[ff] && !SmFollowedBlendMark::Has( sBeside[bb]->GetSurface(), s_lTarget ) )
+                  { bToStayed = TRUE; }
+              }
+            SmSurface * pKeep = NULL;
+            double      dApart = 0.0;
+            if ( bToStayed && sEdges[ee]->IsTopological( pKeep, dApart ) )
+              { sJoins.AddUnique( sEdges[ee] ); }
+          }
+      }
+    for ( ULONG ff = 0; ff < sAll.GetSize(); ff++ )
+      { SmFollowedBlendMark::Clear( sAll[ff]->GetSurface() ); }
+    if ( sOnTarget.GetSize() == 0 )
       { return Refuse( SM_OFR_NO_EFFECT, _T("the local operation reported success but moved no face onto its new surface") ); }
+    if ( sJoins.GetSize() > 0 )
+      {
+        SmTArray<SmEdge*>   sKeepEdges;
+        SmTArray<SmVertex*> sKeepVertices;
+        SmTArray<SmVertex*> sJoinEnds;
+        m_pBrep->GetEdges( sKeepEdges );
+        m_pBrep->GetVertices( sKeepVertices );
+        for ( ULONG jj = 0; jj < sJoins.GetSize(); jj++ )
+          {
+            ULONG lAt = 0;
+            if ( sKeepEdges.FindElement( sJoins[jj], lAt ) )
+              { sKeepEdges.RemoveAt( lAt ); }
+            sJoinEnds.AddUnique( sJoins[jj]->GetStartVertex() );
+            sJoinEnds.AddUnique( sJoins[jj]->GetEndVertex() );
+          }
+        sKeepVertices.RemoveElements( sJoinEnds, sKeepVertices );
+        SER( m_pBrep->RemoveTopologicalEdgesAndVertices( &sKeepEdges, &sKeepVertices ));
+      }
   }
   if ( sBlends.empty() )
     {

@@ -1343,8 +1343,9 @@ void shell_thicker_than_a_step()
 // A stepped block, 40 x 30 x 10 with its half x < 20 raised to 20 (SolidCraft kernel case
 // shell/cov-replace-face-step-onto-the-higher-face): the low top moved up onto the high top's
 // plane closes the step wall between them to nothing (it was SMLIB_ERR_UNSUPPORTED: the wall's
-// edges along the sides closed to points). The wall goes and the tops meet: the 40 x 30 x 20
-// box. The high top moved down onto the low one the same way: the 40 x 30 x 10 box.
+// edges along the sides closed to points). The wall goes and the tops, meeting on one plane, are
+// one face: the 40 x 30 x 20 box, 6 faces. The high top moved down onto the low one the same
+// way: the 40 x 30 x 10 box.
 void offset_faces_close_a_step_wall()
 {
     smlib_brep *base = box(0, 0, 0, 40, 30, 10), *tower = box(0, 0, 0, 20, 30, 20), *stepped = nullptr;
@@ -1367,6 +1368,7 @@ void offset_faces_close_a_step_wall()
                 CHECK(near(volume_of(r), m.volume, 1e-9));
                 CHECK(smlib_brep_area(r, 1e-9, &area) == SMLIB_OK && near(area, m.area, 1e-9));
                 CHECK(smlib_brep_bounds(r, lo, hi) == SMLIB_OK && std::fabs(hi[2] - m.top) < 1e-9 && std::fabs(hi[0] - 40.0) < 1e-9);
+                CHECK(r->p->GetNumFaces() == 6);
                 done(r);
             }
         }
