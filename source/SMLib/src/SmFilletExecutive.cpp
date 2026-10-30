@@ -506,6 +506,8 @@ SmFilletExecutive::SmFilletExecutive
    m_pTargetBrep(pTargetBrep),
    m_pFilletBrep(NULL),
    m_bCliffOverflow(FALSE),
+   m_bOverflowFirst(FALSE),
+   m_bClassifyOnly(FALSE),
    m_bDoPiecewiseMerge(FALSE),
    m_bDoTopologyInsertion(TRUE),
    m_bDoGlobalMerge(FALSE),
@@ -789,6 +791,7 @@ SmStatus SmFilletExecutive::SetFilletParameters
   m_bDoClassification    = TRUE;
   m_bCliffOverflow       = FALSE; // SolidCraft change
   m_vOpenEnds.clear();
+  m_vOverflowEdges.RemoveAll(); // SolidCraft change
 
   ULONG lNumFilletedEdges = rEdgePtrs.GetSize();
   if ( lNumFilletedEdges < 1 ) { return SM_SUCCESS; }
@@ -959,6 +962,7 @@ SmStatus SmFilletExecutive::SetFilletParameters
   m_bDoClassification    = TRUE;
   m_bCliffOverflow       = FALSE; // SolidCraft change
   m_vOpenEnds.clear();
+  m_vOverflowEdges.RemoveAll(); // SolidCraft change
 
   ULONG lNumFilletedEdges = rEdgePtrs.GetSize();
   if ( lNumFilletedEdges < 1 ) { return SM_SUCCESS; }
@@ -3584,6 +3588,7 @@ SmStatus SmFilletExecutive::CreateFilletBrep
   // overflow together with a rail rolling over a tangent edge, or with a fillet end on more
   // than one face (a corner of more than three edges, which the global merge would cut).
   SmBoolean bOverflow = FALSE, bConcave = FALSE, bConcaveOverflow = FALSE, bRoundIntoMaterial = FALSE, bRollsOver = FALSE;
+  SmTArray<SmEdge*> vOverflowing;
   for(solverIdx=0; solverIdx<m_vFilletSolvers.GetSize(); solverIdx++)
     {
       SmFilletSolver * pFilSolver = m_vFilletSolvers[solverIdx];
@@ -3594,6 +3599,8 @@ SmStatus SmFilletExecutive::CreateFilletBrep
       if ( bFit )
         { continue; }
       bOverflow = TRUE;
+      if ( pFilSolver->GetEdgeuse(0) != NULL )
+        { vOverflowing.Add( pFilSolver->GetEdgeuse(0)->GetEdge() ); }
       SmBoolean bAdds = FALSE;
       SER( sm_BlendAddsMaterial( pFilSolver, bAdds ));
       if ( bAdds )
@@ -3605,6 +3612,19 @@ SmStatus SmFilletExecutive::CreateFilletBrep
   // whether the other blends add material (concave), when one overflows
   for(solverIdx=0; solverIdx<m_vFilletSolvers.GetSize() && bOverflow && !bConcaveOverflow && !bConcave; solverIdx++)
     { SER( sm_BlendAddsMaterial( m_vFilletSolvers[solverIdx], bConcave )); }
+  // SolidCraft change: an overflow goes first. A convex blend that overflows across cliffs takes
+  // off all the material it reaches; another blend picked with it rounds what is left. With
+  // SetOverflowFirst, when blends of several edges overflow, nothing is built: the caller finds
+  // the edges whose blends overflow on their own (SetClassifyOnly, one edge at a time), blends
+  // those first, then the other edges where they are left (an edge the overflow removes whole is
+  // gone, one it cuts keeps the rest of its length). With SetClassifyOnly nothing is built either
+  // way: m_vOverflowEdges are the edges whose blends overflow.
+  if ( m_bClassifyOnly || ( m_bOverflowFirst && bOverflow && m_vFilletSolvers.GetSize() > 1 && !bConcaveOverflow && !bConcave && !bRoundIntoMaterial ))
+    {
+      m_vOverflowEdges = vOverflowing;
+      GetFilletErrorInfo()->NoteError( SM_FILERR_OVERFLOW_FIRST, _T("Fillet Note: stopped after classifying the rails (blends that overflow go first)") );
+      return SM_ERR;
+    }
   if ( bOverflow )
     {
       // too large for its faces, or an overflow the subtraction does not build: as before, too large

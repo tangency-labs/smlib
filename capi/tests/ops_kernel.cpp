@@ -1623,6 +1623,88 @@ void knife_edge_rounds()
     smlib_brep_free(part);
 }
 
+// An overflow goes first. R21 on the 20 cube's edge along x at y = z = 0 overflows its faces (its
+// circle about (y, z) = (21, 21) meets them only at 21, past the cube) and takes all of both:
+// what is left is the square [0, 20]^2 inside that circle, with u = 21 - y,
+// int_1^sqrt(440) (sqrt(441 - u^2) - 1) du, along 20: 6107.529370. Rounded with R5 on the
+// corner's other two edges, which lie on those faces, the R5 edges are gone (dropped, flagged) and
+// the body is R21's alone. With R5 on the back upright x = 0, y = 20 instead, the overflow cuts
+// that edge off at z = 21 - sqrt(440) and R5 rounds the rest, ending on R21's cylinder: it takes
+// the corner of the section outside the R5 circle about (5, 15), from the cylinder
+// z_c(y) = 21 - sqrt(441 - (y - 21)^2) up to 20; with y = 15 + 5 sin t,
+// int_0^pi/2 5 (1 - cos t) (20 - z_c(y)) 5 cos t dt = 106.612300588. Its end, where the R5 and
+// R21 cylinders cross (a quartic, no exact B-spline), is held to the edge's tolerance tau: the
+// measure integrates over the faces it trims, so the volume is good to 2 tau L rho / 3 there, L
+// <= 5 pi / 2 + 1 the edge's length and rho <= 21 its distance from the origin.
+void overflow_goes_first()
+{
+    auto exact_volume = [](const smlib_brep *b)
+    {
+        double m[11] = {};
+        CHECK(smlib_brep_mass_properties(b, 1e-8, m) == SMLIB_OK);
+        return m[1];
+    };
+    auto F = [](double u) { return 0.5 * (u * std::sqrt(441.0 - u * u) + 441.0 * std::asin(u / 21.0)); };
+    const double w = std::sqrt(440.0), alone = 20.0 * (F(w) - F(1.0) - (w - 1.0));
+    CHECK(near(alone, 6107.529370, 1e-10));
+    // The R5 corner over the cylinder, by Simpson's rule in t (smooth there) on 4000 spans.
+    auto strip = [](double t)
+    {
+        const double y = 15.0 + 5.0 * std::sin(t), zc = 21.0 - std::sqrt(441.0 - (y - 21.0) * (y - 21.0));
+        return 5.0 * (1.0 - std::cos(t)) * (20.0 - zc) * 5.0 * std::cos(t);
+    };
+    const int n = 4000;
+    const double h = 0.5 * PI / n;
+    double sum = strip(0.0) + strip(0.5 * PI);
+    for (int i = 1; i < n; ++i)
+    {
+        sum += (i % 2 ? 4.0 : 2.0) * strip(i * h);
+    }
+    const double corner = sum * h / 3.0;
+    CHECK(near(corner, 106.612300588, 1e-9));
+    smlib_brep *cube = box(0, 0, 0, 20, 20, 20);
+    struct Case
+    {
+        const char *name;
+        std::vector<double> points, radii;
+        std::vector<int64_t> dropped;
+        double volume;
+        bool quartic_end;
+    };
+    const Case cases[] = {
+        {"R21 with R5 on the corner's other edges", {10, 0, 0, 0, 10, 0, 0, 0, 10}, {21, 5, 5}, {0, 1, 1}, alone, false},
+        {"R21 with R5 on the back upright", {10, 0, 0, 0, 20, 10}, {21, 5}, {0, 0}, alone - corner, true},
+    };
+    for (const Case &c : cases)
+    {
+        const int64_t k = static_cast<int64_t>(c.radii.size());
+        std::vector<int64_t> dropped(c.radii.size(), -1);
+        smlib_brep *r = nullptr;
+        CHECK(smlib_blend_dropping(cube, SMLIB_BLEND_ROUND, c.points.data(), c.radii.data(), k, 1.0, &r, nullptr, dropped.data()) == SMLIB_OK);
+        CHECK(dropped == c.dropped);
+        if (r != nullptr)
+        {
+            CHECK(sound(r));
+            double tau = 0.0;
+            smlib_flat *f = nullptr;
+            CHECK(smlib_brep_export(r, &f) == SMLIB_OK);
+            const double *t = nullptr;
+            int64_t nt = 0;
+            CHECK(f != nullptr && smlib_flat_get_f64(f, SMLIB_FLAT_EDGE_TOLERANCE, &t, &nt) == SMLIB_OK);
+            for (int64_t i = 0; i < nt; ++i)
+            {
+                tau = std::max(tau, t[i]);
+            }
+            smlib_flat_free(f);
+            const double bound = c.quartic_end ? 2.0 * tau * (2.5 * PI + 1.0) * 21.0 / 3.0 : 1e-9 * c.volume;
+            std::printf("overflow first, %s: %.9f, expected %.9f (within %.3g)\n", c.name, exact_volume(r), c.volume, bound);
+            CHECK(std::fabs(exact_volume(r) - c.volume) <= bound);
+        }
+        smlib_brep_free(r);
+    }
+    smlib_brep_free(cube);
+}
+
 // The knife edge of knife_edge_rounds chamfered d: at a cusp no ball lies d back along both faces
 // (their angle is 0), and the chamfer is the chord between the contacts of the ball of radius d
 // (the R d round's): on the flat face sqrt(4 R d) back from the tip, on the wall where the line
@@ -5748,6 +5830,7 @@ int main(int argc, char **argv)
     lip_swept_flush_round_a_corner();
     knife_edge_rounds();
     knife_edge_chamfers();
+    overflow_goes_first();
     crease_rounds_from_half_a_degree();
     corner_setback();
     corner_setback_open();

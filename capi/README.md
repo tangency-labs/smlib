@@ -782,6 +782,18 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   end on several faces or on a non-planar face, concave blends in the same call, a sheet
   boundary that does not pass from face to face along side edges, or a variable round on planes
   whose surface misses its law (`sm_HoldsItsLaw`): too large, `SM_FILERR_NO_ROOM`, as before.
+- **An overflow goes first** (`SmFilletExecutive.h`/`.cpp`, `SetOverflowFirst`, `SetClassifyOnly`,
+  `GetOverflowEdges`, `SM_FILERR_OVERFLOW_FIRST`; `smlib_ops.cpp`, `overflow_first`; new
+  `smlib_blend_dropping`): rounds of several edges where some overflow their faces across cliffs
+  were blended together, and a corner of an overflowing round and the rounds of the edges it
+  takes away had no geometry (R21 with R5 on a 20 cube's corner: 1001, "Corner Geometry
+  Computation Failure"; with all three rounds together every rail was classified as leaving its
+  face). The blends that overflow on their own (each edge's alone, classified and not built) are
+  built first, the picked edges tagged; each other picked edge is then what is left of it, rounded
+  at its size. An edge the overflow removes whole is gone, flagged by `smlib_blend_dropping`; one
+  it cuts keeps the rest of its length. R21 with R5 on the corner's other edges is R21's alone
+  (6107.529370); with R5 on the back upright the R5 rounds the upright above the R21 cylinder.
+  Where no edge overflows on its own, or every one does, the edges are blended together as before.
 - **A trace that reaches its rails** (`SmFilletExecutive.cpp`, `sm_ExtendTraceToItsRails`;
   `SmFilletSolver.h`/`.cpp`, `GetDomainExtension`, `SetTraceReach`; `SmFilletStandardSolver.cpp`,
   `SmVariableRadiusFS::LoadInitialValues`): the fillet trace runs over its base surfaces' domains

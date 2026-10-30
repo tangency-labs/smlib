@@ -25,7 +25,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a declaration in this header changes. */
-#define SMLIB_ABI_VERSION 4
+#define SMLIB_ABI_VERSION 5
 
 #define SMLIB_OK 0
 /* A C++ exception escaped SMLib (out of memory, most likely). */
@@ -656,6 +656,14 @@ int32_t smlib_chamfer(const smlib_brep *brep, const double *points, int64_t n_po
  * smlib_fillet and smlib_chamfer are this call with one size for every point. */
 int32_t smlib_blend(const smlib_brep *brep, int32_t kind, const double *points, const double *sizes, int64_t n_points,
                     double tolerance, smlib_brep **out, int64_t *out_failed_point);
+
+/* smlib_blend, and where some rounds overflow their faces across cliffs and others fit, the
+ * overflowing ones go first: they are built, and the others then round what is left of their
+ * edges. An edge such an overflow removes whole is gone and not rounded: `out_dropped` (one
+ * flag per point, cleared first) is 1 for each point that picked one. An edge it cuts keeps the
+ * rest of its length, rounded at its size. smlib_blend does the same, without the flags. */
+int32_t smlib_blend_dropping(const smlib_brep *brep, int32_t kind, const double *points, const double *sizes, int64_t n_points,
+                             double tolerance, smlib_brep **out, int64_t *out_failed_point, int64_t *out_dropped);
 
 /* As smlib_blend, with corner setbacks: each of the `n_corners` (>= 1) points in `corners` picks
  * the vertex nearest it (within `tolerance`, as a point picks an edge; a vertex picked twice
