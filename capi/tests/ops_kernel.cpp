@@ -4409,6 +4409,54 @@ int main(int argc, char **argv)
         delete half;
     }
 
+    // A 294 deg partial cylinder r5 offset 4, evaluated past its ends (the round solver's first
+    // requests are 18 and 4.5 deg past them). The extension reached a domain past either end, 294
+    // deg each way, and covered the turn two and a half times over. Now it closes the turn, 33 deg
+    // past either end (half the gap), and wraps parameters past that like a periodic surface's.
+    {
+        const SmContext &ctx = *SmApiGetOrCreateContext();
+        SmCylinder *arc = new (ctx) SmCylinder(SmPoint3d(0, 0, 0), SmVector3d(1, 0, 0), SmVector3d(0, 1, 0), 5.0, 0.0, 294.0, 10.0,
+                                               FALSE, FALSE, FALSE, &ctx);
+        const SmExtent2d d = arc->GetNaturalUVDomain();
+        const double length = d.GetMax().x - d.GetMin().x;
+        const double per_deg = length / 294.0;
+        const double turn = 360.0 * per_deg;
+        const double v = 0.5 * (d.GetMin().y + d.GetMax().y);
+        SmOffsetSurface *off = new (ctx) SmOffsetSurface(4.0, *arc);
+        off->SetAllowExtension(TRUE);
+        SmPoint3d p;
+        SmPoint3d inside;
+        CHECK(off->EvaluatePoint(SmPoint2d(d.GetMin().x + 0.4 * length, v), inside) == SM_SUCCESS);
+        double worst = 0.0;
+        for (double past : {18.0, 4.5, 33.0, 40.0, 147.0, 294.0, 588.0, 900.0})
+        {
+            for (double u : {d.GetMax().x + past * per_deg, d.GetMin().x - past * per_deg})
+            {
+                SmPoint3d q;
+                CHECK(off->EvaluatePoint(SmPoint2d(u, v), p) == SM_SUCCESS);
+                CHECK(off->EvaluatePoint(SmPoint2d(u - turn, v), q) == SM_SUCCESS);
+                worst = std::max({worst, std::fabs(std::hypot(p.x, p.y) - 9.0), p.DistanceBetween(q)});
+            }
+        }
+        const SmExtent2d e = off->GetNaturalUVDomain();
+        std::printf("294 deg cylinder r5 offset 4, 4.5 to 900 deg past its ends: off radius 9 or a turn back by at most %.3g, "
+                    "extended over %.12g deg\n", worst, (e.GetMax().x - e.GetMin().x) / per_deg);
+        CHECK(worst < 1e-9);
+        // one turn, the gap's half past either end
+        CHECK(std::fabs(e.GetMax().x - e.GetMin().x - turn) < 1e-9 * turn);
+        CHECK(std::fabs(e.GetMax().x - d.GetMax().x - 33.0 * per_deg) < 1e-9 * turn);
+        // the closure, at -33 deg from either side; inside the arc the same point as before
+        for (double u : {d.GetMax().x + 33.0 * per_deg, d.GetMin().x - 33.0 * per_deg})
+        {
+            CHECK(off->EvaluatePoint(SmPoint2d(u, v), p) == SM_SUCCESS);
+            const double a = -33.0 * SM_PI / 180.0;
+            CHECK(std::fabs(p.x - 9.0 * std::cos(a)) < 1e-9 && std::fabs(p.y - 9.0 * std::sin(a)) < 1e-9);
+        }
+        CHECK(off->EvaluatePoint(SmPoint2d(d.GetMin().x + 0.4 * length, v), p) == SM_SUCCESS && p.DistanceBetween(inside) < 1e-12);
+        delete off;
+        delete arc;
+    }
+
     // SolidCraft rig case fillets/4174: a block 40 x 30 x 5 and a cylinder r10.5 standing on its
     // top, its axis on the block's front edge, so half of it overhangs. The concave arc where the
     // cylinder meets the top, rounded r, ends at the front face, where the arc runs on tangentially
