@@ -6322,6 +6322,21 @@ int iDebugLevel = 0;
   bSideEdgeSameCvxty[0] = same_convexity_edges(pFilEdgeuse, pEU[0], m_cpVertex, iDebugLevel );
   bSideEdgeSameCvxty[1] = same_convexity_edges(pFilEdgeuse, pEU[1], m_cpVertex, iDebugLevel );
 
+  // SolidCraft: a side edge whose faces meet tangentially at the vertex (a bar's flat side
+  // running onto the cylinder its round end lies on) has no convexity: same_convexity_edges()
+  // on it reads only the sign of the rounding in the geometry (IsConvexRadialSector's notes: a
+  // G1 edge needs the step off), so the two ends of one arc read differently with the sketch
+  // solver's residues. It is never of the opposite convexity: the side face runs on across it.
+  // (Edges reached past such an edge round the vertex are read the same way below.)
+  {
+    double dTanTolDeg = SM_RAD2DEG( GetTangencyTolRadians() );
+    for ( ULONG kk=0; kk<2; kk++ )
+      {
+        if ( sm_CheckTangentialEdgeuseAtVertex( pEU[kk], m_cpVertex, dTanTolDeg ) )
+          { bSideEdgeSameCvxty[kk] = TRUE; }
+      }
+  }
+
   // A side edge whose two faces meet tangentially at the vertex (a flat top
   // running smoothly onto a round) is no edge of the corner: the side face the
   // rail runs on continues across it. When the edge reached past it round the
