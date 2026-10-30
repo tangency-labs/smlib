@@ -3700,8 +3700,20 @@ static SmBoolean sbDumpFVUs=FALSE;
       double dReach  = smos_Max( m_dTraceReach, m_dSurfaceExtensionFactor * dLength );
       if ( dLength > SM_EFF_ZERO_SQRT )
         {
+          // Only past the end away from the corner: the side edge leaves the corner's vertex
+          // into the sector the blend fills, and a point of its line behind that vertex lies on
+          // the far side of the filleted edge, where no rail of the blend can be. There, with
+          // the faces continued as themselves, lies the mirror image of the ball (a knife edge's
+          // ball touching the curved wall's continuation past the tip), and the solve took it.
+          const SmEdge * pFilleted = GetEdgeuse(0)->GetEdge();
+          auto bOnFilleted = [pFilleted]( const SmVertex * cpV )
+            { return cpV != NULL && pFilleted != NULL && ( cpV == pFilleted->GetStartVertex() || cpV == pFilleted->GetEndVertex() ); };
+          const SmBoolean bCornerAtStart = bOnFilleted( pSideEdge->GetStartVertex() );
+          const SmBoolean bCornerAtEnd   = bOnFilleted( pSideEdge->GetEndVertex() );
           double dPast = dReach * sEdgeIvl.GetLength() / dLength;
-          sIntervals[0] = SmExtent1d( sEdgeIvl.GetMin() - dPast, sEdgeIvl.GetMax() + dPast );
+          double dBefore = ( bCornerAtStart && !bCornerAtEnd ) ? 0.0 : dPast;
+          double dAfter  = ( bCornerAtEnd && !bCornerAtStart ) ? 0.0 : dPast;
+          sIntervals[0] = SmExtent1d( sEdgeIvl.GetMin() - dBefore, sEdgeIvl.GetMax() + dAfter );
         }
     }
   sIntervals[1] = SmExtent1d(sDomain.GetMin().x,sDomain.GetMax().x);
