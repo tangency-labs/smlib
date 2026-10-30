@@ -9,12 +9,16 @@
 
 #include <SmApiBrep.h>
 #include <SmApiPrimitives.h>
+#include <SmApiTrimmedSurfaces.h>
 #include <SmAxis2Placement.h>
+#include <SmBSplineSurface.h>
 #include <SmCircle.h>
+#include <SmLine.h>
 
 #include <cmath>
 #include <cstdio>
 #include <functional>
+#include <vector>
 
 static int failures = 0;
 
@@ -232,6 +236,76 @@ int main()
             CHECK(std::fabs(box.GetUMin() - end.x) < 1e-9 && std::fabs(box.GetUMax() - 50.0) < 1e-9);
             CHECK(std::fabs(box.GetVMin()) < 1e-9 && std::fabs(box.GetVMax() - end.y) < 1e-9);
             delete arc;
+        }
+    }
+
+    // The tight box of a trimmed face is the face's, not its surface's: a crowned patch whose
+    // surface peaks outside its trim. A bicubic height field z(x, y) over [-20, 20]^2 (8 uniform
+    // spans each way, control points at their Greville abscissae, so its parameters are x and y)
+    // is zero but for two control points: the middle one, height 9, whose basis function is
+    // nonzero on (-10, 10) each way and 2/3 at its middle, and the corner one, height 50, nonzero
+    // on [-20, -15) each way only. Trimmed to the square [-10, 10]^2, z = 0 on the trim and the
+    // face rises to 9 * (2/3)^2 = 4 at (0, 0); the surface's highest point, z = 50 at the corner
+    // (-20, -20), is outside the trim. The box is (-10, -10, 0) to (10, 10, 4), not its edges'
+    // (z up to 0) as when the surface's peak alone was classified.
+    {
+        const SmContext &ctx = *SmApiGetOrCreateContext();
+        const ULONG n = 11;
+        SmTArray<double> unique, greville;
+        SmTArray<ULONG> mult;
+        std::vector<double> knots;
+        for (int k = 0; k <= 8; ++k)
+        {
+            unique.Add(-20.0 + 5.0 * k);
+            mult.Add(k == 0 || k == 8 ? 4 : 1);
+            for (ULONG m = 0; m < (k == 0 || k == 8 ? 4u : 1u); ++m)
+            {
+                knots.push_back(-20.0 + 5.0 * k);
+            }
+        }
+        for (ULONG i = 0; i < n; ++i)
+        {
+            greville.Add((knots[i + 1] + knots[i + 2] + knots[i + 3]) / 3.0);
+        }
+        SmTArray<SmPoint3d> net;
+        net.SetSize(n * n);
+        for (ULONG i = 0; i < n; ++i)
+        {
+            for (ULONG j = 0; j < n; ++j)
+            {
+                const double z = (i == 5 && j == 5) ? 9.0 : (i == 0 && j == 0) ? 50.0 : 0.0;
+                net[i * n + j] = SmPoint3d(greville[i], greville[j], z);
+            }
+        }
+        SmBSplineSurface *field = nullptr;
+        CHECK(SmBSplineSurface::CreateCanonical(ctx, 3, 3, net, SM_SF_UNSPECIFIED, mult, mult, unique, unique, SM_KT_UNSPECIFIED,
+                                                nullptr, nullptr, field) == SM_SUCCESS && field != nullptr);
+        const SmPoint3d corner[4] = {SmPoint3d(-10, -10, 0), SmPoint3d(10, -10, 0), SmPoint3d(10, 10, 0), SmPoint3d(-10, 10, 0)};
+        SmTArray<SmCurve *> sides;
+        for (int k = 0; k < 4; ++k)
+        {
+            SmLine *side = nullptr;
+            CHECK(SmLine::CreateLineSegment(ctx, 3, corner[k], corner[(k + 1) % 4], side) == SM_SUCCESS && side != nullptr);
+            sides.Add(side);
+        }
+        SmTArray<ULONG> loops;
+        loops.Add(4);
+        SmBrep *patch = nullptr;
+        CHECK(field != nullptr && SmApiTrimSurfaceWith3dCurves(field, loops, sides, patch) == SM_SUCCESS && patch != nullptr);
+        if (patch != nullptr)
+        {
+            smlib_brep pb{patch};
+            double plo[3], phi[3];
+            CHECK(smlib_brep_bounds(&pb, plo, phi) == SMLIB_OK);
+            std::printf("crowned patch peaking outside its trim: box (%.9f %.9f %.9f) to (%.9f %.9f %.9f)\n", plo[0], plo[1], plo[2], phi[0],
+                        phi[1], phi[2]);
+            const double want_lo[3] = {-10, -10, 0}, want_hi[3] = {10, 10, 4};
+            for (int i = 0; i < 3; ++i)
+            {
+                CHECK(std::fabs(plo[i] - want_lo[i]) < 1e-6 && std::fabs(phi[i] - want_hi[i]) < 1e-6);
+            }
+            pb.p = nullptr;
+            delete patch;
         }
     }
 
