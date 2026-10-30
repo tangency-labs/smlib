@@ -2387,6 +2387,25 @@ static int sbDumpFVUs=0;
       bReverseTracing = TRUE;
     }
 
+  // SolidCraft change: a trace that starts at a tangent point starts toward the next through
+  // point. The offset surfaces touch there: their normals' cross product gives no direction,
+  // and the filleted edge's tangent at that end can be the line along which they touch (the
+  // round/wall curve of a bar's top edge rounded into a cylinder tangent to the bar's side: it
+  // ends along the bar's side, where a round of the bar's edge and the cylinder's offsets meet
+  // to second order). A first step along that line lies on both offsets to within tolerance,
+  // and the trace took it for the centre curve and ran off round the cylinder. The centre
+  // curve leaves the point toward the next through point; the step from there finds it.
+  if (   lTotalTsects > 1
+      && sTsectPnts[0]->m_ePointType == SM_IP_TANGENT_POINT )
+    {
+      SmPoint3d sFrom, sTo;
+      SER( pOffsetSrf1->EvaluatePoint( sTsectPnts[0]->UVPos(0), sFrom ));
+      SER( pOffsetSrf1->EvaluatePoint( sTsectPnts[1]->UVPos(0), sTo ));
+      SmVector3d sChord = sTo - sFrom;
+      if ( sChord.Length() > dThisApproxTol3d )
+        { sDir = sChord; }
+    }
+
   // get the param value at start end of pEdgeCurve
   //double dParam = (bReverseTracing == TRUE)
   //                ? sIvl.GetMax()
