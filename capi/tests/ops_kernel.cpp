@@ -2194,6 +2194,78 @@ static void loops_touching_from_outside_close_apart()
     }
 }
 
+// A body from a SolidCraft flat file of capi/tests/data.
+smlib_brep *read_flat(const char *path)
+{
+    smlib_flat *flat = nullptr;
+    smlib_brep *b = nullptr;
+    CHECK(smlib_flat_read(path, &flat) == SMLIB_OK && smlib_brep_import(flat, &b) == SMLIB_OK);
+    smlib_flat_free(flat);
+    return b;
+}
+
+// SolidCraft's sloped basin (solidcraft#1080): a 100 x 60 x 30 slab less the loft from the
+// rectangle (20, m)-(80, 50) at the top z = 30 to (30, 20)-(70, 40) at z = 10, its walls planar
+// B-spline faces, the front rim m wide (data: sloped-basin-1-mm-rim, -0-5-mm-rim, as SolidCraft
+// hands them over). Its front rim edge chamfered d > m runs its leg on the top off the rim, over
+// the slab's front face (a cliff): built as if the top went on and cut by the front face. At each
+// end of the edge the pocket's corner is an Nx1 corner of mixed convexity (the end wall's top
+// edge convex, the pocket's corner edge concave): it ends the chamfer on the end wall's surface
+// extended past the vertex, along the end wall's top edge continued back over the rim, and that
+// end face, in the sheet, has its edge along the pocket's corner edge on the surfaces of both
+// walls. It was refused (SMLIB_ERR_NO_ROOM, "a cliff overflow's fillet boundary lies on the
+// surfaces of two faces"). Removed: the section, the triangle of the edge (m, 30), the top's
+// contact (m - d, 30) and the wall's d down it, clipped to y >= 0, along 30 + z between the
+// sloped end walls (shoelace for its area and first moment).
+void chamfer_past_a_sloped_basin_rim()
+{
+    auto removed = [](double m, double d)
+    {
+        const double len = std::sqrt((20.0 - m) * (20.0 - m) + 400.0);
+        const double e[2] = {m, 30.0}, t[2] = {m - d, 30.0}, w[2] = {m + d * (20.0 - m) / len, 30.0 - d * 20.0 / len};
+        std::vector<std::array<double, 2>> poly;
+        if (t[0] >= 0.0)
+        {
+            poly = {{e[0], e[1]}, {t[0], t[1]}, {w[0], w[1]}};
+        }
+        else
+        {
+            const double f = -t[0] / (w[0] - t[0]);
+            poly = {{e[0], e[1]}, {0.0, 30.0}, {0.0, t[1] + f * (w[1] - t[1])}, {w[0], w[1]}};
+        }
+        double area = 0.0, moment = 0.0;
+        for (size_t i = 0; i < poly.size(); ++i)
+        {
+            const auto &a = poly[i];
+            const auto &b = poly[(i + 1) % poly.size()];
+            const double c = a[0] * b[1] - b[0] * a[1];
+            area += c / 2.0;
+            moment += (a[1] + b[1]) * c / 6.0;
+        }
+        return std::fabs(area) * 30.0 + std::fabs(moment);
+    };
+    const struct
+    {
+        const char *file;
+        double m, d;
+    } cases[3] = {{SMLIB_TEST_DATA "/sloped-basin-1-mm-rim.txt", 1.0, 2.0},
+                  {SMLIB_TEST_DATA "/sloped-basin-1-mm-rim.txt", 1.0, 3.0},
+                  {SMLIB_TEST_DATA "/sloped-basin-0-5-mm-rim.txt", 0.5, 4.0}};
+    for (const auto &c : cases)
+    {
+        smlib_brep *basin = read_flat(c.file), *r = nullptr;
+        const double rim[3] = {50.0, c.m, 30.0};
+        const int32_t s = basin != nullptr ? smlib_blend(basin, SMLIB_BLEND_CHAMFER, rim, &c.d, 1, 0.1, &r, nullptr) : -1;
+        if (s != SMLIB_OK || r == nullptr || !near(volume_of(r), volume_of(basin) - removed(c.m, c.d), 1e-8) || !sound(r))
+        {
+            std::fprintf(stderr, "  chamfer %g past the sloped basin's %g mm rim: status %d\n", c.d, c.m, static_cast<int>(s));
+            failures++;
+        }
+        smlib_brep_free(r);
+        smlib_brep_free(basin);
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 4 && std::strcmp(argv[1], "--solidcore-1173") == 0)
@@ -5525,6 +5597,7 @@ int main(int argc, char **argv)
     rounds_at_a_concave_face_corner_are_mitred();
     basin_rim_rounds_mitred_with_a_gap_at_the_corner();
     end_face_rounds_mitred_at_concave_corners();
+    chamfer_past_a_sloped_basin_rim();
 
     // SolidCraft surface.offset of a ball's one face: the face taken off as a sheet is a closed
     // shell whose regions are all voids, which smlib_offset_sheet refused as a solid

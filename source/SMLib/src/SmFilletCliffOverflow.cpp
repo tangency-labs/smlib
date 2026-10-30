@@ -25,7 +25,8 @@
 * what the cliffs cut away: subtraction only removes material, so the blend
 * never bridges an opening.
 *
-* Exactness: a plane continues exactly (the same plane, a larger domain); any
+* Exactness: a planar surface continues exactly (its plane over a larger domain:
+* an SmPlane, or a B-spline SMLib finds planar, a loft's wall); any
 * other surface is used within its own domain, and a needed continuation of
 * one is refused (SM_FILERR_NOT_EXACT). A side edge continues past its end only
 * when it is a straight line (SM_FILERR_NOT_EXACT otherwise). An end the
@@ -112,16 +113,57 @@ SmStatus sm_EdgeCurve(const SmContext & crContext, const SmEdge & crEdge, SmCurv
   return SM_SUCCESS;
 }
 
+// The plane a planar surface lies on, by an origin and orthonormal axes: an SmPlane's own frame,
+// or for any other surface SMLib finds planar (a ruled B-spline wall between parallel lines,
+// a loft's planar side) its plane through a point of it (rbPlanar FALSE when it is not planar).
+SmStatus sm_PlaneOf(const SmSurface & crSurface, SmPoint3d & rOrigin, SmVector3d & rX, SmVector3d & rY, SmVector3d & rZ, SmBoolean & rbPlanar)
+{
+  rbPlanar = FALSE;
+  if ( crSurface.IsKindOf( SmPlane_TYPE ))
+    {
+      const SmAxis2Placement & rFrame = ((const SmPlane&)crSurface).GetPosition();
+      rOrigin  = rFrame.GetOrigin();
+      rX       = rFrame.GetXAxis();
+      rY       = rFrame.GetYAxis();
+      rZ       = rFrame.GetZAxis();
+      rbPlanar = TRUE;
+      return SM_SUCCESS;
+    }
+  SmPoint3d  sAt;
+  SmVector3d sNormal;
+  if ( !crSurface.IsPlanar( SM_EFF_ZERO, &sAt, &sNormal ))
+    { return SM_SUCCESS; }
+  if ( sNormal.Unitize() != SM_SUCCESS )
+    { SER( SM_ERR ); }
+  // an axis in the plane: the normal crossed with the coordinate axis it leans on least
+  SmVector3d sAxis( 1.0, 0.0, 0.0 );
+  if ( smos_Fabs( sNormal.y ) < smos_Fabs( sNormal.x ) && smos_Fabs( sNormal.y ) <= smos_Fabs( sNormal.z ))
+    { sAxis = SmVector3d( 0.0, 1.0, 0.0 ); }
+  else if ( smos_Fabs( sNormal.z ) < smos_Fabs( sNormal.x ))
+    { sAxis = SmVector3d( 0.0, 0.0, 1.0 ); }
+  rX = sNormal * sAxis;
+  if ( rX.Unitize() != SM_SUCCESS )
+    { SER( SM_ERR ); }
+  rY       = sNormal * rX;
+  rZ       = sNormal;
+  rOrigin  = sAt;
+  rbPlanar = TRUE;
+  return SM_SUCCESS;
+}
+
 // The distance from crPnt to the surface of crFace continued, as far as it continues exactly:
-// a plane's to the whole plane, any other surface's to its own domain.
+// a planar surface's to its whole plane, any other surface's to its own domain.
 SmStatus sm_DistanceToSurface(const SmFace & crFace, const SmPoint3d & crPnt, double & rdDist)
 {
   rdDist = SM_BIG_DOUBLE;
   const SmSurface * pSurface = crFace.GetSurface();   NER(pSurface);
-  if ( pSurface->IsKindOf( SmPlane_TYPE ))
+  SmPoint3d  sOrigin;
+  SmVector3d sX, sY, sZ;
+  SmBoolean  bPlanar = FALSE;
+  SER( sm_PlaneOf( *pSurface, sOrigin, sX, sY, sZ, bPlanar ));
+  if ( bPlanar )
     {
-      const SmAxis2Placement & rFrame = ((const SmPlane*)pSurface)->GetPosition();
-      rdDist = smos_Fabs( ( crPnt - rFrame.GetOrigin() ).Dot( rFrame.GetZAxis() ));
+      rdDist = smos_Fabs( ( crPnt - sOrigin ).Dot( sZ ));
       return SM_SUCCESS;
     }
   SmBoolean bDropped = FALSE, bMulti = FALSE;
@@ -147,7 +189,7 @@ SmStatus sm_Samples(const SmCurve & crCurve, ULONG lCount, std::vector<SmPoint3d
 }
 
 // A surface that is crFace's surface, whose domain holds every point of crPoints (all on it):
-// a plane the same plane over a domain that covers them, any other surface a copy of itself
+// a planar surface its plane over a domain that covers them, any other surface a copy of itself
 // when its own domain does (rbExact FALSE when it does not).
 SmStatus sm_CoveringSurface(const SmContext & crContext, const SmFace & crFace, const std::vector<SmPoint3d> & crPoints,
                             double dTol, SmSurface *& rpSurface, SmBoolean & rbExact)
@@ -155,12 +197,13 @@ SmStatus sm_CoveringSurface(const SmContext & crContext, const SmFace & crFace, 
   rpSurface = NULL;
   rbExact   = TRUE;
   const SmSurface * pSurface = crFace.GetSurface();   NER(pSurface);
-  if ( pSurface->IsKindOf( SmPlane_TYPE ))
+  SmPoint3d  sOrigin;
+  SmVector3d sX, sY, sZ;
+  SmBoolean  bPlanar = FALSE;
+  SER( sm_PlaneOf( *pSurface, sOrigin, sX, sY, sZ, bPlanar ));
+  if ( bPlanar )
     {
-      // the plane through the same origin along the same axes, at unit scale: the same points
-      const SmAxis2Placement & rFrame = ((const SmPlane*)pSurface)->GetPosition();
-      SmPoint3d  sOrigin = rFrame.GetOrigin();
-      SmVector3d sX = rFrame.GetXAxis(), sY = rFrame.GetYAxis();
+      // the plane through that origin along those axes, at unit scale: the same points
       SmExtent2d sBox;
       SmBoolean  bFirst = TRUE;
       for (const SmPoint3d & rP : crPoints)
@@ -198,6 +241,30 @@ SmStatus sm_CoveringSurface(const SmContext & crContext, const SmFace & crFace, 
 SmBoolean sm_Same(const SmPoint3d & crA, const SmPoint3d & crB, double dTol)
 {
   return crA.DistanceBetween( crB ) <= dTol ? TRUE : FALSE;
+}
+
+// Whether the sheet face crSheetFace lies on the surface of crFace continued: its surface, over
+// a grid across the face's UV box, within dTol of it (an end face of a corner on the end face's
+// surface extended, SmFilletCorner::CreateCornerPatch).
+SmStatus sm_LiesOnSurface(const SmFace & crSheetFace, const SmFace & crFace, double dTol, SmBoolean & rbOn)
+{
+  rbOn = TRUE;
+  const SmSurface * pSurface = crSheetFace.GetSurface();   NER(pSurface);
+  SmExtent2d sBox  = crSheetFace.GetUVDomain();
+  SmPoint2d  sSize = sBox.GetSize();
+  for (ULONG i=0; i<=4 && rbOn; i++)
+    {
+      for (ULONG j=0; j<=4 && rbOn; j++)
+        {
+          SmPoint3d sPnt;
+          SER( pSurface->EvaluatePoint( SmPoint2d( sBox.GetMin().x + sSize.x * i / 4.0,
+                                                   sBox.GetMin().y + sSize.y * j / 4.0 ), sPnt ));
+          double dDist = SM_BIG_DOUBLE;
+          SER( sm_DistanceToSurface( crFace, sPnt, dDist ));
+          rbOn = ( dDist <= dTol ) ? TRUE : FALSE;
+        }
+    }
+  return SM_SUCCESS;
 }
 
 } // namespace
@@ -441,6 +508,11 @@ NOTES: Each lamina edge of the sheet lies on the surface (continued) of one
     along the filleted edges of F from v to the other end's vertex, and out
     along that end's side edge to the chain's start. A face of a box end (a
     rib between two side edges at one vertex) has no filleted edge between.
+    A sheet face on a target face's own surface (the end face an Nx1 corner of
+    mixed convexity builds on the end face's surface extended) stands in for
+    that face: its lamina edges pass onto the other faces they lie on, and a
+    chain that reaches a filleted edges' vertex along one ends there (v
+    itself, no side edge between).
 ***********************************************************************/
 SmStatus SmFilletExecutive::CloseRemovalRegion()
 {
@@ -491,9 +563,22 @@ SmStatus SmFilletExecutive::CloseRemovalRegion()
       SmStatus eStat = sm_Samples( *pCurve, 4, vPoints );
       delete pCurve;
       SER( eStat );
+      // the sheet's face along the edge (a lamina edge has one)
+      SmTArray<SmFace*> sSheetFaces;
+      pEdge->GetFaces( sSheetFaces );
+      if ( sSheetFaces.GetSize() != 1 )
+        { SER( SM_ERR ); }
       SmFace * pHost = NULL;
       for (SmFace * pFace : vHosts)
         {
+          // A sheet face on the face's own surface (an Nx1 corner's end face of mixed
+          // convexity, on the end face's surface extended, SmFilletCorner::CreateCornerPatch)
+          // stands in for that face there: its lamina edge along a side edge lies on both faces'
+          // surfaces, and the sheet's boundary passes along it onto the other face.
+          SmBoolean bOwn = FALSE;
+          SER( sm_LiesOnSurface( *sSheetFaces[0], *pFace, dOnTol, bOwn ));
+          if ( bOwn )
+            { continue; }
           SmBoolean bOn = TRUE;
           for (size_t p=0; p<vPoints.size() && bOn; p++)
             {
@@ -641,6 +726,18 @@ SmStatus SmFilletExecutive::CloseRemovalRegion()
           NER(pNextHost);
           SmPoint3d sP = pEnd->GetPoint();
           SmBoolean bInexact = FALSE;
+          // A chain can end at a filleted edges' vertex itself: an Nx1 corner of mixed
+          // convexity extends its end face's surface past the vertex, along the side edge of
+          // the filleted edge's convexity continued back (a pocket's rim edge, the pocket's
+          // corner edge concave), and its end face, in the sheet, reaches the vertex. The chain
+          // closes there: no side edge leads back to it.
+          SmTArray<SmVertex*> sHostVerts;
+          pHost->GetVertices( sHostVerts );
+          for (ULONG v=0; v<sHostVerts.GetSize() && apSideVert[k] == NULL; v++)
+            {
+              if ( sBlendedVerts.count( sHostVerts[v] ) && sm_Same( sHostVerts[v]->GetPoint(), sP, dOnTol ))
+                { apSideVert[k] = sHostVerts[v]; }
+            }
           SmTArray<SmEdge*> sHostEdges;
           pHost->GetEdges( sHostEdges );
           for (ULONG s=0; s<sHostEdges.GetSize() && apSideVert[k] == NULL; s++)

@@ -766,7 +766,13 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   (continued along their lines past their ends), stitched and oriented as a solid, and
   subtracted from the body with `SmMerge::ManifoldBoolean` (`SM_BO_DIFFERENCE`). The result is
   the body blended as if the cliffs were not there, then cut by what the cliffs cut away (rig
-  5158 and 5181, #422, solidcraft#1080). Refused: a round whose rail runs on into the body's
+  5158 and 5181, #422, solidcraft#1080). A planar face continues as its plane whatever its
+  surface (a loft's planar B-spline wall too). At a pocket's rim corner (an Nx1 corner of mixed
+  convexity) the sheet holds the corner's end face, on the end wall's surface extended back
+  over the rim: its edge along the pocket's corner edge lies on both walls' surfaces, and passes
+  onto the wall that is not its own; the top's chain then ends at the rim's vertex itself (a
+  sloped basin's front rim chamfered past it, solidcraft#1080, had been refused as on two
+  faces' surfaces). Refused: a round whose rail runs on into the body's
   material (beyond a wall: the knife edge it would leave under the wall, `SM_FILERR_NO_ROOM`,
   solidcraft#3435); a needed continuation of a non-planar surface past its domain or of a side
   edge that is not a line (`SM_FILERR_NOT_EXACT`); an overflow with a tangent rollover, a fillet
