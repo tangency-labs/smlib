@@ -4891,9 +4891,20 @@ iDebugLevel = DebugLevel();
     // edge; where pCurrEU is concave (a boss standing over a box's side face, its line on that
     // face running down from the vertex), pCrossEU is the convex edge, and taking the concave one
     // for it put that fillet's rail on a crossing of pCurrEU that does not exist.
+    // SolidCraft: pCurrEU may be an edge whose faces meet tangentially at the vertex (a block's
+    // side running tangent into a cylinder, the block's top meeting the cylinder's wall above
+    // it): it has no convexity, and IsConvexRadialSector() on it reads only the sign of the
+    // rounding in the geometry (its notes: a G1 edge needs the step off). The roles then follow
+    // what they stand for: pCrossEU is the filleted edge whose face shared with pCurrEU turns
+    // less than half a turn between them at the vertex, so that its rail on that face runs
+    // into pCurrEU; on the other one's face pCurrEU's extension past the vertex runs on.
+    SmBoolean bCurrConcave = pCurrEU->IsConvexRadialSector(5);
+    if ( sm_CheckTangentialEdgeuseAtVertex( pCurrEU, m_cpVertex, SM_RAD2DEG( GetTangencyTolRadians() ) ) ) {
+        bCurrConcave = ! sm_CheckFaceComplimentaryCornerConcavity( m_cpVertex, pConvexEdgeuse, pCurrEU, NULL, iDebugLevel );
+    }
     SmEdgeuse * pCrossEU = pConcaveEdgeuse;
     SmEdgeuse * pExtEU   = pConvexEdgeuse;
-    if (pCurrEU->IsConvexRadialSector(5) == TRUE) {
+    if (bCurrConcave == TRUE) {
         SM_SWAP_PTR(SmEdgeuse,pCrossEU,pExtEU);
     }
 
