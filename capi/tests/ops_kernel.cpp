@@ -4351,10 +4351,21 @@ int main(int argc, char **argv)
         double length = d.GetMax().x - d.GetMin().x;
         double v = 0.5 * (d.GetMin().y + d.GetMax().y);
         SmPoint3d p;
+        // inside the arc, before and after the extension: the same points (its pcurves hold)
+        const double inside[3] = {d.GetMin().x + 0.1 * length, d.GetMin().x + 0.5 * length, d.GetMin().x + 0.93 * length};
+        SmPoint3d before[3];
+        for (int k = 0; k < 3; ++k)
+        {
+            CHECK(first->EvaluatePoint(SmPoint2d(inside[k], v), before[k]) == SM_SUCCESS);
+        }
         const double nearer[2] = {d.GetMax().x + 0.067 * length, d.GetMin().x - 0.067 * length};
         for (double u : nearer)
         {
             CHECK(first->EvaluatePoint(SmPoint2d(u, v), p) == SM_SUCCESS);
+        }
+        for (int k = 0; k < 3; ++k)
+        {
+            CHECK(first->EvaluatePoint(SmPoint2d(inside[k], v), p) == SM_SUCCESS && p.DistanceBetween(before[k]) < 1e-12);
         }
         const double farther[2] = {d.GetMax().x + 0.116 * length, d.GetMin().x - 0.116 * length};
         for (double u : farther)
@@ -4364,6 +4375,34 @@ int main(int argc, char **argv)
             CHECK(second->EvaluatePoint(SmPoint2d(u, v), b) == SM_SUCCESS);
             CHECK(first->EvaluatePoint(SmPoint2d(u, v), a) == SM_SUCCESS);
             CHECK(a.DistanceBetween(b) < 1e-9);
+        }
+        // The offset continues as the circle of radius 9 about the cylinder's axis (z), out to
+        // three domains (a turn and a half) past either end of the arc.
+        double worst = 0.0;
+        for (double past : {0.07, 0.5, 1.0, 2.0, 3.0})
+        {
+            for (double u : {d.GetMax().x + past * length, d.GetMin().x - past * length})
+            {
+                SmOffsetSurface *fresh = new (ctx) SmOffsetSurface(4.0, *half);
+                fresh->SetAllowExtension(TRUE);
+                CHECK(fresh->EvaluatePoint(SmPoint2d(u, v), p) == SM_SUCCESS);
+                worst = std::max(worst, std::fabs(std::hypot(p.x, p.y) - 9.0));
+                delete fresh;
+            }
+        }
+        std::printf("half cylinder r5 offset 4, 0.07 to 3 domains past its ends: off radius 9 by at most %.3g\n", worst);
+        CHECK(worst < 1e-9);
+        // A quarter turn's span per half domain: half a domain past the end at 180 degrees is
+        // at 270, a domain past it at 360.
+        const double quarter[2][3] = {{0.5, 0.0, -9.0}, {1.0, 9.0, 0.0}};
+        for (const auto &q : quarter)
+        {
+            SmOffsetSurface *fresh = new (ctx) SmOffsetSurface(4.0, *half);
+            fresh->SetAllowExtension(TRUE);
+            CHECK(fresh->EvaluatePoint(SmPoint2d(d.GetMax().x + q[0] * length, v), p) == SM_SUCCESS);
+            std::printf("  %g domain past the end: (%.9f, %.9f, %.9f)\n", q[0], p.x, p.y, p.z);
+            CHECK(std::fabs(p.x - q[1]) < 1e-9 && std::fabs(p.y - q[2]) < 1e-9);
+            delete fresh;
         }
         delete first;
         delete second;
