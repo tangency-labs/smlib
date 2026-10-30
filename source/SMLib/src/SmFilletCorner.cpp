@@ -6363,8 +6363,17 @@ int iDebugLevel = 0;
               lSkipped++;
             }
 
+          // The edge reached may itself be one whose faces meet tangentially
+          // (a bar's flat side running onto its round end, below a wall the
+          // bar's top meets): it has no convexity, as its faces' normals agree
+          // along it, and IsConvexRadialSector() on it reads only the sign of
+          // the rounding in the geometry (its notes: a G1 edge needs the step
+          // off). It is not of the opposite convexity, so it is the corner's
+          // edge: the end face beyond it runs on tangentially into the face
+          // the rail runs onto.
           if (   lSkipped > 0
-              && same_convexity_edges_round_vertex( pFilEdgeuse, pNextEU->GetEdge() ) )
+              && (   sm_CheckTangentialEdgeuseAtVertex( pNextEU, m_cpVertex, dTanTolDeg )
+                  || same_convexity_edges_round_vertex( pFilEdgeuse, pNextEU->GetEdge() ) ) )
             {
               pCornerEU[ kk ]           = pNextEU;
               bSideEdgeSameCvxty[ kk ]  = TRUE;
