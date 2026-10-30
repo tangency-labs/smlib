@@ -1784,6 +1784,62 @@ void corner_ball_after_a_round_is_exactly_singular()
     smlib_brep_free(round);
 }
 
+// Rounds meeting at a face's concave corner beside an unpicked sharp edge are mitred (the owner's
+// ruling, 2026-10-30): each runs on past the corner until it meets the other, where SMLib swept a
+// 3-sided face round the side edge (four more faces). Each edge loses (convex) or gains (concave)
+// the spandrel r^2 (1 - pi/4) along its length; in the quadrant beyond both walls the mitred
+// rounds take or add what both of their spandrel prisms hold, the cube r^3 less two quarter
+// cylinders plus their Steinmetz eighth, r^3 (5/3 - pi/2). The mitre's curve is SMLib's fitted
+// fillet-fillet intersection, as at a box's convex corner (3.5e-5 to 6e-5 mm^3 per corner here):
+// within 2e-8 of the body.
+//  - A 60 x 40 x 10 plate with a 30 x 20 x 5 pocket (sharp vertical corners), its four rim edges
+//    rounded (SolidCraft rig fillets/every-pocket-rim-edges-r2, -r5-as-deep-as-pocket): convex
+//    rounds beside the concave corner edge. 15 faces; at r 5, as deep as the pocket, 11.
+//  - A 60 x 60 x 5 plate with a 20 x 20 x 15 boss, its four root edges rounded r 4: concave
+//    rounds beside the boss's convex corner edge. 15 faces.
+void rounds_at_a_concave_face_corner_are_mitred()
+{
+    smlib_brep *plate = box(0, 0, 0, 60, 40, 10), *cut = box(15, 10, 5, 30, 20, 6), *pocket = nullptr;
+    smlib_brep *base = box(0, 0, 0, 60, 60, 5), *block = box(20, 20, 5, 20, 20, 15), *boss = nullptr;
+    CHECK(smlib_boolean(plate, cut, SMLIB_BOOLEAN_SUBTRACT, &pocket) == SMLIB_OK);
+    CHECK(smlib_boolean(base, block, SMLIB_BOOLEAN_UNION, &boss) == SMLIB_OK);
+    const double rim[12] = {30, 10, 10, 30, 30, 10, 15, 20, 10, 45, 20, 10};
+    const double root[12] = {30, 20, 5, 40, 30, 5, 30, 40, 5, 20, 30, 5};
+    struct Case
+    {
+        const char *what;
+        const smlib_brep *body;
+        const double *edges;
+        double r, v0, length, sign;
+        int64_t faces;
+    };
+    const Case cases[] = {{"pocket rim", pocket, rim, 2.0, 21000.0, 100.0, -1.0, 15},
+                          {"pocket rim", pocket, rim, 5.0, 21000.0, 100.0, -1.0, 11},
+                          {"boss root", boss, root, 4.0, 24000.0, 80.0, 1.0, 15}};
+    for (const Case &c : cases)
+    {
+        smlib_brep *round = nullptr;
+        CHECK(c.body != nullptr && smlib_fillet(c.body, c.edges, 4, 0.1, c.r, &round, nullptr) == SMLIB_OK);
+        if (round == nullptr)
+        {
+            continue;
+        }
+        const double want = c.v0 + c.sign * (c.length * c.r * c.r * (1.0 - PI / 4.0) + 4.0 * c.r * c.r * c.r * (5.0 / 3.0 - PI / 2.0));
+        int64_t counts[3] = {0, 0, 0};
+        double v = 0.0;
+        CHECK(smlib_brep_counts(round, counts) == SMLIB_OK && smlib_brep_volume(round, 1e-12, &v) == SMLIB_OK);
+        std::printf("%s rounded r%g: %lld faces, volume %.9f, expected %.9f\n", c.what, c.r, static_cast<long long>(counts[0]), v, want);
+        CHECK(counts[0] == c.faces);
+        CHECK(sound(round));
+        CHECK(near(v, want, 2e-8));
+        smlib_brep_free(round);
+    }
+    for (smlib_brep *x : {plate, cut, pocket, base, block, boss})
+    {
+        smlib_brep_free(x);
+    }
+}
+
 } // namespace
 
 // A disc r 15, 5 thick, one circular edge rounded r 1.5 and shelled 1.6 or 2 inward, open at one
@@ -5306,6 +5362,7 @@ int main(int argc, char **argv)
     shelled_disc_round_thinner_than_the_wall();
     groove_arc_round_ends_in_the_top();
     corner_ball_after_a_round_is_exactly_singular();
+    rounds_at_a_concave_face_corner_are_mitred();
 
     // SolidCraft surface.offset of a ball's one face: the face taken off as a sheet is a closed
     // shell whose regions are all voids, which smlib_offset_sheet refused as a solid
