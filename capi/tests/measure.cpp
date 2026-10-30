@@ -307,6 +307,8 @@ int main()
             pb.p = nullptr;
             delete patch;
         }
+    }
+
     // Point classification: exact, at the body's own zone tolerance. A 10 x 20 x 30 box at the
     // origin: inside, outside, on a face, on an edge, on a vertex. A cylinder of radius 5 about +Z:
     // off its curved wall by half its tolerance is on it, by ten tolerances inside or outside.
