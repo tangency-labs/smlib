@@ -49,6 +49,8 @@
 #include <SmGap.h>
 #include <SmProtoTopology.h>
 #include <SmAssertArray.h>
+#include <SmBoxSearch.h>
+#include <cmath>
 #include <vector>
 
 // #define SM_VALIDATE_TOPOLOGY 1
@@ -1760,14 +1762,44 @@ TCHAR     sDebugBuff[SM_TBLOCK_SIZE] ;
       else                   { sFaceBoxes2.Add( sBox ); }
     }
 
+  // The m_pOther faces each m_pBrep face is paired with: those whose box may lie within the
+  // intersection tolerance of its own (SmBoxSearch: a superset, in ascending order), so the
+  // pairs the box test below skips are never visited, and a join of two bodies of n faces does
+  // not visit all n^2 pairs to skip them. The pairs kept are the same, in the same order. Every
+  // pair is visited when a pair may be skipped for another reason first (a registered
+  // intersection table) or when the tolerance depends on the pair.
+  SmBoolean bSearchPairs = ( m_pIntersectionTable == NULL );
+#ifdef SM_USE_NEWTOL
+  bSearchPairs = FALSE;
+  const double dPairPad = 0.0;
+#else // SM_USE_OLDTOL
+  const double dPairPad = this->GetThisApproxTol3d();
+  if ( !std::isfinite( dPairPad ) ) { bSearchPairs = FALSE; }
+#endif // SM_USE_OLDTOL
+  SmBoxSearch sPairSearch;
+  if ( bSearchPairs )
+    {
+      std::vector< SmExtent3d > sBoxes2( lNumFaces2 );
+      for ( jj=0; jj<lNumFaces2; jj++ ) { sBoxes2[jj] = sFaceBoxes2[jj]; }
+      sPairSearch.Build( sBoxes2, std::vector< bool >( lNumFaces2, true ) );
+    }
+  std::vector< ULONG > sPairs2;
+
   // for every m_pBrep/m_pOther face pair - find and store coincidences and XSections
   for(ii=0;ii<lNumFaces1;ii++)
     {
       SmFace *pF1 = sFaces1[ii];
 
-      // for every m_pBrep/m_pOther face pair - find and store coincidences and XSections
-      for ( jj=0; jj<lNumFaces2; jj++ )
+      if ( !bSearchPairs || !sPairSearch.Query( sFaceBoxes1[ii], dPairPad, sPairs2 ) )
         {
+          sPairs2.resize( lNumFaces2 );
+          for ( jj=0; jj<lNumFaces2; jj++ ) { sPairs2[jj] = jj; }
+        }
+
+      // for every m_pBrep/m_pOther face pair - find and store coincidences and XSections
+      for ( ULONG lPair=0; lPair<sPairs2.size(); lPair++ )
+        {
+          jj = sPairs2[lPair];
           SmFace *pF2 = sFaces2[jj];
 
 #ifdef SM_DEBUG_CODE
