@@ -958,11 +958,38 @@ namespace
 {
 // SolidCraft fork: the trimmed face's own extremes (sm_FaceDirectedMax).
 
-// Most cells sm_FaceDirectedMax divides a face's domain into, and how often a cell is halved:
+// Most cells sm_FaceDirectedMax divides a face's domain into, and how often a cell is divided:
 // a cell left undecided at either limit counts with its own greatest value, so the box is then
 // at most that much larger than the face, never smaller.
 const ULONG sm_lFaceExtremeMaxCells = 4096;
 const ULONG sm_lFaceExtremeMaxDepth = 16;
+
+// How near a cell's side a knot may lie and still divide it: N_SrfExtractPatch (CopySubPatch)
+// snaps a requested side onto a knot within this distance, so a part nearer than that is no
+// cell of its own.
+const double sm_dFaceExtremeKnotSnap = 1.0e-08;
+
+// Where a cell of [dLo, dHi] is divided along one way: at the knot strictly inside it (by more
+// than sm_dFaceExtremeKnotSnap) nearest its middle, else at its middle. Divided at knots, a cell
+// comes to lie within one knot span that way, as sm_CellMonotone asks of a rational patch;
+// halved at middles alone, a cell over a knot off the dyadic points of the domain (a screw
+// surface's at every eighth of a turn) never does.
+double sm_CellDivision( const SmTArray<double> & crKnots, double dLo, double dHi )
+{
+  const double dMid = 0.5 * ( dLo + dHi );
+  double dAt = dMid, dOff = SM_BIG_DOUBLE;
+  for ( ULONG k = 0; k < crKnots.GetSize(); k++ )
+    {
+      const double dKnot = crKnots[k];
+      if (   dKnot > dLo + sm_dFaceExtremeKnotSnap && dKnot < dHi - sm_dFaceExtremeKnotSnap
+          && smos_Fabs( dKnot - dMid ) < dOff )
+        {
+          dAt  = dKnot;
+          dOff = smos_Fabs( dKnot - dMid );
+        }
+    }
+  return dAt;
+}
 
 // The greatest S.d over crCell of pFace's surface, and whether a point taking it lies in the
 // face (the solver's solutions within its tolerance of the greatest, each classified).
@@ -1019,7 +1046,8 @@ SmStatus sm_CellDirectedMax
 //   whose coefficients, B_i B_k = C(p,i) C(p,k) / C(2p,i+k) B_{i+k}, are computed exactly here;
 //   all of one sign for every j, the isocurve's control values rise (or fall) with j. As a
 //   rational Bezier with positive weights diminishes variation, the isocurve then does too.
-//   Likewise along u. A rational patch of several spans is divided further first.
+//   Likewise along u. A rational patch of several spans is divided further first (at its knots,
+//   sm_CellDivision).
 // FALSE when it cannot be told.
 SmBoolean sm_CellMonotone( const SmSurface * pSurface, const SmExtent2d & crCell, const SmVector3d & crDir )
 {
@@ -1117,11 +1145,18 @@ SmBoolean sm_CellMonotone( const SmSurface * pSurface, const SmExtent2d & crCell
 //    wholly inside the face or wholly outside it, and the point of 2 says outside;
 // 4. S.d is monotone over it (sm_CellMonotone): the face's highest point in it is on the face's
 //    boundary, which rdBest holds, or on the cell's own sides, which the neighbouring cells hold;
-// otherwise it is halved each way. A cell left at sm_lFaceExtremeMaxDepth or past
-// sm_lFaceExtremeMaxCells counts with its greatest value (the box is no smaller than the face).
+// otherwise it is divided each way (sm_CellDivision: at a knot inside it, else at its middle). A
+// cell left at sm_lFaceExtremeMaxDepth or past sm_lFaceExtremeMaxCells counts with its greatest
+// value (the box is no smaller than the face).
 SmStatus sm_FaceDirectedMax( const SmFace * pFace, const SmVector3d & crDir, double & rdBest )
 {
   const SmSurface * pSurface = pFace->GetSurface();
+  SmTArray<double> sKnotsU, sKnotsV;
+  if ( pSurface->IsKindOf( SmBSplineSurface_TYPE ) )
+    {
+      SER( ( (const SmBSplineSurface *)pSurface )->GetKnots( SM_SP_U, sKnotsU ) );
+      SER( ( (const SmBSplineSurface *)pSurface )->GetKnots( SM_SP_V, sKnotsV ) );
+    }
   std::vector< std::pair<SmExtent2d, ULONG> > sCells;
   sCells.push_back( std::make_pair( pFace->GetUVDomain(), 0UL ) );
   ULONG lCells = 0;
@@ -1164,11 +1199,12 @@ SmStatus sm_FaceDirectedMax( const SmFace * pFace, const SmVector3d & crDir, dou
           rdBest = dTop;
           continue;
         }
-      const SmPoint2d sMid = sCell.GetMid();
-      sCells.push_back( std::make_pair( SmExtent2d( sCell.GetUMin(), sCell.GetVMin(), sMid.x, sMid.y ), lDepth + 1 ) );
-      sCells.push_back( std::make_pair( SmExtent2d( sMid.x, sCell.GetVMin(), sCell.GetUMax(), sMid.y ), lDepth + 1 ) );
-      sCells.push_back( std::make_pair( SmExtent2d( sCell.GetUMin(), sMid.y, sMid.x, sCell.GetVMax() ), lDepth + 1 ) );
-      sCells.push_back( std::make_pair( SmExtent2d( sMid.x, sMid.y, sCell.GetUMax(), sCell.GetVMax() ), lDepth + 1 ) );
+      const SmPoint2d sAt( sm_CellDivision( sKnotsU, sCell.GetUMin(), sCell.GetUMax() ),
+                           sm_CellDivision( sKnotsV, sCell.GetVMin(), sCell.GetVMax() ) );
+      sCells.push_back( std::make_pair( SmExtent2d( sCell.GetUMin(), sCell.GetVMin(), sAt.x, sAt.y ), lDepth + 1 ) );
+      sCells.push_back( std::make_pair( SmExtent2d( sAt.x, sCell.GetVMin(), sCell.GetUMax(), sAt.y ), lDepth + 1 ) );
+      sCells.push_back( std::make_pair( SmExtent2d( sCell.GetUMin(), sAt.y, sAt.x, sCell.GetVMax() ), lDepth + 1 ) );
+      sCells.push_back( std::make_pair( SmExtent2d( sAt.x, sAt.y, sCell.GetUMax(), sCell.GetVMax() ), lDepth + 1 ) );
     }
   return SM_SUCCESS;
 }
