@@ -1699,14 +1699,16 @@ SmStatus SmTrimmingTools::FixTrimLoopOrder
 // start of the loop's first curve, rlFound the nearest end to lArrive. The ends at that vertex
 // (within d3DTol of rlFound) that the loop can go on from are those of curves it has not used,
 // and lClose. Each leaves the vertex along a ray, its tangent as the loop would run it; of
-// them the loop takes the next round the vertex from the ray it arrives along (turning one way
-// about the curves' plane; curves leaving tangent to each other in the order they bend). Any
-// two rays next to each other bound one sector, so the loop never crosses itself there: it goes
-// round one loop, or through the vertex into the other and back, but it never runs into a hole
-// turned the wrong way round (which counts the hole as material) nor ends on a curve it used.
+// them the loop takes the next round the vertex from the ray it arrives along, counterclockwise
+// about crTurnNormal (unit, one for all the vertices of a call; zero where the curves lie on one
+// line), curves leaving tangent to each other in the order they bend. Any two rays next to each
+// other bound one sector, so the loop never crosses itself there: it goes round one loop, or
+// through the vertex into the other and back, but it never runs into a hole turned the wrong
+// way round (which counts the hole as material) nor ends on a curve it used.
 static SmStatus sm_NextRoundTheVertex(const SmTArray<SmCurve *> & crCurves,
                                       const SmTArray<SmPoint3d> & crEnds,
                                       const SmTArray<SmBoolean> & crSeen,
+                                      const SmVector3d & crTurnNormal,
                                       ULONG lArrive, ULONG lClose, double d3DTol, ULONG & rlFound)
 {
   // the ends there the loop can go on from
@@ -1750,21 +1752,9 @@ static SmStatus sm_NextRoundTheVertex(const SmTArray<SmCurve *> & crCurves,
       if (sRay[ii].Length() <= 0.0) { SER(SM_ERR); }
     }
 
-  // the curves' plane: its normal from two rays there that are not parallel, else from the
-  // arriving curve's bending
-  SmVector3d sNormal(0.0, 0.0, 0.0);
-  for (size_t ii = 0; ii < sRay.size() && sNormal.Length() <= SM_EFF_ZERO_SQRT; ii++)
-    { sNormal = sBack * (sRay[ii] / sRay[ii].Length()); }
-  for (size_t ii = 0; ii < sRay.size() && sNormal.Length() <= SM_EFF_ZERO_SQRT; ii++)
-    {
-      for (size_t jj = ii + 1; jj < sRay.size() && sNormal.Length() <= SM_EFF_ZERO_SQRT; jj++)
-        { sNormal = (sRay[ii] / sRay[ii].Length()) * (sRay[jj] / sRay[jj].Length()); }
-    }
-  if (sNormal.Length() <= SM_EFF_ZERO_SQRT)
-    { sNormal = sBack * sBackA; }
-  if (sNormal.Length() <= SM_EFF_ZERO_SQRT)
-    { return SM_SUCCESS; } // every curve there on one line: they cannot touch from two sides
-  sNormal /= sNormal.Length();
+  if (crTurnNormal.Length() <= 0.0)
+    { return SM_SUCCESS; } // every curve on one line: they cannot touch from two sides
+  const SmVector3d & sNormal = crTurnNormal;
 
   // each ray's angle round the vertex from the arriving one, (0, 2 pi], and for rays leaving
   // along one line, its bending towards larger angles (curvature about the normal)
@@ -1941,6 +1931,49 @@ SmBoolean bDebugMe = FALSE;
   rsCurveBBox.ComputeSphereBound(sFaceCenter, dFaceRadius);
   double dFeatureSize = dFaceRadius/1000.0;
 
+  // SolidCraft: the normal the loops turn about where several curve ends meet (see
+  // sm_NextRoundTheVertex), one for the whole call, so the way a loop goes on there does not
+  // depend on the order of the ends in the list. Each curve's samples p_k about the curves'
+  // centre c add (p_k - c) x (p_k+1 - c): over closed loops that is twice the sum of their area
+  // vectors, as their curves run, whatever their order in the list. Every term is square to the
+  // curves' plane, so where the loops' areas cancel the terms each taken the way of the largest
+  // still give the plane. A loop turns clockwise about the loops' area normal (to its left, as it
+  // runs counterclockwise): it keeps round the region its curves bound as given, so loops that
+  // touch at a vertex from outside each other close apart.
+  SmVector3d sTurnNormal(0.0, 0.0, 0.0);
+  {
+    std::vector<SmVector3d> sTerms;
+    SmVector3d sArea(0.0, 0.0, 0.0), sLargest(0.0, 0.0, 0.0);
+    for (ii = 0; ii < nCurves; ii++)
+      {
+        const SmCurve* pC = crCurves[ii];
+        if (pC == NULL)
+          { continue; }
+        SmExtent1d sIV( pC->GetNaturalInterval() );
+        SmPoint3d sPrev, sPt;
+        SER(pC->EvaluatePoint( sIV.GetMin(), sPrev ));
+        for (jj = 1; jj <= 4; jj++)
+          {
+            SER(pC->EvaluatePoint( sIV.Evaluate(0.25 * jj), sPt ));
+            SmVector3d sTerm = (sPrev - sFaceCenter) * (sPt - sFaceCenter);
+            sTerms.push_back(sTerm);
+            sArea += sTerm;
+            if (sTerm.Length() > sLargest.Length()) { sLargest = sTerm; }
+            sPrev = sPt;
+          }
+      }
+    SmVector3d sPlane(0.0, 0.0, 0.0);
+    for (size_t kk = 0; kk < sTerms.size(); kk++)
+      { sPlane += (sTerms[kk].Dot(sLargest) < 0.0) ? -1.0 * sTerms[kk] : sTerms[kk]; }
+    double dPlane = sPlane.Length();
+    if (dPlane > 0.0)
+      {
+        sTurnNormal = sPlane / dPlane;
+        if (sArea.Dot(sTurnNormal) > SM_EFF_ZERO_SQRT * dPlane)
+          { sTurnNormal = -1.0 * sTurnNormal; }
+      }
+  }
+
   // locals
   ULONG nPlaneBaseComponentCount = 0;
   SmStatus sRet = SM_SUCCESS;
@@ -2076,7 +2109,7 @@ SmBoolean bDebugMe = FALSE;
           // SolidCraft: where more curve ends meet at this vertex (loops touching there), the
           // loop goes on along the curve next round the vertex from the one it arrives by, so it
           // never crosses itself, whatever order the curves were given in.
-          SER(sm_NextRoundTheVertex(crCurves, sVertexPoints, aSeenFlags,
+          SER(sm_NextRoundTheVertex(crCurves, sVertexPoints, aSeenFlags, sTurnNormal,
                                     (eCurveOrient == SM_OT_SAME) ? 2*nCurveIndex+1 : 2*nCurveIndex,
                                     2*nFirstCurveIndex, d3DTol, nFoundIndex));
           

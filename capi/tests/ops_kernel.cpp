@@ -1827,6 +1827,86 @@ void shelled_disc_round_thinner_than_the_wall()
     }
 }
 
+// The lines `lines` (each from its first point to its second) ordered into loops by
+// SmTrimmingTools::OrderCurvesIntoLoops: its status, and each loop's area as it runs (shoelace
+// over its lines), smallest first, each loop checked closed.
+static SmStatus ordered_loop_areas(const std::vector<std::pair<SmPoint3d, SmPoint3d>> &lines, std::vector<double> &areas)
+{
+    const SmContext &ctx = *SmApiGetOrCreateContext();
+    areas.clear();
+    SmTArray<SmCurve *> curves;
+    for (const auto &l : lines)
+    {
+        SmLine *c = nullptr;
+        CHECK(SmLine::CreateLineSegment(ctx, 3, l.first, l.second, c) == SM_SUCCESS && c != nullptr);
+        curves.Add(c);
+    }
+    SmTArray<SmCurve *> ordered;
+    SmTArray<ULONG> counts;
+    SmTArray<SmOrientType> orients;
+    SmPoint3d at;
+    SmVector3d normal;
+    SmExtent3d box;
+    SmStatus s = SmTrimmingTools::OrderCurvesIntoLoops(curves, 1e-6, ordered, counts, orients, at, normal, box);
+    if (s == SM_SUCCESS && ordered.GetSize() == curves.GetSize())
+    {
+        ULONG first = 0;
+        for (ULONG c = 0; c < counts.GetSize(); ++c)
+        {
+            double area = 0.0;
+            SmPoint3d end;
+            for (ULONG k = first; k < first + counts[c]; ++k)
+            {
+                SmPoint3d a, b;
+                ordered[k]->GetEnds(a, b);
+                if (orients[k] != SM_OT_SAME)
+                {
+                    std::swap(a, b);
+                }
+                CHECK(k == first || a.DistanceBetween(end) < 1e-12);
+                area += 0.5 * (a.x * b.y - b.x * a.y);
+                end = b;
+            }
+            SmPoint3d start, other;
+            ordered[first]->GetEnds(start, other);
+            CHECK(end.DistanceBetween(orients[first] == SM_OT_SAME ? start : other) < 1e-12);
+            areas.push_back(area);
+            first += counts[c];
+        }
+        std::sort(areas.begin(), areas.end());
+    }
+    else if (s == SM_SUCCESS)
+    {
+        s = SM_ERR;
+    }
+    for (ULONG k = 0; k < curves.GetSize(); ++k)
+    {
+        delete curves[k];
+    }
+    return s;
+}
+
+// The lines of the closed polygon `p` (n corners), reversed or not, added to `lines`.
+static void polygon_lines(std::vector<std::pair<SmPoint3d, SmPoint3d>> &lines, const double (*p)[2], int n, bool reversed)
+{
+    for (int i = 0; i < n; ++i)
+    {
+        SmPoint3d a(p[i][0], p[i][1], 0.0), b(p[(i + 1) % n][0], p[(i + 1) % n][1], 0.0);
+        lines.push_back(reversed ? std::make_pair(b, a) : std::make_pair(a, b));
+    }
+}
+
+// The list `lines` rotated by `turn` (its curve `turn` first).
+static std::vector<std::pair<SmPoint3d, SmPoint3d>> rotated(const std::vector<std::pair<SmPoint3d, SmPoint3d>> &lines, size_t turn)
+{
+    std::vector<std::pair<SmPoint3d, SmPoint3d>> out;
+    for (size_t k = 0; k < lines.size(); ++k)
+    {
+        out.push_back(lines[(k + turn) % lines.size()]);
+    }
+    return out;
+}
+
 // A 10 x 6 plate's outline and a triangular hole whose corner touches it at (0, 3), as eight
 // lines, ordered into loops (SmTrimmingTools::OrderCurvesIntoLoops) from every rotation of the
 // list, with the outline or the hole reversed. Four curve ends meet at (0, 3). Each loop must
@@ -1837,83 +1917,62 @@ void shelled_disc_round_thinner_than_the_wall()
 static void loops_touching_at_a_vertex_in_any_order()
 {
     const double outline[5][2] = {{0, 0}, {10, 0}, {10, 6}, {0, 6}, {0, 3}}, hole[3][2] = {{0, 3}, {2, 3.5}, {2, 2.5}};
-    const SmContext &ctx = *SmApiGetOrCreateContext();
     for (int variant = 0; variant < 3; ++variant)
     {
         std::vector<std::pair<SmPoint3d, SmPoint3d>> lines;
-        auto loop = [&](const double (*p)[2], int n, bool reversed)
+        polygon_lines(lines, outline, 5, variant == 1);
+        polygon_lines(lines, hole, 3, variant == 2);
+        for (size_t turn = 0; turn < lines.size(); ++turn)
         {
-            for (int i = 0; i < n; ++i)
+            std::vector<double> areas;
+            SmStatus s = ordered_loop_areas(rotated(lines, turn), areas);
+            for (double &a : areas)
             {
-                SmPoint3d a(p[i][0], p[i][1], 0.0), b(p[(i + 1) % n][0], p[(i + 1) % n][1], 0.0);
-                lines.push_back(reversed ? std::make_pair(b, a) : std::make_pair(a, b));
+                a = std::fabs(a);
             }
-        };
-        loop(outline, 5, variant == 1);
-        loop(hole, 3, variant == 2);
-        const size_t n = lines.size();
-        for (size_t turn = 0; turn < n; ++turn)
-        {
-            SmTArray<SmCurve *> curves;
-            for (size_t k = 0; k < n; ++k)
+            std::sort(areas.begin(), areas.end());
+            bool apart = areas.size() == 2 && std::fabs(areas[0] - 1.0) < 1e-12 && std::fabs(areas[1] - 60.0) < 1e-12;
+            bool joined = areas.size() == 1 && std::fabs(areas[0] - 59.0) < 1e-12;
+            if (s != SM_SUCCESS || (!apart && !joined))
             {
-                const auto &l = lines[(k + turn) % n];
-                SmLine *c = nullptr;
-                CHECK(SmLine::CreateLineSegment(ctx, 3, l.first, l.second, c) == SM_SUCCESS && c != nullptr);
-                curves.Add(c);
-            }
-            SmTArray<SmCurve *> ordered;
-            SmTArray<ULONG> counts;
-            SmTArray<SmOrientType> orients;
-            SmPoint3d at;
-            SmVector3d normal;
-            SmExtent3d box;
-            SmStatus s = SmTrimmingTools::OrderCurvesIntoLoops(curves, 1e-6, ordered, counts, orients, at, normal, box);
-            if (s != SM_SUCCESS || ordered.GetSize() != n)
-            {
-                std::fprintf(stderr, "loops touching at a vertex, variant %d, turn %zu: status %ld\n", variant, turn, static_cast<long>(s));
+                std::fprintf(stderr, "loops touching at a vertex, variant %d, turn %zu: status %ld, %zu loops, largest area %g\n", variant, turn,
+                             static_cast<long>(s), areas.size(), areas.empty() ? 0.0 : areas.back());
                 failures++;
             }
-            else
+        }
+    }
+}
+
+// Two unit squares touching at a corner, (1, 1), from outside each other, both counter-clockwise
+// or both clockwise, ordered into loops from the first square's lines then the second's and the
+// other way round, each list from every rotation. Four curve ends meet at (1, 1), and the loop
+// arriving there turns about one normal for the whole list: each square closes as itself, the
+// way its lines run (areas 1 and 1, or -1 and -1), never one loop through the corner twice
+// round both (area 2). Before, the normal there was the first pair of rays found by the ends'
+// order in the list, so its sign, and which of the two the list gave, changed with the order.
+static void loops_touching_from_outside_close_apart()
+{
+    const double a[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}}, b[4][2] = {{1, 1}, {2, 1}, {2, 2}, {1, 2}};
+    for (bool reversed : {false, true})
+    {
+        for (bool b_first : {false, true})
+        {
+            std::vector<std::pair<SmPoint3d, SmPoint3d>> lines;
+            polygon_lines(lines, b_first ? b : a, 4, reversed);
+            polygon_lines(lines, b_first ? a : b, 4, reversed);
+            for (size_t turn = 0; turn < lines.size(); ++turn)
             {
-                // each loop closed, and its area as it runs (shoelace over its lines)
                 std::vector<double> areas;
-                ULONG first = 0;
-                for (ULONG c = 0; c < counts.GetSize(); ++c)
+                SmStatus s = ordered_loop_areas(rotated(lines, turn), areas);
+                double sense = reversed ? -1.0 : 1.0;
+                bool apart = areas.size() == 2 && std::fabs(areas[0] - sense) < 1e-12 && std::fabs(areas[1] - sense) < 1e-12;
+                if (s != SM_SUCCESS || !apart)
                 {
-                    double area = 0.0;
-                    SmPoint3d end;
-                    for (ULONG k = first; k < first + counts[c]; ++k)
-                    {
-                        SmPoint3d a, b;
-                        ordered[k]->GetEnds(a, b);
-                        if (orients[k] != SM_OT_SAME)
-                        {
-                            std::swap(a, b);
-                        }
-                        CHECK(k == first || a.DistanceBetween(end) < 1e-12);
-                        area += 0.5 * (a.x * b.y - b.x * a.y);
-                        end = b;
-                    }
-                    SmPoint3d start, other;
-                    ordered[first]->GetEnds(start, other);
-                    CHECK(end.DistanceBetween(orients[first] == SM_OT_SAME ? start : other) < 1e-12);
-                    areas.push_back(std::fabs(area));
-                    first += counts[c];
-                }
-                std::sort(areas.begin(), areas.end());
-                bool apart = areas.size() == 2 && std::fabs(areas[0] - 1.0) < 1e-12 && std::fabs(areas[1] - 60.0) < 1e-12;
-                bool joined = areas.size() == 1 && std::fabs(areas[0] - 59.0) < 1e-12;
-                if (!apart && !joined)
-                {
-                    std::fprintf(stderr, "loops touching at a vertex, variant %d, turn %zu: %zu loops, largest area %g\n", variant, turn, areas.size(),
-                                 areas.empty() ? 0.0 : areas.back());
+                    std::fprintf(stderr, "loops touching from outside, %s, %s first, turn %zu: status %ld, %zu loops, areas %g .. %g\n",
+                                 reversed ? "clockwise" : "counter-clockwise", b_first ? "second" : "first", turn, static_cast<long>(s), areas.size(),
+                                 areas.empty() ? 0.0 : areas.front(), areas.empty() ? 0.0 : areas.back());
                     failures++;
                 }
-            }
-            for (ULONG k = 0; k < curves.GetSize(); ++k)
-            {
-                delete curves[k];
             }
         }
     }
@@ -1927,6 +1986,7 @@ int main(int argc, char **argv)
     }
 
     loops_touching_at_a_vertex_in_any_order();
+    loops_touching_from_outside_close_apart();
 
     smlib_brep *cube = box(0, 0, 0, 20, 20, 20);
     smlib_brep *r = nullptr;
