@@ -415,6 +415,105 @@ int main()
     expect("extrude square drafted down -10 deg", smlib_extrude(sq.kinds.data(), sq.nk(), sq.reals.data(), sq.nr(), down, 4.0, -10.0 * PI / 180.0, SMLIB_DRAFT_CORNER_TANGENT, 1, &b, nullptr),
            &b, 4.0 / 3.0 * (100.0 + a3 * a3 + 10.0 * a3), 1e-6);
 
+    // A drafted wall that closes before the far end (SMLIB_ERR_WALL_CLOSES before). A wedge whose
+    // tip line (0.02 long) is far shorter than the 5 degree inward taper over 2 moves in: every
+    // wall leans by the taper, so the tip's wall is a triangle that closes where the long sides
+    // meet across it, and above that the long sides meet along a ridge. The section at height z
+    // is the profile's lines moved in by z tan 5: a quadrilateral below the apex, a triangle
+    // above, each area quadratic in z, so Simpson's rule on each piece is exact (72.883284979193).
+    // Every corner rule gives this solid: all its corners are ones where the offsets overlap.
+    {
+        const double w[4][2] = {{0, -2}, {20, -0.01}, {20, 0.01}, {0, 2}};
+        List wedge;
+        wedge.polygon({w[0][0], w[0][1], 0, w[1][0], w[1][1], 0, w[2][0], w[2][1], 0, w[3][0], w[3][1], 0});
+        const double ta = std::tan(5.0 * PI / 180.0);
+        // side i moved in by e (to its left), as a point and a unit direction
+        auto moved = [&](int i, double e, double out[4])
+        {
+            const double *p = w[i], *q = w[(i + 1) % 4];
+            double ux = q[0] - p[0], uy = q[1] - p[1], l = std::hypot(ux, uy);
+            ux /= l;
+            uy /= l;
+            out[0] = p[0] - uy * e;
+            out[1] = p[1] + ux * e;
+            out[2] = ux;
+            out[3] = uy;
+        };
+        auto meet = [&](int i, int j, double e, double out[2])
+        {
+            double a[4], c[4];
+            moved(i, e, a);
+            moved(j, e, c);
+            double s = ((c[0] - a[0]) * c[3] - (c[1] - a[1]) * c[2]) / (a[2] * c[3] - a[3] * c[2]);
+            out[0] = a[0] + s * a[2];
+            out[1] = a[1] + s * a[3];
+        };
+        // where the long sides meet, off the moved tip line (into the solid positive): linear in e
+        auto past_tip = [&](double e)
+        {
+            double x[2], q[4];
+            meet(0, 2, e, x);
+            moved(1, e, q);
+            return (x[0] - q[0]) * q[3] - (x[1] - q[1]) * q[2];
+        };
+        double d = 2.0 * ta, closes = d * past_tip(0.0) / (past_tip(0.0) - past_tip(d)), z_closes = closes / ta;
+        auto area = [&](double z)
+        {
+            double e = z * ta, pts[4][2];
+            int m = 0;
+            if (e <= closes)
+                for (int i = 0; i < 4; i++)
+                    meet((i + 3) % 4, i, e, pts[m++]);
+            else
+            {
+                meet(3, 0, e, pts[m++]);
+                meet(0, 2, e, pts[m++]);
+                meet(2, 3, e, pts[m++]);
+            }
+            double a = 0.0;
+            for (int i = 0; i < m; i++)
+                a += pts[i][0] * pts[(i + 1) % m][1] - pts[(i + 1) % m][0] * pts[i][1];
+            return 0.5 * a;
+        };
+        auto simpson = [&](double z0, double z1) { return (z1 - z0) / 6.0 * (area(z0) + 4.0 * area(0.5 * (z0 + z1)) + area(z1)); };
+        double v = simpson(0.0, z_closes) + simpson(z_closes, 2.0);
+        CHECK(std::fabs(z_closes - 0.126237833) < 1e-9 && std::fabs(v - 72.883284979193) < 1e-9);
+        const char *rules[3] = {"curvature", "tangent", "round"};
+        const int32_t rule_ids[3] = {SMLIB_DRAFT_CORNER_CURVATURE, SMLIB_DRAFT_CORNER_TANGENT, SMLIB_DRAFT_CORNER_ROUND};
+        for (int r = 0; r < 3; r++)
+        {
+            char name[64];
+            std::snprintf(name, sizeof name, "drafted wedge, tip closes (%s)", rules[r]);
+            b = nullptr;
+            int32_t s = smlib_extrude(wedge.kinds.data(), wedge.nk(), wedge.reals.data(), wedge.nr(), Z, 2.0, 5.0 * PI / 180.0, rule_ids[r], 1, &b, nullptr);
+            int64_t counts[3] = {0, 0, 0};
+            CHECK(s == SMLIB_OK && b != nullptr && smlib_brep_counts(b, counts) == SMLIB_OK && counts[0] == 6);
+            expect(name, s, &b, v, 1e-9);
+        }
+    }
+    // A slot 0.2 wide and 8 deep cut into a 10 x 10 square from its top side, drafted 10 degrees
+    // outward over 2: the slot's sides close on each other, and its floor's wall closes between
+    // them, at z* = 0.1 / tan 10 = 0.5671; there the sides meet along a ridge and the two halves
+    // of the top side's wall join above it. The section at height z is the square grown by
+    // e = z tan 10 less the slot, 8 long and 0.2 - 2e wide below z*:
+    // V = ((10 + 4t)^3 - 1000) / (6t) - 8 (0.2 z* - t z*^2) = ((10 + 4t)^3 - 1000) / (6t) - 0.08 / t.
+    {
+        List slot;
+        slot.polygon({0, 0, 0, 10, 0, 0, 10, 10, 0, 5.1, 10, 0, 5.1, 2, 0, 4.9, 2, 0, 4.9, 10, 0, 0, 10, 0});
+        const double tt = std::tan(10.0 * PI / 180.0);
+        double v = (std::pow(10.0 + 4.0 * tt, 3) - 1000.0) / (6.0 * tt) - 0.08 / tt;
+        CHECK(std::fabs(v - 213.984095421783) < 1e-9);
+        for (int32_t rule : {SMLIB_DRAFT_CORNER_CURVATURE, SMLIB_DRAFT_CORNER_TANGENT})
+        {
+            b = nullptr;
+            int32_t s = smlib_extrude(slot.kinds.data(), slot.nk(), slot.reals.data(), slot.nr(), Z, 2.0, -10.0 * PI / 180.0, rule, 1, &b, nullptr);
+            int64_t counts[3] = {0, 0, 0};
+            // bottom, top, the square's four sides (the top side's in its two halves), the slot's three
+            CHECK(s == SMLIB_OK && b != nullptr && smlib_brep_counts(b, counts) == SMLIB_OK && counts[0] == 10);
+            expect(rule == SMLIB_DRAFT_CORNER_CURVATURE ? "drafted slot closes (curvature)" : "drafted slot closes (tangent)", s, &b, v, 1e-9);
+        }
+    }
+
     // Revolutions about z of a profile in the xz plane: a square off the axis (a ring), a
     // quarter turn of it, and a half disc on the axis (a sphere).
     const double Y[3] = {0, 1, 0};

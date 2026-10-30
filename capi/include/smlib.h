@@ -993,8 +993,9 @@ int32_t smlib_ssi_point(const smlib_ssi_result *r, int32_t i, double xyz[3], dou
 /* SMLIB_DRAFT_CORNER_CURVATURE could not close a corner: the continued curves do not meet there
  * (two parallel lines, two circles that part). */
 #define SMLIB_ERR_CORNER_APART (-1108)
-/* SMLIB_DRAFT_CORNER_CURVATURE: a wall closes before the far end, its neighbours meeting across it
- * (or its arc shrinking to its centre). */
+/* SMLIB_DRAFT_CORNER_CURVATURE: a wall closes in a way the draft cannot build: at the far end
+ * (pinching it), so that the whole section closes, or as an arc shrinking to its centre. A wall that
+ * closes partway up, its neighbours meeting across it from there, builds. */
 #define SMLIB_ERR_WALL_CLOSES (-1109)
 
 /* The planar profile extruded `distance` (> 0) along the unit `direction`, square to the
@@ -1007,8 +1008,9 @@ int32_t smlib_ssi_point(const smlib_ssi_result *r, int32_t i, double xyz[3], dou
  * curve's start); SMLIB_DRAFT_CORNER_TANGENT continues lines' and arcs' walls as their tangent
  * planes (two lines meet at a corner edge) and other curves' walls as approximate offsets; a corner it cannot close is
  * SMLIB_ERR_CORNER_APART or SMLIB_ERR_WALL_CLOSES, or SMLIB_ERR_NOT_EXACT, and when `out_corner`
- * is not NULL that corner's point on the profile is written there (for SMLIB_ERR_WALL_CLOSES of an
- * arc that shrinks to its centre, the arc's middle). */
+ * is not NULL that corner's point on the profile is written there (for a seam that starts above
+ * the profile, where a wall closed, its start moved down into the profile's plane; for
+ * SMLIB_ERR_WALL_CLOSES of an arc that shrinks to its centre, the arc's middle). */
 int32_t smlib_extrude(const int64_t *kinds, int64_t n_kinds, const double *reals, int64_t n_reals, const double direction[3],
                       double distance, double draft, int32_t corner, int32_t cap, smlib_brep **out, double out_corner[3]);
 
