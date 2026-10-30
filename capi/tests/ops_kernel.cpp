@@ -719,6 +719,39 @@ double cross_curvature(const SmBrep *b, const SmPoint3d &p, const SmVector3d &al
 // sections' ends) each meet a section half and a face-curve half, both with zero curvature
 // there. The sheet passes SMLib's check and its only free edges are the hole's. An ease of 0 is
 // today's body exactly; the ease is refused where it does not fit or is no length.
+// The corner (60, 40, 20) of a 60 x 40 x 20 box, its three edges rounded r5 and set back 12 or
+// 13 with an ease of 0.5, 1.25 or 5 (SolidCraft's G2 corner, its long setbacks). Each face curve
+// between two sections is split at the side's middle, and both halves are merged into the face
+// they lie on. One half's midpoint lay on the corner's face curve to scaled zero and the other's
+// only to the edges' tolerance, so SmFilletEdge::FindFilletBrepEdge kept the first and dropped
+// the second: that half was never merged, and the sheet came back with two free edges besides
+// the hole's (SMLIB_ERR_NOT_SOLID). The sheet now holds one hole of twelve edges for every pair.
+void corner_setback_eased_long_setbacks()
+{
+    smlib_brep *part = box(0, 0, 0, 60, 40, 20);
+    const double edges[9] = {30, 40, 20, 60, 20, 20, 60, 40, 10};
+    const double radii[3] = {5, 5, 5};
+    const double corner[3] = {60, 40, 20};
+    for (double setback : {12.0, 13.0})
+    {
+        for (double ease : {0.5, 1.25, 5.0})
+        {
+            int64_t holes[64];
+            int64_t len = -1;
+            smlib_brep *r = nullptr;
+            const int32_t s = smlib_blend_setback_open_eased(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, &ease, 1, 0.1, &r,
+                                                             holes, 64, &len, nullptr, nullptr);
+            if (s != SMLIB_OK)
+            {
+                std::printf("set back %g, eased %g: status %d\n", setback, ease, static_cast<int>(s));
+            }
+            CHECK(s == SMLIB_OK && r != nullptr && len == 1 + 3 * 12 && holes[0] == 12);
+            smlib_brep_free(r);
+        }
+    }
+    smlib_brep_free(part);
+}
+
 void corner_setback_eased()
 {
     smlib_brep *part = box(0, 0, 0, 40, 40, 40);
@@ -5869,6 +5902,7 @@ int main(int argc, char **argv)
     setback_sections_are_exact_arcs();
     concave_corner_setback();
     corner_setback_eased();
+    corner_setback_eased_long_setbacks();
     shelled_tapered_box_rounds();
     shelled_disc_round_thinner_than_the_wall();
     groove_arc_round_ends_in_the_top();

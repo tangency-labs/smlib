@@ -8387,6 +8387,32 @@ SmStatus SmFilletEdge::FindFilletBrepEdge
         } // end looking for multiple edges branch
     } // end iter every input edge
 
+  // SolidCraft change: looking for both edges of a fillet edge split in two (a corner's face
+  // curve, split at the side's middle), one half's midpoint can lie on the curve to scaled
+  // zero while the other's lies on it only to the edges' tolerance (the halves are pieces of
+  // the curve, cut and evaluated apart: so at a box corner's r5 rounds set back 12, eased 0.5
+  // before it). The close one is the other half: kept as the second edge, not dropped. Left
+  // out, the second half was never merged into its face and the sheet came out with two free
+  // edges. A close edge counts only when its ends lie on the curve too, so that a different
+  // curve passing near the midpoint [B332] is not taken for a piece of this one.
+  if ( bFindMultipleEdges && m_pFilletBrepEdge1 != NULL && m_pFilletBrepEdge2 == NULL
+       && pBestEdge1 != NULL && pBestEdge1 != m_pFilletBrepEdge1 )
+    {
+      SmBoolean bOnCurve = TRUE;
+      for ( int iEnd = 0; iEnd < 2 && bOnCurve; iEnd++ )
+        {
+          SmPoint3d sEnd;
+          SmExtent1d sEdgeIvl = pBestEdge1->GetInterval();
+          SER(pBestEdge1->GetCurve()->EvaluatePoint(iEnd == 0 ? sEdgeIvl.GetMin() : sEdgeIvl.GetMax(), sEnd));
+          SmSolution sEData[4];
+          SmSolutionArray sEnds(4, sEData);
+          SER(p3DCurve->GlobalPointSolve(sIvl, SM_SO_INTERSECT, sEnd, pBestEdge1->GetTolerance(), NULL, NULL, SM_SR_SINGLE, sEnds));
+          bOnCurve = ( sEnds.GetSize() >= 1 ) ? TRUE : FALSE;
+        }
+      if ( bOnCurve )
+        { m_pFilletBrepEdge2 = pBestEdge1; }
+    }
+
   // every filletEdge should map to a Brep edge
   if ( m_pFilletBrepEdge1 )
     { return SM_SUCCESS; }
