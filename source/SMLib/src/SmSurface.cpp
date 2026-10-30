@@ -7801,6 +7801,12 @@ SmBoolean bDebugMe2 = FALSE;
 
 } // end CoincidenceCheck
 
+// The fraction of the domain, in u and in v, a step of CoverCoincidentSurface()'s drops
+// may cover before sm_CrossedSeamOrPole() calls it a crossing of a seam or a pole.
+// SolidCraft fork: at file scope, so the seam-jump test in CoverCoincidentSurface()
+// reads the same limit.
+static constexpr double sdMaxStepRatio = 0.4;
+
 /*******************************************************************//**
 PURPOSE: Static helper for CoverCoincidentSurface():
   Check whether a step crossed a seam or a pole.
@@ -7841,8 +7847,7 @@ static SmBoolean sm_CrossedSeamOrPole( SmSurface *pSurf,
   // But first it should be sufficient to check against half the domain:
   // assuming the step size was not too large, a jump that big probably
   // indicates some kind of problem that would justify a failure return
-  // from CoverCoincidentSurface().
-  constexpr double sdMaxStepRatio = 0.4;
+  // from CoverCoincidentSurface(). The limit is sdMaxStepRatio (file scope).
 
   // Check u and v separately.
   double dDomSizeU = crDomain.GetUInterval().GetLength();
@@ -8234,6 +8239,19 @@ SmBoolean bDebugMe = FALSE;
 
   sGuessUV = sCornerUVs[0][0];
 
+  // SolidCraft fork: a surface whose domain already closes on itself in a direction (a cylinder's
+  // full turn, the face on it wrapping all the way round) covers a face that straddles its seam:
+  // that face's points lie on it on both sides of the seam, and the face merged into it is the
+  // periodic face whose seam runs on through the covered part (the merge adds that piece of the
+  // seam, SmFace::SplitAtSeam). A step of the boundary walk across the seam in such a direction
+  // is no failure; the domain in it stays the period it already spans. In any other direction,
+  // or across a pole, a crossing still means the other face does not fit inside this one.
+  const SmExtent2d sThisDomain = this->GetNaturalUVDomain();
+  const SmBoolean  bWrapsU     = this->IsClosed( sThisDomain, SM_SP_U );
+  const SmBoolean  bWrapsV     = this->IsClosed( sThisDomain, SM_SP_V );
+  SmBoolean        bCrossedU   = FALSE;
+  SmBoolean        bCrossedV   = FALSE;
+
   for ( ii=0; ii<4; ii++ )
     {
       // Get the corner guess.  (Sorry, a bit slick:)
@@ -8278,7 +8296,16 @@ SmBoolean bDebugMe = FALSE;
 
           // Here we check seams/poles.
           if ( sm_CrossedSeamOrPole( this, sGuessUV, sDropUV, sBigDomain ) )
-            { return SM_SUCCESS; }
+            {
+              // Across which seam: a step longer than the helper allows (sdMaxStepRatio).
+              SmVector2d sStep( sDropUV - sGuessUV );
+              SmBoolean  bJumpU = smos_Fabs( sStep.x ) > sdMaxStepRatio * sBigDomain.GetUInterval().GetLength();
+              SmBoolean  bJumpV = smos_Fabs( sStep.y ) > sdMaxStepRatio * sBigDomain.GetVInterval().GetLength();
+              if ( ( bJumpU && !bWrapsU ) || ( bJumpV && !bWrapsV ) || eLocation == SM_LT_POLE )
+                { return SM_SUCCESS; }
+              bCrossedU = bCrossedU || bJumpU;
+              bCrossedV = bCrossedV || bJumpV;
+            }
 
           // Check max distance.
           SER( this->EvaluateSTEPPoint( sDropUV, sPt2 ) );
@@ -8314,6 +8341,17 @@ SmBoolean bDebugMe = FALSE;
   // with our original domain, and update our domain to it.
   SmExtent2d sOrigDomain = this->GetSTEPUVDomain();
   sOrigDomain.Union( sNewDomain, sUpdateDomain );
+  // SolidCraft fork: across a seam it already wraps, this surface keeps its period (see above).
+  if ( bCrossedU )
+    {
+      sUpdateDomain = SmExtent2d( SmPoint2d( sOrigDomain.GetMin().x, sUpdateDomain.GetMin().y ), SmPoint2d( sOrigDomain.GetMax().x, sUpdateDomain.GetMax().y ) );
+      sNewDomain    = SmExtent2d( SmPoint2d( sOrigDomain.GetMin().x, sNewDomain.GetMin().y ),    SmPoint2d( sOrigDomain.GetMax().x, sNewDomain.GetMax().y ) );
+    }
+  if ( bCrossedV )
+    {
+      sUpdateDomain = SmExtent2d( SmPoint2d( sUpdateDomain.GetMin().x, sOrigDomain.GetMin().y ), SmPoint2d( sUpdateDomain.GetMax().x, sOrigDomain.GetMax().y ) );
+      sNewDomain    = SmExtent2d( SmPoint2d( sNewDomain.GetMin().x, sOrigDomain.GetMin().y ),    SmPoint2d( sNewDomain.GetMax().x, sOrigDomain.GetMax().y ) );
+    }
 
   // SolidCraft fork: a B-spline surface covers past its natural domain by continuing its end
   // spans, and that continuation need not be one sheet: the straight lines of a swept planar
