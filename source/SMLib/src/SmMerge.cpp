@@ -24,6 +24,8 @@
 //  #include <SmCFace.h>
 #include <SmAssertArray.h>
 
+#include <unordered_set>
+
 
 /*******************************************************************//**
 PURPOSE: Set default values for all boolean flags
@@ -884,17 +886,16 @@ SmBoolean bDebugMe=FALSE;
             { continue; }
         }
 
-      // SolidCraft change: an edge the caller keeps, or one between two faces it keeps apart (a
-      // fillet's input), stays
-      if ( m_sPostProcessKeptEdges.count( pEdge ) != 0 )
-        { continue; }
-      if ( ! m_sPostProcessKeptFaces.empty() )
+      // SolidCraft change: an edge of a fillet's input, or one between two of its faces, stays
+      if ( m_bPostProcessKeepsFilletInput )
         {
+          if ( pEdge->FindAttribute( SM_AI_FILLET_INPUT ) != NULL )
+            { continue; }
           SM_PTR_ARRAY(sKeptFaces, SmFace, 8);
           pEdge->GetFaces( sKeptFaces );
           SmBoolean bAllKept = sKeptFaces.GetSize() > 0;
           for ( ULONG kf=0; kf<sKeptFaces.GetSize() && bAllKept; kf++ )
-            { bAllKept = m_sPostProcessKeptFaces.count( sKeptFaces[kf] ) != 0; }
+            { bAllKept = sKeptFaces[kf]->FindAttribute( SM_AI_FILLET_INPUT ) != NULL; }
           if ( bAllKept )
             { continue; }
         }

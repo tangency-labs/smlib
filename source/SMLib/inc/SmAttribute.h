@@ -74,6 +74,9 @@ enum SmBooleanOperationType ;
 #define SM_AI_FILLET_EDGECURVE   128  // SolidCraft change: a fillet surface's filleted edge, during a piecewise merge
 #define SM_AI_FOLLOWED_BLEND     130  // SolidCraft change: SmOffsetFacesExecutive's marks, during one call
 #define SM_AI_FILLET_CORNER_FACE 132  // SolidCraft change: a face of a set-back fillet corner's patch (SmFilletExecutive::SetMarkCornerPatches)
+#define SM_AI_FILLET_INPUT       134  // SolidCraft change: an edge or face of the target as it was before filleting, during one
+                                      //   SmFilletExecutive::DoFilleting (SM_AB_TEMP: no split, merge or copy hands it on, and it goes
+                                      //   with its entity)
                                       //   after a boolean every AObject with this attribute is a child of the AObject originally marked
                                       //   When tracking one AObject (a face) use SmAttribute, when tracking many faces use 
                                       //   SmLongAttribute or SmPointerAttribute so that children of different parents can be identified.
