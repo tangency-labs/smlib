@@ -10408,8 +10408,7 @@ static SmBoolean sm_GoodDropResult(
         const SmExtent2d & crDomain,   // in
         const SmPoint3d  & crPtToDrop, // in
         const SmPoint2d  & crGuessUV,  // in
-        const SmSolution & crSol,      // in: result of drop using crGuessUV
-        double             dTol        // in: the face's tolerance: how far along the surface a foot point may be off
+        const SmSolution & crSol       // in: result of drop using crGuessUV
     )
 {
   // Check whether it's right on.
@@ -10446,11 +10445,15 @@ static SmBoolean sm_GoodDropResult(
   SmVector3d sGap( crPtToDrop - sSrfPoint );
   double Fu = sGap.Dot( Su );
   double Fv = sGap.Dot( Sv );
-  // SolidCraft change: a foot point is off along the surface by no more than the face's
-  // tolerance (it was any 1e-4 mm, and in the interior 1e-3 mm in each direction): a local solve
-  // that stopped short where the surface's parameter is slow (a corner patch near its collapsed
-  // side, 0.043 mm per unit there) was taken for the foot point 6.9e-5 mm off it.
-  if ( smos_Fabs( Fu ) + smos_Fabs( Fv ) < dTol ) {
+  // SolidCraft change: a foot point is one the local solve converged to by its own tight
+  // tolerance (LocalPointSolve_1's, the gap's components along the unit tangents); any other
+  // stalled, and the global solve finds the foot. It was any 1e-4 mm off along the surface (in
+  // the interior 1e-3 mm in each direction), then the face's tolerance: a local solve that stopped
+  // short where the surface's parameter is slow (a corner patch near its collapsed side, 0.043 mm
+  // per unit there) was taken for the foot point 6.9e-5 mm off it, and on a raked wedge one
+  // 6.05e-4 mm off gave a gap of 7.07e-4 where it is about 3.7e-4.
+  const double dTightTol = SM_EFF_ZERO * ( 1.0 + crPtToDrop.GetMaxDimension() );
+  if ( smos_Fabs( Fu ) + smos_Fabs( Fv ) < dTightTol ) {
       return TRUE;
   }
 
@@ -10472,7 +10475,7 @@ static SmBoolean sm_GoodDropResult(
           return FALSE;
       }
   }
-  else if ( smos_Fabs( Fu ) > dTol )
+  else if ( smos_Fabs( Fu ) > dTightTol )
   {
       return FALSE; // interior, bad fcn value.
   }
@@ -10491,7 +10494,7 @@ static SmBoolean sm_GoodDropResult(
           return FALSE;
       }
   }
-  else if ( smos_Fabs( Fv ) > dTol )
+  else if ( smos_Fabs( Fv ) > dTightTol )
   {
       return FALSE; // interior, bad fcn value.
   }
@@ -10501,8 +10504,10 @@ static SmBoolean sm_GoodDropResult(
   // (Remember, this routine uses MINIMIZE.)
   SmPoint3d sGuess3dPt;
   if ( pSurface->EvaluatePoint( crGuessUV, sGuess3dPt ) != SM_SUCCESS ) { return FALSE ; } // SolidCraft: a drop that can't be evaluated isn't shown good
-  double dDsqGuess  = crPtToDrop.DistanceBetweenSquared( sSrfPoint );
-  double dDsqResult = crPtToDrop.DistanceBetweenSquared( sGuess3dPt );
+  // SolidCraft change: the result's distance and the guess's were swapped, so a result nearer
+  // than its guess was refused and one farther taken.
+  double dDsqGuess  = crPtToDrop.DistanceBetweenSquared( sGuess3dPt );
+  double dDsqResult = crPtToDrop.DistanceBetweenSquared( sSrfPoint );
   if ( dDsqResult > dDsqGuess )
   {
       return FALSE;
@@ -10614,7 +10619,7 @@ SmStatus SmSurface::DropPoint
       // i.e., was it a good enough guess?  [080206]
       if ( rbSuccess )
         {
-          rbSuccess = sm_GoodDropResult( this, crDomain, crPtToDrop, *pOptGuessUV, sSol, dDistTol );
+          rbSuccess = sm_GoodDropResult( this, crDomain, crPtToDrop, *pOptGuessUV, sSol );
         }
 
       if ( rbSuccess )
