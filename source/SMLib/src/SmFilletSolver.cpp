@@ -4001,8 +4001,18 @@ int iDebugLevel = DebugLevel();
       // (Otherwise we could take a second step in the direction that works
       // and use 2nd order forward or backward difference.)
 
+      // SolidCraft change: at a tangent point the intersection curve ends or branches; it does
+      // not run on through it, so a central difference across it averages the curve with
+      // whatever the surfaces do past it. Where the surfaces touch only to within the model's
+      // accuracy (a sketch with solver residues, 1e-10 mm), a step back past the point finds
+      // the near-tangent crossing beyond it, a branch at 18 degrees to the curve, and the
+      // averaged tangent made every step after the point fail the angle test, the trace
+      // creeping on in tiny steps (repeated control points, an internal pole). Where they
+      // touch exactly that step finds nothing and the forward difference is used. So it is
+      // here: the forward step runs along the trace (the previous point's tangent).
+      SmBoolean bTangentPoint = ( rTsectPnt.m_ePointType == SM_IP_TANGENT_POINT );
       SmPoint3d sStepPtForw, sStepPtBack;
-      if ( bFoundForw && bFoundBack )
+      if ( bFoundForw && bFoundBack && ! bTangentPoint )
         {
             sStepPtForw = ( sSrf0PtForw + sSrf1PtForw ) / 2.0;
             sStepPtBack = ( sSrf0PtBack + sSrf1PtBack ) / 2.0;
