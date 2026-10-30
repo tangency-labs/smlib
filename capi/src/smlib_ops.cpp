@@ -215,6 +215,11 @@ std::string pts(const double *points, int64_t n)
 // the edge, at the edge's midpoint: distance * tan(a / 2), with a the angle between b0 and b1,
 // the unit directions into the faces perpendicular to the edge (distance itself on a right-
 // angled edge). A constant-radius solver with a linear cross-section then cuts the chamfer.
+// At a cusp (a knife edge: the faces tangent at the edge, within the half degree
+// SmEdge::GetBlendEdgeuse calls tangent, and folded back on each other, b0 and b1 the same way)
+// a is 0 and no ball lies `distance` back along both: the faces part only to second order, so the
+// ball's contacts lie at different distances. There the chamfer is the chord between the
+// contacts of the ball of radius `distance`, the ball the round of that radius rolls.
 bool chamfer_radius(SmEdge *e, double distance, double &radius)
 {
     SmEdgeuse *u0 = e->GetBlendEdgeuse();
@@ -228,12 +233,15 @@ bool chamfer_radius(SmEdge *e, double distance, double &radius)
     SmPoint3d p1;
     SmVector3d b0;
     SmVector3d b1;
-    if (u0->EvaluateBinormal(t, FALSE, p0, b0) != SM_SUCCESS || u1->EvaluateBinormal(t, FALSE, p1, b1) != SM_SUCCESS)
+    SmVector3d n0;
+    if (u0->EvaluateBinormal(t, FALSE, p0, b0, nullptr, &n0) != SM_SUCCESS || u1->EvaluateBinormal(t, FALSE, p1, b1) != SM_SUCCESS ||
+        n0.Unitize() != SM_SUCCESS || b0.Unitize() != SM_SUCCESS || b1.Unitize() != SM_SUCCESS)
     {
         return false;
     }
     double c = std::max(-1.0, std::min(1.0, b0.Dot(b1)));
-    radius = distance * std::sqrt((1.0 - c) / (1.0 + c));
+    const bool cusp = c > 0.0 && std::fabs(b1.Dot(n0)) < std::sin(0.5 * SM_PI / 180.0);
+    radius = cusp ? distance : distance * std::sqrt((1.0 - c) / (1.0 + c));
     return std::isfinite(radius) && radius > 0.0;
 }
 

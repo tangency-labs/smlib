@@ -1623,6 +1623,52 @@ void knife_edge_rounds()
     smlib_brep_free(part);
 }
 
+// The knife edge of knife_edge_rounds chamfered d: at a cusp no ball lies d back along both faces
+// (their angle is 0), and the chamfer is the chord between the contacts of the ball of radius d
+// (the R d round's): on the flat face sqrt(4 R d) back from the tip, on the wall where the line
+// from its axis to the ball's centre meets it. It takes the triangle flat contact, tip, wall
+// contact less the wall's circular segment R^2/2 (b - sin b), b = acos((R - d)/(R + d)): at
+// d = 2, 3.822 wide, 159.23645 removed (SolidCraft rig fillets/851-chamfer-knife-edge-tip-*).
+// (At d 0.5 to 0.8 the chamfer face is built but left apart from the body, which keeps its knife
+// edge: SMLIB_ERR_NOT_SOLID, a defect of its own.)
+void knife_edge_chamfers()
+{
+    const double R = 21.0, TIP = 62.0 + 1.0 / 6.0, H = 10.0;
+    Profile p;
+    p.line(0, 0, 0, -R, 0).line(0, -R, TIP - R, -R, 0).arc(TIP, -R, 0, -1, R, PI, 1.5 * PI).line(TIP, 0, 0, 0, 0);
+    smlib_brep *part = p.extrude(H);
+    const double before = (TIP - R) * R * H + R * R * (1.0 - PI / 4.0) * H;
+    for (double d : {1.0, 2.0, 5.0})
+    {
+        const double flat = TIP - std::sqrt(4.0 * R * d);
+        const double wx = TIP - std::sqrt(4.0 * R * d) * R / (R + d), wy = -R + (R - d) * R / (R + d);
+        const double triangle = 0.5 * std::fabs((TIP - flat) * wy);
+        const double b = std::acos((R - d) / (R + d));
+        const double removed = (triangle - 0.5 * R * R * (b - std::sin(b))) * H;
+        if (d == 2.0)
+        {
+            CHECK(near(removed, 159.23645074290118, 1e-12) && near(std::hypot(wx - flat, wy), 3.8221323436236347, 1e-12));
+        }
+        for (int mirrored = 0; mirrored < 2; ++mirrored)
+        {
+            const double m[4][4] = {{mirrored ? -1.0 : 1.0, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}};
+            smlib_brep *body = nullptr, *cut = nullptr;
+            CHECK(part != nullptr && smlib_brep_transform(part, m, &body) == SMLIB_OK);
+            const double tip[3] = {mirrored ? -TIP : TIP, 0, H / 2};
+            CHECK(body != nullptr && smlib_chamfer(body, tip, 1, 0.01, d, &cut, nullptr) == SMLIB_OK);
+            if (cut != nullptr)
+            {
+                CHECK(sound(cut));
+                std::printf("knife edge chamfered %g%s: %.9f, expected %.9f\n", d, mirrored ? " (mirrored)" : "", volume_of(cut), before - removed);
+                CHECK(near(volume_of(cut), before - removed, 1e-9));
+            }
+            smlib_brep_free(cut);
+            smlib_brep_free(body);
+        }
+    }
+    smlib_brep_free(part);
+}
+
 // A block 40 x 20, 20 deep, whose top rises to a crease at x = 20, each half sloping `slope`
 // degrees, so the faces turn by twice that across it. Faces within half a degree of each other are
 // tangent, a smooth edge with nothing to round (SolidCraft's angle): the 0.3 degree crease is
@@ -5701,6 +5747,7 @@ int main(int argc, char **argv)
     drafted_cylinders_are_cones();
     lip_swept_flush_round_a_corner();
     knife_edge_rounds();
+    knife_edge_chamfers();
     crease_rounds_from_half_a_degree();
     corner_setback();
     corner_setback_open();
