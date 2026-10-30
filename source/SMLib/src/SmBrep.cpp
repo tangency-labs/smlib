@@ -14124,12 +14124,32 @@ SmStatus SmBrep::MakeEdgeTopology
           pEndShell->m_pList = NULL ; SER( pEndShell->UpdateListSize()  );
           SM_ASSERT(pVU != NULL) ; delete pVU ; pVU = NULL ;
         }
+      else if (pStartShell->IsWireShell() && pEndShell->IsFaceuseShell())
+        {
+          // A wire shell meeting a faceuse shell: the faceuse shell takes the wires, and the
+          // wire shell's place in the region, and the wire shell goes. Moving the faceuse shell's
+          // children into the wire shell instead ends the same (a faceuse shell holding the same
+          // faceuses in the same order, and both shells' wires), but costs the faceuse shell's
+          // size and a pass over every edge of the Brep (SmShell::GetWireEdges), once for each
+          // edge a boolean makes from a faceuse shell to a wire.
+          SmRegion *pReg = pStartShell->GetRegion();
+          SER( pStartShell->TransferChildrenTo(pEndShell,NULL) );
+          SER( pReg->Remove(pEndShell) );
+          SER( pReg->InsertAfter(pEndShell, pStartShell) );
+          SER( pReg->Remove(pStartShell) );
+          SM_ASSERT(pStartShell != NULL) ; delete pStartShell ;
+          pStartShell = pEndShell ;
+          pEndShell   = NULL ;
+        }
       else
         {
           SER(pEndShell->TransferChildrenTo(pStartShell,NULL));
         }
-      SER( pEndShell->GetRegion()->Remove(pEndShell) );
-      SM_ASSERT(pEndShell != NULL) ; delete pEndShell ; pEndShell = NULL ;
+      if (pEndShell != NULL)
+        {
+          SER( pEndShell->GetRegion()->Remove(pEndShell) );
+          delete pEndShell ; pEndShell = NULL ;
+        }
     }
 
   // Note that an error will invoke destructors of these items
