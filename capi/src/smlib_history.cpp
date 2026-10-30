@@ -25,7 +25,9 @@
 #include <SmCurve.h>
 #include <SmEdge.h>
 #include <SmFace.h>
+#include <SmVertex.h>
 
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <set>
@@ -78,16 +80,24 @@ public:
         return t == TAG_TYPE ? TRUE : SmAttribute::IsKindOf(t);
     }
 
-    // A split: both children stand for what the split object stood for.
+    // A split: both children stand for what the split object stood for, and lie where it lay
+    // (each a piece of it).
     void Split(SmAObject *split, SmAObject *a, SmAObject *b) override
     {
-        if (a != split)
+        for (SmAObject *x : {a, b})
         {
-            join(a, origins, edges);
-        }
-        if (b != split)
-        {
-            join(b, origins, edges);
+            if (x == split)
+            {
+                continue;
+            }
+            if (on(x) == nullptr && x != nullptr && !origins.empty())
+            {
+                set(x, origins, edges, at);
+            }
+            else
+            {
+                join(x, origins, edges);
+            }
         }
     }
 
@@ -175,32 +185,71 @@ std::vector<SmPoint3d> samples(const SmEdge *e)
     return p;
 }
 
-// Has `e` moved from where its tag says it lay: its ends elsewhere, or a point it ran through
-// off it (by more than `tol`)? An edge with no record of where it lay has not.
-bool moved(SmEdge *e, double tol)
+// Have `pieces`, the result edges standing for one edge, moved from where its tag says it lay?
+// Together they must run between its ends (the vertices only one piece ends on; none for an edge
+// closed on itself, whose end some piece still ends on), and every point it ran through must lie
+// on one of them (within `tol`). One piece is the edge still whole; more, the edge cut by
+// vertices. Pieces with no record of where the edge lay have not moved.
+bool moved(const std::vector<SmEdge *> &pieces, double tol)
 {
-    Tag *t = Tag::on(e);
-    if (t == nullptr || t->at.size() < 2)
+    const Tag *t = nullptr;
+    for (SmEdge *e : pieces)
+    {
+        const Tag *p = Tag::on(e);
+        if (p != nullptr && p->at.size() >= 2)
+        {
+            t = p;
+            break;
+        }
+    }
+    if (t == nullptr)
     {
         return false;
     }
-    std::vector<SmPoint3d> now = samples(e);
-    if (now.size() < 2)
-    {
-        return true;
-    }
     auto near = [&](const SmPoint3d &a, const SmPoint3d &b) { return (a - b).Length() <= tol; };
-    bool ends = (near(now[0], t->at[0]) && near(now[1], t->at[1])) || (near(now[0], t->at[1]) && near(now[1], t->at[0]));
-    if (!ends)
+    std::map<SmVertex *, int> ends;
+    for (SmEdge *e : pieces)
+    {
+        SmVertex *s = nullptr, *f = nullptr;
+        e->GetVertices(s, f);
+        if (s == nullptr || f == nullptr)
+        {
+            return true;
+        }
+        ++ends[s];
+        ++ends[f];
+    }
+    std::vector<SmPoint3d> open;
+    for (const auto &[v, n] : ends)
+    {
+        if (n % 2 == 1)
+        {
+            open.push_back(v->GetPoint());
+        }
+    }
+    const SmPoint3d &a = t->at[0], &b = t->at[1];
+    bool span = open.size() == 2 ? (near(open[0], a) && near(open[1], b)) || (near(open[0], b) && near(open[1], a))
+                : open.empty() ? near(a, b) && std::any_of(ends.begin(), ends.end(), [&](const auto &v) { return near(v.first->GetPoint(), a); })
+                               : false;
+    if (!span)
     {
         return true;
     }
     for (size_t k = 2; k < t->at.size(); ++k)
     {
-        SmPoint3d q;
-        double param = 0.0;
-        double d = HUGE_VAL;
-        if (SmApiEdgeClosestPoint(e, t->at[k], q, param, d) != SM_SUCCESS || !(d <= tol))
+        bool on = false;
+        for (SmEdge *e : pieces)
+        {
+            SmPoint3d q;
+            double param = 0.0;
+            double d = HUGE_VAL;
+            on = SmApiEdgeClosestPoint(e, t->at[k], q, param, d) == SM_SUCCESS && d <= tol;
+            if (on)
+            {
+                break;
+            }
+        }
+        if (!on)
         {
             return true;
         }
@@ -341,24 +390,36 @@ extern "C" int32_t smlib_history_read(const smlib_brep *result, int64_t *buf, in
                     }
                     else
                     {
-                        // Kept when its boundary is still exactly the edges it had, each whole
-                        // (one origin, under no other result edge), its own operand's and where
-                        // it was (an edge an operation moved, as a draft moves a tilted face's
-                        // neighbours' edges, leaves those faces trimmed differently).
+                        // Kept when its boundary is still exactly where the edges it had were:
+                        // each boundary edge one of its own operand's, standing for one edge only,
+                        // every piece of that edge on this face (an edge only cut by a vertex, as
+                        // splitting the face beside it cuts it, is still all there), the pieces
+                        // where it lay (an edge an operation moved, as a draft moves a tilted
+                        // face's neighbours' edges, leaves those faces trimmed differently), and
+                        // those edges exactly the ones it had.
                         SmTArray<SmEdge *> bound;
                         faces[i]->GetEdges(bound);
-                        std::set<long> now;
+                        std::map<long, std::vector<SmEdge *>> pieces;
                         bool whole = true;
                         for (ULONG j = 0; j < bound.GetSize() && whole; ++j)
                         {
                             auto it = edge_at.find(bound[j]);
                             const std::set<Origin> *e = it == edge_at.end() ? nullptr : &eo[static_cast<size_t>(it->second)];
-                            whole = e != nullptr && e->size() == 1 && e->begin()->first == o.first && edge_uses[*e->begin()] == 1 &&
-                                    !moved(bound[j], tol);
+                            whole = e != nullptr && e->size() == 1 && e->begin()->first == o.first;
                             if (whole)
                             {
-                                now.insert(e->begin()->second);
+                                std::vector<SmEdge *> &p = pieces[e->begin()->second];
+                                if (std::find(p.begin(), p.end(), bound[j]) == p.end())
+                                {
+                                    p.push_back(bound[j]);
+                                }
                             }
+                        }
+                        std::set<long> now;
+                        for (const auto &[edge, p] : pieces)
+                        {
+                            whole = whole && static_cast<long>(p.size()) == edge_uses[{o.first, edge}] && !moved(p, tol);
+                            now.insert(edge);
                         }
                         change = whole && now == fe[i] ? SMLIB_CHANGE_KEPT : SMLIB_CHANGE_MODIFIED;
                     }
