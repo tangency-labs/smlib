@@ -2417,6 +2417,30 @@ void tabbed_plate_rounds_mitred_on_the_arcs_continuation()
     smlib_brep_free(round);
 }
 
+// SolidCraft blend_corner::tests::issue1557_connected_rounds_keep_their_radii (its reference): a
+// 25 x 25 x 10 box, its four bottom edges rounded r 2 and the vertical edge (25, 0) r 0.5 in one
+// call. SMLib's own check found a 6.9e-5 gap between the corner patch's edge (23, 2, 0)-(24.5, 0, 2)
+// and the patch, on which it lies to 4e-15: the check drops the edge's points onto the patch
+// with the last foot point as a guess, and the local solve stopped 0.0016 short in u, where the
+// patch's u runs at 0.043 mm per unit near its collapsed side; the drop took any point less than
+// 1e-4 mm off along the surface for the foot point. A foot point is now off along the surface by
+// no more than the face's tolerance. The body is unchanged.
+void corner_patch_edge_lies_on_its_patch()
+{
+    smlib_brep *b = box(0, 0, 0, 25, 25, 10), *r = nullptr;
+    const double points[15] = {12.5, 0, 0, 25, 12.5, 0, 12.5, 25, 0, 0, 12.5, 0, 25, 0, 6};
+    const double sizes[5] = {2, 2, 2, 2, 0.5};
+    CHECK(b != nullptr && smlib_blend(b, SMLIB_BLEND_ROUND, points, sizes, 5, 0.1, &r, nullptr) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        int64_t counts[3] = {0, 0, 0};
+        CHECK(smlib_brep_counts(r, counts) == SMLIB_OK && counts[0] == 12);
+        CHECK(sound(r));
+    }
+    smlib_brep_free(b);
+    smlib_brep_free(r);
+}
+
 } // namespace
 
 // A disc r 15, 5 thick, one circular edge rounded r 1.5 and shelled 1.6 or 2 inward, open at one
@@ -6118,6 +6142,7 @@ int main(int argc, char **argv)
     chamfer_past_a_sloped_basin_rim();
     chamfer_of_a_rim_loop_past_its_rim();
     tabbed_plate_rounds_mitred_on_the_arcs_continuation();
+    corner_patch_edge_lies_on_its_patch();
 
     // SolidCraft surface.offset of a ball's one face: the face taken off as a sheet is a closed
     // shell whose regions are all voids, which smlib_offset_sheet refused as a solid
