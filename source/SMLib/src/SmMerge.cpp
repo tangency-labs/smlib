@@ -18,6 +18,8 @@
 #include <SmPrimitiveCreation.h>
 #include <SmTrimmingTools.h>
 #include <SmTopologyTraverser.h>
+#include <SmCurveClass.h>
+#include <SmFace.h>
 
 #include <SmTree.h>
 // Remove Composites
@@ -1168,6 +1170,19 @@ SmBoolean bDebugMe=FALSE;
 
       // Preserve the face-domain union across DeleteEdge's possible surface swap.
       pSurfToKeep->GetFace()->SetUVDomain(sMergedFaceDomain);
+
+      // SolidCraft: a face that wraps its surface's period may have taken in a face straddling
+      // the seam (SmSurface::CoverCoincidentSurface): the merged face is the periodic face whose
+      // seam runs on through that part. Add the missing piece of the seam, splitting the edges
+      // that cross it, as a face on a periodic surface has it (SmFace::SplitAtSeam).
+      {
+        SmFace *pMerged = pSurfToKeep->GetFace();
+        SmCurveClassification sSeamClassU, sSeamClassV;
+        SmSurfParamType eCrossedSeam = SM_SP_NEITHER, eMissingSeam = SM_SP_NEITHER, eNearMissSeam = SM_SP_NEITHER;
+        SER( pMerged->HasSeamProblem( sSeamClassU, sSeamClassV, eCrossedSeam, eMissingSeam, eNearMissSeam ) );
+        if ( SmFace::HasSeamProblem( eCrossedSeam, eMissingSeam ) )
+          { SER( pMerged->SplitAtSeam( sSeamClassU, sSeamClassV, eCrossedSeam, eMissingSeam, eNearMissSeam ) ); }
+      }
 
       // SolidCraft: the merged face's edges that now have it on both sides are checked too (sLeftInsideFace).
       SmTArray<SmEdge*> sFaceEdges;
