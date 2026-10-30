@@ -1103,6 +1103,7 @@ SmFilletCorner::SmFilletCorner
    m_bDegenerate(FALSE),
    m_bCalcAsConstRad(FALSE),
    m_bTopologyAdjusted(FALSE),
+   m_bBevelGapPatch(FALSE),
    m_bExtendedSurfacePatch(TRUE),
    m_dSetBackDist(0.0),
    m_dEaseDist(0.0),
@@ -1799,7 +1800,9 @@ SmStatus SmFilletCorner::CalcCornerGeom()
   // a corner patch if indicated.   [Fillet iter: 124]
 
   // no work - Bevel corner or degenerate corner
-  if(  ( m_bBevel && lFilletEdges > 1 )
+  // SolidCraft change: a bevel with a gap to fill on a side face's continuation
+  // (m_bBevelGapPatch) builds the gap's patch.
+  if(  ( m_bBevel && lFilletEdges > 1 && !m_bBevelGapPatch )
      ||  lTotalEdges < 3)  // Corner patches are not defined
     { return SM_SUCCESS; }
 
@@ -8595,6 +8598,21 @@ SmStatus SmFilletNx2Corner::AdjustTopology()
       if ( dDist < m_dThisApproxTol3d )
         { continue ; }
 
+      // SolidCraft change: two rounds mitred at the common face's concave corner (a pocket's rim
+      // at a sloped corner) whose rails meet the side edge at two places. The larger round cut
+      // by the side face, and the smaller round's rail, run on past the side edge onto the side
+      // face's continuation, where they meet the mitre's curve: the gap between them and the
+      // side edge is filled by a patch on the side face's surface, extended, as at a corner of
+      // mixed convexity whose rounds are swept. That corner's topology is built for it, the
+      // mitre's curve taking the place of the swept face (CreateCornerPatch).
+      if (   m_pAllEUs->GetSize() == 3
+          && sm_CheckFaceComplimentaryCornerConcavity( m_cpVertex, (*m_pSolverEUs)[0], (*m_pSolverEUs)[1], NULL, 0 ) )
+        {
+          SER( AdjustConcaveCornerTopology() );
+          m_bBevelGapPatch = TRUE;
+          return SM_SUCCESS;
+        }
+
       // Ok, if we're here, we're going to adjust the topology
       // of this corner.  We're going to make two separate vertices
       // where the rails from each of the two fillets hit the common
@@ -8771,6 +8789,24 @@ NOTES: This corner should have either 3 or 6 boundary edges
 SmStatus SmFilletNx2Corner::CreateCornerPatch()
 {
   ULONG ii, lTotalEdges = m_vEdges.GetSize();
+
+  // SolidCraft change: a mitre whose rails meet the side edge at two places
+  // (AdjustTopology, AdjustConcaveCornerTopology): the mitre's curve, then the
+  // three edges round the gap on the side face's continuation, filled by a
+  // patch on that face's extended surface. The mitre needs no patch of its own.
+  if ( m_bBevelGapPatch )
+    {
+      if ( lTotalEdges != 4 )
+        { SER( SM_ERR ); }
+      SmTArray<SmFilletEdge*> sAll;
+      sAll.Append( m_vEdges );
+      m_vEdges.RemoveAt( 0 );
+      SmStatus eGap = SmFilletCorner::CreateEndPatch();
+      m_vEdges.ReSet();
+      m_vEdges.Append( sAll );
+      SER( eGap );
+      return SM_SUCCESS;
+    }
 
   SmFilletEdge * apData1[3];
   SmFilletEdge * apData2[3];
