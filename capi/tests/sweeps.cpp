@@ -1290,6 +1290,31 @@ int main()
         expect("stations: twisted ring, joined",
                smlib_sweep_stations(ring.kinds.data(), ring.nk(), ring.reals.data(), ring.nr(), round.data(), m, SMLIB_ENDS_JOINED, &b), &b,
                64.0 * 2.0 * PI * 30.0, 1e-5);
+        // The same ring with a 4 x 4 hole (SolidCraft issue_2005 closed_holed_sweep_joins_every_loop),
+        // 73 stations round the full turn, twisted a half turn about the path and not twisted:
+        // the hole's tube is the solid's cavity. The stitch glued the walls into two closed tubes
+        // but left the region inside the hole's tube solid (the volume the outer tube's alone) and,
+        // twisted, the tubes in each other's regions (SMLib's check: an inner shell not inside its
+        // region's outer shell). Pappus: V = (64 - 16) * 2 pi 30.
+        for (double twist_turn : {0.5 * PI, 0.0})
+        {
+            const int k = 73;
+            List holed = ring;
+            holed.polygon({28, 0, -2, 28, 0, 2, 32, 0, 2, 32, 0, -2});
+            std::vector<double> joined;
+            for (int i = 0; i < k; ++i)
+            {
+                double f = static_cast<double>(i) / (k - 1);
+                double phi = 2.0 * PI * f, psi = 2.0 * twist_turn * f;
+                double cp = std::cos(phi), sp = std::sin(phi), cs = std::cos(psi), ss = std::sin(psi);
+                double d[3] = {30.0 - 30.0 * cs, 0.0, 30.0 * ss};
+                joined.insert(joined.end(), {cp * cs, sp * cs, -ss, -sp, cp, 0, cp * ss, sp * ss, cs, cp * d[0] - sp * d[1], sp * d[0] + cp * d[1], d[2]});
+            }
+            b = nullptr;
+            expect(twist_turn > 0.0 ? "stations: holed ring, half turn, joined" : "stations: holed ring, joined",
+                   smlib_sweep_stations(holed.kinds.data(), holed.nk(), holed.reals.data(), holed.nr(), joined.data(), k, SMLIB_ENDS_JOINED, &b), &b,
+                   48.0 * 2.0 * PI * 30.0, 1e-6);
+        }
         // Hostile maps: a singular matrix, a NaN, one station, unknown ends.
         std::vector<double> flat = twist;
         flat[12 * 5 + 0] = 0.0;

@@ -2714,6 +2714,13 @@ SmStatus SmStitch::StitchIntoSolid
       SmTArray<SmRegion*> sRegions;
       pBrepToStitch->GetRegions(sRegions);
       if (sRegions.GetSize() > 1) {
+          // SolidCraft change: the stitching found the infinite region, but left the regions
+          // inside nested closed shells solid, each shell where the glue put it. A solid is a
+          // nested solid model: inside the outer shell is material, inside a shell within it a
+          // void, and so on, each region's outer shell first. (A sweep round a closed path of a
+          // profile with a hole: the hole's tube is the solid's cavity, not more material.)
+          SmTemporaryChangeValue<SmBoolean> sChange(pBrepToStitch->m_bEditingEnabled,FALSE);
+          SER(pBrepToStitch->FindAndSetInfiniteRegion(NULL, SM_VS_NESTEDSOLID));
           rbProducesASolid = TRUE;
       }
   }

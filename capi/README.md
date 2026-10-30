@@ -1208,3 +1208,11 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   part (a plane against a cylinder of radius 21) rounds r 0.5, 2 and 5 to the ball touching both
   faces sqrt(4 R r) back from the tip, mirrored too (`ops_kernel` `knife_edge_rounds`). A smooth
   edge, and a cusp whose faces' curvatures match across it, are still refused.
+- **A stitched solid with a cavity** (`SmStitch.cpp`, `SmStitch::StitchIntoSolid`): stitching
+  found the infinite region only (`SM_VS_INFINITEREGION_SWAP`), so the region inside a closed
+  shell nested in another stayed solid and the shells stayed where the gluing put them. A sweep
+  of a holed square round a closed path (`smlib_sweep_stations`, `SMLIB_ENDS_JOINED`; SolidCraft
+  issue_2005) measured as if it had no hole, and with a half-turn twist SMLib's check refused it
+  (Test #12, an inner shell not inside its region's outer shell). A stitched solid is now a
+  nested solid model (`SM_VS_NESTEDSOLID`): material inside the outer shell, a void inside a
+  shell within it, each region's outer shell first (`sweeps` `stations: holed ring`).
