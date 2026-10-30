@@ -11,6 +11,7 @@
 #include <SmVector3d.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1030,6 +1031,79 @@ void hair_off_pin_at_a_seam()
     }
 }
 
+// A planar join of large bodies takes time near linear in their size. Level-3 Menger sponges
+// (8000 unit cubes, 7326 faces) joined face to face in a row: two, that pair to a copy of itself,
+// and that four to a copy of itself, each join along one face of a sponge. Each face SMLib made
+// from the other body searched for its own mate depth-first, across the shell
+// (SmBrep::TestClosureSplitRegion), every face of one body was tried against every face of the
+// other (SmTopologyIntersector::IntersectTopology), and each edge from a faceuse shell to a wire
+// moved the faceuse shell (SmBrep::MakeEdgeTopology): the join of the fours took 17 times as
+// long as the join of two sponges (60 s against 3.6 s), now 5.5 times (8.5 s, 1.55 s). The
+// results are the ones those joins always gave.
+smlib_brep *moved(const smlib_brep *b, double x, double y, double z)
+{
+    // rows 0-2 the axes' images, row 3 the translation
+    const double m[4][4] = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {x, y, z, 1}};
+    smlib_brep *r = nullptr;
+    CHECK(b != nullptr && smlib_brep_transform(b, m, &r) == SMLIB_OK);
+    return r;
+}
+
+void menger_sponges_row_join()
+{
+    using clock = std::chrono::steady_clock;
+    smlib_brep *sponge = box(0, 0, 0, 1, 1, 1);
+    double size = 1.0;
+    for (int level = 0; level < 3 && sponge != nullptr; ++level)
+    {
+        std::vector<smlib_brep *> parts;
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                for (int k = 0; k < 3; ++k)
+                    if ((i == 1) + (j == 1) + (k == 1) < 2)
+                        parts.push_back(moved(sponge, i * size, j * size, k * size));
+        smlib_brep *next = nullptr;
+        CHECK(smlib_boolean_union_all(parts.data(), static_cast<int64_t>(parts.size()), &next) == SMLIB_OK);
+        for (smlib_brep *p : parts)
+            smlib_brep_free(p);
+        smlib_brep_free(sponge);
+        sponge = next;
+        size *= 3.0;
+    }
+    int64_t n[3] = {0, 0, 0};
+    CHECK(sponge != nullptr && smlib_brep_counts(sponge, n) == SMLIB_OK && n[0] == 7326);
+
+    // a join, timed, and its result's faces, edges, vertices and volume
+    auto join = [&](const smlib_brep *a, double shift, const int64_t want[3], double cubes, double &seconds) {
+        smlib_brep *b = moved(a, shift, 0, 0);
+        smlib_brep *r = nullptr;
+        const auto t0 = clock::now();
+        CHECK(a != nullptr && b != nullptr && smlib_boolean(a, b, SMLIB_BOOLEAN_UNION, &r) == SMLIB_OK);
+        seconds = std::chrono::duration<double>(clock::now() - t0).count();
+        int64_t c[3] = {0, 0, 0};
+        CHECK(r != nullptr && smlib_brep_counts(r, c) == SMLIB_OK);
+        std::printf("  %lld faces, %lld edges, %lld vertices in %.3f s\n", static_cast<long long>(c[0]),
+                    static_cast<long long>(c[1]), static_cast<long long>(c[2]), seconds);
+        CHECK(c[0] == want[0] && c[1] == want[1] && c[2] == want[2]);
+        CHECK(r != nullptr && near(volume(r), cubes, 1e-9));
+        smlib_brep_free(b);
+        return r;
+    };
+    const int64_t want2[3] = {14354, 32952, 15232};
+    const int64_t want4[3] = {28410, 65016, 29872};
+    const int64_t want8[3] = {56522, 129144, 59152};
+    double t2 = 0.0, t4 = 0.0, t8 = 0.0;
+    smlib_brep *pair = join(sponge, 27.0, want2, 16000.0, t2);
+    smlib_brep *four = join(pair, 54.0, want4, 32000.0, t4);
+    smlib_brep *eight = join(four, 108.0, want8, 64000.0, t8);
+    CHECK(eight != nullptr && sound(eight));
+    // Four times the body, one face of contact each time: a join near linear in the body's size
+    // takes four to six times as long as the first, a quadratic one about sixteen (17 before).
+    CHECK(t8 < 10.0 * t2);
+    for (smlib_brep *x : {sponge, pair, four, eight})
+        smlib_brep_free(x);
+}
+
 int main(int argc, char **argv)
 {
     struct Case
@@ -1053,6 +1127,7 @@ int main(int argc, char **argv)
         {"hair_off_pin_at_a_seam", hair_off_pin_at_a_seam},
         {"crescent_on_rim_join", crescent_on_rim_join},
         {"near_coincident_tube_ends_join", near_coincident_tube_ends_join},
+        {"menger_sponges_row_join", menger_sponges_row_join},
     };
     for (const Case &c : cases)
     {
