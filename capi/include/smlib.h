@@ -961,7 +961,7 @@ int32_t smlib_ssi_point(const smlib_ssi_result *r, int32_t i, double xyz[3], dou
 #define SMLIB_CURVE_LINE 1
 #define SMLIB_CURVE_ARC 2
 #define SMLIB_CURVE_NURBS 3
-#define SMLIB_CURVE_MAX_CURVES 4096
+#define SMLIB_CURVE_MAX_CURVES 16384
 #define SMLIB_CURVE_MAX_DEGREE 25
 #define SMLIB_CURVE_MAX_POINTS 100000
 
