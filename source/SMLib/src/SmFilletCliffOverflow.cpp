@@ -32,7 +32,7 @@
 * when it is a straight line (SM_FILERR_NOT_EXACT otherwise). An end the
 * fillet runs past is cut only by a planar end face. Configurations the
 * construction does not cover (a non-planar end face run past, a closed rail
-* on a face, a sheet boundary point where it does not pass from one face to
+* on a face but round a loop of blended edges of a planar one, a sheet boundary point where it does not pass from one face to
 * another along a side edge) stay what they were before this change: too
 * large for the faces, SM_FILERR_NO_ROOM, the reason in the error's comment.
 **********************************************************************/
@@ -52,6 +52,7 @@
 #include <SmSurface.h>
 #include <SmCurve.h>
 #include <SmRegion.h>
+#include <SmLoop.h>
 #include <SmPointClass.h>
 #include <SmTol.h>
 
@@ -264,6 +265,195 @@ SmStatus sm_LiesOnSurface(const SmFace & crSheetFace, const SmFace & crFace, dou
           rbOn = ( dDist <= dTol ) ? TRUE : FALSE;
         }
     }
+  return SM_SUCCESS;
+}
+
+// The signed area of a loop of curves in a plane's parameters (its frame's axes), sampled.
+SmStatus sm_LoopArea(const sm_Loop & crLoop, const SmPoint3d & crOrigin, const SmVector3d & crX, const SmVector3d & crY, double & rdArea)
+{
+  rdArea = 0.0;
+  std::vector<SmPoint2d> vUV;
+  for (const sm_LoopCurve & rC : crLoop.m_vCurves)
+    {
+      std::vector<SmPoint3d> vAlong;
+      SER( sm_Samples( *rC.m_pCurve, 16, vAlong ));
+      if ( rC.m_eOrient == SM_OT_OPPOSITE )
+        { std::reverse( vAlong.begin(), vAlong.end() ); }
+      for (size_t p=0; p+1<vAlong.size(); p++)
+        {
+          SmVector3d sD = vAlong[p] - crOrigin;
+          vUV.push_back( SmPoint2d( sD.Dot( crX ), sD.Dot( crY )));
+        }
+    }
+  for (size_t p=0; p<vUV.size(); p++)
+    {
+      const SmPoint2d & rA = vUV[p];
+      const SmPoint2d & rB = vUV[(p+1) % vUV.size()];
+      rdArea += 0.5 * ( rA.x * rB.y - rB.x * rA.y );
+    }
+  return SM_SUCCESS;
+}
+
+// Reverses a loop of curves.
+void sm_Reverse(sm_Loop & rLoop)
+{
+  std::reverse( rLoop.m_vCurves.begin(), rLoop.m_vCurves.end() );
+  for (sm_LoopCurve & rC : rLoop.m_vCurves)
+    { rC.m_eOrient = ( rC.m_eOrient == SM_OT_SAME ) ? SM_OT_OPPOSITE : SM_OT_SAME; }
+}
+
+/*
+ * The closing face, on pHost's plane, of a chain of the sheet's boundary that closes on that one
+ * face: the blends of every edge of one of its loops run all round it (a pocket's rim, a
+ * cylinder's top rim), and the face between the chain and that loop is the region's there, the
+ * one loop inside the other. The loop is the one whose filleted edges the chain's fillet faces
+ * blend. Refused (rcWhy set, reNoRoom the error) when no such loop, or more than one, is found,
+ * or the host is not planar.
+ */
+SmStatus sm_CloseRoundLoop(const SmContext & crContext, SmBrep * pSheet, const std::vector<SmEdge*> & crChain,
+                           const std::vector<SmVertex*> & crVerts, SmFace * pHost, const std::set<SmEdge*> & crBlended,
+                           const std::map<SmFace*, SmEdge*> & crEdgeOfFillet, double dOnTol,
+                           const TCHAR *& rcWhy, SmFilletErrorType & reError)
+{
+  rcWhy   = NULL;
+  reError = SM_FILERR_NO_ROOM;
+  NER(pSheet);
+  NER(pHost);
+  if ( crVerts.size() != crChain.size() + 1 )
+    { SER( SM_ERR ); }
+
+  // the filleted edges whose fillet faces the chain bounds
+  std::set<SmEdge*> sAlong;
+  for (SmEdge * pE : crChain)
+    {
+      SmTArray<SmFace*> sFaces;
+      pE->GetFaces( sFaces );
+      for (ULONG f=0; f<sFaces.GetSize(); f++)
+        {
+          auto it = crEdgeOfFillet.find( sFaces[f] );
+          if ( it != crEdgeOfFillet.end() )
+            { sAlong.insert( it->second ); }
+        }
+    }
+  // the host's loop of filleted edges they belong to
+  SmTArray<SmLoop*> sHostLoops;
+  pHost->GetLoops( sHostLoops );
+  SmLoop * pRound = NULL;
+  for (ULONG l=0; l<sHostLoops.GetSize(); l++)
+    {
+      SmTArray<SmEdge*> sEdges;
+      sHostLoops[l]->GetEdges( sEdges );
+      SmBoolean bAllBlended = ( sEdges.GetSize() > 0 ) ? TRUE : FALSE, bOurs = FALSE;
+      for (ULONG e=0; e<sEdges.GetSize(); e++)
+        {
+          if ( !crBlended.count( sEdges[e] ))
+            { bAllBlended = FALSE; }
+          if ( sAlong.count( sEdges[e] ))
+            { bOurs = TRUE; }
+        }
+      if ( !bAllBlended || !bOurs )
+        { continue; }
+      if ( pRound != NULL )
+        {
+          rcWhy = _T("Fillet Error: a cliff overflow's fillet boundary closes on one face round two of its loops");
+          return SM_ERR;
+        }
+      pRound = sHostLoops[l];
+    }
+  if ( pRound == NULL )
+    {
+      rcWhy = _T("Fillet Error: a cliff overflow's fillet boundary closes on one face round no loop of filleted edges");
+      return SM_ERR;
+    }
+  SmPoint3d  sOrigin;
+  SmVector3d sX, sY, sZ;
+  SmBoolean  bPlanar = FALSE;
+  SER( sm_PlaneOf( *pHost->GetSurface(), sOrigin, sX, sY, sZ, bPlanar ));
+  if ( !bPlanar )
+    {
+      rcWhy = _T("Fillet Error: a cliff overflow's fillet boundary closes on one face that is not planar");
+      return SM_ERR;
+    }
+
+  // the chain, and the loop of filleted edges, each run end to end
+  sm_Loop asLoops[2];
+  for (size_t e=0; e<crChain.size(); e++)
+    {
+      SmCurve * pCurve = NULL;
+      SER( sm_EdgeCurve( crContext, *crChain[e], pCurve ));
+      SER( sm_AddCurve( asLoops[0], pCurve, crVerts[e]->GetPoint(), crVerts[e+1]->GetPoint() ));
+    }
+  SmTArray<SmEdge*> sRoundEdges;
+  pRound->GetEdges( sRoundEdges );
+  {
+    std::vector<SmEdge*> vLeft( sRoundEdges.GetSize() );
+    for (ULONG e=0; e<sRoundEdges.GetSize(); e++)
+      { vLeft[e] = sRoundEdges[e]; }
+    SmVertex * pAt = vLeft[0]->GetStartVertex();
+    while ( !vLeft.empty() )
+      {
+        auto it = std::find_if( vLeft.begin(), vLeft.end(), [pAt]( SmEdge * pE )
+                                { return pE->GetStartVertex() == pAt || pE->GetEndVertex() == pAt; } );
+        if ( it == vLeft.end() )
+          { SER( SM_ERR ); }
+        SmEdge   * pE     = *it;
+        SmVertex * pOther = pE->GetOtherVertex( pAt );       NER(pOther);
+        SmCurve  * pCurve = NULL;
+        SER( sm_EdgeCurve( crContext, *pE, pCurve ));
+        SER( sm_AddCurve( asLoops[1], pCurve, pAt->GetPoint(), pOther->GetPoint() ));
+        pAt = pOther;
+        vLeft.erase( it );
+      }
+  }
+
+  // the host's plane over both, the outer loop anticlockwise on it and the inner clockwise
+  std::vector<SmPoint3d> vPoints;
+  for (const sm_Loop & rLoop : asLoops)
+    {
+      for (const sm_LoopCurve & rC : rLoop.m_vCurves)
+        { SER( sm_Samples( *rC.m_pCurve, 8, vPoints )); }
+    }
+  SmSurface * pSurface = NULL;
+  SmBoolean   bExact = TRUE;
+  SER( sm_CoveringSurface( crContext, *pHost, vPoints, dOnTol, pSurface, bExact ));
+  NER(pSurface);
+  SmObjDelete sCleanSurface( pSurface );
+  double adArea[2] = { 0.0, 0.0 };
+  for (ULONG k=0; k<2; k++)
+    { SER( sm_LoopArea( asLoops[k], sOrigin, sX, sY, adArea[k] )); }
+  ULONG lOuter = ( smos_Fabs( adArea[0] ) >= smos_Fabs( adArea[1] )) ? 0 : 1;
+  if ( adArea[lOuter] < 0.0 )
+    { sm_Reverse( asLoops[lOuter] ); }
+  if ( adArea[1-lOuter] > 0.0 )
+    { sm_Reverse( asLoops[1-lOuter] ); }
+  // the plane built on the host's frame: its parameters are (sX, sY), as measured
+  SmTArray<ULONG>        sLoopCounts;
+  SmTArray<SmCurve*>     s3DCurves;
+  SmTArray<SmOrientType> sOrients;
+  SmTArray<SmPoint3d>    sLoopPoints;
+  for (ULONG k : { lOuter, 1-lOuter })
+    {
+      sLoopCounts.Add( (ULONG)asLoops[k].m_vCurves.size() );
+      for (const sm_LoopCurve & rC : asLoops[k].m_vCurves)
+        {
+          s3DCurves.Add( rC.m_pCurve );
+          sOrients.Add( rC.m_eOrient );
+        }
+    }
+  SmRegion * pNewRegion = NULL;
+  SmShell  * pNewShell  = NULL;
+  SmFace   * pNewFace   = NULL;
+  // the new face owns its curves and its surface
+  for (sm_Loop & rLoop : asLoops)
+    {
+      for (sm_LoopCurve & rC : rLoop.m_vCurves)
+        { rC.m_pCurve = NULL; }
+    }
+  sCleanSurface.Clear();
+  SER( pSheet->MakeFaceWithCurves( pSheet->GetInfiniteRegion(), sLoopCounts, &s3DCurves, NULL, sOrients,
+                                   sLoopPoints, pSurface, pSurface->GetNaturalUVDomain(), SM_OT_SAME,
+                                   pNewRegion, pNewShell, pNewFace ));
+  NER(pNewFace);
   return SM_SUCCESS;
 }
 
@@ -512,7 +702,10 @@ NOTES: Each lamina edge of the sheet lies on the surface (continued) of one
     mixed convexity builds on the end face's surface extended) stands in for
     that face: its lamina edges pass onto the other faces they lie on, and a
     chain that reaches a filleted edges' vertex along one ends there (v
-    itself, no side edge between).
+    itself, no side edge between). A chain that closes on its host runs
+    round a loop of it whose every edge is blended (a pocket's rim, its
+    chamfers mitred at the corners): the closing face lies between the two,
+    on the host's plane, one loop inside the other (sm_CloseRoundLoop).
 ***********************************************************************/
 SmStatus SmFilletExecutive::CloseRemovalRegion()
 {
@@ -611,7 +804,8 @@ SmStatus SmFilletExecutive::CloseRemovalRegion()
     {
       SmFace                 * m_pHost;
       std::vector<SmEdge*>     m_vEdges;
-      std::vector<SmVertex*>   m_vVerts;  // m_vEdges.size() + 1
+      std::vector<SmVertex*>   m_vVerts;  // m_vEdges.size() + 1, the first again when closed
+      SmBoolean                m_bClosed = FALSE;
     };
   std::vector<sm_Chain> vChains;
   std::set<SmEdge*>     sDone;
@@ -662,8 +856,10 @@ SmStatus SmFilletExecutive::CloseRemovalRegion()
         }
       if ( bClosed )
         {
-          GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, _T("Fillet Error: a cliff overflow's fillet boundary closes on one face") );
-          return SM_ERR;
+          // round a loop of the host whose every edge is blended (below)
+          sChain.m_bClosed = TRUE;
+          vChains.push_back( sChain );
+          continue;
         }
       // backward from pFirst's start vertex
       SmVertex * pAt   = sChain.m_vVerts.front();
@@ -688,10 +884,41 @@ SmStatus SmFilletExecutive::CloseRemovalRegion()
       vChains.push_back( sChain );
     }
 
+  // the filleted edge of each fillet face of the sheet
+  std::map<SmFace*, SmEdge*> sEdgeOfFillet;
+  for (ULONG i=0; i<m_vFilletSolvers.GetSize(); i++)
+    {
+      SmFilletSolver * pSolver = m_vFilletSolvers[i];
+      SmTArray<SmFilletGeom*> sFGs;
+      pSolver->GetFilletGeoms( sFGs );
+      for (ULONG k=0; k<sFGs.GetSize(); k++)
+        {
+          if ( sFGs[k] == NULL || sFGs[k]->GetFilletSurface() == NULL )
+            { continue; }
+          SmFace * pFace = SM_CAST_PTR( SmFace, sFGs[k]->GetFilletSurface()->GetOwner() );
+          if ( pFace != NULL && pFace->GetBrep() == m_pFilletBrep )
+            { sEdgeOfFillet[pFace] = pSolver->GetEdgeuse(0)->GetEdge(); }
+        }
+    }
+
   // the closing face of each chain
   for (const sm_Chain & rChain : vChains)
     {
       SmFace * pHost = rChain.m_pHost;
+      if ( rChain.m_bClosed )
+        {
+          const TCHAR     * cWhy   = NULL;
+          SmFilletErrorType eError = SM_FILERR_NO_ROOM;
+          SmStatus eStat = sm_CloseRoundLoop( m_crContext, m_pFilletBrep, rChain.m_vEdges, rChain.m_vVerts, pHost,
+                                              sBlended, sEdgeOfFillet, dOnTol, cWhy, eError );
+          if ( eStat != SM_SUCCESS && cWhy != NULL )
+            {
+              GetFilletErrorInfo()->NoteError( eError, cWhy );
+              return SM_ERR;
+            }
+          SER( eStat );
+          continue;
+        }
       sm_Loop  sLoop;
 
       // the chain, from its start to its end
