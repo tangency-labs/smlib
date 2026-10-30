@@ -1950,6 +1950,56 @@ void basin_rim_rounds_mitred_with_a_gap_at_the_corner()
     }
 }
 
+// SolidCraft issue_871_tests::rounds_that_fit_are_closed: a 14 x 21.5 x 10 plate with a narrower
+// block on top (y from a to b, 10 high) and a 5.2 x 7.1 window through both, every edge of both
+// end faces (x = 9.5 and 23.5) rounded r 0.5. The rounds meeting at the end faces' concave
+// corners (the two shoulders, the window's four corners) are mitred: their rails run on past
+// those corners until they meet. The check that a blend's rail stays out of the band another
+// blend takes off a face (BandsClearOtherRails) read the rails before they were trimmed, and
+// the window's top rail, run on past its corner, crossed the band of the block's side, 1.26 away
+// (SMLIB_ERR_NO_ROOM). The band is the rail's part between its end vertices. Each end face's
+// round section at depth u into the round is the end face's outline moved in by
+// d = r - sqrt(r^2 - (r - u)^2), every corner mitred: the area less L d (L = 107.6, the outline's
+// and the window's length together), plus d^2 at each of the six convex corners and less d^2 at
+// each of the six concave ones, so both ends remove 2 L r^2 (1 - pi/4), to the fit of the 24
+// corners' bevel curves (1e-7 of the body). At r 1 the rounds of the window and of the block's
+// sides overlap across the 1.26 wall: refused.
+void end_face_rounds_mitred_at_concave_corners()
+{
+    const double a = 12.74437365538526, b = 22.69275963366936;
+    auto block = [](double x0, double y0, double z0, double x1, double y1, double z1) { return box(x0, y0, z0, x1 - x0, y1 - y0, z1 - z0); };
+    smlib_brep *base = block(9.5, 8, 0, 23.5, 29.5, 10), *top = block(9.5, a, 10, 23.5, b, 20), *joined = nullptr;
+    smlib_brep *window = block(9.5, 14, 7, 23.5, 19.2, 14.1), *part = nullptr;
+    CHECK(smlib_boolean(base, top, SMLIB_BOOLEAN_UNION, &joined) == SMLIB_OK);
+    CHECK(joined != nullptr && smlib_boolean(joined, window, SMLIB_BOOLEAN_SUBTRACT, &part) == SMLIB_OK);
+    const double yz[12][2] = {{a, 15}, {10.37218682769263, 10}, {8, 5}, {18.75, 0}, {29.5, 5}, {26.09637981683468, 10},
+                              {b, 15}, {17.71856664452731, 20}, {16.6, 7}, {14, 10.55}, {16.6, 14.1}, {19.2, 10.55}};
+    double edges[72];
+    for (int i = 0; i < 24; ++i)
+    {
+        edges[3 * i] = i < 12 ? 23.5 : 9.5;
+        edges[3 * i + 1] = yz[i % 12][0];
+        edges[3 * i + 2] = yz[i % 12][1];
+    }
+    const double v0 = 14.0 * (21.5 * 10.0 + (b - a) * 10.0 - 5.2 * 7.1), r = 0.5;
+    const double want = v0 - 2.0 * (2.0 * (21.5 + 20.0) + 2.0 * (5.2 + 7.1)) * r * r * (1.0 - PI / 4.0);
+    smlib_brep *round = nullptr, *overlap = nullptr;
+    CHECK(part != nullptr && smlib_fillet(part, edges, 24, 0.1, r, &round, nullptr) == SMLIB_OK);
+    if (round != nullptr)
+    {
+        double v = 0.0;
+        CHECK(smlib_brep_volume(round, 1e-12, &v) == SMLIB_OK);
+        std::printf("end faces' edges rounded r%g: volume %.9f, expected %.9f\n", r, v, want);
+        CHECK(sound(round));
+        CHECK(near(v, want, 1e-7));
+    }
+    CHECK(part != nullptr && smlib_fillet(part, edges, 24, 0.1, 1.0, &overlap, nullptr) == SMLIB_ERR_NO_ROOM && overlap == nullptr);
+    for (smlib_brep *x : {base, top, joined, window, part, round})
+    {
+        smlib_brep_free(x);
+    }
+}
+
 } // namespace
 
 // A disc r 15, 5 thick, one circular edge rounded r 1.5 and shelled 1.6 or 2 inward, open at one
@@ -5474,6 +5524,7 @@ int main(int argc, char **argv)
     corner_ball_after_a_round_is_exactly_singular();
     rounds_at_a_concave_face_corner_are_mitred();
     basin_rim_rounds_mitred_with_a_gap_at_the_corner();
+    end_face_rounds_mitred_at_concave_corners();
 
     // SolidCraft surface.offset of a ball's one face: the face taken off as a sheet is a closed
     // shell whose regions are all voids, which smlib_offset_sheet refused as a solid
