@@ -748,6 +748,12 @@ SmObject *SmCurve::SetOwner(SmObject *pNewOwner)
 PURPOSE: Compute approximate normal from planar loop of planar curves
 
 NOTES: The curves need not be truly planar.
+       SolidCraft change: the normal is the area vector of the polygon through points sampled
+       along the curves in order (Newell's method), so it points the way the loop runs round
+       counterclockwise. It was the sum of the cross products of consecutive chords, which
+       weighs each turn by its chords' lengths: a loop whose long sides meet at reflex corners
+       (a plus sign, the letter t of a text) came out with the normal reversed, and a draft
+       about it leaned the walls against the draft. An open chain is closed by its chord.
 ***********************************************************************/
 
 SmStatus SmCurve::ComputeCrvsNormal(SmTArray<SmCurve*>& cr3DCurves, SmVector3d& crCrvsNormal)
@@ -755,12 +761,9 @@ SmStatus SmCurve::ComputeCrvsNormal(SmTArray<SmCurve*>& cr3DCurves, SmVector3d& 
     // Initialize resulting normal
     crCrvsNormal.Set(0, 0, 0);
 
-    SmPoint3d sPt1(0, 0, 0), sPt2(0, 0, 0), sPt3(0, 0, 0);
-    SmVector3d sVec1(0, 0, 0), sVec2(0, 0, 0), sTempNorm;
-    SmVector3d sStartPt(0, 0, 0);
-    SmVector3d sStartVector(0, 0, 0);
-    double dT, dTIncr;
-    ULONG iTotalPoints = 0;
+    // the first sample point (the fan's apex) and the previous one
+    SmPoint3d sFirstPt(0, 0, 0), sPrevPt(0, 0, 0), sPt(0, 0, 0);
+    SmBoolean bFirst = TRUE;
 
     ULONG lNumCurves = cr3DCurves.GetSize();
     for (ULONG ii = 0; ii < lNumCurves; ii++)
@@ -774,57 +777,27 @@ SmStatus SmCurve::ComputeCrvsNormal(SmTArray<SmCurve*>& cr3DCurves, SmVector3d& 
             return SM_ERR;
         }
 
-        dT = 0.0;
-        SER( pCrv->EvaluatePoint(sDomain.Evaluate(dT), sPt3) );
-
-        // Keep track of start point in case loop is closed
-        if( ii == 0 )
-        {
-            sStartPt = sPt3;
-        }
-
-        iTotalPoints++;
         ULONG iCount = 5;
         if (pCrv->GetNumberControlPoints() == 2)
         {
             iCount = 1;
         }
-        dTIncr = 1.0 / iCount;
 
-        for (ULONG jj = 0; jj < iCount; jj++)
+        // the curve's start, iCount - 1 points along it and its end; twice the area of the
+        // polygon is the sum of the triangles of the fan from its first point
+        for (ULONG jj = 0; jj <= iCount; jj++)
         {
-            sPt1 = sPt2;
-            sPt2 = sPt3;
-            sVec1 = sVec2;
-
-            SER( pCrv->EvaluatePoint(sDomain.Evaluate(dT + dTIncr), sPt3) );
-
-            iTotalPoints++;
-            sVec2 = sPt3 - sPt2;
-            dT += dTIncr;
-            if (dT > 1.0)
+            SER( pCrv->EvaluatePoint(sDomain.Evaluate((double)jj / (double)iCount), sPt) );
+            if (bFirst)
             {
-                dT = 1.0;
+                sFirstPt = sPt;
+                bFirst = FALSE;
             }
-
-            if (iTotalPoints < 3)
+            else
             {
-                // Keep track of start vector in case loop is closed
-                sStartVector = sVec2;
-                continue;
+                crCrvsNormal += (sPrevPt - sFirstPt) * (sPt - sFirstPt);
             }
-
-            sTempNorm = sVec1 * sVec2;
-
-            crCrvsNormal += sTempNorm;
-
-            // If loop is closed and this is the last curve, add the last corner
-            // Is tolerance required?
-            if (ii == (lNumCurves - 1) && sStartPt == sPt3)
-            {
-                sTempNorm = sVec2 * sStartVector;
-                crCrvsNormal += sTempNorm;
-            }
+            sPrevPt = sPt;
         }
     }
 
