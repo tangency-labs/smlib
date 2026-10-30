@@ -27,6 +27,7 @@
 #include <SmFace.h>
 #include <SmLine.h>
 #include <SmPrimitiveCreation.h>
+#include <SmTol.h>
 
 #include <algorithm>
 #include <cmath>
@@ -369,6 +370,194 @@ bool one_loop(const Curves &c, double tol)
     return !c.v.empty() && prev.DistanceBetween(first) <= tol;
 }
 
+// An arc of a curve list (include/smlib.h) as numbers: its frame, radius and angles.
+struct FlatArc
+{
+    SmPoint3d centre;
+    SmVector3d axis, ref;
+    double radius, start, sweep;
+
+    // The point at angle `t` (radians from `ref`, counter-clockwise about `axis`).
+    SmPoint3d at(double t) const
+    {
+        SmVector3d y = axis * ref;
+        return centre + ref * (radius * std::cos(t)) + y * (radius * std::sin(t));
+    }
+};
+
+FlatArc flat_arc(const double *r)
+{
+    FlatArc a;
+    a.centre = SmPoint3d(r[0], r[1], r[2]);
+    a.axis = SmVector3d(r[3], r[4], r[5]);
+    a.ref = SmVector3d(r[6], r[7], r[8]);
+    (void)a.axis.Unitize();
+    (void)a.ref.Unitize();
+    a.radius = r[9];
+    a.start = r[10];
+    a.sweep = r[11] - r[10];
+    return a;
+}
+
+// Whether arcs `a` and `b` lie on one circle to `tol`: centres and radii within it, and the
+// axes alike (the same way round) to within it at the rim.
+bool one_circle(const FlatArc &a, const FlatArc &b, double tol)
+{
+    return a.centre.DistanceBetween(b.centre) <= tol && std::fabs(a.radius - b.radius) <= tol && a.axis.Dot(b.axis) > 0.0 &&
+           (a.axis * b.axis).Length() * std::max(a.radius, b.radius) <= tol;
+}
+
+// The angle of `p` on the circle of `a`, in `a`'s frame (radians, in [0, 2 pi)).
+double angle_on(const FlatArc &a, const SmPoint3d &p)
+{
+    SmVector3d d = p - a.centre;
+    SmVector3d y = a.axis * a.ref;
+    double t = std::atan2(d.Dot(y), d.Dot(a.ref));
+    return t < 0.0 ? t + TWO_PI : t;
+}
+
+// The profile `in` (parsed from the curve list kinds/reals) with each run of consecutive arcs on
+// one circle within a loop made one arc, so that the run's wall is one face as a single arc's
+// is: a circle drawn in pieces (split where another sketch curve ends on it) sweeps the one
+// cylinder it lies on, not a face per piece meeting the next along a line that is no edge of
+// the shape. A run that is its whole loop is the full circle, swept as a plain circle is: one
+// periodic face, its seam the one edge it uses twice. The seam goes where a plain circle has it:
+// when the arcs are pieces of one drawn circle (they share its frame, the reference direction
+// their angles are measured from), at that circle's own start, angle 0 of that frame, as an
+// unsplit circle would be swept; otherwise at the middle of the run's longest arc (the first of
+// equal ones, in profile order). Where it lands does not decide whether faces merge later: a
+// face that straddles it is taken in with the seam run on through it (CoverCoincidentSurface,
+// SmMerge::BooleanPostProcess). The curves `in` moves into `out` or frees; `tol` is the model's
+// zone tolerance, within which consecutive curves already meet.
+int32_t one_wall_per_circle(const int64_t *kinds, int64_t n_kinds, const double *reals, Curves &in, double tol, Curves &out)
+{
+    const SmContext &ctx = *SmApiGetOrCreateContext();
+    size_t n = in.v.size();
+    // Each curve's kind and where its numbers start (parse() has checked the list).
+    std::vector<int64_t> kind(n), at(n);
+    for (int64_t i = 0, k = 0, r = 0; k < static_cast<int64_t>(n) && i < n_kinds; ++k)
+    {
+        kind[k] = kinds[i++];
+        int64_t degree = 0, count = 0;
+        if (kind[k] == SMLIB_CURVE_NURBS)
+        {
+            degree = kinds[i++];
+            count = kinds[i++];
+        }
+        at[k] = r;
+        r += reals_of(kind[k], degree, count);
+    }
+    std::vector<SmPoint3d> head(n), tail(n);
+    for (size_t i = 0; i < n; ++i)
+    {
+        in.v[i]->GetEnds(head[i], tail[i]);
+    }
+    auto arc_of = [&](size_t i) { return flat_arc(reals + at[i]); };
+    auto joins = [&](size_t i, size_t j) // arc j goes on from arc i, on its circle
+    { return kind[i] == SMLIB_CURVE_ARC && kind[j] == SMLIB_CURVE_ARC && tail[i].DistanceBetween(head[j]) <= tol && one_circle(arc_of(i), arc_of(j), tol); };
+
+    size_t first = 0;
+    while (first < n)
+    {
+        // The loop from `first`: its curves run end to end until one ends at its start.
+        size_t last = first;
+        while (last + 1 < n && tail[last].DistanceBetween(head[first]) > tol && tail[last].DistanceBetween(head[last + 1]) <= tol)
+        {
+            ++last;
+        }
+        size_t len = last - first + 1;
+        bool closed = tail[last].DistanceBetween(head[first]) <= tol;
+        bool any = false; // whether two of the loop's arcs go on on one circle
+        for (size_t j = 0; j + 1 < len || (closed && len > 1 && j < len); ++j)
+        {
+            any = any || joins(first + j, first + (j + 1) % len);
+        }
+        if (!any)
+        {
+            for (size_t i = first; i <= last; ++i)
+            {
+                out.v.push_back(in.v[i]);
+                in.v[i] = nullptr;
+            }
+            first = last + 1;
+            continue;
+        }
+        // A run starts where its curve does not go on from the one before it round the loop.
+        size_t begin = 0;
+        if (closed)
+        {
+            while (begin < len && joins(first + (begin + len - 1) % len, first + begin))
+            {
+                ++begin;
+            }
+        }
+        if (begin == len)
+        {
+            // The whole loop is arcs of one circle: the full circle, its seam at the drawn
+            // circle's start when the arcs share its frame, else at the middle of the longest arc.
+            FlatArc a = arc_of(first);
+            bool one_frame = true;
+            size_t longest = first;
+            for (size_t i = first; i <= last; ++i)
+            {
+                one_frame = one_frame && (arc_of(i).ref - a.ref).Length() * a.radius <= tol;
+                if (arc_of(i).sweep > arc_of(longest).sweep)
+                {
+                    longest = i;
+                }
+            }
+            FlatArc l = arc_of(longest);
+            double seam = one_frame ? 0.0 : angle_on(a, l.at(l.start + 0.5 * l.sweep));
+            double r[12] = {a.centre.x, a.centre.y, a.centre.z, a.axis.x, a.axis.y, a.axis.z, a.ref.x, a.ref.y, a.ref.z, a.radius, seam, seam + TWO_PI};
+            SmCurve *c = nullptr;
+            int32_t s = arc(ctx, r, c);
+            if (s != SMLIB_OK)
+            {
+                return s;
+            }
+            out.v.push_back(c);
+        }
+        else
+        {
+            for (size_t k = 0; k < len;)
+            {
+                size_t i = first + (begin + k) % len;
+                size_t m = 1; // the arcs i, i + 1, ... round the loop that go on on its circle
+                while (k + m < len && joins(first + (begin + k + m - 1) % len, first + (begin + k + m) % len))
+                {
+                    ++m;
+                }
+                if (m == 1)
+                {
+                    out.v.push_back(in.v[i]);
+                    in.v[i] = nullptr;
+                }
+                else
+                {
+                    FlatArc a = arc_of(i);
+                    double sweep = 0.0;
+                    for (size_t j = 0; j < m; ++j)
+                    {
+                        sweep += arc_of(first + (begin + k + j) % len).sweep;
+                    }
+                    double start = angle_on(a, head[i]);
+                    double r[12] = {a.centre.x, a.centre.y, a.centre.z, a.axis.x, a.axis.y, a.axis.z, a.ref.x, a.ref.y, a.ref.z, a.radius, start, start + sweep};
+                    SmCurve *c = nullptr;
+                    int32_t s = arc(ctx, r, c);
+                    if (s != SMLIB_OK)
+                    {
+                        return s;
+                    }
+                    out.v.push_back(c);
+                }
+                k += m;
+            }
+        }
+        first = last + 1;
+    }
+    return SMLIB_OK;
+}
+
 // Whether the path is lines end to end along one direction: then `dir` is that unit direction
 // and `distance` the path's length.
 bool straight(const Curves &path, SmVector3d &dir, double &distance)
@@ -513,7 +702,13 @@ extern "C" int32_t smlib_extrude(const int64_t *kinds, int64_t n_kinds, const do
             SmBrep *r = nullptr;
             if (draft == 0.0)
             {
-                s = status(SmApiCreateLinearSweep(profile.array(), dir, distance, cap ? TRUE : FALSE, r));
+                Curves walls;
+                s = one_wall_per_circle(kinds, n_kinds, reals, profile, SmTol::GetZoneTol3d(SmApiGetOrCreateContext()), walls);
+                if (s != SMLIB_OK)
+                {
+                    return s;
+                }
+                s = status(SmApiCreateLinearSweep(walls.array(), dir, distance, cap ? TRUE : FALSE, r));
             }
             else
             {
