@@ -624,6 +624,29 @@ int main()
         expect(name, smlib_revolve(horn.kinds.data(), horn.nk(), horn.reals.data(), horn.nr(), O, Z, 2 * PI * turn, 1, &b), &b,
                2 * PI * turn * (14.0 + 56.0 / (3.0 * PI)) * PI * 98.0, 1e-6);
     }
+    // The whole disc of radius 5 centred 5 from the axis, touching it at the origin: a horn
+    // torus, turned part way (SolidCraft rig sweeps/cov-revolve-circle-touching-its-axis). Its
+    // circle starts where the caller's reference direction says: on the far side (10, 0, 0), up
+    // at (5, 0, 5), or at the origin itself, where it touches the axis. Wherever it starts, the
+    // result is one face of the turned circle and the two discs at its ends. Pappus:
+    // turn * 2 pi 5 * pi 25.
+    {
+        const double refs[3][3] = {{1, 0, 0}, {0, 0, 1}, {-1, 0, 0}};
+        for (const double *ref : refs)
+        {
+            List disc = circle(5, 0, 0, 0, -1, 0, ref[0], ref[1], ref[2], 5);
+            for (double turn : {0.25, 0.5, 0.75})
+            {
+                char name[64];
+                std::snprintf(name, sizeof name, "revolve horn disc (%g, %g) %.2f turn", ref[0], ref[2], turn);
+                b = nullptr;
+                int32_t s = smlib_revolve(disc.kinds.data(), disc.nk(), disc.reals.data(), disc.nr(), O, Z, 2 * PI * turn, 1, &b);
+                int64_t counts[3] = {0, 0, 0};
+                CHECK(s != SMLIB_OK || (smlib_brep_counts(b, counts) == SMLIB_OK && counts[0] == 3));
+                expect(name, s, &b, turn * 2 * PI * 5.0 * PI * 25.0, 1e-6);
+            }
+        }
+    }
     // A barrel: a closed profile on the axis whose outer side is an arc of radius 24 centred 10
     // on the far side of the axis (the whole circle turned would be a spindle torus; the arc is
     // its inner, lemon zone), from z 0 to 26.8, turned half and a whole turn (SolidCraft shell_barrel,

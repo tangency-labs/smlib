@@ -26,6 +26,7 @@
 #include <SmLine.h>
 #include <SmAssertArray.h>
 #include <SmMerge.h>
+#include <algorithm>
 #include <vector>
 
 #ifdef SM_DEBUG_CODE
@@ -2737,6 +2738,71 @@ if(bDebugMe)
 
 } // end SmPrimitiveCreation::CreateRotationalSweep
 
+// SolidCraft: the curves of a profile to turn about the axis through crBasePt along crAxis, each
+// split where it meets the axis inside itself (a circle tangent to the axis: a horn torus).
+// SmRotationalSweepGeometry::CheckCurveSweep refuses such a curve (SM_SC_ROT_ON_CURVE: "split the
+// curve at the point and try the same sweep on the pieces"); this finds the points as that check
+// does, with the same tolerance, and splits there. A curve closed on itself, cut at its points,
+// has its last piece joined back onto its first, so it stays one curve that now starts at the
+// first of them: its seam there. The curves are consumed; their pieces are in rCurves.
+static SmStatus sm_SplitCurvesOnAxis(const SmContext & crContext, SmTArray<SmCurve*> & rCurves,
+                                     const SmPoint3d & crBasePt, const SmVector3d & crAxis, double dTol)
+{
+  SmTArray<SmCurve*> sOut;
+  SmLine sAxis(crBasePt, crAxis, 3, TRUE, &crContext);
+  for (ULONG ii = 0; ii < rCurves.GetSize(); ii++)
+    {
+      SmCurve * pCurve = rCurves[ii];
+      if (pCurve == NULL)
+        { continue; }
+      SmExtent1d sIvl = pCurve->GetNaturalInterval();
+      SmBoolean bMore = FALSE;
+      SmSolutionArray sHits;
+      SER(pCurve->IntersectWithLine(sIvl, sAxis, sAxis.GetNaturalInterval(), dTol, bMore, sHits));
+      std::vector<double> sAt;
+      for (ULONG jj = 0; jj < sHits.GetSize(); jj++)
+        {
+          double dParam = sHits[jj].m_vStart[0];
+          if (sIvl.IsValueOnBoundary(dParam, dTol) == FALSE)
+            { sAt.push_back(dParam); }
+        }
+      if (sAt.empty())
+        {
+          sOut.Add(pCurve);
+          continue;
+        }
+      std::sort(sAt.begin(), sAt.end());
+      SmBoolean bClosed = pCurve->IsClosed(sIvl, dTol);
+      SmTArray<SmBSplineCurve*> sPieces;
+      SmCurve * pRest = pCurve;
+      for (double dParam : sAt)
+        {
+          SmCurve * pNext = NULL;
+          SER(pRest->CreateBySplitCurve(crContext, dParam, pNext)); NER(pNext);
+          sPieces.Add((SmBSplineCurve*)pRest);
+          pRest = pNext;
+        }
+      sPieces.Add((SmBSplineCurve*)pRest);
+      if (bClosed)
+        {
+          // the last piece runs on to the curve's start: it and the first are one piece
+          SmTArray<SmBSplineCurve*> sJoin;
+          sJoin.Add(sPieces[sPieces.GetSize() - 1]);
+          sJoin.Add(sPieces[0]);
+          SmBSplineCurve * pJoined = NULL;
+          SER(SmBSplineCurve::CreateByJoining(crContext, sJoin, NULL, pJoined)); NER(pJoined);
+          delete sJoin[0];
+          delete sJoin[1];
+          sPieces.RemoveAt(sPieces.GetSize() - 1);
+          sPieces.SetAt(0, pJoined);
+        }
+      for (ULONG jj = 0; jj < sPieces.GetSize(); jj++)
+        { sOut.Add(sPieces[jj]); }
+    }
+  rCurves = sOut;
+  return SM_SUCCESS;
+}
+
 /*******************************************************************//**
 PURPOSE: Creates a planar face from the given curves, and sweeps them,
             possibly into a solid. 
@@ -2845,6 +2911,9 @@ SmBoolean bDebugMe = FALSE ;
     { SER(SM_ERR); }
 
   double dTol = pBrep->GetTolerance();
+
+  // SolidCraft: no curve meets the axis inside itself (CheckCurveSweep's SM_SC_ROT_ON_CURVE).
+  SER(sm_SplitCurvesOnAxis(*pContext, r3DCurves, crRotAxisBasePt, crRotAxisDir, dTol));
   pBrep->m_bEditingEnabled = TRUE;
     
   SmTArray<SmFace*> aFaces;
