@@ -1701,6 +1701,47 @@ std::string corner_child_run(const char *self, const char *order, bool &sound_ou
 
 } // namespace
 
+// A disc r 15, 5 thick, one circular edge rounded r 1.5 and shelled 1.6 or 2 inward, open at one
+// end (SolidCraft shell_of_a_disc_rounded_smaller_than_the_wall, #319). The round is a fillet's
+// surface of revolution of an arc; moved in past its radius it has no offset, as a torus's (a
+// round thinner than the wall), and the floor's and side's offsets meet across it in a circle.
+// The arc's offset used to be built as the arc turned inside out, r 0.1 or 0.5 round its centre,
+// and the offset was no closed solid (1001). The cavity is the cylinder r 15 - t, 5 - t deep; the
+// round takes r^2 (1 - pi/4) from the disc's section, its centroid r (10 - 3 pi) / (3 (4 - pi)) in
+// from the rim, swept round the axis (Pappus).
+void shelled_disc_round_thinner_than_the_wall()
+{
+    const double rd = 15.0, h = 5.0, r = 1.5;
+    const double corner = r * r * (1.0 - PI / 4.0) * 2.0 * PI * (rd - r * (10.0 - 3.0 * PI) / (3.0 * (4.0 - PI)));
+    const double top[3] = {0, 0, 0}, bottom[3] = {0, 0, -h};
+    struct Case
+    {
+        double edge_z;
+        const double *open;
+    };
+    for (Case c : {Case{-h, top}, Case{-h, bottom}, Case{0.0, bottom}})
+    {
+        smlib_brep *disc = cylinder(0, 0, -h, rd, h), *rounded = nullptr;
+        const double edge[3] = {0, rd, c.edge_z};
+        CHECK(smlib_fillet(disc, edge, 1, 0.1, r, &rounded, nullptr) == SMLIB_OK);
+        for (double t : {1.6, 2.0})
+        {
+            smlib_brep *s = nullptr;
+            CHECK(rounded != nullptr && smlib_shell(rounded, c.open, 1, 0.1, -t, &s, nullptr) == SMLIB_OK);
+            if (s != nullptr)
+            {
+                const double want = PI * rd * rd * h - corner - PI * (rd - t) * (rd - t) * (h - t);
+                std::printf("disc rounded at z %g, open at z %g, shelled %g: volume %.9f, expected %.9f\n", c.edge_z, c.open[2], t, volume_of(s), want);
+                CHECK(sound(s));
+                CHECK(near(volume_of(s), want, 1e-7));
+            }
+            smlib_brep_free(s);
+        }
+        smlib_brep_free(disc);
+        smlib_brep_free(rounded);
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 4 && std::strcmp(argv[1], "--solidcore-1173") == 0)
@@ -5023,6 +5064,7 @@ int main(int argc, char **argv)
     concave_corner_setback();
     corner_setback_eased();
     shelled_tapered_box_rounds();
+    shelled_disc_round_thinner_than_the_wall();
 
     // SolidCraft surface.offset of a ball's one face: the face taken off as a sheet is a closed
     // shell whose regions are all voids, which smlib_offset_sheet refused as a solid

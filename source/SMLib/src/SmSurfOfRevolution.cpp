@@ -1233,6 +1233,52 @@ SmBoolean bDebugMe = FALSE ;
 //      } // end SmSurfOfRevolution::Notify
 
 /*******************************************************************//**
+PURPOSE: SolidCraft change. TRUE when the offset by dSignedOffsetDistance
+    shrinks the surface onto its spine or past it: its generatrix is one
+    circular arc, and the offset runs towards the arc's centre by the
+    arc's radius or more, leaving a radius below dTol
+    (SmSurface::OffsetCollapses). Such a surface is a round made by a
+    fillet along a circular edge (a torus in all but its type); offset
+    inward past its radius, its generatrix turned inside out.
+
+NOTES: The offset moves each point along the surface's NURB normal
+    (CreateOffsetSurface). Along the generatrix direction the surface's
+    iso-curve is the generatrix revolved, an arc of the same radius r, so
+    its curvature vector k points at the arc's centre with |k| = 1/r and
+    the normal is +-k r. The offset's radius is r - d (N . k) r.
+***********************************************************************/
+SmBoolean SmSurfOfRevolution::OffsetCollapses
+(
+  double dSignedOffsetDistance,  // in : offset dist, (neg val = Offset dir opposite surface normal)
+  double dTol                    // in : the radius below which the offset is the arc's centre circle
+) const
+{
+  if (m_pGenCurve == NULL) { return FALSE; }
+
+  SmAxis2Placement sArcFrame;
+  double dRadius = 0.0, dStartDeg = 0.0, dEndDeg = 0.0;
+  if (!m_pGenCurve->IsArc(9, dTol, sArcFrame, dRadius, dStartDeg, dEndDeg) || dRadius <= dTol)
+    { return FALSE; }
+
+  // the curvature of the generatrix direction's iso-curve, at the middle of the domain
+  SmPoint2d  sUV = GetNaturalUVDomain().GetMid();
+  SmPoint3d  sPoint;
+  SmVector3d sDU, sDV, sDUV, sDUU, sDVV, sNormal;
+  if (   Evaluate2ndDerivatives(sUV, TRUE, TRUE, sPoint, sDU, sDV, sDUV, sDUU, sDVV) != SM_SUCCESS
+      || EvaluateNormal(sUV, TRUE, TRUE, sNormal) != SM_SUCCESS)
+    { return FALSE; }
+  const SmVector3d & crD1 = m_bSwapUV ? sDU  : sDV;
+  const SmVector3d & crD2 = m_bSwapUV ? sDUU : sDVV;
+  double dSpeedSq = crD1.LengthSquared();
+  if (dSpeedSq < SM_EFF_ZERO_SQ) { return FALSE; } // at a pole: no generatrix tangent to measure
+  SmVector3d sCurvature = (crD2 - crD1 * (crD2.Dot(crD1) / dSpeedSq)) / dSpeedSq;
+
+  // radius r - d (N . k) r: N . k r is +1 where the normal points at the centre, -1 away from it
+  double dTowardsCentre = sNormal.Dot(sCurvature) * dRadius;
+  return dRadius - dSignedOffsetDistance * dTowardsCentre < dTol;
+} // end SmSurfOfRevolution::OffsetCollapses
+
+/*******************************************************************//**
 PURPOSE: Create an offset surface for the surface of revolution.
 
 NOTES: The offset Nurb and Step domains map from old to new
@@ -1250,6 +1296,12 @@ SmStatus SmSurfOfRevolution::CreateOffsetSurface
   SmSurface* &           rOffsetSurface         // out: Offset Surf Approx, may be more than 1 when offsets have self-intersections
 ) const
 {
+  rOffsetSurface = NULL;
+
+  // SolidCraft change: an offset that shrinks the generatrix arc onto its centre or past it is no
+  // surface (OffsetCollapses); built, its generatrix came out inside out.
+  if ( OffsetCollapses(dSignedOffsetDistance, dThisApproxTol3d) )
+    { return SM_SUCCESS; }
 
   // locals
   SmTArray    <SmCurve*>        sCCurves;
