@@ -12513,6 +12513,31 @@ SmStatus SmFilletGeom::TrimOriginalSurfaces
 
           // for every Orig m_pTargetBrep->pBrepEdge->Edgeuse - find the Face connected to the edgeuse no longer needed
           SER( pBrepEdge->GetEdgeuses( sEdgeuses ) );
+          // SolidCraft change: of the original face's pieces along the rail, the one 'inside' is
+          // the one whose binormal points most the way the fillet's does. The pieces' binormals
+          // are opposite, so its dot is the positive one, however steeply the fillet meets the
+          // face: a chamfer of a knife edge meets the flat face at 81 degrees at d = 0.5 (dot
+          // 0.15), which a fixed 0.2 took for noise, deleting nothing and leaving the chamfer
+          // face apart from the body. Only a fillet square to the face (no side) is ambiguous.
+          ULONG     lInside   = sEdgeuses.GetSize();
+          double    dBestDot  = SM_EFF_ZERO_SQRT;
+          for(kk=0;kk<sEdgeuses.GetSize();kk+=2)
+            {
+              SmEdgeuse * pEU     = sEdgeuses[kk];
+              SmFace    * pEUFace = pEU->GetFace();
+              if ( ! ( pEUFace == pOrigFace || crSpltFaces.IsIn( pEUFace ) ) )
+                { continue; }
+              SmPoint3d  sPnt2;
+              SmVector3d sBin2;
+              SER(pEU->EvaluateBinormal(dDroppedParameter, FALSE, sPnt2, sBin2 ));
+              if ( pFS->GetReverseTrim() )
+                { sBin2 = - sBin2; }
+              if ( sFilletBin.Dot( sBin2 ) > dBestDot )
+                {
+                  dBestDot = sFilletBin.Dot( sBin2 );
+                  lInside  = kk;
+                }
+            }
           for(kk=0;kk<sEdgeuses.GetSize();kk+=2)  // gwc: potential savings - we only need faces so only look at every other Edgeuse
                                                   //      later try changing kk++ to kk+=2
             {
@@ -12555,7 +12580,7 @@ SmStatus SmFilletGeom::TrimOriginalSurfaces
               // then the m_pTargetBrep->Edgeuse->Face is 'inside' the closed loop of common edges and
               // it (and all Faces connected to it) get marked for deletion.
 
-              if ( sFilletBin.Dot( sBin2 ) > 0.2 ) // 0.2: just to avoid noise around 0.0.
+              if ( kk == lInside )
                 {
                   // Found a face that is 'inside' the closed loop
                   // of (marked) Edges in the target Brep.

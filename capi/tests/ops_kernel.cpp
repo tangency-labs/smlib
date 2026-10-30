@@ -1711,8 +1711,7 @@ void overflow_goes_first()
 // from its axis to the ball's centre meets it. It takes the triangle flat contact, tip, wall
 // contact less the wall's circular segment R^2/2 (b - sin b), b = acos((R - d)/(R + d)): at
 // d = 2, 3.822 wide, 159.23645 removed (SolidCraft rig fillets/851-chamfer-knife-edge-tip-*).
-// (At d 0.5 to 0.8 the chamfer face is built but left apart from the body, which keeps its knife
-// edge: SMLIB_ERR_NOT_SOLID, a defect of its own.)
+// At d 0.5 the chord meets the flat face at 81 degrees, which the trim took for no side at all.
 void knife_edge_chamfers()
 {
     const double R = 21.0, TIP = 62.0 + 1.0 / 6.0, H = 10.0;
@@ -1720,7 +1719,7 @@ void knife_edge_chamfers()
     p.line(0, 0, 0, -R, 0).line(0, -R, TIP - R, -R, 0).arc(TIP, -R, 0, -1, R, PI, 1.5 * PI).line(TIP, 0, 0, 0, 0);
     smlib_brep *part = p.extrude(H);
     const double before = (TIP - R) * R * H + R * R * (1.0 - PI / 4.0) * H;
-    for (double d : {1.0, 2.0, 5.0})
+    for (double d : {0.5, 0.8, 1.0, 2.0, 5.0})
     {
         const double flat = TIP - std::sqrt(4.0 * R * d);
         const double wx = TIP - std::sqrt(4.0 * R * d) * R / (R + d), wy = -R + (R - d) * R / (R + d);

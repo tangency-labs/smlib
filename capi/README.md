@@ -782,6 +782,13 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   end on several faces or on a non-planar face, concave blends in the same call, a sheet
   boundary that does not pass from face to face along side edges, or a variable round on planes
   whose surface misses its law (`sm_HoldsItsLaw`): too large, `SM_FILERR_NO_ROOM`, as before.
+- **A fillet meeting its face steeply trims it** (`SmFilletGeom.cpp`, `TrimOriginalSurfaces`): the
+  piece of a face 'inside' a fillet's rail (to be deleted) was the one whose binormal along the
+  rail made a dot of more than 0.2 with the fillet's, as if anything less were noise. The pieces'
+  binormals are opposite, so the inside one is the one whose dot is positive, the larger of the
+  two; a fixed 0.2 refused a fillet meeting its face at more than 78 degrees. The chamfer of
+  solidcraft#851's knife edge does (81 degrees at d 0.5, dot 0.15): nothing was deleted and the
+  chamfer face was left apart from the body (SMLIB_ERR_NOT_SOLID) for d 0.5 to 0.8.
 - **An overflow goes first** (`SmFilletExecutive.h`/`.cpp`, `SetOverflowFirst`, `SetClassifyOnly`,
   `GetOverflowEdges`, `SM_FILERR_OVERFLOW_FIRST`; `smlib_ops.cpp`, `overflow_first`; new
   `smlib_blend_dropping`): rounds of several edges where some overflow their faces across cliffs
