@@ -28,6 +28,82 @@
 #include <SmSurfOfExtrusion.h>
 
 /*******************************************************************//**
+PURPOSE: SolidCraft change: the side of each face of the sector between
+    rpEdgeuses[0] and its radial on which the other face lies, at the
+    middle of the edge: rdSides[i] = +1 when face (1-i) lies on the side
+    face i's surface normal points to, -1 when it lies on the other side:
+    the sign of face i's offset (SmOffsetSurface offsets along the surface
+    normal).
+
+NOTES: The faces leave the edge along their binormals b0 and b1. When b1
+    is not tangent to face 0 the side is that of b1 (and the same for
+    face 1). Where the faces are tangent at the edge and their binormals
+    point the same way (a cusp: a knife edge, or its complement) they
+    part to second order: along the binormal b, face j lies at height
+    s^2/2 * kj * Nj (kj its normal curvature in direction b, Nj its unit
+    surface normal), so face (1-i) lies on the side of face i given by
+    k(1-i) N(1-i).ni - ki Ni.ni (ni face i's normal at the edge). Faces
+    tangent at the edge whose binormals point apart continue each other
+    (a smooth edge), and faces of a cusp
+    whose curvatures match there do not part to second order: neither
+    has a sector to fillet (SM_ERR). dLength is the size of the blend,
+    the scale the parting of the faces is measured at.
+***********************************************************************/
+static SmStatus sm_SectorSides
+  (SmEdgeuse * const rpEdgeuses[2],  // in : the edgeuse bounding the sector, and its radial
+   double            dLength,        // in : the blend's size
+   double            rdSides[2])     // out: the side of each face the other lies on
+{
+  NER(rpEdgeuses[0]); NER(rpEdgeuses[1]);
+  SmEdge *pEdge = rpEdgeuses[0]->GetEdge(); NER(pEdge);
+  double dParam = pEdge->GetInterval().Evaluate(0.5);
+
+  SmPoint3d  sPnt[2];
+  SmVector3d sBinVec[2], sNormal[2];
+  SmPoint2d  sUV[2];
+  SmVector2d sUVDir[2];
+  for (ULONG i = 0; i < 2; i++)
+    {
+      SER(rpEdgeuses[i]->EvaluateBinormal(dParam, FALSE, sPnt[i], sBinVec[i], NULL, &sNormal[i], &sUV[i], &sUVDir[i]));
+      if (rpEdgeuses[i]->GetLoopuse()->GetFaceuse()->GetOrientation() == SM_OT_OPPOSITE)
+        { sNormal[i] = -sNormal[i]; } // the surface's normal
+    }
+
+  double dFirst[2] = { sBinVec[1].Dot(sNormal[0]), sBinVec[0].Dot(sNormal[1]) };
+  if (smos_Fabs(dFirst[0]) >= SM_EFF_ZERO_SQRT && smos_Fabs(dFirst[1]) >= SM_EFF_ZERO_SQRT)
+    {
+      rdSides[0] = dFirst[0] < 0.0 ? -1.0 : 1.0;
+      rdSides[1] = dFirst[1] < 0.0 ? -1.0 : 1.0;
+      return SM_SUCCESS;
+    }
+  if (sBinVec[0].Dot(sBinVec[1]) <= 0.0)
+    { return SM_ERR; } // smooth: the faces continue each other
+
+  // a cusp: each face's normal curvature along its binormal, into the face
+  double     dCurvature[2];
+  SmVector3d sSurfaceNormal[2];
+  for (ULONG i = 0; i < 2; i++)
+    {
+      const SmSurface *cpSurface = rpEdgeuses[i]->GetLoopuse()->GetFaceuse()->GetFace()->GetSurface();
+      NER(cpSurface);
+      SmVector3d sTangent;
+      SER(cpSurface->EvaluateNormalSection(sUV[i], sUVDir[i].x >= 0.0, sUVDir[i].y >= 0.0, sBinVec[i],
+                                           sTangent, dCurvature[i], sSurfaceNormal[i]));
+    }
+  for (ULONG i = 0; i < 2; i++)
+    {
+      ULONG j = 1 - i;
+      double dPart =   dCurvature[j] * sSurfaceNormal[j].Dot(sNormal[i])
+                     - dCurvature[i] * sSurfaceNormal[i].Dot(sNormal[i]);
+      if (smos_Fabs(dPart) * dLength < SM_EFF_ZERO_SQRT)
+        { return SM_ERR; } // the faces osculate: no sector to fillet
+      rdSides[i] = dPart < 0.0 ? -1.0 : 1.0;
+    }
+  return SM_SUCCESS;
+
+} // end sm_SectorSides
+
+/*******************************************************************//**
 PURPOSE: Constructor for Constant Radius Fillet object that allows
     different offsets for corresponding surfaces.
 
@@ -97,47 +173,19 @@ SmConstantRadiusFS::SmConstantRadiusFS
 
     // Create offset surfaces of appropriate radius in appropriate direction.
 
-    SmPoint3d sPnt, sPnt2;
-    SmVector3d sBinVec2, sBinVec, sFaceuseNormal, sFaceuseNormal2;
-    SmEdge *pEdge = m_pEdgeuses[0]->GetEdge();
-    SE(m_pEdgeuses[0]->EvaluateBinormal(pEdge->GetInterval().Evaluate(0.5),
-        FALSE,sPnt,sBinVec,NULL,&sFaceuseNormal));
-    SE(m_pEdgeuses[1]->EvaluateBinormal(pEdge->GetInterval().Evaluate(0.5),
-        FALSE,sPnt2,sBinVec2,NULL,&sFaceuseNormal2));
-
-    if (m_pEdgeuses[0]->GetLoopuse()->GetFaceuse()->GetOrientation() == SM_OT_OPPOSITE) {
-        sFaceuseNormal = -sFaceuseNormal;
-    }
-    if (m_pEdgeuses[1]->GetLoopuse()->GetFaceuse()->GetOrientation() == SM_OT_OPPOSITE) {
-        sFaceuseNormal2 = -sFaceuseNormal2;
-    }
-
-    m_dOrientations[0] = 1.0;
-    m_dOrientations[1] = 1.0;
-    double dDot1 = sBinVec2.Dot(sFaceuseNormal);
-    if (smos_Fabs(dDot1) < SM_EFF_ZERO_SQRT)
+    // SolidCraft change: offset each surface to the side of it the other face lies on
+    // (sm_SectorSides), a cusp's faces too.
+    double dSides[2] = { 1.0, 1.0 };
+    if (sm_SectorSides(m_pEdgeuses, smos_Max(smos_Fabs(m_dFilletRadii[0]), smos_Fabs(m_dFilletRadii[1])), dSides) != SM_SUCCESS)
     {
-        // Surfaces are tangent at midpoint: can't fillet this.
+        // Smooth, or no sector: can't fillet this.
         m_pEdgeuses[0] = NULL;
         m_pEdgeuses[1] = NULL;
         SE(SM_ERR);
         return;
     }
-    if (dDot1 < 0.0) {
-        m_dOrientations[0] = -1.0;
-    }
-
-    double dDot2 = sBinVec.Dot(sFaceuseNormal2);
-    if (smos_Fabs(dDot2) < SM_EFF_ZERO_SQRT) {
-        // Tangent surfaces.
-        m_pEdgeuses[0] = NULL;
-        m_pEdgeuses[1] = NULL;
-        SE(SM_ERR);
-        return;
-    }
-    if (dDot2 < 0.0) {
-        m_dOrientations[1] = -1.0;
-    }
+    m_dOrientations[0] = dSides[0];
+    m_dOrientations[1] = dSides[1];
 
     SmSurface *pSurface =
         m_pEdgeuses[0]->GetLoopuse()->GetFaceuse()->GetFace()->GetSurface();
@@ -1265,44 +1313,19 @@ SmConstantDistanceFS::SmConstantDistanceFS
     // For now assume that the orientations at the center of the edge
     // work for the rest of the edge.
 
-    SmPoint3d sPnt, sPnt2;
-    SmVector3d sBinVec2, sBinVec, sFaceuseNormal, sFaceuseNormal2;
-    SmEdge *pEdge = m_pEdgeuses[0]->GetEdge();
-    SE(m_pEdgeuses[0]->EvaluateBinormal(pEdge->GetInterval().Evaluate(0.5),
-        FALSE,sPnt,sBinVec,NULL,&sFaceuseNormal));
-    SE(m_pEdgeuses[1]->EvaluateBinormal(pEdge->GetInterval().Evaluate(0.5),
-        FALSE,sPnt2,sBinVec2,NULL,&sFaceuseNormal2));
-
-    if (m_pEdgeuses[0]->GetLoopuse()->GetFaceuse()->GetOrientation() == SM_OT_OPPOSITE) {
-        sFaceuseNormal = -sFaceuseNormal;
-    }
-    if (m_pEdgeuses[1]->GetLoopuse()->GetFaceuse()->GetOrientation() == SM_OT_OPPOSITE) {
-        sFaceuseNormal2 = -sFaceuseNormal2;
-    }
-
-
-    m_dOrientations[0] = 1.0;
-    m_dOrientations[1] = 1.0;
-    double dDot1 = sBinVec2.Dot(sFaceuseNormal);
-    if (smos_Fabs(dDot1) < SM_EFF_ZERO_SQRT) {
+    // SolidCraft change: offset each surface to the side of it the other face lies on
+    // (sm_SectorSides), a cusp's faces too.
+    double dSides[2] = { 1.0, 1.0 };
+    if (sm_SectorSides(m_pEdgeuses, m_dDistance, dSides) != SM_SUCCESS)
+    {
+        // Smooth, or no sector: can't fillet this.
         m_pEdgeuses[0] = NULL;
         m_pEdgeuses[1] = NULL;
         SE(SM_ERR);
         return;
     }
-    if (dDot1 < 0.0) {
-        m_dOrientations[0] = -1.0;
-    }
-    double dDot2 = sBinVec.Dot(sFaceuseNormal2);
-    if (smos_Fabs(dDot2) < SM_EFF_ZERO_SQRT) {
-        m_pEdgeuses[0] = NULL;
-        m_pEdgeuses[1] = NULL;
-        SE(SM_ERR);
-        return;
-    }
-    if (dDot2 < 0.0) {
-        m_dOrientations[1] = -1.0;
-    }
+    m_dOrientations[0] = dSides[0];
+    m_dOrientations[1] = dSides[1];
 
     SmSurface *pSurface = m_pEdgeuses[0]->GetLoopuse()->GetFaceuse()->GetFace()->GetSurface();
     SmSurface *pSurface2 = m_pEdgeuses[1]->GetLoopuse()->GetFaceuse()->GetFace()->GetSurface();
@@ -1919,47 +1942,23 @@ SmVariableRadiusFS::SmVariableRadiusFS
     // For now assume that the orientations at the center of the edge
     // work for the rest of the edge.
 
-    SmPoint3d sPnt, sPnt2;
-    SmVector3d sBinVec2, sBinVec, sFaceuseNormal, sFaceuseNormal2;
+    double dVals[3];
+    SE(rFilletLaw.Evaluate(m_vLawInterval.Evaluate(0.5),m_vLawInterval,m_bLawOrientation,dVals));
+    double dApproxRadius = dVals[0];
 
-    SE(m_pEdgeuses[0]->EvaluateBinormal(pEdge->GetInterval().Evaluate(0.5),
-        FALSE,sPnt,sBinVec,NULL,&sFaceuseNormal));
-    SE(m_pEdgeuses[1]->EvaluateBinormal(pEdge->GetInterval().Evaluate(0.5),
-        FALSE,sPnt2,sBinVec2,NULL,&sFaceuseNormal2));
-
-    if (m_pEdgeuses[0]->GetLoopuse()->GetFaceuse()->GetOrientation() == SM_OT_OPPOSITE) {
-        sFaceuseNormal = -sFaceuseNormal;
-    }
-    if (m_pEdgeuses[1]->GetLoopuse()->GetFaceuse()->GetOrientation() == SM_OT_OPPOSITE) {
-        sFaceuseNormal2 = -sFaceuseNormal2;
-    }
-
-
-    m_dOrientations[0] = 1.0;
-    m_dOrientations[1] = 1.0;
-    double dDot1 = sBinVec2.Dot(sFaceuseNormal);
-    if (smos_Fabs(dDot1) < SM_EFF_ZERO_SQRT) {
-        m_pEdgeuses[0] = NULL;
-        m_pEdgeuses[1] = NULL;
-        return;
-    }
-    if (dDot1 < 0.0) {
-        m_dOrientations[0] = -1.0;
-    }
-    double dDot2 = sBinVec.Dot(sFaceuseNormal2);
-    if (smos_Fabs(dDot2) < SM_EFF_ZERO_SQRT) {
+    // SolidCraft change: offset each surface to the side of it the other face lies on
+    // (sm_SectorSides), a cusp's faces too.
+    double dSides[2] = { 1.0, 1.0 };
+    if (sm_SectorSides(m_pEdgeuses, smos_Fabs(dApproxRadius), dSides) != SM_SUCCESS)
+    {
+        // Smooth, or no sector: can't fillet this.
         m_pEdgeuses[0] = NULL;
         m_pEdgeuses[1] = NULL;
         SE(SM_ERR);
         return;
     }
-    if (dDot2 < 0.0) {
-        m_dOrientations[1] = -1.0;
-    }
-
-    double dVals[3];
-    SE(rFilletLaw.Evaluate(m_vLawInterval.Evaluate(0.5),m_vLawInterval,m_bLawOrientation,dVals));
-    double dApproxRadius = dVals[0];
+    m_dOrientations[0] = dSides[0];
+    m_dOrientations[1] = dSides[1];
 
     SmSurface *pSurface = m_pEdgeuses[0]->GetLoopuse()->GetFaceuse()->GetFace()->GetSurface();
     SmSurface *pSurface2 = m_pEdgeuses[1]->GetLoopuse()->GetFaceuse()->GetFace()->GetSurface();

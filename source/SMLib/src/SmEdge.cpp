@@ -6820,15 +6820,20 @@ SmEdgeuse * SmEdge::GetBlendEdgeuse() const
 
   // when 1st edgeuse surface normal is perpendicular to 2nd edgeuse binormal or 
   //      1st edgeuse binormal       is perpendicular to 2nd edgeuse surface normal
-  // the faces are tangent and can't be filleted
+  // the faces are tangent at the edge. They are smooth there, and can't be filleted, when
+  // their binormals point away from each other (the faces continue each other). When the
+  // binormals point the same way the faces fold back on each other in a cusp (a knife edge,
+  // the sector between them of no angle, or of a full turn): the ball touching both faces
+  // lies back from the edge, and the edge is filleted like any other.
+  SmBoolean bCusp = sBinVec.Dot( sBinVec2 ) > 0.0;
   double dDot1 = sBinVec2.Dot( sFaceuseNormal );
-  if(smos_Fabs( dDot1 ) < dMaxDotValue)
+  if(!bCusp && smos_Fabs( dDot1 ) < dMaxDotValue)
   {
     return NULL; // Tangent: unable to fillet
   }
 
   double dDot2 = sBinVec.Dot( sFaceuseNormal2 );
-  if(smos_Fabs( dDot2 ) < dMaxDotValue)
+  if(!bCusp && smos_Fabs( dDot2 ) < dMaxDotValue)
   {
     return NULL; // Tangent: unable to fillet
   }

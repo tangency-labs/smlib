@@ -1194,3 +1194,17 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   curvature-continuous or other sections) or a blend it cannot take off, `SMLIB_ERR_UNSUPPORTED`;
   a removal needing a non-planar surface or a curved edge continued, `SMLIB_ERR_NOT_EXACT`; a blend
   that no longer fits the moved faces, `SMLIB_ERR_NO_ROOM` (the fillet's own rules).
+- **Rounds of a knife edge** (`SmEdge.cpp`, `SmEdge::GetBlendEdgeuse`; `SmFilletStandardSolver.cpp`,
+  new `sm_SectorSides`, used by the `SmConstantRadiusFS`, `SmConstantDistanceFS` and
+  `SmVariableRadiusFS` constructors; `SmFilletCorner.cpp`, `SmFilletNx1Corner::CheckNx1Degeneracy`):
+  an edge whose faces are tangent along it but fold back on each other (a cusp: a curved wall
+  running out into a flat face at no angle, solidcraft#851) was refused as smooth
+  (`SM_ERR_INVALID_INPUT`): all three took faces tangent at the edge for faces continuing each
+  other. A cusp's binormals point the same way, a smooth edge's apart; at a cusp the faces part
+  to second order, and the side of each face the other lies on (the side its offset surface is
+  offset to) is the sign of the difference of their normal curvatures across the edge. Its end
+  corners, the faces' normals there anti-parallel, are ordinary corners, not degenerate ones
+  where the fillet runs out to the vertex (normals parallel). The knife edge of SolidCraft's arc
+  part (a plane against a cylinder of radius 21) rounds r 0.5, 2 and 5 to the ball touching both
+  faces sqrt(4 R r) back from the tip, mirrored too (`ops_kernel` `knife_edge_rounds`). A smooth
+  edge, and a cusp whose faces' curvatures match across it, are still refused.
