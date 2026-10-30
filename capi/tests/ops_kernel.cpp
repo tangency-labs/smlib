@@ -38,7 +38,12 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
 #include <functional>
+#include <iterator>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -1533,10 +1538,93 @@ void lip_swept_flush_round_a_corner()
     }
 }
 
+// The 60 x 40 x 20 box, its top edge at y = 40 rounded r5, its top edge at x = 60 rounded r3,
+// then the vertical edge at x = 60, y = 40 rounded `radius` with the edges tangent to it up into
+// the corner (main has the case), or null.
+smlib_brep *rounded_corner(double radius)
+{
+    smlib_brep *slab = box(0, 0, 0, 60, 40, 20);
+    smlib_brep *top = nullptr;
+    smlib_brep *both = nullptr;
+    smlib_brep *corner = nullptr;
+    const double top_edge[3] = {30, 40, 20};
+    const double end_edge[3] = {60, 20, 20};
+    const double up[9] = {60, 40, 7.5, 60, 35.0 + std::sqrt(24.0), 16, 58.931891825700852, 37.55984948554854, 19.294016994391871};
+    CHECK(smlib_fillet(slab, top_edge, 1, 0.1, 5.0, &top, nullptr) == SMLIB_OK);
+    CHECK(top != nullptr && smlib_fillet(top, end_edge, 1, 0.1, 3.0, &both, nullptr) == SMLIB_OK);
+    CHECK(both != nullptr && smlib_fillet(both, up, 3, 0.1, radius, &corner, nullptr) == SMLIB_OK);
+    for (smlib_brep *x : {both, top, slab})
+    {
+        smlib_brep_free(x);
+    }
+    return corner;
+}
+
+// The constant-distance blend (SMLIB_BLEND_CHORD) of tangency-labs/solidcore#453's back rim, on
+// the 20 cube bored r5 along y with the bore's wall on its bottom face: refused (main has the
+// case), after its solver has computed points across the rim.
+void failed_chord_blend()
+{
+    smlib_brep *cube = box(0, 0, 0, 20, 20, 20);
+    SmBrep *bore = nullptr;
+    CHECK(SmApiCreateCylinder(SmVector3d(0, 0, 0), 5.0, 20.0, bore) == SM_SUCCESS && bore != nullptr);
+    CHECK(SmApiRotate(bore, SmVector3d(0, 0, 0), SmVector3d(1, 0, 0), 90.0) == SM_SUCCESS);
+    CHECK(SmApiTranslate(bore, SmVector3d(10, 20, 5)) == SM_SUCCESS);
+    smlib_brep tool{bore};
+    smlib_brep *holed = nullptr;
+    CHECK(smlib_boolean(cube, &tool, SMLIB_BOOLEAN_SUBTRACT, &holed) == SMLIB_OK);
+    const double back_rim[3] = {10, 20, 10};
+    const double size = 3.0;
+    smlib_brep *r = nullptr;
+    CHECK(holed != nullptr && smlib_blend(holed, SMLIB_BLEND_CHORD, back_rim, &size, 1, 0.1, &r, nullptr) != SMLIB_OK && r == nullptr);
+    smlib_brep_free(holed);
+    smlib_brep_free(cube);
+    delete bore;
+}
+
+// A run of this program as a child (tangency-labs/solidcore#1173): the corner of rounded_corner
+// rounded r2.5, either first thing in the process (`order` "first") or after the failed blend
+// above ("after"), written to `path`. 0 if the body is sound.
+int corner_child(const char *order, const char *path)
+{
+    if (std::strcmp(order, "after") == 0)
+    {
+        failed_chord_blend();
+    }
+    smlib_brep *corner = rounded_corner(2.5);
+    const bool ok = corner != nullptr && sound(corner);
+    CHECK(corner != nullptr && smlib_brep_write(corner, path, 1) == SMLIB_OK);
+    smlib_brep_free(corner);
+    return ok && failures == 0 ? 0 : 1;
+}
+
+// Runs `self` as a corner_child in `order` and returns what it wrote ("" if it failed); notes
+// whether the body it made was sound in `sound_out`.
+std::string corner_child_run(const char *self, const char *order, bool &sound_out)
+{
+    const std::string path = std::string("solidcore-1173-") + order + ".smb";
+    std::string command = std::string("\"") + self + "\" --solidcore-1173 " + order + " " + path;
+#ifdef _WIN32
+    command = "\"" + command + "\"";
+#endif
+    std::remove(path.c_str());
+    sound_out = std::system(command.c_str()) == 0;
+    std::ifstream in(path, std::ios::binary);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    std::remove(path.c_str());
+    return text;
+}
+
 } // namespace
 
-int main()
+int main(int argc, char **argv)
 {
+    if (argc == 4 && std::strcmp(argv[1], "--solidcore-1173") == 0)
+    {
+        return corner_child(argv[2], argv[3]);
+    }
+
     smlib_brep *cube = box(0, 0, 0, 20, 20, 20);
     smlib_brep *r = nullptr;
 
@@ -2954,8 +3042,13 @@ int main()
     // (the two rounds' offsets, of radii 5 - r and r - 3 about axes 2 apart, then meet only in
     // a point). No ball over r3 fits: r3.1, r4, r5 and r7 are SMLIB_ERR_NO_ROOM (r7 failed in
     // the corner's vertex, looking on the side for a rail end that is not there, with SMLib's
-    // generic error, and so did r4 and r5); r1 and r2 build and take off at least
+    // generic error, and so did r4 and r5); r1, r2, r2.5 and r2.9 build and take off at least
     // the 15 straight lengths of r^2 (1 - pi/4) below the top rounds and less than twice that.
+    // (tangency-labs/solidcore#1173: r2.5 and r2.9 came out unsound here, after the earlier
+    // blends of this run, and sound in a fresh process: the finite-difference step at a tangent
+    // point was a static, set by the first point any blend of the process computed. Run as a
+    // child first thing in a process and after a failed constant-distance blend, r2.5 must make
+    // the same body byte for byte.)
     {
         const double quarter = 1.0 - PI / 4.0;
         smlib_brep *slab = box(0, 0, 0, 60, 40, 20);
@@ -2974,7 +3067,7 @@ int main()
             smlib_brep *corner = nullptr;
             CHECK(smlib_fillet(both, up, 3, 0.1, radius, &corner, nullptr) == SMLIB_ERR_NO_ROOM && corner == nullptr);
         }
-        for (double radius : {1.0, 2.0})
+        for (double radius : {1.0, 2.0, 2.5, 2.9})
         {
             smlib_brep *corner = nullptr;
             CHECK(smlib_fillet(both, up, 3, 0.1, radius, &corner, nullptr) == SMLIB_OK);
@@ -2988,6 +3081,14 @@ int main()
         smlib_brep_free(both);
         smlib_brep_free(top);
         smlib_brep_free(slab);
+        bool first_sound = false;
+        bool after_sound = false;
+        const std::string first = corner_child_run(argv[0], "first", first_sound);
+        const std::string after = corner_child_run(argv[0], "after", after_sound);
+        std::printf("corner r2.5 in a fresh process: sound %d, after a failed chord blend: sound %d, same body %d\n", first_sound, after_sound,
+                    !first.empty() && first == after);
+        CHECK(first_sound && after_sound);
+        CHECK(!first.empty() && first == after);
     }
 
     // tangency-labs/solidcore#419: an offset surface evaluated beyond its

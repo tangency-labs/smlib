@@ -3924,11 +3924,13 @@ int iDebugLevel = DebugLevel();
        SER( ComputeUVVectors( rTsectPnt ));
 
       // Take a small forward step.
-      // (Use a static value, as a debugging aid.)
-static double sdStaticStep =   (rTsectPnt.m_ePointType == SM_IP_TANGENT_POINT)
+      // SolidCraft change: chosen for this point. It was a function-local static, set once by the
+      // first point the process computed here: every later point took that point's step (a
+      // tangent point 1e-5 after an earlier crossing point, a crossing point 1e-3 after an
+      // earlier tangent point), and a blend's result depended on the blends before it.
+      double dStep = (rTsectPnt.m_ePointType == SM_IP_TANGENT_POINT)
                      ? 1.0e-3
                      : 1.0e-5;  // (1e-8 is too small: noise)
-      double dStep = sdStaticStep;
 
       // Take a step.
       // Note: won't find a step value when stepping off a surface domain boundary.
