@@ -28453,14 +28453,14 @@ SmStatus SmBrep::TestClosureSplitRegion
   SmNewMarkAndLock sMarkLock((SmContext *)GetContext()) ; // increments newly locked mark
   SmMarkType       eMarkType = sMarkLock.GetMarkType() ;
 
-  // See if pFUStart is connected to a set of closed Faceuse neighbors
-  // side effect: increment sMarkLock
+  // See if pFUStart is connected to a set of closed Faceuse neighbors.
+  // Searched from both sides at once: a face that does not split the region finds its mate
+  // near it, where a walk from one side may cross the whole shell first (once per new face
+  // in a boolean, so quadratic in the shell's size). Nothing below reads its marks.
   SmTopologyTraverser sTT;
   SmBoolean bIsClosed;
-  SER( sTT.ClosureTraversal(pFUStart,     // in : target faceuse (gets marked)
-                            bIsClosed,    // out: TRUE=faceuse connects to closed faceuse set, FALSE=doesn't
-                            NULL,         // out: List of all connected faces (get marked), NULL to ignore.
-                            sMarkLock)) ; // in : specify mark for target objects (incremented)
+  SER( sTT.ClosureTraversalFromBothSides(pFUStart,     // in : target faceuse
+                                         bIsClosed)) ; // out: TRUE=faceuse connects to closed faceuse set, FALSE=doesn't
 
   // no work - pFUStart is not connected to a set of closed Faceuse neighbors
   if(bIsClosed == FALSE )
