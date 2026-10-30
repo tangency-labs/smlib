@@ -7037,92 +7037,15 @@ iDebugLevel = DebugLevel();
       pNewFaceFV->SetPointClass( SM_PC_FACE, pCommonFace );
       m_vVertices.Add( pNewFaceFV );
 
-      // mixed convexity case
-      if(   bMixedConvexity 
-         && !m_bBevel 
-         && dAngleDeg > 5.0 )
-        {
-          // Mixed-convexity 3x2 corner, will create a 3-sided corner face.
-          m_bBlending = TRUE;
-
-          // It will just be straight across from where the other rail
-          // hits the side edge (at pNewSideFV):
-          pNewFaceFV->SetFilletVertexType( SM_FV_MATE );
-          pNewFaceFV->SetMate( 0, pNewSideFV );
-          pNewSideFV->SetMate( 0, pNewFaceFV );
-
-          // Make a FilletEdgeuse and a FilletVertexuse to connect 
-          // a given filletVertex to one of this FilletGeom's Fillet Rails.
-          SER( pFilletGeom1->MakeRailEdgeuse( m_pPseudoBrep, lRailIndex, pNewFaceFV, pNewEdgeuse ));
-
-          // pNewFaceFV, in this case, will not be where the two rails meet
-          // in the common face, because they're not going to meet, we're
-          // going to put in a 3-sided face in between them.
-          // pNewFaceFV will be where one rail meets the 3-sided face,
-          // and we'll need another vertex for the other rail meeting it,
-          // plus two new edges.
-
-          SmFilletVertex * pNewFaceFV2 = new (m_pPseudoBrep) SmFilletVertex(this);
-          m_vVertices.Add( pNewFaceFV2 );
-          pNewFaceFV2->SetPointClass( SM_PC_FACE, pCommonFace ) ;
-
-          // It will just be straight across from where the other rail
-          // hits the side edge (at pNewSideFV):
-          pNewFaceFV2->SetFilletVertexType( SM_FV_MATE );
-          pNewFaceFV2->SetMate( 0, pNewSideFV );
-          pNewSideFV-> SetMate( 1, pNewFaceFV2 );
-
-          // Make a FilletEdgeuse and a FilletVertexuse to connect 
-          // a given filletVertex to one of this FilletGeom's Fillet Rails.
-          SER( pFilletGeom2->MakeRailEdgeuse( m_pPseudoBrep, lOtherRailIndex, pNewFaceFV2, pNewEdgeuse ));
-
-          // Make Fillet Edge: a straight-across rib to end filletGeom1.
-          SmFilletEdge * pNewRibFilEdge = NULL;
-          SER( SmFilletEdge::MakeFilletEdge( m_pPseudoBrep,  // in : target Brep to receive new topology objects
-                                             pNewSideFV,     // in : start of new FilletEdge
-                                             pNewFaceFV,     // in : end   of new FilletEdge
-                                             pNewRibFilEdge, // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                             this ));        // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                             //      NULL to ignore, default:[NULL]
-
-          pNewRibFilEdge->SetFilletEdgeType( SM_FE_CROSS_SECTION );
-          SmFilletEdgeuse * pPrimEU      = (SmFilletEdgeuse*)pNewRibFilEdge->GetPrimaryEdgeuse();
-          SmFilletGeom    * pFilletGeom3 = pFilSolver1->GetFirstFilletGeom();
-          pPrimEU->SetFilletGeom( pFilletGeom3 );
-          m_vEdges.Add( pNewRibFilEdge );
-
-          // Make the 3-sided face's third edge.
-          // This connects the two rails, and will lie inside the common face.
-          // (Well, eventually it will separate the common face from the new 3-sided face.)
-          SER( SmFilletEdge::MakeFilletEdge( m_pPseudoBrep,   // in : target Brep to receive new topology objects
-                                             pNewFaceFV,      // in : start of new FilletEdge
-                                             pNewFaceFV2,     // in : end   of new FilletEdge
-                                             pNewRibFilEdge,  // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                             this ));         // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                              //      NULL to ignore, default:[NULL]
-
-          pNewRibFilEdge->SetFilletEdgeType( SM_FE_RAIL_RAIL_INTERPOLATION );
-          pNewRibFilEdge->SetOriginalFace( pCommonFace );
-          m_vEdges.Add( pNewRibFilEdge );
-
-          // Make a straight-across rib to end filletGeom2.
-          SER( SmFilletEdge::MakeFilletEdge( m_pPseudoBrep,   // in : target Brep to receive new topology objects
-                                             pNewFaceFV2,     // in : start of new FilletEdge
-                                             pNewSideFV,      // in : end   of new FilletEdge
-                                             pNewRibFilEdge,  // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                             this ));         // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                              //      NULL to ignore, default:[NULL]
-
-          pNewRibFilEdge->SetFilletEdgeType( SM_FE_CROSS_SECTION );
-          pPrimEU                     = (SmFilletEdgeuse*)pNewRibFilEdge->GetPrimaryEdgeuse();
-          SmFilletGeom * pFilletGeom4 = pFilSolver2->GetFirstFilletGeom();
-          pPrimEU->SetFilletGeom( pFilletGeom4 );
-          m_vEdges.Add( pNewRibFilEdge );
-
-          // all done
-          return SM_SUCCESS;
-
-        }  // end mixed-concavity case branch.
+      // SolidCraft change: where the common face's corner between the two filleted edges is
+      // concave (mixed convexity: a pocket's rim at its sharp corner, a boss's root at its sharp
+      // corner, the side edge not filleted), the two blends are mitred, as at a corner of
+      // uniform convexity: each runs on past the corner until it meets the other, their rails
+      // meeting in the common face and on the side edge (the owner's ruling, 2026-10-30). Upstream
+      // swept a 3-sided face round the side edge here, between ribs straight across from where
+      // the rails meet the side edge. Where the rails meet the side edge at two places (blends
+      // of different heights there), AdjustTopology joins them along the side face, as for any
+      // bevel. Edges meeting at less than 5 degrees still blend (below).
 
       //
       if (   bIsTangentCase
