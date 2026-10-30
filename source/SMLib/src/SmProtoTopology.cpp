@@ -22,6 +22,11 @@
 
 #include <SmProtoTopology.h>
 #include <SmTools.h>
+#include <SmCircle.h>
+#include <SmEllipse.h>
+#include <SmLine.h>
+
+#include <cmath>
 
 #include <algorithm>
 #include <vector>
@@ -1471,6 +1476,98 @@ SmBoolean SmEdgeDefinition::IsInteriorPoint(
 
 
 /*******************************************************************//**
+PURPOSE: static helper: the continued NURB of an analytic curve made that
+         analytic curve again.
+
+USAGE NOTES---- SolidCraft fork, for sm_CreateExactlyExtendedCurve. A line, a
+  circle and an ellipse are SmBSplineCurve subclasses that carry their NURB;
+  continuing that NURB leaves it on the same line or conic, so the continued
+  curve is the same kind: a circle or ellipse keeps its frame, radii and
+  inside-out sense, its angular domain carried on to the new end; a line runs
+  between the continued ends over the same parameter interval. The new curve
+  takes crNurb as its NURB, so its parameter is the continued one, which the
+  edge's interval and UV curves share; it must evaluate as crNurb does at its
+  ends and inside, or this fails (rpNew NULL), as it does for any other
+  analytic kind (a parabola, a hyperbola) and an inside-out line.
+***********************************************************************/
+static SmStatus sm_AnalyticOfContinuedNurb
+ (const SmContext      &crContext, // in : context for the new curve
+  const SmCurve        *cpCurve,   // in : the analytic curve that was continued
+  SmBoolean             bAtEnd,    // in : TRUE = its end was continued, FALSE = its start
+  const SmBSplineCurve &crNurb,    // in : its continued NURB
+  SmCurve             *&rpNew)     // out: the analytic curve over crNurb, owned by the caller
+{
+  rpNew = NULL;
+  SmExtent1d sNat = crNurb.GetNaturalInterval();
+  SmPoint3d  sStart, sEnd;
+  SER( crNurb.EvaluatePoint( sNat.GetMin(), sStart)) ;
+  SER( crNurb.EvaluatePoint( sNat.GetMax(), sEnd)) ;
+
+  SmCurve *pKind = NULL;
+  if(cpCurve->IsKindOf( SmEllipse_TYPE) )
+    {
+      const SmEllipse        *pE   = static_cast<const SmEllipse *>( cpCurve) ;
+      const SmAxis2Placement &rPos = pE->GetPosition();
+      SmBoolean  bInsideOut = pE->GetInsideOut();
+      SmExtent1d sDom       = pE->GetSTEPInterval();
+      // The angular end the continued NURB end is: the max when the NURB runs the angle's way.
+      SmBoolean  bMax = ( bAtEnd != bInsideOut ) ;
+      SmVector3d sD   = ( bAtEnd ? sEnd : sStart ) - rPos.GetOriginRef();
+      double dAng   = SM_DEGREES( std::atan2( sD.Dot( rPos.GetYAxisRef()) / pE->GetYRadius(), sD.Dot( rPos.GetXAxisRef()) / pE->GetXRadius())) ;
+      double dOld   = bMax ? sDom.GetMax() : sDom.GetMin();
+      double dDelta = std::remainder( dAng - dOld, 360.0) ;
+      if(bMax ? !(dDelta > 0.0) : !(dDelta < 0.0) )
+        { return SM_ERR; }
+      SmExtent1d sNewDom = sDom;
+      if(bMax ) { SER( sNewDom.SetMax( dOld + dDelta)) ; }
+      else      { SER( sNewDom.SetMin( dOld + dDelta)) ; }
+      SmExtent1d sMaxDom = pE->GetMaxAnalyticDomain();
+      if(   !(sNewDom.GetLength() <= 360.0)
+         || !(sNewDom.GetMin() >= sMaxDom.GetMin()) || !(sNewDom.GetMax() <= sMaxDom.GetMax()) )
+        { return SM_ERR; }
+      if(cpCurve->IsKindOf( SmCircle_TYPE) )
+        {
+          pKind = new (crContext) SmCircle( rPos.GetOriginRef(), rPos.GetXAxisRef(), rPos.GetYAxisRef(), sNewDom,
+                                            pE->GetXRadius(), cpCurve->GetDim(), &crContext, &crNurb, bInsideOut) ;
+        }
+      else
+        {
+          pKind = new (crContext) SmEllipse( rPos.GetOriginRef(), rPos.GetXAxisRef(), rPos.GetYAxisRef(), sNewDom,
+                                             pE->GetXRadius(), pE->GetYRadius(), cpCurve->GetDim(), &crContext, &crNurb, bInsideOut) ;
+        }
+    }
+  else if(cpCurve->IsKindOf( SmLine_TYPE) && !static_cast<const SmLine *>( cpCurve)->GetInsideOut() )
+    {
+      SmLine *pLine = NULL;
+      SER( SmLine::CreateLineSegment( crContext, cpCurve->GetDim(), sStart, sEnd, pLine, &sNat)) ;
+      pKind = pLine;
+    }
+  else
+    { return SM_ERR; }
+  NER( pKind) ;
+  SmObjDelete sCleanKind( pKind) ;
+
+  // The same curve over the same parameter, to round-off.
+  SmExtent1d sKindNat = pKind->GetNaturalInterval();
+  if(!SM_ARE_SAME( sKindNat.GetMin(), sNat.GetMin()) || !SM_ARE_SAME( sKindNat.GetMax(), sNat.GetMax()) )
+    { return SM_ERR; }
+  double dZero = ANALYTIC_TOL_SCALE * SM_EFF_ZERO * (1.0 + smos_Max( sStart.GetMaxDimension(), sEnd.GetMaxDimension())) ;
+  for(int ii=0; ii<=8; ii++)
+    {
+      double    dT = sNat.Evaluate( ii / 8.0) ;
+      SmPoint3d sOnNurb, sOnKind;
+      SER( crNurb.EvaluatePoint( dT, sOnNurb)) ;
+      SER( pKind->EvaluatePoint( dT, sOnKind)) ;
+      if(!(sOnNurb.DistanceBetween( sOnKind) <= dZero) )
+        { return SM_ERR; }
+    }
+  sCleanKind.Clear();
+  rpNew = pKind;
+  return SM_SUCCESS;
+
+} // end static sm_AnalyticOfContinuedNurb
+
+/*******************************************************************//**
 PURPOSE: static helper: a copy of a clamped B-spline curve whose end span is
          continued exactly, its polynomial unchanged, to a new end parameter.
 
@@ -1481,7 +1578,8 @@ USAGE NOTES---- SolidCraft fork. The end span is made a Bezier segment (its
   rational curve keeps its shape too). Nothing else changes: the curve is the
   same over its old interval and only that one span grows. Fails (leaving
   rpNew NULL) for any other curve kind, an unclamped or trimmed B-spline, or a
-  new end that is not outside the old one.
+  new end that is not outside the old one. A line, circle or ellipse comes
+  back as that kind over the continued NURB (sm_AnalyticOfContinuedNurb).
 ***********************************************************************/
 static SmStatus sm_CreateExactlyExtendedCurve
  (const SmContext &crContext, // in : context for the new curve
@@ -1577,6 +1675,16 @@ static SmStatus sm_CreateExactlyExtendedCurve
   SER( SmBSplineCurve::CreateCanonical( crContext, pCopy->GetDim(), lDeg, sPts, SM_CF_UNSPECIFIED, sMults, sKnots,
                                         SM_KT_UNSPECIFIED, bRational ? &sWts : NULL, NULL, pNew )) ;
   NER( pNew) ;
+  SmObjDelete sCleanNew( pNew) ;
+  // An analytic curve (a line, circle or ellipse) continued is that curve still: the same kind
+  // over the continued NURB (sm_AnalyticOfContinuedNurb), not a plain B-spline in its place.
+  if(pCrv->GetType() != SmBSplineCurve_TYPE )
+    {
+      SER( sm_AnalyticOfContinuedNurb( crContext, pCrv, bAtEnd, *pNew, rpNew)) ;
+      NER( rpNew) ;
+      return SM_SUCCESS;
+    }
+  sCleanNew.Clear();
   rpNew = pNew;
   return SM_SUCCESS;
 
