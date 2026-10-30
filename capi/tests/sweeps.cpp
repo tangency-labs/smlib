@@ -513,6 +513,42 @@ int main()
             expect(rule == SMLIB_DRAFT_CORNER_CURVATURE ? "drafted slot closes (curvature)" : "drafted slot closes (tangent)", s, &b, v, 1e-9);
         }
     }
+    // A plus sign drafted 10 degrees over 2, outward and inward, by each corner rule: arms 1
+    // wide reaching 3.5 from the centre, counter-clockwise about +z. Its sides at the reflex
+    // corners are long: the sum of its consecutive sides' cross products points down (8 convex
+    // corners of 1 x 3, 4 reflex ones of 3 x 3), and its walls leaned against the draft (an
+    // outward draft narrowed it, as it narrowed the letter t of a text). The section at height z
+    // is the plus offset by e = z tan 10 outward (-e inward): two crossing bars 1 + 2e by 7 + 2e.
+    // The corners the offset opens (the 8 convex ones outward, the 4 reflex ones inward) are
+    // mitred (curvature, tangent) or closed by an arc of radius e about the corner (round), which
+    // takes (1 - pi/4) e^2 off the section at a convex corner and adds it at a reflex one. The
+    // area is quadratic in z, so Simpson's rule is exact.
+    {
+        List plus;
+        plus.polygon({-0.5, -3.5, 0, 0.5, -3.5, 0, 0.5, -0.5, 0, 3.5, -0.5, 0, 3.5, 0.5, 0, 0.5, 0.5, 0,
+                      0.5, 3.5, 0, -0.5, 3.5, 0, -0.5, 0.5, 0, -3.5, 0.5, 0, -3.5, -0.5, 0, -0.5, -0.5, 0});
+        const double tt = std::tan(10.0 * PI / 180.0);
+        const char *rules[3] = {"curvature", "tangent", "round"};
+        const int32_t rule_ids[3] = {SMLIB_DRAFT_CORNER_CURVATURE, SMLIB_DRAFT_CORNER_TANGENT, SMLIB_DRAFT_CORNER_ROUND};
+        for (double out : {1.0, -1.0})
+        {
+            for (int r = 0; r < 3; r++)
+            {
+                double rounded = rule_ids[r] == SMLIB_DRAFT_CORNER_ROUND ? (out > 0.0 ? -8.0 : 4.0) * (1.0 - PI / 4.0) : 0.0;
+                auto area = [&](double z)
+                {
+                    double e = out * z * tt, w = 1.0 + 2.0 * e;
+                    return 2.0 * w * (7.0 + 2.0 * e) - w * w + rounded * e * e;
+                };
+                double v = 2.0 / 6.0 * (area(0.0) + 4.0 * area(1.0) + area(2.0));
+                char name[64];
+                std::snprintf(name, sizeof name, "drafted plus %s (%s)", out > 0.0 ? "outward" : "inward", rules[r]);
+                b = nullptr;
+                expect(name, smlib_extrude(plus.kinds.data(), plus.nk(), plus.reals.data(), plus.nr(), Z, 2.0, -out * 10.0 * PI / 180.0, rule_ids[r], 1, &b, nullptr), &b, v,
+                       1e-8);
+            }
+        }
+    }
 
     // Revolutions about z of a profile in the xz plane: a square off the axis (a ring), a
     // quarter turn of it, and a half disc on the axis (a sphere).
