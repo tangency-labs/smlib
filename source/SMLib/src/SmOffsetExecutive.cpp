@@ -145,7 +145,8 @@ NOTES: SolidCraft fork. A planar B-spline patch (such as a bilinear
    normal the same way, over a domain that holds the face, and its UV trim
    curves are made anew from its edges (SmBrep::ReplaceSurface). A face on
    a plane already, or on a surface that is not planar (its control points
-   off one plane), is left as it is.
+   off one plane), is left as it is. Its seam, where its surface closed
+   round on itself, is removed.
 ***********************************************************************/
 static SmStatus sm_PutPlanarFaceOnItsPlane
   (const SmContext & crContext,   // in : context for the new plane
@@ -189,11 +190,27 @@ static SmStatus sm_PutPlanarFaceOnItsPlane
   double dMargin = smos_Max(dUMax - dUMin, dVMax - dVMin);
   SmExtent2d sDomain(dUMin - dMargin, dVMin - dMargin, dUMax + dMargin, dVMax + dMargin);
 
+  // A surface that closes round on itself (the wall between a circle and its offset about the
+  // same axis: a flat ring) bounds the face along its seam too, an edge both of whose uses are in
+  // the face's one loop. On the plane that edge bounds nothing, a slit through the ring: it goes
+  // (SmBrep::DeleteEdge splits the loop in two, the ring's outer and inner circles).
+  SmTArray<SmEdge*> sSeams;
+  {
+    SmTArray<SmEdge*> sEdges;
+    pFace->GetEdges(sEdges);
+    for (ULONG ee=0; ee<sEdges.GetSize(); ee++)
+      {
+        if (sEdges[ee]->IsSeam(*pSurface)) { sSeams.Add(sEdges[ee]); }
+      }
+  }
+
   SmPlane *pPlane = new (crContext) SmPlane(sOrigin, sXAxis, sYAxis, SmVector2d(1.0, 1.0), sDomain, &crContext);
   NER(pPlane);
   SmStatus eStat = pPlane->MakeNurb();
   if (eStat != SM_SUCCESS) { delete pPlane; SER(eStat); }
   SER(rBrep.ReplaceSurface(pFace, pPlane, FALSE, NULL, TRUE));
+  for (ULONG ee=0; ee<sSeams.GetSize(); ee++)
+    { SER(rBrep.DeleteEdge(sSeams[ee])); }
   return SM_SUCCESS;
 
 } // end sm_PutPlanarFaceOnItsPlane
@@ -468,19 +485,27 @@ SmStatus SmOffsetExecutive::ShellBrep
                   { vMerging.push_back(sEdgeFaces[ff]); }
               }
           }
-        if (!vMerging.empty())
-          {
-            // A wall is the ruled surface between a lamina edge and its offset, over its whole
-            // domain: a planar wall that is not a parallelogram (along one side of a corner the
-            // edge and its offset differ in length) is a bilinear patch, not a plane, and the
-            // merge would extend it over its neighbour, where the neighbour's straight edges are
-            // curves in its parameters. Each such wall goes onto its plane first, where they are
-            // straight, so the merged face is exact.
-            SmTemporaryChangeValue<SmBoolean> sEditing(pBrepShell->m_bEditingEnabled, TRUE);
-            for (size_t ff=0; ff<vMerging.size(); ff++)
-              { SER_DELETE(sm_PutPlanarFaceOnItsPlane(crContext, *pBrepShell, vMerging[ff]), pBrepShell); }
-            SER_DELETE(pBrepShell->RemoveTopologicalEdgesAndVertices(&sKeepEdges, &sKeepVertices), pBrepShell);
-          }
+        // A wall is the ruled surface between a lamina edge and its offset, over its whole domain.
+        // Where the two lie in one plane the wall is flat, but not a plane: between a line and
+        // its offset that is not a parallelogram (along one side of a corner the edge and its
+        // offset differ in length) a bilinear patch, between a circle and its offset about the
+        // same axis (a cylinder's wall thickened: its end rings) a surface of revolution of the
+        // line between them (SmSurfOfRevolution). Every such wall goes onto its plane, as SMLib's
+        // own flat faces are planes (and a merge would extend a bilinear patch over its
+        // neighbour, where the neighbour's straight edges are curves in its parameters; on the
+        // plane they are straight, so the merged face is exact).
+        {
+          SmTemporaryChangeValue<SmBoolean> sEditing(pBrepShell->m_bEditingEnabled, TRUE);
+          SmTArray<SmFace*> sFaces;
+          pBrepShell->GetFaces(sFaces);
+          for (ULONG ff=0; ff<sFaces.GetSize(); ff++)
+            {
+              if (sWalls.count(sFaces[ff]) > 0)
+                { SER_DELETE(sm_PutPlanarFaceOnItsPlane(crContext, *pBrepShell, sFaces[ff]), pBrepShell); }
+            }
+          if (!vMerging.empty())
+            { SER_DELETE(pBrepShell->RemoveTopologicalEdgesAndVertices(&sKeepEdges, &sKeepVertices), pBrepShell); }
+        }
       }
 
       rpShellBrep = pBrepShell;

@@ -21,6 +21,7 @@
 #include <SmFace.h>
 #include <SmFaceuse.h>
 #include <SmFilletExecutive.h>
+#include <SmLoop.h>
 #include <SmOffsetGeometryCreation.h>
 #include <SmOffsetSurface.h>
 #include <SmPlane.h>
@@ -4575,6 +4576,55 @@ int main()
             }
             smlib_brep_free(sheet);
         }
+    }
+
+    // Rig case surfaces/cov-thicken-cylinder-sheet-symmetric-tube: SolidCraft's cylinder wall,
+    // radius 10 and 20 high (tests/data/cylinder-sheet-r10.txt, one face on a cone of semi-angle
+    // 0, as SolidCraft hands it over), thickened 2: a tube, 4 faces, its ends flat rings. Each end
+    // is the wall between the sheet's circle and its offset, which lie in one plane; it came back
+    // a surface of revolution of the line between them (SmSurfOfRevolution), which SolidCraft
+    // reads as a B-spline. Such a wall is now on its plane (SmPlane), bounded by its two circles
+    // (its seam, which the closed surface needed, gone). Symmetric, the tube is r 9 to
+    // 11: 800 pi; by +2, r 10 to 12: 880 pi; by -2, r 8 to 10: 720 pi.
+    {
+        smlib_flat *f = nullptr;
+        smlib_brep *sheet = nullptr;
+        CHECK(smlib_flat_read(SMLIB_TEST_DATA "/cylinder-sheet-r10.txt", &f) == SMLIB_OK && smlib_brep_import(f, &sheet) == SMLIB_OK);
+        smlib_flat_free(f);
+        struct Thicken
+        {
+            double t;
+            int symmetric;
+            double volume;
+        };
+        const Thicken cases[] = {{2.0, 1, 800.0 * PI}, {2.0, 0, 880.0 * PI}, {-2.0, 0, 720.0 * PI}};
+        for (const Thicken &c : cases)
+        {
+            CHECK(sheet != nullptr && smlib_thicken(sheet, c.t, c.symmetric, &r) == SMLIB_OK);
+            if (r == nullptr)
+            {
+                continue;
+            }
+            SmTArray<SmFace *> faces;
+            r->p->GetFaces(faces);
+            int planes = 0, round = 0;
+            for (ULONG i = 0; i < faces.GetSize(); i++)
+            {
+                const SmSurface *s = faces[i]->GetSurface();
+                // a flat ring on its plane is bounded by its two circles, no seam between them
+                SmTArray<SmLoop *> loops;
+                faces[i]->GetLoops(loops);
+                planes += s->IsKindOf(SmPlane_TYPE) && loops.GetSize() == 2 ? 1 : 0;
+                round += s->IsKindOf(SmCone_TYPE) || s->IsKindOf(SmCylinder_TYPE) ? 1 : 0;
+            }
+            double v = volume_of(r);
+            std::printf("cylinder sheet thickened %+g%s: %lu faces, %d planes, %d cylinders, volume %.9f\n", c.t,
+                        c.symmetric ? " symmetric" : "", static_cast<unsigned long>(faces.GetSize()), planes, round, v);
+            // (to the volume's own accuracy for faces of revolution, 1e-9)
+            CHECK(faces.GetSize() == 4 && planes == 2 && round == 2 && near(v, c.volume, 1e-9));
+            done(r);
+        }
+        smlib_brep_free(sheet);
     }
 
     // smlib_offset_sheet of faces that close on themselves: a sphere's one face (radius 10) moved
