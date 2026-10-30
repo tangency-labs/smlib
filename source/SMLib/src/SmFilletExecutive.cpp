@@ -4359,6 +4359,73 @@ SmBoolean bDebugMe = FALSE;
 } // end SmFilletExecutive::DoPiecewiseMerge
 
 /*******************************************************************//**
+PURPOSE: SolidCraft change: marks the target's edges and faces as the
+    fillet's input (SM_AI_FILLET_INPUT) and sets rbKeep for as long as
+    it lives; then clears both.
+
+NOTES: The attribute is SM_AB_TEMP: a split, merge or copy hands it to
+    no other entity, and it is deleted with its entity.
+***********************************************************************/
+namespace
+{
+class sm_FilletInputMarks
+{
+public:
+  sm_FilletInputMarks( SmBrep * pBrep, SmBoolean & rbKeep )
+    : m_pBrep( pBrep ), m_rbKeep( rbKeep )
+  {
+    m_rbKeep = FALSE;
+    if ( m_pBrep == NULL )
+      { return; }
+    SmTArray<SmEdge*> sEdges;
+    m_pBrep->GetEdges( sEdges );
+    for ( ULONG ii=0; ii<sEdges.GetSize(); ii++ )
+      { Mark( sEdges[ii] ); }
+    SmTArray<SmFace*> sFaces;
+    m_pBrep->GetFaces( sFaces );
+    for ( ULONG ii=0; ii<sFaces.GetSize(); ii++ )
+      { Mark( sFaces[ii] ); }
+    m_rbKeep = TRUE;
+  }
+
+  ~sm_FilletInputMarks()
+  {
+    m_rbKeep = FALSE;
+    if ( m_pBrep == NULL )
+      { return; }
+    SmTArray<SmEdge*> sEdges;
+    m_pBrep->GetEdges( sEdges );
+    for ( ULONG ii=0; ii<sEdges.GetSize(); ii++ )
+      { Clear( sEdges[ii] ); }
+    SmTArray<SmFace*> sFaces;
+    m_pBrep->GetFaces( sFaces );
+    for ( ULONG ii=0; ii<sFaces.GetSize(); ii++ )
+      { Clear( sFaces[ii] ); }
+  }
+
+  sm_FilletInputMarks( const sm_FilletInputMarks & ) = delete;
+  sm_FilletInputMarks & operator=( const sm_FilletInputMarks & ) = delete;
+
+private:
+  static void Mark( SmAObject * pX )
+  {
+    if ( pX->FindAttribute( SM_AI_FILLET_INPUT ) == NULL )
+      { pX->AddAttribute( new (*pX->GetContext()) SmAttribute( SM_AI_FILLET_INPUT, SM_AB_TEMP ) ); }
+  }
+
+  static void Clear( SmAObject * pX )
+  {
+    SmAttribute * pMark = pX->FindAttribute( SM_AI_FILLET_INPUT );
+    if ( pMark != NULL )
+      { pX->RemoveAttribute( pMark ); }
+  }
+
+  SmBrep    * m_pBrep;
+  SmBoolean & m_rbKeep;
+};
+} // namespace
+
+/*******************************************************************//**
 PURPOSE: Do edge & corner filleting per users specification. Creates
     m_pFilletBrep fillet-brep first, then merges the results into 
     m_pTargetBrep original brep.
@@ -4377,20 +4444,11 @@ SmStatus SmFilletExecutive::DoFilleting
   // SolidCraft change: the clean-up after filleting removes topological edges next to the
   // faces the fillet made, never one between two of the target's own faces (the faces of a
   // sphere in patches, which it merged into a face no parameterization of theirs could carry).
-  // Booleans likewise clean up only the edges of their intersection.
-  m_sPostProcessKeptEdges.clear();
-  m_sPostProcessKeptFaces.clear();
-  if (m_pTargetBrep != NULL)
-    {
-      SmTArray<SmEdge*> sTargetEdges;
-      m_pTargetBrep->GetEdges(sTargetEdges);
-      for (ULONG ke=0; ke<sTargetEdges.GetSize(); ke++)
-        { m_sPostProcessKeptEdges.insert(sTargetEdges[ke]); }
-      SmTArray<SmFace*> sTargetFaces;
-      m_pTargetBrep->GetFaces(sTargetFaces);
-      for (ULONG kf=0; kf<sTargetFaces.GetSize(); kf++)
-        { m_sPostProcessKeptFaces.insert(sTargetFaces[kf]); }
-    }
+  // Booleans likewise clean up only the edges of their intersection. The target's edges and faces
+  // carry an SM_AI_FILLET_INPUT attribute until DoFilleting returns: it goes with its entity, and
+  // no split, merge or copy hands it on, so an entity made while filleting never carries it (a
+  // set of their addresses also took in an entity made at the address of a deleted one).
+  sm_FilletInputMarks sInputMarks(m_pTargetBrep, m_bPostProcessKeepsFilletInput);
 
   // Create m_pFilletBrep - A shell Brep containing the new Fillet Faces, 
   //  Edges, and Vertices created by filleting m_pTargetBrep Edges and Corners

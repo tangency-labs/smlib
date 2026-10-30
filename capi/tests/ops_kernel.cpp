@@ -2020,6 +2020,58 @@ int main(int argc, char **argv)
     }
     CHECK(smlib_fillet(cube, mids, 12, 0.1, 2.0, &r, nullptr) == SMLIB_OK);
     done(r);
+    // tangency-labs/solidcore#1176: the clean-up after a fillet kept the target's edges and faces
+    // by address. Filleting deletes some of them, and an edge or face it then made at a freed
+    // address passed for the target's own: BooleanPostProcess passed over it without its
+    // topological test, and so without the UV trims that test builds. The cube's 12 edges
+    // chamfered 1/sqrt(2) came out with 96 UV trims or 94 (two edgeuses without, not always the
+    // same two) as the heap lay. Run again with blocks of other sizes allocated first, some of them
+    // freed, the body written out must be the same byte for byte.
+    {
+        auto chamfered = [&]() -> std::string
+        {
+            const char *path = "solidcore-1176.smb";
+            smlib_brep *c = nullptr;
+            std::string text;
+            CHECK(smlib_chamfer(cube, mids, 12, 0.1, 1.0 / std::sqrt(2.0), &c, nullptr) == SMLIB_OK);
+            if (c != nullptr && smlib_brep_write(c, path, 1) == SMLIB_OK)
+            {
+                std::ifstream in(path, std::ios::binary);
+                text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+            }
+            std::remove(path);
+            CHECK(!text.empty());
+            done(c);
+            return text;
+        };
+        const std::string first = chamfered();
+        for (size_t layout = 1; layout <= 5; ++layout)
+        {
+            std::vector<void *> blocks;
+            for (size_t round = 0; round < layout; ++round)
+            {
+                for (size_t size = 16; size <= 1024; size += 8)
+                {
+                    blocks.push_back(std::malloc(size));
+                }
+            }
+            for (size_t i = 0; i < blocks.size(); i += layout + 1)
+            {
+                std::free(blocks[i]);
+                blocks[i] = nullptr;
+            }
+            const bool same = chamfered() == first;
+            if (!same)
+            {
+                std::fprintf(stderr, "  the chamfered cube differs after heap layout %zu\n", layout);
+            }
+            CHECK(same);
+            for (void *b : blocks)
+            {
+                std::free(b);
+            }
+        }
+    }
     const double vertical[3] = {20, 20, 10};
     smlib_brep *round = nullptr;
     CHECK(smlib_fillet(cube, vertical, 1, 0.1, 5.0, &round, nullptr) == SMLIB_OK && sound(round));
