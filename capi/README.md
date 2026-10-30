@@ -772,7 +772,9 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   over the rim: its edge along the pocket's corner edge lies on both walls' surfaces, and passes
   onto the wall that is not its own; the top's chain then ends at the rim's vertex itself (a
   sloped basin's front rim chamfered past it, solidcraft#1080, had been refused as on two
-  faces' surfaces). Refused: a round whose rail runs on into the body's
+  faces' surfaces). Where every edge of a loop of a planar face is blended (a pocket's rim
+  loop), the sheet's boundary closes on that face round the loop, and the region's face there
+  lies between the two, one inside the other (it had been refused as closing on one face). Refused: a round whose rail runs on into the body's
   material (beyond a wall: the knife edge it would leave under the wall, `SM_FILERR_NO_ROOM`,
   solidcraft#3435); a needed continuation of a non-planar surface past its domain or of a side
   edge that is not a line (`SM_FILERR_NOT_EXACT`); an overflow with a tangent rollover, a fillet

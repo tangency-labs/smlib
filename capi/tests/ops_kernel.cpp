@@ -2266,6 +2266,69 @@ void chamfer_past_a_sloped_basin_rim()
     }
 }
 
+// A loop of edges every one of which is blended, past its rim: the chamfers' boundary on the
+// face they surround closes on that face, round the loop, and the region's face there lies
+// between the two, one loop inside the other. It was refused (SMLIB_ERR_NO_ROOM, "a cliff
+// overflow's fillet boundary closes on one face").
+// - SolidCraft's equal-slope basin (solidcraft#1080, data: equal-slope-basin-1-mm-rim, the
+//   loft from (20, 1)-(80, 50) at z = 30 to (30, 11)-(70, 40) at z = 10 out of a 100 x 60 x 30
+//   slab, every wall sloping 10 over 20), its rim loop chamfered 2: the front leg runs off the
+//   1 mm rim over the slab's front face. Sliced at depth t each chamfer is a strip
+//   w(t) = d (1 - t / delta) wide beside its wall, delta = d / sqrt(1 + k^2), k = 1/2; mitred
+//   at the rim's corners, the section removed is the pocket's rectangle at t grown by w(t) on
+//   each side and clipped to y >= 0, less the rectangle: quadratic in t between delta and where
+//   the front strip crosses y = 0, so Simpson's rule is exact on each piece.
+// - A 60 x 40 x 10 plate less a 30 x 20 pocket 5 deep, its rim loop chamfered 5.5: the legs on
+//   the walls run 0.5 past the floor. Removed: 50 d^2 + (4/3) d^3 (the pocket's perimeter 100
+//   along the triangle d^2 / 2, and the four mitred corners), the groove round the floor
+//   included.
+void chamfer_of_a_rim_loop_past_its_rim()
+{
+    {
+        smlib_brep *basin = read_flat(SMLIB_TEST_DATA "/equal-slope-basin-1-mm-rim.txt"), *r = nullptr;
+        const double d = 2.0, k = 0.5, delta = d / std::sqrt(1.0 + k * k);
+        auto area = [&](double t)
+        {
+            const double w = d * (1.0 - t / delta);
+            const double x0 = 20.0 + k * t, x1 = 80.0 - k * t, y0 = 1.0 + k * t, y1 = 50.0 - k * t;
+            return (x1 - x0 + 2.0 * w) * (y1 + w - std::max(y0 - w, 0.0)) - (x1 - x0) * (y1 - y0);
+        };
+        const double crossing = (d - 1.0) / (k + d / delta);
+        double removed = 0.0;
+        for (const auto &piece : {std::array<double, 2>{0.0, crossing}, std::array<double, 2>{crossing, delta}})
+        {
+            const double a = piece[0], b = piece[1];
+            removed += (b - a) / 6.0 * (area(a) + 4.0 * area(0.5 * (a + b)) + area(b));
+        }
+        const double rim[12] = {50, 1, 30, 80, 25.5, 30, 50, 50, 30, 20, 25.5, 30};
+        const double sizes[4] = {d, d, d, d};
+        CHECK(basin != nullptr && near(volume_of(basin), 140333.333333333, 1e-10));
+        CHECK(basin != nullptr && smlib_blend(basin, SMLIB_BLEND_CHAMFER, rim, sizes, 4, 0.1, &r, nullptr) == SMLIB_OK);
+        if (r != nullptr)
+        {
+            CHECK(near(volume_of(r), volume_of(basin) - removed, 1e-8));
+            done(r);
+        }
+        smlib_brep_free(basin);
+    }
+    {
+        smlib_brep *plate = box(0, 0, 0, 60, 40, 10), *cut = box(15, 10, 5, 30, 20, 6), *pocket = nullptr, *r = nullptr;
+        CHECK(smlib_boolean(plate, cut, SMLIB_BOOLEAN_SUBTRACT, &pocket) == SMLIB_OK);
+        const double rim[12] = {30, 10, 10, 30, 30, 10, 15, 20, 10, 45, 20, 10};
+        const double d = 5.5, sizes[4] = {d, d, d, d};
+        CHECK(pocket != nullptr && smlib_blend(pocket, SMLIB_BLEND_CHAMFER, rim, sizes, 4, 0.1, &r, nullptr) == SMLIB_OK);
+        if (r != nullptr)
+        {
+            CHECK(near(volume_of(r), 21000.0 - (50.0 * d * d + 4.0 / 3.0 * d * d * d), 1e-8));
+            done(r);
+        }
+        for (smlib_brep *b : {plate, cut, pocket})
+        {
+            smlib_brep_free(b);
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 4 && std::strcmp(argv[1], "--solidcore-1173") == 0)
@@ -5598,6 +5661,7 @@ int main(int argc, char **argv)
     basin_rim_rounds_mitred_with_a_gap_at_the_corner();
     end_face_rounds_mitred_at_concave_corners();
     chamfer_past_a_sloped_basin_rim();
+    chamfer_of_a_rim_loop_past_its_rim();
 
     // SolidCraft surface.offset of a ball's one face: the face taken off as a sheet is a closed
     // shell whose regions are all voids, which smlib_offset_sheet refused as a solid
