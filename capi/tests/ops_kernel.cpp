@@ -1699,6 +1699,56 @@ std::string corner_child_run(const char *self, const char *order, bool &sound_ou
     return text;
 }
 
+// A 40 x 20 x 20 box less a cylinder r 8 along y, its axis 4 below the top (SolidCraft
+// a_curved_edge_blend_ends_in_a_face_at_an_angle): the groove's arc on the front face y = 0
+// spans 240 degrees and ends in the top at 60 degrees to it. Rounded r 0.5, the round is a torus
+// about the groove's axis. The cylinder is turned so its seam points up, out of the part: the
+// arc is one edge, an SmCircle framed on the seam with its analytic domain from 60 to 300
+// degrees, and the torus's span (the turn from the start section to the end one) had the 60
+// taken off: the torus stopped 60 degrees short of the arc's end and its end in the top found no
+// fillet surface there (1001). The round takes the section's corner (0 <= y <= r and
+// 8 <= rho <= 8 + r, outside the ball about (r, 8 + r)) at every angle where it lies in the box,
+// z = 16 + rho sin(phi) <= 20: pi + 2 asin(4 / rho) of the turn, so with
+// F(rho) = pi rho^2 / 2 + rho^2 asin(4 / rho) + 4 sqrt(rho^2 - 16) its volume is
+// the integral over y of F(8 + r - sqrt(r^2 - (y - r)^2)) - F(8), 1.8160502. The round's ends
+// in the top are intersection curves fitted within the solver's 3D tolerance (4e-5 here) of both
+// surfaces, not exact: the volume is within 1e-4 of its size of that (SMLib's is 5e-5 off).
+void groove_arc_round_ends_in_the_top()
+{
+    smlib_brep *slab = box(0, 0, 0, 40, 20, 20), *bore = cylinder(0, 0, 0, 8.0, 22.0), *along_y = nullptr, *groove = nullptr;
+    const double m[4][4] = {{0, 0, 1, 0}, {1, 0, 0, 0}, {0, 1, 0, 0}, {20, -1, 16, 1}};
+    CHECK(bore != nullptr && smlib_brep_transform(bore, m, &along_y) == SMLIB_OK);
+    CHECK(along_y != nullptr && smlib_boolean(slab, along_y, SMLIB_BOOLEAN_SUBTRACT, &groove) == SMLIB_OK);
+    const double r = 0.5, arc[3] = {20, 0, 8};
+    auto F = [](double rho) { return PI * rho * rho / 2.0 + rho * rho * std::asin(4.0 / rho) + 4.0 * std::sqrt(rho * rho - 16.0); };
+    // y = r - r sin t, t from 0 to pi/2: the corner's outer edge 8 + r - r cos t, dy = r cos t dt.
+    const int n = 20000;
+    double taken = 0.0;
+    for (int i = 0; i < n; ++i)
+    {
+        const double t = (i + 0.5) / n * PI / 2.0;
+        taken += (F(8.0 + r - r * std::cos(t)) - F(8.0)) * r * std::cos(t) * (PI / 2.0) / n;
+    }
+    smlib_brep *round = nullptr;
+    CHECK(groove != nullptr && smlib_fillet(groove, arc, 1, 0.1, r, &round, nullptr) == SMLIB_OK);
+    if (round != nullptr)
+    {
+        int64_t before[3] = {0, 0, 0}, after[3] = {0, 0, 0};
+        CHECK(smlib_brep_counts(groove, before) == SMLIB_OK && smlib_brep_counts(round, after) == SMLIB_OK);
+        CHECK(after[0] == before[0] + 1);
+        CHECK(sound(round));
+        double v0 = 0.0, v1 = 0.0;
+        CHECK(smlib_brep_volume(groove, 1e-12, &v0) == SMLIB_OK && smlib_brep_volume(round, 1e-12, &v1) == SMLIB_OK);
+        const double removed = v0 - v1;
+        std::printf("groove arc rounded r%g: removed %.9f, expected %.9f\n", r, removed, taken);
+        CHECK(near(removed, taken, 1e-4));
+    }
+    for (smlib_brep *x : {slab, bore, along_y, groove, round})
+    {
+        smlib_brep_free(x);
+    }
+}
+
 } // namespace
 
 // A disc r 15, 5 thick, one circular edge rounded r 1.5 and shelled 1.6 or 2 inward, open at one
@@ -5065,6 +5115,7 @@ int main(int argc, char **argv)
     corner_setback_eased();
     shelled_tapered_box_rounds();
     shelled_disc_round_thinner_than_the_wall();
+    groove_arc_round_ends_in_the_top();
 
     // SolidCraft surface.offset of a ball's one face: the face taken off as a sheet is a closed
     // shell whose regions are all voids, which smlib_offset_sheet refused as a solid
