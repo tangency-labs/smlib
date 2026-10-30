@@ -1241,8 +1241,10 @@ SmStatus SmFilletSolver::CalcTorusFilletGeom
   if ( dSpanAng < SM_ANG_TOL_RAD )
     { dSpanAng += 2*SM_PI; }
 
-  dEndAng = SM_RAD2DEG( dSpanAng );
-  double dAngleSpan = dEndAng - dStartAng;
+  // SolidCraft change: the span is the turn from the start section (sVec) to the end one. The
+  // start angle IsArc gives is measured from the arc's own frame (an SmCircle's analytic
+  // domain, which need not start at 0), not from sVec, so it is no part of that turn.
+  double dAngleSpan = SM_RAD2DEG( dSpanAng );
 
   // Determine if we need to extend the span even when 'm_bExtendBefore' is FALSE
   // In some cases, fillet(torus) will go beyond the start or end of the edge
