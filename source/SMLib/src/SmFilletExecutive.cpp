@@ -1995,8 +1995,10 @@ NOTES: A blend takes off each face it rolls on the band between its
    points of B's filleted edge and of B's rail nearest it, measured along
    the chord between those two (the band's section on a planar face is
    that chord), farther than ten times the solvers' tolerance from both;
-   only points of the rail on the face, and whose nearest point of B's
-   edge is inside the edge, are asked. Rails that meet (the two rounds
+   only points of the rail on the face, between the rail's end vertices
+   (the rails are not trimmed yet, and run on past the corners that end
+   them), and whose nearest point of B's edge is inside the edge, are
+   asked. Rails that meet (the two rounds
    of a full round, each as wide as half the face) are clear.
 ***********************************************************************/
 SmStatus SmFilletExecutive::BandsClearOtherRails
@@ -2006,8 +2008,9 @@ SmStatus SmFilletExecutive::BandsClearOtherRails
   // each solver's rails: the face each rolls on and its curve
   struct Rail
   {
-    SmFace  * pFace;
-    SmCurve * pCurve;
+    SmFace     * pFace;
+    SmCurve    * pCurve;
+    SmExtent1d   sKept;   // the part of the rail between its end vertices
   };
   std::vector<std::vector<Rail>> vRails( m_vFilletSolvers.GetSize() );
   double dTol = 0.0;
@@ -2027,8 +2030,30 @@ SmStatus SmFilletExecutive::BandsClearOtherRails
               SmFilletEdge * pRail = pFG->GetRail(ii);     NER(pRail);
               SmCurve      * pCurve = pRail->GetCurve();   NER(pCurve);
               SmFace       * pFace = pRail->GetOriginalFace();
-              if (pFace != NULL)
-                { vRails[i].push_back( Rail{ pFace, pCurve } ); }
+              if (pFace == NULL)
+                { continue; }
+              // The rail runs on past its ends (the surfaces are not trimmed yet), as far as a
+              // mitre at a corner needs and beyond: the band is the rail's part between the
+              // vertices that end it, where the corners have placed them (an end no corner has
+              // placed is the rail's own; a rail whose ends are one vertex is closed and whole).
+              SmFilletEdgeuse * pPrimEU = (SmFilletEdgeuse*)pRail->GetPrimaryEdgeuse();    NER(pPrimEU);
+              SmFilletEdgeuse * pMateEU = (SmFilletEdgeuse*)pPrimEU->GetMate();            NER(pMateEU);
+              SmFilletVertex  * apEnd[2] = { (SmFilletVertex*)pPrimEU->GetVertexuse()->GetVertex(),
+                                             (SmFilletVertex*)pMateEU->GetVertexuse()->GetVertex() };
+              SmExtent1d sIvl = pCurve->GetNaturalInterval();
+              double     adT[2] = { sIvl.GetMin(), sIvl.GetMax() };
+              NER(apEnd[0]); NER(apEnd[1]);
+              for (ULONG e=0; e<2 && apEnd[0] != apEnd[1]; e++)
+                {
+                  if ( !apEnd[e]->IsProcessed() )
+                    { continue; }
+                  SmBoolean bOn = FALSE;
+                  double    dT = 0.0, dDist = 0.0;
+                  SER( pCurve->DropPoint( sIvl, apEnd[e]->GetPoint(), NULL, SM_BIG_DOUBLE, NULL, bOn, dT, dDist ));
+                  if ( bOn )
+                    { adT[e] = dT; }
+                }
+              vRails[i].push_back( Rail{ pFace, pCurve, SmExtent1d( smos_Min( adT[0], adT[1] ), smos_Max( adT[0], adT[1] )) } );
             }
         }
     }
@@ -2053,7 +2078,7 @@ SmStatus SmFilletExecutive::BandsClearOtherRails
                 {
                   if ( rA.pFace != rB.pFace || !rbClear )
                     { continue; }
-                  SmExtent1d sIvlA = rA.pCurve->GetNaturalInterval();
+                  SmExtent1d sIvlA = rA.sKept;
                   SmExtent1d sIvlB = rB.pCurve->GetNaturalInterval();
                   for (ULONG s=1; s<16 && rbClear; s++)
                     {
