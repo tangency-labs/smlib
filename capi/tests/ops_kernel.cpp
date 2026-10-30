@@ -1623,6 +1623,59 @@ void knife_edge_rounds()
     smlib_brep_free(part);
 }
 
+// A block 40 x 20, 20 deep, whose top rises to a crease at x = 20, each half sloping `slope`
+// degrees, so the faces turn by twice that across it. Faces within half a degree of each other are
+// tangent, a smooth edge with nothing to round (SolidCraft's angle): the 0.3 degree crease is
+// refused. The 1 degree crease was refused too, as within 2 degrees; it is an edge the model means
+// and rounds: R2 and R20 each lie r (sec(d/2) - 1) inside the crease at its top, d its turn, and
+// remove 20 r^2 (tan(d/2) - d/2).
+void crease_rounds_from_half_a_degree()
+{
+    for (double turn : {0.3, 1.0, 3.0})
+    {
+        const double d = turn * PI / 180.0, h = 20.0 * std::tan(0.5 * d);
+        Profile p;
+        p.line(0, 0, 40, 0, 0).line(40, 0, 40, 20, 0).line(40, 20, 20, 20 + h, 0).line(20, 20 + h, 0, 20, 0).line(0, 20, 0, 0, 0);
+        smlib_brep *block = p.extrude(20.0);
+        const double crease[3] = {20, 20 + h, 10};
+        auto exact_volume = [](const smlib_brep *b)
+        {
+            double m[11] = {};
+            CHECK(smlib_brep_mass_properties(b, 1e-8, m) == SMLIB_OK);
+            return m[1];
+        };
+        auto top = [](const smlib_brep *b)
+        {
+            double lo[3] = {}, hi[3] = {};
+            CHECK(smlib_brep_bounds(b, lo, hi) == SMLIB_OK);
+            return hi[1];
+        };
+        const double before = block != nullptr ? exact_volume(block) : 0.0;
+        for (double r : {2.0, 20.0})
+        {
+            smlib_brep *round = nullptr;
+            const int32_t s = block != nullptr ? smlib_fillet(block, crease, 1, 0.01, r, &round, nullptr) : SMLIB_ERR_EMPTY;
+            if (turn < 0.5)
+            {
+                CHECK(s != SMLIB_OK && round == nullptr);
+                continue;
+            }
+            CHECK(s == SMLIB_OK && round != nullptr && sound(round));
+            if (round != nullptr)
+            {
+                const double removed = 20.0 * r * r * (std::tan(0.5 * d) - 0.5 * d), got = before - exact_volume(round);
+                const double sag = r * (1.0 / std::cos(0.5 * d) - 1.0), lowered = top(block) - top(round);
+                std::printf("crease %g deg rounded r%g: removed %.9g, expected %.9g; top lowered %.9g, expected %.9g\n", turn, r, got, removed,
+                            lowered, sag);
+                CHECK(std::fabs(lowered - sag) < 1e-9);
+                CHECK(std::fabs(got - removed) < 1e-6);
+            }
+            smlib_brep_free(round);
+        }
+        smlib_brep_free(block);
+    }
+}
+
 // The 60 x 40 x 20 box, its top edge at y = 40 rounded r5, its top edge at x = 60 rounded r3,
 // then the vertical edge at x = 60, y = 40 rounded `radius` with the edges tangent to it up into
 // the corner (main has the case), or null.
@@ -5648,6 +5701,7 @@ int main(int argc, char **argv)
     drafted_cylinders_are_cones();
     lip_swept_flush_round_a_corner();
     knife_edge_rounds();
+    crease_rounds_from_half_a_degree();
     corner_setback();
     corner_setback_open();
     setback_sections_are_exact_arcs();

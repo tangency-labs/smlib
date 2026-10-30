@@ -6736,7 +6736,7 @@ PURPOSE: A generic routine to test if an edge is filletable.
 NOTES:
    Returns Edgeuse for the edge, if filletable, else Null.
    If this Edge is Lamina, not filletable, return Null.
-   If this Edge is tangent (to within 2 degrees), not filletable, return Null.
+   If this Edge is tangent (to within half a degree), not filletable, return Null.
    If this Edge separates two Regions (e.g., manifold),
      return an Edgeuse that does not point into the infinite region,
      and has SM_OT_SAME orientation.
@@ -6802,7 +6802,7 @@ SmEdgeuse * SmEdge::GetBlendEdgeuse() const
   pEU1 = pEU0->GetRadial();
 
   // Test to determine if edge bounds two tangential faces
-  // test for smooth edge - don't fillet edges within 2 degrees of tangent
+  // test for smooth edge - don't fillet edges within half a degree of tangent
   double dTestParam = this->GetInterval().Evaluate( 0.34 );
   SmPoint3d sPnt, sPnt2;
 
@@ -6815,8 +6815,10 @@ SmEdgeuse * SmEdge::GetBlendEdgeuse() const
   SE( sBinVec.Unitize() );
   SE( sBinVec2.Unitize() );
 
-  // set max nonTangent angle to 88 degrees
-  double dMaxDotValue = smos_Cosine( 88.0*SM_PI / 180.0 );
+  // set max nonTangent angle to 89.5 degrees: faces within half a degree of each other are
+  // tangent (SolidCraft's one angle for a smooth edge). A crease of 0.5 to 2 degrees is an edge
+  // the model means (a draft meeting a flat) and is filleted like any other.
+  double dMaxDotValue = smos_Cosine( 89.5*SM_PI / 180.0 );
 
   // when 1st edgeuse surface normal is perpendicular to 2nd edgeuse binormal or 
   //      1st edgeuse binormal       is perpendicular to 2nd edgeuse surface normal
