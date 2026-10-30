@@ -15,6 +15,7 @@
 #include <SmCircle.h>
 #include <SmLine.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <functional>
@@ -306,6 +307,82 @@ int main()
             }
             pb.p = nullptr;
             delete patch;
+        }
+    }
+
+    // The tight box of a threaded part is the part's: a thread's walls (rational screw surfaces of
+    // many spans, smlib_screw_sweep) are cut off by the part's ends, so each wall's highest and
+    // lowest points are on its edges there, the wall rising past them along the helix. External:
+    // the ISO 68-1 groove of an M10x1.5 thread (as tests/sweeps.cpp cuts it) running from below
+    // z = 0 to above 12, cut from a shaft of radius 5 and 12 long: (-5, -5, 0) to (5, 5, 12).
+    // Internal: the groove of the M10x1.5 nut thread (P/8 wide at the major radius, widening by
+    // 2 tan 30 per unit of radius inwards) cut into the bore of radius 4.3 of a 20 x 20 x 8 block:
+    // the block's box.
+    {
+        auto polygon = [](const std::vector<double> &rz, std::vector<int64_t> &kinds, std::vector<double> &reals)
+        {
+            const size_t n = rz.size() / 2;
+            for (size_t i = 0; i < n; ++i)
+            {
+                const size_t j = (i + 1) % n;
+                kinds.push_back(SMLIB_CURVE_LINE);
+                reals.insert(reals.end(), {rz[2 * i], 0.0, rz[2 * i + 1], rz[2 * j], 0.0, rz[2 * j + 1]});
+            }
+        };
+        const double p = 1.5, h = p * std::sqrt(3.0) / 2.0, slope = std::tan(PI / 6.0), tol = p * 1e-4;
+        const double O[3] = {0, 0, 0}, Z[3] = {0, 0, 1};
+        struct Threaded
+        {
+            const char *name;
+            bool external;
+            std::vector<double> rz;
+            double turns;
+            double lo[3], hi[3];
+        };
+        const double r0 = 5.0 - 5.0 * h / 8.0, r1 = 5.0 + 0.05 * p, w0 = p / 8.0, w1 = (p / 4.0 + 2.0 * (r1 - r0) * slope) / 2.0;
+        const double ri = 4.2, ro = 5.0, wi0 = p / 16.0, wi1 = wi0 + (ro - ri) * slope;
+        const Threaded parts[] = {
+            {"M10x1.5 shaft 12", true, {r0, -p - w0, r1, -p - w1, r1, -p + w1, r0, -p + w0}, 15.0 / p, {-5, -5, 0}, {5, 5, 12}},
+            {"M10x1.5 nut 8", false, {ri, -p - wi1, ro, -p - wi0, ro, -p + wi0, ri, -p + wi1}, 11.0 / p, {-10, -10, 0}, {10, 10, 8}},
+        };
+        for (const Threaded &t : parts)
+        {
+            std::vector<int64_t> kinds;
+            std::vector<double> reals;
+            polygon(t.rz, kinds, reals);
+            smlib_brep *groove = nullptr, *part = nullptr, *cut = nullptr;
+            CHECK(smlib_screw_sweep(kinds.data(), static_cast<int64_t>(kinds.size()), reals.data(), static_cast<int64_t>(reals.size()), O, Z, p,
+                                    t.turns, tol, &groove) == SMLIB_OK);
+            if (t.external)
+            {
+                CHECK(smlib_make_cylinder(O, 5.0, 12.0, &part) == SMLIB_OK);
+            }
+            else
+            {
+                smlib_brep *block = nullptr, *bore = nullptr;
+                const double corner[3] = {-10, -10, 0}, size[3] = {20, 20, 8}, below[3] = {0, 0, -1};
+                CHECK(smlib_make_box(corner, size, &block) == SMLIB_OK);
+                CHECK(smlib_make_cylinder(below, 4.3, 10.0, &bore) == SMLIB_OK);
+                CHECK(block != nullptr && bore != nullptr && smlib_boolean(block, bore, SMLIB_BOOLEAN_SUBTRACT, &part) == SMLIB_OK);
+                smlib_brep_free(block);
+                smlib_brep_free(bore);
+            }
+            CHECK(groove != nullptr && part != nullptr && smlib_boolean(part, groove, SMLIB_BOOLEAN_SUBTRACT, &cut) == SMLIB_OK && cut != nullptr);
+            if (cut != nullptr)
+            {
+                double lo[3], hi[3];
+                const auto start = std::chrono::steady_clock::now();
+                CHECK(smlib_brep_bounds(cut, lo, hi) == SMLIB_OK);
+                const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+                std::printf("%s: box (%.9f %.9f %.9f) to (%.9f %.9f %.9f) in %.2f s\n", t.name, lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], secs);
+                for (int i = 0; i < 3; ++i)
+                {
+                    CHECK(std::fabs(lo[i] - t.lo[i]) < 1e-6 && std::fabs(hi[i] - t.hi[i]) < 1e-6);
+                }
+            }
+            smlib_brep_free(groove);
+            smlib_brep_free(part);
+            smlib_brep_free(cut);
         }
     }
 
