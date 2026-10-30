@@ -1134,6 +1134,19 @@ SmStatus SmFilletSolver::CalcTorusFilletGeom
       sm_TurnIntoHalfPlane( sAxisPnt, sUnitAxis, sEdgeStart, dCenterTol, sP1 );
     }
 
+  // SolidCraft change: a rail point within the tolerance of the axis turns round it in a circle
+  // smaller than the tolerance, a point: the rail collapses onto the axis (a round along an
+  // earlier round's end arc of the ball's own radius) and the surface is singular there. The
+  // input's residues (1e-11 after a sketch's 1e-10) leave the point off the axis, the surface
+  // then nearly singular, not exactly (SmSurface rule 5): the rail point is the axis's point.
+  for (SmPoint3d * pRailPnt : { &sP0, &sP1 })
+    {
+      SmVector3d sOff( *pRailPnt - sAxisPnt );
+      SmPoint3d  sOnAxis( sAxisPnt + sUnitAxis*sOff.Dot( sUnitAxis ) );
+      if ( sOnAxis.DistanceBetween( *pRailPnt ) < dCenterTol )
+        { *pRailPnt = sOnAxis; }
+    }
+
   // allocate the cross-section from the points [centerPoint, sP0, sP1]:
   // the arc about the center, or the line from rail to rail
   SmBSplineCurve * pArc = NULL ;

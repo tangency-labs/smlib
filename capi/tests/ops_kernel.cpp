@@ -1751,6 +1751,39 @@ void groove_arc_round_ends_in_the_top()
     }
 }
 
+// SolidCraft rig case fillets/report-fillet-corner-after-round-running-into-cylinder-solver-residues
+// (tests/data/corner-after-round.txt, SMLib's own r 2 round of the front top edge of a bar whose
+// sketch left residues of 1e-10 mm): the bar's vertical front left edge, its left top edge and
+// the first round's end arc on the left face rounded r 2 together. Along the end arc, of the
+// ball's own radius, the earlier round's rail collapses onto the arc's axis, and the round there
+// is a sphere patch built as a torus whose rail is a point. The residues left that rail point
+// 1e-11 off the axis and the surface nearly singular there, not exactly (smlib_brep_check: Bad
+// Surf Pole Approximation); the rail point is the axis's point. Removed: the spandrel
+// A = r^2 (1 - pi/4) along the vertical edge's 8 and the top edge's 14, and in the corner's cube
+// of side r what three rounds take there, r^3 (1 - pi/6), less the first round's 2 A:
+// 20 A + 8 (1 - pi/6).
+void corner_ball_after_a_round_is_exactly_singular()
+{
+    smlib_flat *flat = nullptr;
+    smlib_brep *bar = nullptr, *round = nullptr;
+    CHECK(smlib_flat_read(SMLIB_TEST_DATA "/corner-after-round.txt", &flat) == SMLIB_OK && smlib_brep_import(flat, &bar) == SMLIB_OK);
+    smlib_flat_free(flat);
+    const double points[9] = {0.4893, 0.0579, 4.0, 0.4893, 9.058, 10.0, 0.4893, 0.6437, 9.4142};
+    const double sizes[3] = {2.0, 2.0, 2.0};
+    CHECK(bar != nullptr && smlib_blend(bar, SMLIB_BLEND_ROUND, points, sizes, 3, 2.77, &round, nullptr) == SMLIB_OK);
+    if (round != nullptr)
+    {
+        double v0 = 0.0, v1 = 0.0;
+        CHECK(smlib_brep_volume(bar, 1e-12, &v0) == SMLIB_OK && smlib_brep_volume(round, 1e-12, &v1) == SMLIB_OK);
+        const double want = 20.0 * 4.0 * (1.0 - PI / 4.0) + 8.0 * (1.0 - PI / 6.0);
+        std::printf("corner ball after a round: removed %.9f, expected %.9f\n", v0 - v1, want);
+        CHECK(sound(round));
+        CHECK(near(v0 - v1, want, 1e-8));
+    }
+    smlib_brep_free(bar);
+    smlib_brep_free(round);
+}
+
 } // namespace
 
 // A disc r 15, 5 thick, one circular edge rounded r 1.5 and shelled 1.6 or 2 inward, open at one
@@ -5212,6 +5245,7 @@ int main(int argc, char **argv)
     shelled_tapered_box_rounds();
     shelled_disc_round_thinner_than_the_wall();
     groove_arc_round_ends_in_the_top();
+    corner_ball_after_a_round_is_exactly_singular();
 
     // SolidCraft surface.offset of a ball's one face: the face taken off as a sheet is a closed
     // shell whose regions are all voids, which smlib_offset_sheet refused as a solid
