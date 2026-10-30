@@ -3785,7 +3785,77 @@ SmBoolean SmFilletCorner::MakeAnalyticCornerSurface()
 } // end SmFilletCorner::MakeAnalyticCornerSurface
 
 /*******************************************************************//**
-PURPOSE: Create Face (and Edges and Verts) in m_pFilletBrep from 
+PURPOSE: SolidCraft change. The half of one of the corner's face curves
+   (an SM_FE_RAIL_RAIL_INTERPOLATION edge of crEdges) that a side
+   crIso of an N-sided patch's face runs along, as its own curve:
+   rpHalf, from crIso's start to its end; NULL when crIso is on no such
+   half (its ends not the half's to dTol).
+
+NOTES: N_FillNSidedHole splits each side of the hole at the middle of
+   its parameter and interpolates the halves by its surfaces, whose
+   boundaries carry the cross-derivative fields' degree and knots (a
+   quintic face curve's half came back degree 6 over 7 spans, off it to
+   tolerance). The face curve's half is the curve itself on half its
+   interval: at a corner whose rounds ease (m_dEaseDist) the face curve
+   is one quintic span (SmFilletEdge::CalcRailRailInterpolation, G2 to
+   the contact lines at both ends), so each half is one quintic span,
+   G2 to its contact line at the setback and to the other half at the
+   middle.
+***********************************************************************/
+static SmStatus sm_FaceCurveHalfAlong
+  (const SmContext               & crContext,
+   const SmTArray<SmFilletEdge*> & crEdges,
+   const SmCurve                 & crIso,
+   double                          dTol,
+   SmBSplineCurve               *& rpHalf)
+{
+  rpHalf = NULL;
+  SmExtent1d sIsoIvl = crIso.GetNaturalInterval();
+  SmPoint3d sIsoStart, sIsoEnd;
+  SER(crIso.EvaluatePoint(sIsoIvl.GetMin(), sIsoStart));
+  SER(crIso.EvaluatePoint(sIsoIvl.GetMax(), sIsoEnd));
+  for (ULONG e=0; e<crEdges.GetSize(); e++)
+    {
+      SmFilletEdge * pFE = crEdges[e];
+      if (pFE == NULL || pFE->GetFilletEdgeType() != SM_FE_RAIL_RAIL_INTERPOLATION)
+        { continue; }
+      SmBSplineCurve * pSide = SM_CAST_PTR(SmBSplineCurve, pFE->GetCurve());
+      if (pSide == NULL)
+        { continue; }
+      SmExtent1d sIvl = pSide->GetNaturalInterval();
+      double     adAt[3] = { sIvl.GetMin(), sIvl.Evaluate(0.5), sIvl.GetMax() };
+      SmPoint3d  asPnt[3];
+      for (ULONG i=0; i<3; i++)
+        { SER(pSide->EvaluatePoint(adAt[i], asPnt[i])); }
+      for (ULONG h=0; h<2; h++)
+        {
+          SmBoolean bSame =    asPnt[h].DistanceBetween(sIsoStart)   <= dTol
+                            && asPnt[h+1].DistanceBetween(sIsoEnd)   <= dTol;
+          SmBoolean bOpposite =    asPnt[h].DistanceBetween(sIsoEnd)   <= dTol
+                                && asPnt[h+1].DistanceBetween(sIsoStart) <= dTol;
+          if (!bSame && !bOpposite)
+            { continue; }
+          SmCurve * pCopy = NULL;
+          SER(pSide->Copy(crContext, pCopy));
+          SmObjDelete sCleanCopy(pCopy);
+          SmBSplineCurve * pHalf = SM_CAST_PTR(SmBSplineCurve, pCopy); NER(pHalf);
+          SmExtent1d sHalfIvl(adAt[h], adAt[h+1]);
+          SER(pHalf->Trim(sHalfIvl));
+          if (!bSame)
+            {
+              SmExtent1d sReversed;
+              SER(pHalf->ReverseParameterization(pHalf->GetNaturalInterval(), sReversed));
+            }
+          sCleanCopy.Clear();
+          rpHalf = pHalf;
+          return SM_SUCCESS;
+        }
+    }
+  return SM_SUCCESS;
+} // end sm_FaceCurveHalfAlong
+
+/*******************************************************************//**
+PURPOSE: Create Face (and Edges and Verts) in m_pFilletBrep from
          m_vSurfaces with call m_pFilletBrep->MakeFaceWithCurves()
 
 NOTES:   no Faces made when m_vSurfaces is empty
@@ -3947,6 +4017,24 @@ SmStatus SmFilletCorner::MakeFaceBrep()
       SER(pSurface->CreateIsoParametricCurve(m_crContext, SM_SP_V,sUVDomain.GetMin().y, 0.0, pNewBSC));
       s3DCurves.Add(pNewBSC);
       sCurveOrients.Add(SM_OT_OPPOSITE);
+
+      // SolidCraft change: at a corner whose rounds ease into their curvature-continuous
+      // sections (m_dEaseDist), a side of this face on one of the corner's face curves is that
+      // curve's own half (sm_FaceCurveHalfAlong), not the patch's iso-curve, which
+      // N_FillNSidedHole fits to the half only to tolerance, in its surfaces' degree and knots
+      if (m_dEaseDist > 0.0)
+        {
+          for (ULONG k=0; k<s3DCurves.GetSize(); k++)
+            {
+              SmBSplineCurve * pHalf = NULL;
+              SER(sm_FaceCurveHalfAlong(m_crContext, m_vEdges, *s3DCurves[k], m_dThisApproxTol3d, pHalf));
+              if (pHalf != NULL)
+                {
+                  delete s3DCurves[k];
+                  s3DCurves[k] = pHalf;
+                }
+            }
+        }
 
       SmRegion *pNewRegion = NULL;
       SmShell  *pNewShell = NULL;
