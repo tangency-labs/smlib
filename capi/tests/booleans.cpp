@@ -1037,8 +1037,8 @@ void hair_off_pin_at_a_seam()
 // from the other body searched for its own mate depth-first, across the shell
 // (SmBrep::TestClosureSplitRegion), every face of one body was tried against every face of the
 // other (SmTopologyIntersector::IntersectTopology), and each edge from a faceuse shell to a wire
-// moved the faceuse shell (SmBrep::MakeEdgeTopology): the join of the fours took 17 times as
-// long as the join of two sponges (60 s against 3.6 s), now 5.5 times (8.5 s, 1.55 s). The
+// moved the faceuse shell (SmBrep::MakeEdgeTopology): the join of the fours did about 16 times
+// the work of the join of two sponges, now at most about 4 times (smlib_work_counters). The
 // results are the ones those joins always gave.
 smlib_brep *moved(const smlib_brep *b, double x, double y, double z)
 {
@@ -1073,17 +1073,23 @@ void menger_sponges_row_join()
     int64_t n[3] = {0, 0, 0};
     CHECK(sponge != nullptr && smlib_brep_counts(sponge, n) == SMLIB_OK && n[0] == 7326);
 
-    // a join, timed, and its result's faces, edges, vertices and volume
-    auto join = [&](const smlib_brep *a, double shift, const int64_t want[3], double cubes, double &seconds) {
+    // a join, its work counted (and timed, for information), and its result's faces, edges,
+    // vertices and volume
+    auto join = [&](const smlib_brep *a, double shift, const int64_t want[3], double cubes, int64_t work[3]) {
         smlib_brep *b = moved(a, shift, 0, 0);
         smlib_brep *r = nullptr;
+        CHECK(smlib_work_counters_reset() == SMLIB_OK);
         const auto t0 = clock::now();
         CHECK(a != nullptr && b != nullptr && smlib_boolean(a, b, SMLIB_BOOLEAN_UNION, &r) == SMLIB_OK);
-        seconds = std::chrono::duration<double>(clock::now() - t0).count();
+        const double seconds = std::chrono::duration<double>(clock::now() - t0).count();
+        CHECK(smlib_work_counters(work) == SMLIB_OK);
         int64_t c[3] = {0, 0, 0};
         CHECK(r != nullptr && smlib_brep_counts(r, c) == SMLIB_OK);
-        std::printf("  %lld faces, %lld edges, %lld vertices in %.3f s\n", static_cast<long long>(c[0]),
-                    static_cast<long long>(c[1]), static_cast<long long>(c[2]), seconds);
+        std::printf("  %lld faces, %lld edges, %lld vertices in %.3f s; %lld closure-test faceuses, %lld face "
+                    "pairs, %lld faceuses moved\n",
+                    static_cast<long long>(c[0]), static_cast<long long>(c[1]), static_cast<long long>(c[2]), seconds,
+                    static_cast<long long>(work[0]), static_cast<long long>(work[1]),
+                    static_cast<long long>(work[2]));
         CHECK(c[0] == want[0] && c[1] == want[1] && c[2] == want[2]);
         CHECK(r != nullptr && near(volume(r), cubes, 1e-9));
         smlib_brep_free(b);
@@ -1092,14 +1098,25 @@ void menger_sponges_row_join()
     const int64_t want2[3] = {14354, 32952, 15232};
     const int64_t want4[3] = {28410, 65016, 29872};
     const int64_t want8[3] = {56522, 129144, 59152};
-    double t2 = 0.0, t4 = 0.0, t8 = 0.0;
-    smlib_brep *pair = join(sponge, 27.0, want2, 16000.0, t2);
-    smlib_brep *four = join(pair, 54.0, want4, 32000.0, t4);
-    smlib_brep *eight = join(four, 108.0, want8, 64000.0, t8);
+    int64_t w2[3] = {0, 0, 0}, w4[3] = {0, 0, 0}, w8[3] = {0, 0, 0};
+    smlib_brep *pair = join(sponge, 27.0, want2, 16000.0, w2);
+    smlib_brep *four = join(pair, 54.0, want4, 32000.0, w4);
+    smlib_brep *eight = join(four, 108.0, want8, 64000.0, w8);
     CHECK(eight != nullptr && sound(eight));
-    // Four times the body, one face of contact each time: a join near linear in the body's size
-    // takes four to six times as long as the first, a quadratic one about sixteen (17 before).
-    CHECK(t8 < 10.0 * t2);
+    // Twice the body, one face of contact each time. A join near linear in the body's size (the
+    // box search's n log n) does at most about twice the work of the join before it: 3.9 times
+    // the first join's closure-test faceuses at the eighth (20074, 39566, 77884), the same 1481
+    // face pairs (the contact is the same), no faceuse shell moved. A quadratic one does about
+    // four times the work at each doubling, sixteen at the eighth: before the box search, the
+    // closure test from both sides and the faceuse shell kept, the joins visited 5.47, 18.6 and
+    // 68.8 million faceuses, examined 53.7, 206 and 807 million face pairs and moved 3.67, 15.1
+    // and 60.1 million faceuses (12.6, 15.0 and 16.4 times the first). Work counts, not times:
+    // a ratio of times depends on the machine (10.9 on one runner where it was 5.5 on another).
+    CHECK(w2[0] > 0 && w2[1] > 0);
+    for (int i = 0; i < 3; ++i)
+    {
+        CHECK(w4[i] <= 3 * w2[i] && w8[i] <= 6 * w2[i]);
+    }
     for (smlib_brep *x : {sponge, pair, four, eight})
         smlib_brep_free(x);
 }

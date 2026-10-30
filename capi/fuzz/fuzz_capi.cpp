@@ -217,6 +217,12 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         {
             char buf[64];
             smlib_current_call(in.byte() & 1 ? buf : nullptr, static_cast<int64_t>(in.byte()) - 8);
+            int64_t work[3];
+            smlib_work_counters(in.byte() & 1 ? work : nullptr);
+            if (in.byte() & 1)
+            {
+                smlib_work_counters_reset();
+            }
             break;
         }
         }

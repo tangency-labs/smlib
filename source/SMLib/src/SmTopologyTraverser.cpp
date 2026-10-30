@@ -35,6 +35,7 @@
 #include <SmGraphicsExtern.h>
 #include <SmAttribute.h>
 
+#include <SmWorkCounters.h>
 #include <unordered_map>
 
 /*******************************************************************//**
@@ -651,6 +652,7 @@ SmStatus SmTopologyTraverser::ClosureTraversalFromBothSides
             }
 
           SmFaceuse *pFaceuse = sQueue[k][lHead[k]++];
+          SmWorkCounters::Add(SmWorkCounters::eClosureFaceuses); // SolidCraft fork: work count
 
           // for every faceuse->loopuse->edgeuse: the edgeuse's radial neighbour's faceuse
           pFaceuse->GetLoopuses(sLoopuses);

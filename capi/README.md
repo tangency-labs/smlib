@@ -329,6 +329,12 @@ face of a sheet onto its surface's offset along its normal (`SmApiOffsetBrepFull
   replay a call, read those back with `smlib_brep_read` and call the function again.
 - **Crash reports:** `smlib_current_call` copies the call in flight into a caller buffer. It takes
   no lock and doesn't allocate, so a crash handler can record it.
+- **Work counters:** for tests and profiling, `smlib_work_counters` reads three counts of the work
+  a boolean does where its cost once grew with the square of the body's size: faceuses visited by
+  new faces' closure tests, face pairs examined for intersection, and faceuses moved between
+  shells by new edges. `smlib_work_counters_reset` zeroes them. They are process-wide atomics,
+  shared by every thread and call (not thread-scoped), and take no lock. A test of how a
+  boolean's work grows with the body checks them in place of times, which depend on the machine.
 
 ## Fuzzing
 
@@ -1216,3 +1222,8 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   (Test #12, an inner shell not inside its region's outer shell). A stitched solid is now a
   nested solid model (`SM_VS_NESTEDSOLID`): material inside the outer shell, a void inside a
   shell within it, each region's outer shell first (`sweeps` `stations: holed ring`).
+- **Work counters** (new `SmWorkCounters.h`; `SmTopologyTraverser.cpp`,
+  `ClosureTraversalFromBothSides`; `SmTopologyIntersector.cpp`, `IntersectTopology`; `SmBrep.cpp`,
+  `MakeEdgeTopology`): process-wide atomic counts of the faceuses a new face's closure test
+  visits, the face pairs examined for intersection and the faceuses moved between shells, read by
+  `smlib_work_counters`. They change no result.
