@@ -35,6 +35,8 @@
 #include <SmGraphicsExtern.h>
 #include <SmAttribute.h>
 
+#include <unordered_map>
+
 /*******************************************************************//**
 PURPOSE: Gather all faces connected to target faces through edges.
    eMarkType all faces and the edges and vertices that are connected to those
@@ -590,6 +592,95 @@ SmStatus SmTopologyTraverser::ClosureTraversal
   return SM_SUCCESS;
 
 } // end SmTopologyTraverser::ClosureTraversal
+
+/*******************************************************************//**
+PURPOSE: Determine if the shell specified by this faceuse is closed, as
+   ClosureTraversal does, without walking the whole shell when it is open.
+
+NOTES:  The faceuse is closed iff its mate is not reachable from it through
+        edgeuse radials (ClosureTraversal, FaceuseTraversal). The radial
+        relation is symmetric (an edge's edgeuses alternate in orientation),
+        so the mate is reachable from the faceuse iff a search from the
+        faceuse and a search from its mate meet. The two grow breadth-first,
+        one faceuse each in turn: they stop when they meet (open) or when one
+        of them has no faceuse left to visit (closed: that side's component is
+        all there is, without the other start in it). The answer is
+        ClosureTraversal's exactly, and the search visits at most twice the
+        faceuses on the smaller side, where ClosureTraversal's depth-first
+        walk may cross the whole shell before it comes back to the mate.
+
+        Marks nothing: no mark is locked or incremented.
+***********************************************************************/
+SmStatus SmTopologyTraverser::ClosureTraversalFromBothSides
+ (SmFaceuse * pStartFaceuse, // in : target faceuse
+  SmBoolean & rbIsClosed)    // out: TRUE=faceuse connects to closed faceuse set, FALSE=doesn't
+{
+  rbIsClosed = FALSE;
+  NER(pStartFaceuse);
+
+  // A face with any lamina edges is not closed (as ClosureTraversal).
+  if(pStartFaceuse->GetFace()->HasLaminaEdge())
+    { return SM_SUCCESS; }
+
+  SmFaceuse *pMate = pStartFaceuse->GetMate();
+  NER(pMate);
+
+  // the side (0 = from the faceuse, 1 = from its mate) each visited faceuse was reached from
+  std::unordered_map<const SmFaceuse*, int> sSide;
+  sSide[pStartFaceuse] = 0;
+  sSide[pMate]         = 1;
+
+  // a breadth-first queue per side: the faceuses still to expand are [lHead[k], size)
+  SmTArray<SmFaceuse*> sQueue[2];
+  ULONG                lHead[2] = {0, 0};
+  sQueue[0].Add(pStartFaceuse);
+  sQueue[1].Add(pMate);
+
+  SmTArray<SmLoopuse*> sLoopuses;
+  SmTArray<SmEdgeuse*> sEdgeuses;
+
+  for(;;)
+    {
+      for(int k = 0; k < 2; k++)
+        {
+          // this side has nothing left: its component does not hold the other start
+          if(lHead[k] >= sQueue[k].GetSize())
+            {
+              rbIsClosed = TRUE;
+              return SM_SUCCESS;
+            }
+
+          SmFaceuse *pFaceuse = sQueue[k][lHead[k]++];
+
+          // for every faceuse->loopuse->edgeuse: the edgeuse's radial neighbour's faceuse
+          pFaceuse->GetLoopuses(sLoopuses);
+          for(ULONG j = 0; j < sLoopuses.GetSize(); j++)
+            {
+              sLoopuses[j]->GetEdgeuses(sEdgeuses);
+              for(ULONG i = 0; i < sEdgeuses.GetSize(); i++)
+                {
+                  SmEdgeuse *pEURadial = sEdgeuses[i]->GetRadial();
+                  SmFaceuse *pFURadial = pEURadial ? pEURadial->GetFaceuse() : NULL;
+                  if(pFURadial == NULL)
+                    { continue; }
+
+                  auto sFound = sSide.find(pFURadial);
+                  if(sFound == sSide.end())
+                    {
+                      sSide[pFURadial] = k;
+                      sQueue[k].Add(pFURadial);
+                    }
+                  else if(sFound->second != k)
+                    {
+                      // the two searches meet: the mate is reachable, the shell is open
+                      return SM_SUCCESS;
+                    }
+                } // end iter every faceuse->loopuse->edgeuse
+            } // end iter every faceuse->loopuse
+        } // end one faceuse from each side
+    } // end until the sides meet or one runs out
+
+} // end SmTopologyTraverser::ClosureTraversalFromBothSides
 
 /*******************************************************************//**
 PURPOSE: Order an array of Edges into topological chains

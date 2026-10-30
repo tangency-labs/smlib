@@ -96,6 +96,15 @@ public:
     SmNewMarkAndLock     & rMark          ///< [in ]: specify mark for target objects (incremented)                <br>
   );
 
+  // Find out if a faceuse is part of a closed shell: ClosureTraversal's answer, found by searching
+  // from the faceuse and from its mate at once, so the search ends when the two meet or one side
+  // runs out. NO USE of marks.
+  SmStatus ClosureTraversalFromBothSides
+  (
+    SmFaceuse            * pStartFaceuse, ///< [in ]: target faceuse                                               <br>
+    SmBoolean            & rbIsClosed     ///< [out]: TRUE=faceuse connects to closed faceuse set, FALSE=doesn't   <br>
+  );
+
   // Order an array of Edges into topological chains
   static SmStatus FixEdgeChainList
   ( 
