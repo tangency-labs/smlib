@@ -888,14 +888,15 @@ SmBoolean bDebugMe=FALSE;
             { continue; }
         }
 
-      // SolidCraft change: an edge of a fillet's input, or one between two of its faces, stays
+      // SolidCraft change: an edge of a fillet's input, or one between two of its faces, stays,
+      // unless one face lies on both its sides: removing that slit merges no faces.
       if ( m_bPostProcessKeepsFilletInput )
         {
-          if ( pEdge->FindAttribute( SM_AI_FILLET_INPUT ) != NULL )
-            { continue; }
           SM_PTR_ARRAY(sKeptFaces, SmFace, 8);
           pEdge->GetFaces( sKeptFaces );
-          SmBoolean bAllKept = sKeptFaces.GetSize() > 0;
+          if ( sKeptFaces.GetSize() != 1 && pEdge->FindAttribute( SM_AI_FILLET_INPUT ) != NULL )
+            { continue; }
+          SmBoolean bAllKept = sKeptFaces.GetSize() > 1;
           for ( ULONG kf=0; kf<sKeptFaces.GetSize() && bAllKept; kf++ )
             { bAllKept = sKeptFaces[kf]->FindAttribute( SM_AI_FILLET_INPUT ) != NULL; }
           if ( bAllKept )
