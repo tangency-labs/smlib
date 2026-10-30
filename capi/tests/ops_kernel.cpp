@@ -1840,6 +1840,116 @@ void rounds_at_a_concave_face_corner_are_mitred()
     }
 }
 
+// SolidCraft rig fillets/1080-fillet-sloped-basin-1-mm-rim-r0-5-4-edges: a 100 x 60 x 30 slab less
+// a basin lofted from 20..80 x 1..50 at the top to 30..70 x 20..40 at z = 10, its front and right
+// rim edges, then all four, rounded r 0.5. The walls lean differently (the front 19 over 20, the
+// others 10 over 20), so at each corner of two rounds the rails meet the sloped corner edge at
+// two places: the mitre leaves a gap there on the side face's continuation past the corner edge
+// (beyond the wall the smaller round rolls on, inside the material behind the other wall),
+// filled by a patch on that wall's plane that joins the wall. SMLib cut the larger round by the
+// side face's own surface, which does not reach past the corner edge, and failed (SM_ERR). Each
+// round's section at height z spans from its wall to its arc, its width w(z), and runs between its
+// neighbours' walls extended, L(z); in the quadrant beyond both walls of a mitred corner the two
+// take what both take, w1(z) w2(z): removed Int (sum w L + sum over corners w1 w2) dz, taken over
+// the arc's angle from the top (z = 30 - r + r cos phi, smooth there) and split where each round
+// meets its wall (Simpson, converged to 1e-10 mm^3). V0 = 144533.333333 (a prismatoid:
+// 20/6 (A_top + A_bottom + 4 A_mid)).
+// 13 faces, then 15: the gaps' patches join the walls.
+void basin_rim_rounds_mitred_with_a_gap_at_the_corner()
+{
+    smlib_brep *slab = box(0, 0, 0, 100, 60, 30), *pocket = nullptr, *basin = nullptr;
+    const double rims[2][5] = {{20, 1, 80, 50, 30}, {30, 20, 70, 40, 10}};
+    int64_t kinds[8];
+    double reals[48];
+    for (int s = 0; s < 2; ++s)
+    {
+        const double *q = rims[s];
+        const double xy[4][2] = {{q[0], q[1]}, {q[2], q[1]}, {q[2], q[3]}, {q[0], q[3]}};
+        for (int i = 0; i < 4; ++i)
+        {
+            const int j = (i + 1) % 4;
+            const double seg[6] = {xy[i][0], xy[i][1], q[4], xy[j][0], xy[j][1], q[4]};
+            kinds[4 * s + i] = SMLIB_CURVE_LINE;
+            std::copy(seg, seg + 6, reals + 6 * (4 * s + i));
+        }
+    }
+    const int64_t sizes[2] = {4, 4};
+    CHECK(smlib_loft(kinds, 8, reals, 48, sizes, 2, 1, 1, &pocket) == SMLIB_OK);
+    CHECK(pocket != nullptr && smlib_boolean(slab, pocket, SMLIB_BOOLEAN_SUBTRACT, &basin) == SMLIB_OK);
+    const double r = 0.5, front = 19.0 / 20.0, side = 10.0 / 20.0;
+    // A round of a rim edge whose wall leans k (horizontally per unit down): the wall's line at
+    // depth s = 30 - z is k s from the rim, the arc's centre r below the top and r from the wall.
+    auto width = [r](double k, double z) {
+        const double q = std::sqrt(1.0 + k * k), uc = k * r - r * q, zc = 30.0 - r;
+        if (z < zc + r * k / q || z > 30.0)
+        {
+            return 0.0;
+        }
+        return k * (30.0 - z) - (uc + std::sqrt(std::max(0.0, r * r - (z - zc) * (z - zc))));
+    };
+    auto simpson = [](const std::function<double(double)> &f, double a, double b) {
+        const int n = 2000;
+        const double h = (b - a) / n;
+        double s = f(a) + f(b);
+        for (int i = 1; i < n; ++i)
+        {
+            s += (i % 2 ? 4.0 : 2.0) * f(a + i * h);
+        }
+        return s * h / 3.0;
+    };
+    // the edges' leans and lengths between their neighbours' walls: front, right, back, left
+    const double k[4] = {front, side, side, side};
+    auto length = [&](int e, double z) {
+        const double s = 30.0 - z;
+        return e % 2 == 0 ? 60.0 - 2.0 * side * s : 49.0 - (front + side) * s;
+    };
+    const double edges[12] = {50, 1, 30, 80, 27, 30, 50, 50, 30, 20, 27, 30};
+    const double v0 = 3000.0 * 60.0 - 20.0 / 6.0 * (60.0 * 49.0 + 40.0 * 20.0 + 4.0 * 50.0 * 34.5);
+    for (int n : {2, 4})
+    {
+        auto removed = [&](double z) {
+            double sum = 0.0;
+            for (int e = 0; e < n; ++e)
+            {
+                sum += width(k[e], z) * length(e, z);
+            }
+            for (int e = 0; e < 4; ++e)
+            {
+                const int f = (e + 1) % 4;
+                if (e < n && f < n)
+                {
+                    sum += width(k[e], z) * width(k[f], z);
+                }
+            }
+            return sum;
+        };
+        // over the arc's angle phi from the top, split where each round meets its wall
+        // (cos phi = k / sqrt(1 + k^2)): dz = r sin phi dphi
+        auto by_angle = [&](double phi) { return removed(30.0 - r + r * std::cos(phi)) * r * std::sin(phi); };
+        const double at_front = std::acos(front / std::sqrt(1.0 + front * front)), at_side = std::acos(side / std::sqrt(1.0 + side * side));
+        const double want = v0 - simpson(by_angle, 0.0, at_front) - simpson(by_angle, at_front, at_side);
+        smlib_brep *round = nullptr;
+        CHECK(basin != nullptr && smlib_fillet(basin, edges, n, 0.1, r, &round, nullptr) == SMLIB_OK);
+        if (round == nullptr)
+        {
+            continue;
+        }
+        int64_t counts[3] = {0, 0, 0};
+        double v = 0.0;
+        CHECK(smlib_brep_counts(round, counts) == SMLIB_OK && smlib_brep_volume(round, 1e-12, &v) == SMLIB_OK);
+        std::printf("sloped basin, %d rim edges rounded r%g: %lld faces, volume %.9f, expected %.9f\n", n, r, static_cast<long long>(counts[0]), v,
+                    want);
+        CHECK(counts[0] == 11 + n);
+        CHECK(sound(round));
+        CHECK(near(v, want, 1e-9));
+        smlib_brep_free(round);
+    }
+    for (smlib_brep *x : {slab, pocket, basin})
+    {
+        smlib_brep_free(x);
+    }
+}
+
 } // namespace
 
 // A disc r 15, 5 thick, one circular edge rounded r 1.5 and shelled 1.6 or 2 inward, open at one
@@ -5363,6 +5473,7 @@ int main(int argc, char **argv)
     groove_arc_round_ends_in_the_top();
     corner_ball_after_a_round_is_exactly_singular();
     rounds_at_a_concave_face_corner_are_mitred();
+    basin_rim_rounds_mitred_with_a_gap_at_the_corner();
 
     // SolidCraft surface.offset of a ball's one face: the face taken off as a sheet is a closed
     // shell whose regions are all voids, which smlib_offset_sheet refused as a solid

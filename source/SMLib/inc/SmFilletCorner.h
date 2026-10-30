@@ -63,6 +63,9 @@ protected:
   SmBoolean                 m_bCalcAsConstRad;       // See notes below.
 
   SmBoolean                 m_bTopologyAdjusted;     // TRUE = corner topology has been altered
+  SmBoolean                 m_bBevelGapPatch;        // SolidCraft change: TRUE = a bevel (mitre) whose rails meet the side
+                                                     //   edge at two places, the gap between them on the side face's
+                                                     //   continuation filled by a patch (SmFilletNx2Corner::AdjustTopology)
   SmBoolean                 m_bExtendedSurfacePatch; // TRUE = EndFace->Surface is defined by sideFace->ExtendedSurface
                                                      // FALSE=EndFace->Surface is defined by interpolating filletEdges
                                                      // default:[TRUE]
