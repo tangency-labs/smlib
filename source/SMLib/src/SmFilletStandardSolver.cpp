@@ -3507,6 +3507,36 @@ SmBoolean bDebugMe=FALSE;
 
     } // end while inserting knots into curves to make at least 4
 
+  // SolidCraft change: where the rails meet at an end of the fillet (a degenerate corner: the
+  // two faces touch at its one fillet vertex and the cross section is a point, below), both
+  // rails end at that one point. Each rail is lifted from its own surface
+  // (SmFilletIntersector::FlushCurve), and at a vertex the two surfaces pass through it only to
+  // within the model's accuracy, so their ends differ by that much (6.5e-12 mm on a sketch with
+  // solver residues). The point section was the first rail's end while the second rail, a
+  // boundary of the skinned surface, kept its own: the surface came out close to singular there
+  // instead of exactly (SmSurface test 5). Both rail ends move to their midpoint, within the
+  // distance the ends already agree to.
+  for ( ULONG lEnd=0; lEnd<2; lEnd++ )
+    {
+      SmExtent1d sIvl = rRail1Curve.GetNaturalInterval();
+      double     dT   = ( lEnd == 0 ) ? sIvl.GetMin() : sIvl.GetMax();
+      SmPoint3d  sEnd1, sEnd2;
+      SER( rRail1Curve.EvaluatePoint( dT, sEnd1 ) );
+      SER( rRail2Curve.EvaluatePoint( dT, sEnd2 ) );
+      if ( sEnd1.DistanceBetween( sEnd2 ) >= dThisApproxTol3d )
+        { continue; }
+      SmPoint3d sMeet = ( sEnd1 + sEnd2 ) / 2.0;
+      SmBSplineCurve * apRails[2] = { &rRail1Curve, &rRail2Curve };
+      for ( ULONG lRail=0; lRail<2; lRail++ )
+        {
+          ULONG     lIdx = ( lEnd == 0 ) ? 0 : apRails[lRail]->GetNumberControlPoints() - 1;
+          SmPoint3d sCP;
+          double    dW = 1.0;
+          SER( apRails[lRail]->GetControlPoint( SM_CP_EUCLIDIAN_RATIONAL, lIdx, sCP, dW ) );
+          SER( apRails[lRail]->SetControlPoint( SM_CP_EUCLIDIAN_RATIONAL, lIdx, sMeet, dW ) );
+        }
+    }
+
   // when center, rail1, and rail2 curves are parallel lines - NewSurf = RuledSurface
   // when center, rail1, and rail2 curves are arcs           - NewSurf = SurfaceOfRevolution
   // else                                                    - NewSurf = Skinned Surface
