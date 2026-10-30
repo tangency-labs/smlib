@@ -1340,6 +1340,43 @@ void shell_thicker_than_a_step()
     }
 }
 
+// A stepped block, 40 x 30 x 10 with its half x < 20 raised to 20 (SolidCraft kernel case
+// shell/cov-replace-face-step-onto-the-higher-face): the low top moved up onto the high top's
+// plane closes the step wall between them to nothing (it was SMLIB_ERR_UNSUPPORTED: the wall's
+// edges along the sides closed to points). The wall goes and the tops meet: the 40 x 30 x 20
+// box. The high top moved down onto the low one the same way: the 40 x 30 x 10 box.
+void offset_faces_close_a_step_wall()
+{
+    smlib_brep *base = box(0, 0, 0, 40, 30, 10), *tower = box(0, 0, 0, 20, 30, 20), *stepped = nullptr;
+    CHECK(smlib_boolean(base, tower, SMLIB_BOOLEAN_UNION, &stepped) == SMLIB_OK);
+    CHECK(stepped != nullptr && stepped->p->GetNumFaces() == 8);
+    if (stepped != nullptr)
+    {
+        struct Move
+        {
+            double at[3], distance, volume, area, top;
+        };
+        const Move moves[] = {{{30, 15, 10}, 10.0, 24000.0, 5200.0, 20.0}, {{10, 15, 20}, -10.0, 12000.0, 3800.0, 10.0}};
+        for (const Move &m : moves)
+        {
+            smlib_brep *r = nullptr;
+            CHECK(smlib_offset_faces(stepped, m.at, 1, 0.1, m.distance, &r, nullptr) == SMLIB_OK);
+            if (r != nullptr)
+            {
+                double area = -1.0, lo[3] = {}, hi[3] = {};
+                CHECK(near(volume_of(r), m.volume, 1e-9));
+                CHECK(smlib_brep_area(r, 1e-9, &area) == SMLIB_OK && near(area, m.area, 1e-9));
+                CHECK(smlib_brep_bounds(r, lo, hi) == SMLIB_OK && std::fabs(hi[2] - m.top) < 1e-9 && std::fabs(hi[0] - 40.0) < 1e-9);
+                done(r);
+            }
+        }
+    }
+    for (smlib_brep *x : {base, tower, stepped})
+    {
+        smlib_brep_free(x);
+    }
+}
+
 // A pin r 10, 20 tall, its side drafted 5 degrees about its base circle (neutral z = 0, pull +z):
 // the frustum from r 10 to 10 - 20 tan 5. A 30 x 30 x 10 block's through hole r 5 drafted the
 // same way widens to 5 + 10 tan 5 at the top. (SolidCraft draft_on_a_cylinder_side_makes_a_frustum,
@@ -4829,6 +4866,7 @@ int main(int argc, char **argv)
     shelled_single_round_stays_a_cylinder();
     shelled_box_with_a_drilled_hole();
     shell_thicker_than_a_step();
+    offset_faces_close_a_step_wall();
     drafted_cylinders_are_cones();
     lip_swept_flush_round_a_corner();
     corner_setback();
