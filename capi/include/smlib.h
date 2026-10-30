@@ -768,7 +768,10 @@ int32_t smlib_shell(const smlib_brep *brep, const double *points, int64_t n_poin
  * take off (its rail in pieces, ends at corners it cannot take apart) is SMLIB_ERR_UNSUPPORTED;
  * one whose removal would need a surface other than a plane, or a curved edge, continued past
  * its end is SMLIB_ERR_NOT_EXACT. A tangent neighbour that is no blend (a piece of the same
- * surface) gives a step, a wall between the two. */
+ * surface) gives a step, a wall between the two. A neighbour the move closes to nothing (a
+ * step's wall, the low top moved onto the high top's plane: its edges along the sides close to
+ * points) goes, and the faces on either side of it meet; an edge that closes to a point with no
+ * face closing with it (a face turned inside out past it) is SMLIB_ERR_UNSUPPORTED. */
 int32_t smlib_offset_faces(const smlib_brep *brep, const double *points, int64_t n_points, double tolerance, double distance,
                            smlib_brep **out, int64_t *out_failed_point);
 

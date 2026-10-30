@@ -150,6 +150,8 @@ protected:
   SmMapPtrToPtr<SmSurface, SmSurface> & m_vSurfExtSurf;
   SmTArray<SmFace*>               m_sCollapsedFaces;    // inset faces whose offset collapses (a round thinner than the wall),
                                                         //  mated across instead of offset (DoExtendedOffset())
+  SmTArray<SmFace*>               m_sClosedEdgeFaces;   // the offset face of each edge that closed to a point (CloseLoopGap()),
+  SmTArray<SmFace*>               m_sClosedEdgeAcross;  //  and the original face across that edge (NULL where unknown)
 
 public:
 

@@ -3495,6 +3495,48 @@ SmStatus SmOffsetExecutive::CloseLoopGaps()
             } // end iter every loop
         } // end until no gap is left
     } // end iter every offset face
+  // The faces that closed to nothing as their edges closed to points (a step wall whose low top
+  // moved onto the high top's plane: its edges along the tops now coincide, it bounds no area)
+  // are removed, and the merge joins the faces on either side along their coinciding edges.
+  // Every edge that closed must be one of theirs or lie across from one of them (the sides'
+  // edges along the wall); any other closed edge is a face turned inside out past it (a shell
+  // thicker than a step beside it), a change of topology the offset does not make.
+  if (m_sClosedEdgeFaces.GetSize() > 0)
+    {
+      SmTArray<SmFace*>           sGoneList;  // offset faces closed to nothing, in the order they closed
+      std::unordered_set<SmFace*> sGone;      //  the same
+      std::unordered_set<SmFace*> sGoneOrig;  // the original faces they were offset from
+      for (ULONG ii=0; ii<m_sClosedEdgeFaces.GetSize(); ii++)
+        {
+          SmFace *pFace = m_sClosedEdgeFaces[ii];
+          if (sGone.count(pFace) > 0 || !pFace->IsDegenerate()) { continue; }
+          sGone.insert(pFace);
+          sGoneList.Add(pFace);
+          SmTArray<SmFaceuse*> sOrigFUs;
+          m_vFUToF.GetFirsts(pFace, sOrigFUs);
+          for (ULONG ff=0; ff<sOrigFUs.GetSize(); ff++) { sGoneOrig.insert(sOrigFUs[ff]->GetFace()); }
+        }
+      for (ULONG ii=0; ii<m_sClosedEdgeFaces.GetSize(); ii++)
+        {
+          if (   sGone.count(m_sClosedEdgeFaces[ii]) == 0
+              && (m_sClosedEdgeAcross[ii] == NULL || sGoneOrig.count(m_sClosedEdgeAcross[ii]) == 0))
+            { SER(SM_ERR_OFFSET_EDGE_VANISHES); }
+        }
+      std::unordered_set<SmEdgeuse*> sGoneEUs;
+      for (ULONG ii=0; ii<sGoneList.GetSize(); ii++)
+        {
+          SmTArray<SmEdge*> sEdges;
+          sGoneList[ii]->GetEdges(sEdges);
+          for (ULONG ee=0; ee<sEdges.GetSize(); ee++) { SER(sEdges[ee]->GetEdgeuses(sGoneEUs)); }
+          SER(m_pOffsetBrep->DeleteFace(sGoneList[ii], TRUE));
+        }
+      sm_ForgetSeconds(m_vEUToEU, sGoneEUs, (const std::unordered_set<SmEdgeuse*> *)NULL);
+      sm_ForgetSeconds(m_vFUToF, sGone, (const std::unordered_set<SmFace*> *)NULL);
+      sm_ForgetSeconds(m_vEToF, sGone, (const std::unordered_set<SmFace*> *)NULL);
+      sm_ForgetSeconds(m_vVToF, sGone, (const std::unordered_set<SmFace*> *)NULL);
+      sm_ForgetSeconds(m_vBlendToFaces, sGone, (const std::unordered_set<SmFace*> *)NULL);
+      sm_ForgetFirsts(m_vBlendToFaces, sGone);
+    }
   return SM_SUCCESS;
 
 } // end SmOffsetExecutive::CloseLoopGaps
@@ -3586,10 +3628,41 @@ SmStatus SmOffsetExecutive::CloseLoopGap
       {
         double dAt = sTSolutions[0].m_vStart[0];
         SmExtent1d sKeep = (lCrvEnd == 0) ? SmExtent1d(dAt, sIvl.GetMax()) : SmExtent1d(sIvl.GetMin(), dAt);
-        // The vertex moved to the edge's other end or past it: the edge vanishes, the face turns
-        // inside out (a shell thicker than a step beside it).
         if (!(sKeep.GetLength() > SM_EFF_ZERO * (1.0 + sIvl.GetMaxDimension())))
-          { SER(SM_ERR_OFFSET_EDGE_VANISHES); }
+          {
+            // The vertex moved to the edge's other end, where the edge's other vertex is: the
+            // edge closed to a point. That is sound only where a face closes to nothing with it
+            // (the wall of a step whose low top moved onto the high top's plane: the wall's
+            // edges along the sides close, and the sides' edges along the wall), which
+            // CloseLoopGaps checks once every gap is closed. The edge is squeezed out, its two
+            // vertices one, and noted with the original face across it.
+            SmVertex *pAt  = bAtStart ? pEdgeuse->GetVertexuse()->GetVertex() : pEdgeuse->GetMate()->GetVertexuse()->GetVertex();
+            NER(pAt);
+            SmVertex *pFar = pEdge->GetOtherVertex(pAt);
+            if (pFar != NULL && pFar != pAt && pFar->GetPoint().DistanceBetween(crVertexPoint) <= dTol)
+              {
+                SmFace *pAcross = NULL;
+                SmTArray<SmEdgeuse*> sOrigEUs;
+                m_vEUToEU.GetFirsts(pEdgeuse, sOrigEUs);
+                if (sOrigEUs.GetSize() == 0) { m_vEUToEU.GetFirsts(pEdgeuse->GetMate(), sOrigEUs); }
+                if (sOrigEUs.GetSize() == 1)
+                  {
+                    SmTArray<SmFace*> sOrigFaces;
+                    sOrigEUs[0]->GetEdge()->GetFaces(sOrigFaces);
+                    for (ULONG ff=0; ff<sOrigFaces.GetSize(); ff++)
+                      {
+                        if (sOrigFaces[ff] != sOrigEUs[0]->GetFace()) { pAcross = sOrigFaces[ff]; }
+                      }
+                  }
+                SER(m_pOffsetBrep->SqueezeEdge(pEdge, pAt));
+                m_sClosedEdgeFaces.Add(pFace);
+                m_sClosedEdgeAcross.Add(pAcross);
+                return SM_SUCCESS;
+              }
+            // Elsewhere the vertex moved past the edge's end: the edge vanishes, the face turns
+            // inside out (a shell thicker than a step beside it).
+            SER(SM_ERR_OFFSET_EDGE_VANISHES);
+          }
         SER(pCurve->Trim(sKeep));
         sCleanCurve.Clear();
         pEdge->SetCurve(pCurve, TRUE);
