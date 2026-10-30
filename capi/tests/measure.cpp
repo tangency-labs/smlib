@@ -307,6 +307,52 @@ int main()
             pb.p = nullptr;
             delete patch;
         }
+    // Point classification: exact, at the body's own zone tolerance. A 10 x 20 x 30 box at the
+    // origin: inside, outside, on a face, on an edge, on a vertex. A cylinder of radius 5 about +Z:
+    // off its curved wall by half its tolerance is on it, by ten tolerances inside or outside.
+    {
+        auto where = [](const smlib_brep *b, double x, double y, double z)
+        {
+            int32_t c = -1;
+            const int32_t s = smlib_brep_classify_point(b, x, y, z, &c);
+            return s == SMLIB_OK ? c : -100 - s;
+        };
+        smlib_brep *bx = nullptr, *cyl = nullptr;
+        const double o[3] = {0, 0, 0}, size[3] = {10, 20, 30};
+        CHECK(smlib_make_box(o, size, &bx) == SMLIB_OK && bx != nullptr);
+        CHECK(smlib_make_cylinder(o, 5.0, 10.0, &cyl) == SMLIB_OK && cyl != nullptr);
+        if (bx != nullptr && cyl != nullptr)
+        {
+            CHECK(where(bx, 5, 10, 15) == SMLIB_POINT_INSIDE);
+            CHECK(where(bx, 5, 10, 31) == SMLIB_POINT_OUTSIDE);
+            CHECK(where(bx, -1, -1, -1) == SMLIB_POINT_OUTSIDE);
+            CHECK(where(bx, 5, 10, 30) == SMLIB_POINT_ON_BOUNDARY);
+            CHECK(where(bx, 10, 10, 30) == SMLIB_POINT_ON_BOUNDARY);
+            CHECK(where(bx, 10, 20, 30) == SMLIB_POINT_ON_BOUNDARY);
+            CHECK(where(bx, 0, 0, 0) == SMLIB_POINT_ON_BOUNDARY);
+
+            const double tol = static_cast<double>(SmTol::GetZoneTol3d(cyl->p));
+            std::printf("cylinder zone tolerance %.3g mm\n", tol);
+            CHECK(tol > 0.0 && tol < 1e-2);
+            const double c45 = std::sqrt(0.5);
+            for (double r : {5.0 - 0.5 * tol, 5.0 + 0.5 * tol})
+            {
+                CHECK(where(cyl, r * c45, r * c45, 5) == SMLIB_POINT_ON_BOUNDARY);
+            }
+            CHECK(where(cyl, (5.0 - 10 * tol) * c45, (5.0 - 10 * tol) * c45, 5) == SMLIB_POINT_INSIDE);
+            CHECK(where(cyl, (5.0 + 10 * tol) * c45, (5.0 + 10 * tol) * c45, 5) == SMLIB_POINT_OUTSIDE);
+            CHECK(where(cyl, 0, 0, 5) == SMLIB_POINT_INSIDE);
+            CHECK(where(cyl, 0, 0, 10) == SMLIB_POINT_ON_BOUNDARY);
+
+            int32_t c = 7;
+            CHECK(smlib_brep_classify_point(nullptr, 0, 0, 0, &c) == SMLIB_ERR_ARG);
+            CHECK(smlib_brep_classify_point(bx, NAN, 0, 0, &c) == SMLIB_ERR_ARG);
+            CHECK(smlib_brep_classify_point(bx, 0, INFINITY, 0, &c) == SMLIB_ERR_ARG);
+            CHECK(smlib_brep_classify_point(bx, 0, 0, 0, nullptr) == SMLIB_ERR_ARG);
+            CHECK(c == 7);
+        }
+        smlib_brep_free(bx);
+        smlib_brep_free(cyl);
     }
 
     // Rejected arguments.

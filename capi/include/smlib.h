@@ -231,6 +231,21 @@ int32_t smlib_brep_edge_face_distance(const smlib_brep *brep, int64_t edge, int6
 /* SMLib's own check that `brep` is one closed, manifold solid: *out = 1 if so, else 0. */
 int32_t smlib_brep_is_manifold_solid(const smlib_brep *brep, int32_t *out);
 
+/* Where a point lies against a body (smlib_brep_classify_point). */
+#define SMLIB_POINT_OUTSIDE 0
+#define SMLIB_POINT_INSIDE 1
+#define SMLIB_POINT_ON_BOUNDARY 2
+
+/* Classifies the point (x, y, z), in mm, against `brep` exactly, on its curves and surfaces (no
+ * tessellation), with SmBrep::Point3DClassify at the body's own zone tolerance
+ * (SmTol::GetZoneTol3d of the body). *out is SMLIB_POINT_ON_BOUNDARY when the point is within
+ * that tolerance of a face, an edge or a vertex (sheet faces and edges included), else
+ * SMLIB_POINT_INSIDE when it lies in one of the body's material (non-void) regions and
+ * SMLIB_POINT_OUTSIDE when it lies in a void region. A body with no material region (a sheet, an
+ * open shell) has nothing inside. A non-finite coordinate is SMLIB_ERR_ARG; SMLib failing to
+ * decide the region (every ray it fires fails) is its status, SM_ERR. */
+int32_t smlib_brep_classify_point(const smlib_brep *brep, double x, double y, double z, int32_t *out);
+
 /* ---- Flat B-rep arrays -------------------------------------------------------------------
  *
  * One B-rep as plain arrays, laid out like one member of USD's BrepArray schema (the arrays of

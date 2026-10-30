@@ -3,7 +3,8 @@
 
 // smlib_brep_mass_properties and smlib_brep_area: SMLib's exact (integrated, not tessellated)
 // area, volume, centroid and inertia; smlib_brep_bounds: the exact box;
-// smlib_brep_edge_face_distance: how far an edge lies from a face's surface, as SMLib measures it.
+// smlib_brep_edge_face_distance: how far an edge lies from a face's surface, as SMLib measures it;
+// smlib_brep_classify_point: where a point lies against a body, exactly.
 
 #include "smlib_shim.h"
 
@@ -12,6 +13,7 @@
 #include <SmExtent3d.h>
 #include <SmFace.h>
 #include <SmGap.h>
+#include <SmPointClass.h>
 #include <SmSurface.h>
 #include <SmRegion.h>
 #include <SmVertex.h>
@@ -304,6 +306,53 @@ extern "C" int32_t smlib_brep_edge_face_distance(const smlib_brep *brep, int64_t
             }
             *out = largest->GetLength();
             return SMLIB_OK;
+        }
+    );
+}
+
+extern "C" int32_t smlib_brep_classify_point(const smlib_brep *brep, double x, double y, double z, int32_t *out)
+{
+    if (!valid(brep) || out == nullptr || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+    {
+        return SMLIB_ERR_ARG;
+    }
+    Call c("smlib_brep_classify_point", handle(brep) + ", point=[" + num(x) + "," + num(y) + "," + num(z) + "]");
+    c.input("brep", brep);
+    return c.run(
+        [&]
+        {
+            const SmBrep *b = brep->p;
+            // With boundary intersections on, Point3DClassify first solves the point against the
+            // body's vertices, edges and faces at the given zone tolerance (BrepPointSolve,
+            // lowest-dimensional hit first) and only then fires rays for the region, so a point on
+            // the boundary is reported as such and never decided by a ray.
+            SmPointClassification pc;
+            int32_t s = status(b->Point3DClassify(SmPoint3d(x, y, z), SmTol::GetZoneTol3d(b), TRUE, pc));
+            if (s != SMLIB_OK)
+            {
+                return s;
+            }
+            switch (pc.GetPointClass())
+            {
+            case SM_PC_VERTEX:
+            case SM_PC_EDGE:
+            case SM_PC_FACE:
+                *out = SMLIB_POINT_ON_BOUNDARY;
+                return SMLIB_OK;
+            case SM_PC_REGION:
+            {
+                const SmRegion *r = static_cast<const SmRegion *>(pc.GetObject());
+                if (r == nullptr)
+                {
+                    return static_cast<int32_t>(SM_ERR);
+                }
+                *out = r->IsVoid() == TRUE ? SMLIB_POINT_OUTSIDE : SMLIB_POINT_INSIDE;
+                return SMLIB_OK;
+            }
+            default:
+                // Point3DClassify reports only the four classes above on success.
+                return static_cast<int32_t>(SM_ERR);
+            }
         }
     );
 }

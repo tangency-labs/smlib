@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 SolidCraft contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// libFuzzer target for smlib_brep_mass_properties, smlib_brep_area and
-// smlib_brep_edge_face_distance: arbitrary accuracies, indices and NULLs, on primitives and sheets from 10 um to 5 m, at the origin and far from it, some with
+// libFuzzer target for smlib_brep_mass_properties, smlib_brep_area,
+// smlib_brep_edge_face_distance and smlib_brep_classify_point: arbitrary accuracies, indices, points and NULLs, on primitives and sheets from 10 um to 5 m, at the origin and far from it, some with
 // vertices pushed anywhere. Any status is fine; a crash, hang, leak, exception or non-finite result is not.
 //
 //   cmake -S capi -B build-fuzz -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DSMLIB_CAPI_FUZZ=ON
@@ -148,7 +148,18 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         // Mostly sensible accuracies (fine ones are slow), sometimes anything at all.
         double accuracy = flags & 4 ? in.real() : std::pow(10.0, -1.0 - (in.byte() % 6));
         const smlib_brep *b = flags & 1 ? brep : nullptr;
-        if (flags & 16)
+        if (flags & 32)
+        {
+            // any point, finite or not
+            int32_t where = -1;
+            const double x = flags & 4 ? in.real() : in.place(), y = in.place(), z = in.place();
+            if (smlib_brep_classify_point(b, x, y, z, flags & 2 ? &where : nullptr) == SMLIB_OK &&
+                where != SMLIB_POINT_OUTSIDE && where != SMLIB_POINT_INSIDE && where != SMLIB_POINT_ON_BOUNDARY)
+            {
+                std::abort();
+            }
+        }
+        else if (flags & 16)
         {
             // any edge and face index, in range or not
             const int64_t edge = static_cast<int64_t>(in.byte()) - 8, face = static_cast<int64_t>(in.byte()) - 8;
