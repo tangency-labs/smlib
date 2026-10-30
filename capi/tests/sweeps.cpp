@@ -342,6 +342,23 @@ int main()
     b = nullptr;
     expect("extrude annulus", smlib_extrude(ring.kinds.data(), ring.nk(), ring.reals.data(), ring.nr(), Z, 3.0, 0.0, SMLIB_DRAFT_CORNER_TANGENT, 1, &b, nullptr), &b,
            PI * (100.0 - 16.0) * 3.0, 1e-6);
+    // A regular polygon of 5000 sides inscribed in a circle of radius 20, 10 up: more curves than
+    // the old limit of 4096 (SMLIB_CURVE_MAX_CURVES, which SMLib's core does not have). Area
+    // n/2 r^2 sin(2 pi / n).
+    {
+        const int n = 5000;
+        std::vector<double> pts;
+        for (int i = 0; i < n; ++i)
+        {
+            const double a = 2.0 * PI * i / n;
+            pts.insert(pts.end(), {20.0 * std::cos(a), 20.0 * std::sin(a), 0.0});
+        }
+        List many;
+        many.polygon(pts);
+        b = nullptr;
+        expect("extrude a 5000-gon", smlib_extrude(many.kinds.data(), many.nk(), many.reals.data(), many.nr(), Z, 10.0, 0.0, SMLIB_DRAFT_CORNER_TANGENT, 1, &b, nullptr), &b,
+               0.5 * n * 400.0 * std::sin(2.0 * PI / n) * 10.0, 1e-9);
+    }
     // A 3000 x 1000 plate with a hole of radius 0.002 at (30, 20), 2 thick (SolidCraft
     // display_mesh a_radius_far_below_the_tolerance_keeps_its_chord_facets): a loop 1.5e6 times
     // smaller than its face.
