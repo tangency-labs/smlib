@@ -10408,7 +10408,8 @@ static SmBoolean sm_GoodDropResult(
         const SmExtent2d & crDomain,   // in
         const SmPoint3d  & crPtToDrop, // in
         const SmPoint2d  & crGuessUV,  // in
-        const SmSolution & crSol       // in: result of drop using crGuessUV
+        const SmSolution & crSol,      // in: result of drop using crGuessUV
+        double             dTol        // in: the face's tolerance: how far along the surface a foot point may be off
     )
 {
   // Check whether it's right on.
@@ -10445,7 +10446,11 @@ static SmBoolean sm_GoodDropResult(
   SmVector3d sGap( crPtToDrop - sSrfPoint );
   double Fu = sGap.Dot( Su );
   double Fv = sGap.Dot( Sv );
-  if ( smos_Fabs( Fu ) + smos_Fabs( Fv ) < 0.0001 ) {
+  // SolidCraft change: a foot point is off along the surface by no more than the face's
+  // tolerance (it was any 1e-4 mm, and in the interior 1e-3 mm in each direction): a local solve
+  // that stopped short where the surface's parameter is slow (a corner patch near its collapsed
+  // side, 0.043 mm per unit there) was taken for the foot point 6.9e-5 mm off it.
+  if ( smos_Fabs( Fu ) + smos_Fabs( Fv ) < dTol ) {
       return TRUE;
   }
 
@@ -10467,7 +10472,7 @@ static SmBoolean sm_GoodDropResult(
           return FALSE;
       }
   }
-  else if ( smos_Fabs( Fu ) > 0.001 )
+  else if ( smos_Fabs( Fu ) > dTol )
   {
       return FALSE; // interior, bad fcn value.
   }
@@ -10486,7 +10491,7 @@ static SmBoolean sm_GoodDropResult(
           return FALSE;
       }
   }
-  else if ( smos_Fabs( Fv ) > 0.001 )
+  else if ( smos_Fabs( Fv ) > dTol )
   {
       return FALSE; // interior, bad fcn value.
   }
@@ -10609,7 +10614,7 @@ SmStatus SmSurface::DropPoint
       // i.e., was it a good enough guess?  [080206]
       if ( rbSuccess )
         {
-          rbSuccess = sm_GoodDropResult( this, crDomain, crPtToDrop, *pOptGuessUV, sSol );
+          rbSuccess = sm_GoodDropResult( this, crDomain, crPtToDrop, *pOptGuessUV, sSol, dDistTol );
         }
 
       if ( rbSuccess )
