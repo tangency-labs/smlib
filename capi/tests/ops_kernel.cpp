@@ -2369,6 +2369,54 @@ void end_face_rounds_mitred_at_concave_corners()
     }
 }
 
+// SolidCraft tests::fillet_tabbed_plate_outer_loop_and_partial_selection_after_hole: a plate 2
+// thick, its outline an R25 arc to the sides x = +-4 of a tab whose top is 4 wide with R2
+// corners, every top edge of the outline rounded r 0.5. At the concave corners (+-4, y) the arc's
+// round and the tab side's are mitred: the trace of the arc's round runs on past the arc's end
+// to where its rails meet the tab side's, on the R25 wall's continuation. The wall is an
+// SmCylinder, and its continuation was a tangent (G1R) extension of its NURB, 0.0036 off the
+// circle 0.44 past the arc's end: the round's section came from there, every section of the
+// torus was that far off, and the mitre's curve found no fillet surface through its ends
+// (1001). Analytic surfaces now continue as themselves. Removed: the outline's area less the
+// area of the outline moved in by d = r (1 - cos phi) at the height r sin phi into the round
+// (each element parallel to itself, the arc's radius 25 - d, the tab's run moved in by d and
+// the moved elements meeting where they cross at the mitres), over that height (midpoint rule
+// in phi, 8192 steps, which 4096 agree with to 1e-7); the area by Green's theorem. The fit of the
+// rounds' and mitres' curves leaves 1.6e-7 of it.
+void tabbed_plate_rounds_mitred_on_the_arcs_continuation()
+{
+    const double theta = std::acos(4.0 / 25.0), y = std::sqrt(625.0 - 16.0), cy = 280.0 / 9.0;
+    Profile p;
+    p.arc(0, 0, 0, 1, 25, PI - theta, 2.0 * PI + theta).line(4, y, 4, cy, 0).arc(2, cy, 0, 1, 2, 0, PI / 2.0);
+    p.line(2, cy + 2.0, -2, cy + 2.0, 0).arc(-2, cy, 0, 1, 2, PI / 2.0, PI).line(-4, cy, -4, y, 0);
+    smlib_brep *plate = p.extrude(2.0), *round = nullptr;
+    // the outline's area with the arc moved in by da and the tab's run by dt
+    auto area = [cy](double da, double dt) {
+        const double big = 25.0 - da, rho = 2.0 - dt, tab = rho * rho * PI + 2.0 * rho * (2.0 + cy) + 4.0 * (cy + rho);
+        const double yc = std::sqrt(big * big - (4.0 - dt) * (4.0 - dt)), at = std::atan2(yc, 4.0 - dt);
+        return 0.5 * (big * big * (PI + 2.0 * at) + tab) + (4.0 - dt) * (cy - yc);
+    };
+    const double r = 0.5, dphi = (PI / 2.0) / 8192.0;
+    double want = 0.0;
+    for (int i = 0; i < 8192; ++i)
+    {
+        const double phi = (i + 0.5) * dphi, d = r * (1.0 - std::cos(phi));
+        want += (area(0.0, 0.0) - area(d, d)) * r * std::cos(phi) * dphi;
+    }
+    const double top[18] = {0, -25, 2, 4, 27.8945, 2, 3.41421356, 32.5253247, 2, 0, cy + 2.0, 2, -3.41421356, 32.5253247, 2, -4, 27.8945, 2};
+    CHECK(plate != nullptr && near(volume_of(plate), 2.0 * area(0.0, 0.0), 1e-10));
+    CHECK(plate != nullptr && smlib_fillet(plate, top, 6, 0.01, r, &round, nullptr) == SMLIB_OK);
+    if (round != nullptr)
+    {
+        const double removed = volume_of(plate) - volume_of(round);
+        std::printf("tabbed plate's outline rounded r%g: removed %.9f, expected %.9f\n", r, removed, want);
+        CHECK(sound(round));
+        CHECK(near(removed, want, 1e-6));
+    }
+    smlib_brep_free(plate);
+    smlib_brep_free(round);
+}
+
 } // namespace
 
 // A disc r 15, 5 thick, one circular edge rounded r 1.5 and shelled 1.6 or 2 inward, open at one
@@ -6069,6 +6117,7 @@ int main(int argc, char **argv)
     end_face_rounds_mitred_at_concave_corners();
     chamfer_past_a_sloped_basin_rim();
     chamfer_of_a_rim_loop_past_its_rim();
+    tabbed_plate_rounds_mitred_on_the_arcs_continuation();
 
     // SolidCraft surface.offset of a ball's one face: the face taken off as a sheet is a closed
     // shell whose regions are all voids, which smlib_offset_sheet refused as a solid
