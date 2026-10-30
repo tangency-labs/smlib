@@ -157,6 +157,10 @@ public:
     SmSurface* &           rOffsetSurface           ///< [out]: Offset Surf Approx, may be more than 1 when offsets have self-intersections     <br>
   ) const;
 
+  // SolidCraft change: a generatrix that is one circular arc shrinks onto its centre where the
+  // offset runs towards that centre by its radius or more (SmSurface::OffsetCollapses)
+  virtual SmBoolean OffsetCollapses(double dSignedOffsetDistance, double dTol) const;
+
   virtual SmStatus CreateApproxSurface
   (
     const SmContext     & crContext,                 ///< [in ]: context for new object construction                                        <br>

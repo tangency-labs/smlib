@@ -635,6 +635,15 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   the offset edge along its end, which the mating shrinks to a corner, is squeezed out. A collapsed
   face that cannot be bridged so (not four-sided, or a collapsed face across it) is refused with
   `SM_ERR_DEGENERATE_SURFACE`.
+- **A round of revolution moved in past its radius has no offset** (`SmSurfOfRevolution.cpp`/`.h`,
+  new `SmSurfOfRevolution::OffsetCollapses`; `CreateOffsetSurface`): a fillet along a circular
+  edge is a surface of revolution of an arc (a torus in all but its type), which had no collapse
+  test, so moved in past its radius its generatrix's offset was built as the arc turned inside
+  out round its centre and the offset was no closed solid (1001: a disc r 15 with its rim rounded
+  r 1.5, shelled 1.6 or 2; SolidCraft shell_of_a_disc_rounded_smaller_than_the_wall, #319). Such
+  a surface now collapses when its generatrix is one arc and the offset runs towards the arc's
+  centre by its radius or more (the radius left below the tolerance), as a torus's does, and the
+  faces either side are mated across it.
 - **Triangles held to the chord tolerance** (`SmTess.cpp`/`.h`, new
   `SmTess::RefineTrianglesToChordHeight`, called from `AddQuadBoundaries`): the subdivision tree
   bounds each cell's chord height, but the triangles made in it were never measured. The cell strip
