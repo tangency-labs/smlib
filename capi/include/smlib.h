@@ -1245,7 +1245,14 @@ int32_t smlib_untrim_face(const smlib_brep *body, const double point[3], double 
 /* ---- Sheets (src/smlib_sheets.cpp) -------------------------------------------------------- */
 
 /* A new body: `brep`'s faces sewn along the vertices and edges that coincide within `tolerance`
- * (> 0, at most 1e3 mm), glued once at that tolerance (SmBrep::StitchFaces), then oriented
+ * (> 0, at most 1e3 mm), glued once at that tolerance (SmBrep::StitchFaces); edges left with one
+ * face are then glued to the edges they lie on whatever uses those (a sheet laid on a solid's
+ * edges), a space the faces so close becoming material and a face left between two material
+ * regions removed (the cut top of a box under a cover sewn over it), when that leaves no edge with
+ * more than two faces (a sheet that closes nothing, one hung on a solid's edge, stays beside the
+ * solid as the first gluing left it; a sheet that cannot be placed
+ * between the faces around those edges, as one running on along the solid's faces from them or
+ * overlapping them, is SMLIB_ERR_UNSUPPORTED), then oriented
  * (SmBrep::OrientTrimmedSurfaces): outward where every edge is glued and the faces close, else
  * turned only to agree with their neighbours across the edges they share. `*out_closed` is 1 when
  * the result is a closed manifold solid, 0 for a sheet. Tags (smlib_history_tag) travel with the
