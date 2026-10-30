@@ -31,6 +31,8 @@
 #include <SmSphere.h>
 #include <SmSurface.h>
 #include <SmSurfOfRevolution.h>
+#include <SmTrimmingTools.h>
+#include <SmLine.h>
 #include <SmVector3d.h>
 #include <SmVertex.h>
 
@@ -1792,12 +1794,106 @@ void shelled_disc_round_thinner_than_the_wall()
     }
 }
 
+// A 10 x 6 plate's outline and a triangular hole whose corner touches it at (0, 3), as eight
+// lines, ordered into loops (SmTrimmingTools::OrderCurvesIntoLoops) from every rotation of the
+// list, with the outline or the hole reversed. Four curve ends meet at (0, 3). Each loop must
+// close and never cross itself there: either the outline and the hole apart (areas 60 and 1) or
+// one loop through the corner twice round the material (area 59), never the hole run the wrong
+// way round inside the outline (61). Each line's own direction is kept, so reversing an outline
+// or hole reverses its lines.
+static void loops_touching_at_a_vertex_in_any_order()
+{
+    const double outline[5][2] = {{0, 0}, {10, 0}, {10, 6}, {0, 6}, {0, 3}}, hole[3][2] = {{0, 3}, {2, 3.5}, {2, 2.5}};
+    const SmContext &ctx = *SmApiGetOrCreateContext();
+    for (int variant = 0; variant < 3; ++variant)
+    {
+        std::vector<std::pair<SmPoint3d, SmPoint3d>> lines;
+        auto loop = [&](const double (*p)[2], int n, bool reversed)
+        {
+            for (int i = 0; i < n; ++i)
+            {
+                SmPoint3d a(p[i][0], p[i][1], 0.0), b(p[(i + 1) % n][0], p[(i + 1) % n][1], 0.0);
+                lines.push_back(reversed ? std::make_pair(b, a) : std::make_pair(a, b));
+            }
+        };
+        loop(outline, 5, variant == 1);
+        loop(hole, 3, variant == 2);
+        const size_t n = lines.size();
+        for (size_t turn = 0; turn < n; ++turn)
+        {
+            SmTArray<SmCurve *> curves;
+            for (size_t k = 0; k < n; ++k)
+            {
+                const auto &l = lines[(k + turn) % n];
+                SmLine *c = nullptr;
+                CHECK(SmLine::CreateLineSegment(ctx, 3, l.first, l.second, c) == SM_SUCCESS && c != nullptr);
+                curves.Add(c);
+            }
+            SmTArray<SmCurve *> ordered;
+            SmTArray<ULONG> counts;
+            SmTArray<SmOrientType> orients;
+            SmPoint3d at;
+            SmVector3d normal;
+            SmExtent3d box;
+            SmStatus s = SmTrimmingTools::OrderCurvesIntoLoops(curves, 1e-6, ordered, counts, orients, at, normal, box);
+            if (s != SM_SUCCESS || ordered.GetSize() != n)
+            {
+                std::fprintf(stderr, "loops touching at a vertex, variant %d, turn %zu: status %ld\n", variant, turn, static_cast<long>(s));
+                failures++;
+            }
+            else
+            {
+                // each loop closed, and its area as it runs (shoelace over its lines)
+                std::vector<double> areas;
+                ULONG first = 0;
+                for (ULONG c = 0; c < counts.GetSize(); ++c)
+                {
+                    double area = 0.0;
+                    SmPoint3d end;
+                    for (ULONG k = first; k < first + counts[c]; ++k)
+                    {
+                        SmPoint3d a, b;
+                        ordered[k]->GetEnds(a, b);
+                        if (orients[k] != SM_OT_SAME)
+                        {
+                            std::swap(a, b);
+                        }
+                        CHECK(k == first || a.DistanceBetween(end) < 1e-12);
+                        area += 0.5 * (a.x * b.y - b.x * a.y);
+                        end = b;
+                    }
+                    SmPoint3d start, other;
+                    ordered[first]->GetEnds(start, other);
+                    CHECK(end.DistanceBetween(orients[first] == SM_OT_SAME ? start : other) < 1e-12);
+                    areas.push_back(std::fabs(area));
+                    first += counts[c];
+                }
+                std::sort(areas.begin(), areas.end());
+                bool apart = areas.size() == 2 && std::fabs(areas[0] - 1.0) < 1e-12 && std::fabs(areas[1] - 60.0) < 1e-12;
+                bool joined = areas.size() == 1 && std::fabs(areas[0] - 59.0) < 1e-12;
+                if (!apart && !joined)
+                {
+                    std::fprintf(stderr, "loops touching at a vertex, variant %d, turn %zu: %zu loops, largest area %g\n", variant, turn, areas.size(),
+                                 areas.empty() ? 0.0 : areas.back());
+                    failures++;
+                }
+            }
+            for (ULONG k = 0; k < curves.GetSize(); ++k)
+            {
+                delete curves[k];
+            }
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 4 && std::strcmp(argv[1], "--solidcore-1173") == 0)
     {
         return corner_child(argv[2], argv[3]);
     }
+
+    loops_touching_at_a_vertex_in_any_order();
 
     smlib_brep *cube = box(0, 0, 0, 20, 20, 20);
     smlib_brep *r = nullptr;
