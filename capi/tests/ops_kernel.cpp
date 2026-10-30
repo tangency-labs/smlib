@@ -3409,6 +3409,39 @@ int main(int argc, char **argv)
         CHECK(smlib_fillet_variable(cube, edge, 0.1, from0, 1, v_knots, 5, p_radii, 3, &r) == SMLIB_ERR_UNSUPPORTED && r == nullptr);
     }
 
+    // A variable round whose radius falls fast between its ends: the cubic Bezier law 6, 6, 1, 1
+    // along the cube's edge y = z = 20 (its slope reaches 3/8). On the cube's planes any uv curve
+    // lies on the face, so the trace's span test held for any step up to its angle tolerance,
+    // and the rails between the traced points cut across the law: the round came out up to
+    // 0.05 mm off its radius and took 0.2% too much. Each span's rails are now held to the
+    // fillet solved inside the span. The round takes (1 - pi/4) r^2 per unit length, integrated
+    // here (Simpson, 2000 panels, exact to 1e-12 on this polynomial); the sections are cubics
+    // within 0.05% of the radius, so to 1e-4.
+    {
+        const double edge[3] = {10, 20, 20};
+        const double from0[3] = {0, 20, 20};
+        const double knots[8] = {0, 0, 0, 0, 1, 1, 1, 1};
+        const double radii[4] = {6, 6, 1, 1};
+        auto law = [&](double t) {
+            const double u = 1.0 - t;
+            return radii[0] * u * u * u + 3.0 * radii[1] * u * u * t + 3.0 * radii[2] * u * t * t + radii[3] * t * t * t;
+        };
+        const int n = 2000;
+        double sum = 0.0;
+        for (int i = 0; i <= n; ++i)
+        {
+            const double t = static_cast<double>(i) / n, rr = law(t);
+            sum += (i == 0 || i == n ? 1.0 : (i % 2 == 1 ? 4.0 : 2.0)) * rr * rr;
+        }
+        const double removed = (1.0 - PI / 4.0) * 20.0 * sum / (3.0 * n);
+        CHECK(smlib_fillet_variable(cube, edge, 0.1, from0, 3, knots, 8, radii, 4, &r) == SMLIB_OK);
+        if (r != nullptr)
+        {
+            CHECK(near(8000.0 - volume_of(r), removed, 1e-4));
+            done(r);
+        }
+    }
+
     // A variable round 2 -> r1 on the top edge x = 10, z = 30 of a 10 x 20 x 30 box. The top is
     // 10 wide: up to r1 = 10 the round fits, and takes (1 - pi/4) L (a^2 + ab + b^2) / 3. Past
     // it the contact line on the top leaves it across its far edge x = 0 before the round's end
