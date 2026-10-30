@@ -12,6 +12,10 @@
 #include <SmExtent2d.h>
 #include <SmBSplineSurface.h>
 #include <SmOffsetSurface.h>
+#include <SmSurfOfRevolution.h>
+#include <SmCone.h>
+#include <SmSphere.h>
+#include <SmTorus.h>
 #include <SmGraphicsExtern.h>
 #include <SmExtent3d.h>
 #include <SmPseudoBox.h>
@@ -492,6 +496,139 @@ static SmStatus sm_ExtendToward
 } // end sm_ExtendToward
 
 /*******************************************************************//**
+PURPOSE: SolidCraft change. Extend a cylinder's, cone's, sphere's or
+   torus's NURB as itself so that its domain reaches crLo and crHi: each
+   end span's rational polynomial carried on (NLib's C-infinity extension),
+   which stays on the surface however far it runs.
+
+NOTES: NLib's C-infinity extension merges the new piece into the end span,
+   one rational span, and refuses it once that span would need a weight
+   under NL_WMIN: a rational quadratic arc's middle weight goes to zero as
+   the span reaches half a turn. So the extension is made piece by piece:
+   each piece is the end span's polynomial carried on over a parameter
+   length (at first the end span's, doubled after each piece, halved when
+   NLib refuses it), and the old end is then made a knot of multiplicity
+   equal to the degree (exact), so the next piece carries on the last
+   piece's polynomial only. Every piece is the same polynomial: the
+   continuation is exact at any parameter. A straight direction (a cone's
+   rulings) takes one piece.
+***********************************************************************/
+static SmStatus sm_ExtendAsItself
+  (const SmContext        & crContext,       // in : context for new object
+   SmBSplineSurface       * pSurface,        // in : surface to extend
+   const SmPoint2d        & crLo,            // in : the domain's least corner to reach
+   const SmPoint2d        & crHi,            // in : the domain's greatest corner to reach
+   SmBSplineSurface      *& rpExtended)      // out: new extended surface
+{
+  rpExtended = NULL;
+  NL_SURFACE * sur = pSurface->GetOrCreateGwNurbPointer();
+  NER( sur );
+  NL_STACKS    SG;
+  N_InitNurbs( &SG );
+  NL_SURFACE   cur;
+  N_SrfInitArrays( &cur );
+  if ( N_SrfCopy( sur, &cur, &SG ))
+    {
+      N_EndNurbs( &SG );
+      return SM_ERR;
+    }
+  const NL_FLAG aDir[2] = { NL_UDIR, NL_VDIR };
+  const NL_FLAG aEnd[2] = { NL_START, NL_END };
+  for (ULONG d=0; d<2; d++)
+    {
+      for (ULONG e=0; e<2; e++)
+        {
+          const double dGoal = ( e == 0 ) ? ( d == 0 ? crLo.x : crLo.y ) : ( d == 0 ? crHi.x : crHi.y );
+          double dStep = 0.0;
+          for (ULONG lTries=0; lTries<4096; lTries++)
+            {
+              NL_PARAMETER us, ue, vs, ve;
+              N_SrfGetParameterBounds( &cur, &us, &ue, &vs, &ve );
+              const double dBound = ( e == 0 ) ? ( d == 0 ? us : vs ) : ( d == 0 ? ue : ve );
+              const double dRange = ( d == 0 ) ? ( ue - us ) : ( ve - vs );
+              // reached (to the parameters' rounding: a piece of no length is no extension)
+              const double dSame = SM_EFF_ZERO * ( 1.0 + smos_Fabs( dBound ) + dRange );
+              if ( e == 0 ? !( dGoal < dBound - dSame ) : !( dGoal > dBound + dSame ))
+                { break; }
+              NL_INDEX     n, m, r, s;
+              NL_CPOINT ** Pw;
+              NL_DEGREE    p, q;
+              NL_REAL    * UP, * VP;
+              N_SrfGetCPtsDegreesAndKnots( &cur, &n, &m, &Pw, &p, &q, &r, &s, &UP, &VP );
+              const NL_REAL * K    = ( d == 0 ) ? UP : VP;
+              const NL_INDEX  lTop = ( d == 0 ) ? r : s;
+              const NL_DEGREE lDeg = ( d == 0 ) ? p : q;
+              if ( !( dStep > 0.0 ))
+                {
+                  // the end span's parameter length
+                  NL_INDEX k = ( e == 0 ) ? 1 : lTop - 1;
+                  while ( k > 0 && k < lTop && K[k] == K[( e == 0 ) ? 0 : lTop] )
+                    { k = ( e == 0 ) ? k + 1 : k - 1; }
+                  dStep = smos_Fabs( K[k] - K[( e == 0 ) ? 0 : lTop] );
+                }
+              if ( !( dStep > SM_EFF_ZERO * ( 1.0 + dRange )))
+                {
+                  N_EndNurbs( &SG );
+                  return SM_ERR;
+                }
+              const double dPar = ( e == 0 ) ? smos_Max( dGoal, dBound - dStep ) : smos_Min( dGoal, dBound + dStep );
+              NL_SURFACE next;
+              N_SrfInitArrays( &next );
+              if ( N_SrfExtendByParamDist( &cur, dPar, aDir[d], aEnd[e], NL_CMAX, &next, &SG, &SG ))
+                {
+                  // a weight under NL_WMIN: a shorter piece
+                  dStep *= 0.5;
+                  continue;
+                }
+              // the old end a knot of full multiplicity: the next piece carries on this one's polynomial
+              NL_SURFACE knotted;
+              N_SrfInitArrays( &knotted );
+              if ( lDeg > 0 && N_SrfInsertKnot( &next, dBound, lDeg, aDir[d], &knotted, &SG, &SG ))
+                {
+                  N_EndNurbs( &SG );
+                  return SM_ERR;
+                }
+              cur = ( lDeg > 0 ) ? knotted : next;
+              // The new piece's weights brought back to the old end's (a rational Bezier piece
+              // reparameterized: its i-th control weights times c^i counted from the old end,
+              // the same points of the surface): the polynomial's weights grow with the square
+              // of the parameter, and NLib refuses a weight over NL_WMAX.
+              if ( lDeg > 0 )
+                {
+                  N_SrfGetCPtsDegreesAndKnots( &cur, &n, &m, &Pw, &p, &q, &r, &s, &UP, &VP );
+                  const NL_INDEX lLast  = ( d == 0 ) ? n : m;
+                  const NL_INDEX lOld   = ( e == 0 ) ? lDeg : lLast - lDeg;  // the old end's control index
+                  const NL_INDEX lFar   = ( e == 0 ) ? 0    : lLast;         // the new end's
+                  NL_REAL dOldW = 1.0, dFarW = 1.0;
+                  N_CPtGetW( ( d == 0 ) ? Pw[lOld][0] : Pw[0][lOld], &dOldW );
+                  N_CPtGetW( ( d == 0 ) ? Pw[lFar][0] : Pw[0][lFar], &dFarW );
+                  if ( dOldW > 0.0 && dFarW > 0.0 )
+                    {
+                      const double dC = pow( dOldW / dFarW, 1.0 / (double)lDeg );
+                      for (NL_INDEX k=0; k<=lDeg; k++)
+                        {
+                          const NL_INDEX lAt    = ( e == 0 ) ? lDeg - k : lLast - lDeg + k;  // k from the old end
+                          const double   dScale = pow( dC, (double)k );
+                          const NL_INDEX lOther = ( d == 0 ) ? m : n;
+                          for (NL_INDEX o=0; o<=lOther; o++)
+                            {
+                              NL_CPOINT & rP = ( d == 0 ) ? Pw[lAt][o] : Pw[o][lAt];
+                              N_ScaleCPt( dScale, rP, &rP );
+                            }
+                        }
+                    }
+                }
+              dStep *= 2.0;
+            }
+        }
+    }
+  rpExtended = new (crContext) SmBSplineSurface( (gw_SURFACE *)&cur );
+  N_EndNurbs( &SG );
+  return SM_SUCCESS;
+
+} // end sm_ExtendAsItself
+
+/*******************************************************************//**
 PURPOSE: Make sure given DomainPoint is contained in
             domain of given surface by 
    1. Wrapping UV coordinates in domain periodic directions and
@@ -567,6 +704,15 @@ static SmStatus sm_ExtendSurface
         { dK *= 2.0; }
       return dEnd + dDir * dK * dSize;
     };
+  // SolidCraft change: a cylinder, cone, sphere or torus continues as itself (sm_ExtendAsItself):
+  // its NURB spans are rational arcs and straight lines, whose polynomials carried on stay on the
+  // surface. A tangent extension (G1R) leaves it at once: a cylinder R25 continued 0.44 past its
+  // face's end was 0.0036 off the circle, and a round traced there (where a mitre's rails meet
+  // past a concave corner) was built that far off all along.
+  const SmBoolean bAsItself =    pSurface->IsKindOf(SmCone_TYPE)
+                              || pSurface->IsKindOf(SmSphere_TYPE)
+                              || pSurface->IsKindOf(SmTorus_TYPE);
+
   // Every side that can grow grows at once (an extension's shape on one side depends on the
   // other sides' too), at least one size out.
   SmPoint2d sLo = sHave.GetMin();
@@ -579,6 +725,11 @@ static SmStatus sm_ExtendSurface
     { sLo.y = smos_Min(sLo.y, Reach(sDomain.GetMin().y, sSize.y, rUV.y, -1.0)); }
   if (!bIsPeriodicOnV && !(lSingularities & SM_SS_VMAX))
     { sHi.y = smos_Max(sHi.y, Reach(sDomain.GetMax().y, sSize.y, rUV.y,  1.0)); }
+  if (bAsItself)
+    {
+      SER(sm_ExtendAsItself(crContext, pSurface, sLo, sHi, rpExtended));
+      return SM_SUCCESS;
+    }
 
   // Extend the base toward the low corner, then the result toward the high corner (a side that
   // does not grow keeps its middle coordinate).
