@@ -2943,6 +2943,47 @@ void rounds_mitred_to_one_past_a_rim()
     }
 }
 
+// SolidCraft's rounded rectangle (solidcraft#2498: a 26.4 x 8.6 outline, its corners R4.29,
+// extruded 8.4), its top rim rounded R9: too large for the 8.6 top, refused cleanly. The big-radius
+// conversion (SmFilletExecutive::TestAndConvertBigRadFillet) deleted a fillet vertex its corner
+// still listed; where the conversion then failed the corner deleted it again (SIGBUS).
+void big_round_of_a_rounded_rectangle_is_refused()
+{
+    const double w = 26.4, h = 8.6, r = 4.29;
+    std::vector<int64_t> kinds;
+    std::vector<double> reals;
+    auto line = [&](double x0, double y0, double x1, double y1)
+    {
+        kinds.push_back(SMLIB_CURVE_LINE);
+        reals.insert(reals.end(), {10 + x0, 10 + y0, 0, 10 + x1, 10 + y1, 0});
+    };
+    auto arc = [&](double cx, double cy, double from, double to)
+    {
+        kinds.push_back(SMLIB_CURVE_ARC);
+        reals.insert(reals.end(), {10 + cx, 10 + cy, 0, 0, 0, 1, 1, 0, 0, r, from, to});
+    };
+    line(r, 0, w - r, 0);
+    arc(w - r, r, -0.5 * PI, 0);
+    line(w, r, w, h - r);
+    arc(w - r, h - r, 0, 0.5 * PI);
+    line(w - r, h, r, h);
+    arc(r, h - r, 0.5 * PI, PI);
+    line(0, h - r, 0, r);
+    arc(r, r, PI, 1.5 * PI);
+    const double up[3] = {0, 0, 1};
+    double corner[3];
+    smlib_brep *bar = nullptr, *out = nullptr;
+    CHECK(smlib_extrude(kinds.data(), static_cast<int64_t>(kinds.size()), reals.data(), static_cast<int64_t>(reals.size()), up, 8.4, 0, 0, 1,
+                        &bar, corner) == SMLIB_OK);
+    const double rim[24] = {23.2, 10.0, 8.4, 35.14348809129028, 11.25651190870971, 8.4, 11.256511908709715, 11.256511908709712, 8.4,
+                            10.0, 14.3, 8.4, 11.256511908709713, 17.343488091290293, 8.4, 23.2, 18.6, 8.4,
+                            35.14348809129028, 17.34348809129029, 8.4, 36.4, 14.3, 8.4};
+    const double sizes[8] = {9, 9, 9, 9, 9, 9, 9, 9};
+    CHECK(bar != nullptr && smlib_blend(bar, SMLIB_BLEND_ROUND, rim, sizes, 8, 0.5, &out, nullptr) != SMLIB_OK && out == nullptr);
+    smlib_brep_free(out);
+    smlib_brep_free(bar);
+}
+
 // Simpson's rule for f on [a, b] in n (even) spans.
 template <class F> double simpson(F f, double a, double b, int n)
 {
@@ -6555,6 +6596,7 @@ int main(int argc, char **argv)
     chamfer_of_a_rim_loop_past_its_rim();
     rounds_mitred_to_one_past_a_rim();
     closed_rims_blended_past_their_walls();
+    big_round_of_a_rounded_rectangle_is_refused();
     tabbed_plate_rounds_mitred_on_the_arcs_continuation();
     corner_patch_edge_lies_on_its_patch();
     corner_patch_drop_from_a_guess_is_its_foot();
