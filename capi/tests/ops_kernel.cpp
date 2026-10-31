@@ -4683,7 +4683,7 @@ double box_edge_section_cut(int n, double w)
     {
         const P2 r = gn_section(n, w, BOX_TOP_JETS, BOX_BACK_JETS, static_cast<double>(i) / N);
         // about the edge (30, 20), the region between the section and the two faces
-        a += 0.5 * ((q.x - 30.0) * (r.y - 20.0) - (r.x - 30.0) * (q.y - 20.0));
+        a += 0.5 * ((q[0] - 30.0) * (r[1] - 20.0) - (r[0] - 30.0) * (q[1] - 20.0));
         q = r;
     }
     return std::fabs(a) / 9.0;
