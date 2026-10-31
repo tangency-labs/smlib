@@ -239,6 +239,8 @@ protected:
       SmFace         * m_pEndFace;                  //   the face whose surface's continuation cuts the fillet off there
     };
   std::vector<SmFilletOpenEnd> m_vOpenEnds;         // SolidCraft change: the fillet's ends left uncut, in m_bCliffOverflow
+  std::vector<SmPoint3d>       m_vFanSplitPoints;   // SolidCraft change: where a blended edge's vertex the body touches itself at
+                                                    //   was split into one vertex per fan (SplitBlendedVertexFans)
   SmBoolean                 m_bOverflowFirst;       // SolidCraft change: TRUE = when blends of several edges overflow across cliffs, stop
                                                     //   before building anything (SM_FILERR_OVERFLOW_FIRST): the caller blends the
                                                     //   edges that overflow on their own first, then what is left of the others
@@ -424,6 +426,9 @@ public:
   SmStatus CreateFilletBrep          (SmFilletErrorInfo * pOptFilletErrorInfo = NULL);
   SmStatus CreateFilletCorners       (SmFilletErrorInfo * pOptFilletErrorInfo = NULL);
   SmStatus DoFilleting               (SmFilletErrorInfo * pOptFilletErrorInfo = NULL); // note: increments unlocked mark value
+  SmStatus DoFilletingSteps          (SmFilletErrorInfo * pOptFilletErrorInfo); // SolidCraft change: DoFilleting between the fan split and join
+  SmStatus SplitBlendedVertexFans    (SmBrep * pBrep, const SmTArray< SmEdge* > & rEdgePtrs); // SolidCraft change: one vertex per fan at each blended edge's vertex
+  SmStatus JoinBlendedVertexFans     (); // SolidCraft change: the vertices still at a split point joined again
   SmStatus DoSurfaceFilleting        (SmFilletErrorInfo * pOptFilletErrorInfo = NULL); // note: increments unlocked mark value
   SmStatus DoPiecewiseMerge          ();                                               // note: increments unlocked mark value
   SmStatus LoadFilletSolver          (SmFilletSolver * pFS);
