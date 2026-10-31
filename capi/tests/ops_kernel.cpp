@@ -2629,13 +2629,45 @@ static std::vector<std::pair<SmPoint3d, SmPoint3d>> rotated(const std::vector<st
     return out;
 }
 
-// A 10 x 6 plate's outline and a triangular hole whose corner touches it at (0, 3), as eight
-// lines, ordered into loops (SmTrimmingTools::OrderCurvesIntoLoops) from every rotation of the
-// list, with the outline or the hole reversed. Four curve ends meet at (0, 3). Each loop must
-// close and never cross itself there: either the outline and the hole apart (areas 60 and 1) or
-// one loop through the corner twice round the material (area 59), never the hole run the wrong
-// way round inside the outline (61). Each line's own direction is kept, so reversing an outline
-// or hole reverses its lines.
+// SolidCraft rig shell/616-shell-open-a-rib-side-face-of-a-lid (tests/data/lid-rib-open-at-its-
+// side.txt, as smlib_shell was handed it): #616's lid shelled 0.5 open at a rib's outer side
+// (x = 102.8), which stands 0.15 in from the skirt's outer wall (102.65). The skirt top's offset
+// (z = 4.9) has the rib's foot as a hole; the hole's side along the open face stays at 102.8, the
+// outer loop's side along the skirt's wall moves to 103.15, and between them, under the opening,
+// the loops wind round the other way: the cavity's floor, the cavity above it, a face of the skirt
+// top's offset turned over. It was dropped and the cavity left open (1001). The owner's ruling of
+// 2026-10-31: it builds, with the 0.15 lip beside the opening.
+static void shell_open_beside_a_step_keeps_the_floor_under_the_opening()
+{
+    smlib_flat *f = nullptr;
+    smlib_brep *part = nullptr, *r = nullptr;
+    CHECK(smlib_flat_read(SMLIB_TEST_DATA "/lid-rib-open-at-its-side.txt", &f) == SMLIB_OK && smlib_brep_import(f, &part) == SMLIB_OK);
+    smlib_flat_free(f);
+    const double pick[3] = {102.8, 17, 6.85};
+    CHECK(part != nullptr && smlib_shell(part, pick, 1, 0.11862452211935036, -0.5, &r, nullptr) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        CHECK(sound(r));
+        SmTArray<SmFace *> faces;
+        r->p->GetFaces(faces);
+        int floors = 0;
+        for (ULONG i = 0; i < faces.GetSize(); i++)
+        {
+            SmExtent3d e;
+            CHECK(faces[i]->CalculateBoundingBox(e, TRUE) == SM_SUCCESS);
+            if (std::fabs(e.GetMin(0) - 102.8) < 1e-6 && std::fabs(e.GetMax(0) - 103.15) < 1e-6 && std::fabs(e.GetMin(2) - 4.9) < 1e-6 &&
+                std::fabs(e.GetMax(2) - 4.9) < 1e-6)
+            {
+                floors++;
+            }
+        }
+        std::printf("lid shelled 0.5 open at a rib's side: volume %.9f, %d floor face(s) under the opening\n", volume_of(r), floors);
+        CHECK(floors == 1);
+        done(r);
+    }
+    smlib_brep_free(part);
+}
+
 // SolidCraft rig shell/cov-shell-trough-whose-floor-falls-to-a-drain and
 // cov-shell-pocket-whose-floor-falls-to-a-drain (tests/data/trough-falling-to-a-drain.txt,
 // pocket-falling-to-a-drain.txt, as smlib_shell was handed them): a 100 x 60 x 40 trough whose
@@ -2646,44 +2678,6 @@ static std::vector<std::pair<SmPoint3d, SmPoint3d>> rotated(const std::vector<st
 // joined by a new edge. The volumes are the solutions' own closed forms (the offset faces
 // extended to meet: the cavity integrated exactly over the cells where each moved facet is
 // highest); both were 1001.
-// SolidCraft rig shells that must build, one closed valid solid each (the owner's rulings of
-// 2026-10-31), as smlib_shell was handed them (tests/data): #616's lid shelled 0.5 open at a
-// rib's outer side, beside a 0.15 step down to the skirt; #545's frame (a recess from the top, a
-// ring cut from the bottom, a 0.5 floor between) shelled 0.5 open at the ring cut's outer wall;
-// a plate closed by a half-round side, a blind r5 hole drilled in through it, shelled 2 open at
-// the far end (tangency-labs/solidcore#1795: the hole's offset passes out through the side's);
-// squares joined up and down along an edge, shelled 0.346 open at a side wall. Every one was
-// 1001: the offset left its cavity open or touching itself along edges. No closed form: the
-// result is sound, a closed solid, and hollower than the part.
-static void shells_the_rig_must_build()
-{
-    struct
-    {
-        const char *data;
-        double pick[3], tolerance, wall;
-    } cases[1] = {
-        {SMLIB_TEST_DATA "/lid-rib-open-at-its-side.txt", {102.8, 17, 6.85}, 0.11862452211935036, 0.5},
-    };
-    for (const auto &c : cases)
-    {
-        smlib_flat *f = nullptr;
-        smlib_brep *part = nullptr, *r = nullptr;
-        CHECK(smlib_flat_read(c.data, &f) == SMLIB_OK && smlib_brep_import(f, &part) == SMLIB_OK);
-        smlib_flat_free(f);
-        int32_t got = part != nullptr ? smlib_shell(part, c.pick, 1, c.tolerance, -c.wall, &r, nullptr) : SMLIB_ERR_ARG;
-        std::printf("%s shelled %g: status %d\n", c.data, c.wall, got);
-        CHECK(got == SMLIB_OK);
-        if (r != nullptr)
-        {
-            double v = volume_of(r), v0 = volume_of(part);
-            std::printf("  volume %.9f of the part's %.9f\n", v, v0);
-            CHECK(v > 0.0 && v < v0);
-            done(r);
-        }
-        smlib_brep_free(part);
-    }
-}
-
 static void four_faces_meeting_at_a_vertex_shell()
 {
     struct
@@ -2816,6 +2810,13 @@ static void up_down_joined_squares_shell()
     smlib_brep_free(part);
 }
 
+// A 10 x 6 plate's outline and a triangular hole whose corner touches it at (0, 3), as eight
+// lines, ordered into loops (SmTrimmingTools::OrderCurvesIntoLoops) from every rotation of the
+// list, with the outline or the hole reversed. Four curve ends meet at (0, 3). Each loop must
+// close and never cross itself there: either the outline and the hole apart (areas 60 and 1) or
+// one loop through the corner twice round the material (area 59), never the hole run the wrong
+// way round inside the outline (61). Each line's own direction is kept, so reversing an outline
+// or hole reverses its lines.
 static void loops_touching_at_a_vertex_in_any_order()
 {
     const double outline[5][2] = {{0, 0}, {10, 0}, {10, 6}, {0, 6}, {0, 3}}, hole[3][2] = {{0, 3}, {2, 3.5}, {2, 2.5}};
@@ -3024,7 +3025,7 @@ int main(int argc, char **argv)
 
     loops_touching_at_a_vertex_in_any_order();
     four_faces_meeting_at_a_vertex_shell();
-    shells_the_rig_must_build();
+    shell_open_beside_a_step_keeps_the_floor_under_the_opening();
     hole_whose_offset_leaves_the_round_side_shell();
     floor_thinner_than_two_walls_shell();
     up_down_joined_squares_shell();
