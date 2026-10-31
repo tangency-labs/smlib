@@ -676,7 +676,8 @@ int32_t smlib_blend(const smlib_brep *brep, int32_t kind, const double *points, 
  * overflowing ones go first: they are built, and the others then round what is left of their
  * edges. An edge such an overflow removes whole is gone and not rounded: `out_dropped` (one
  * flag per point, cleared first) is 1 for each point that picked one. An edge it cuts keeps the
- * rest of its length, rounded at its size. smlib_blend does the same, without the flags. */
+ * rest of its length, rounded at its size. Rounds mitred at a face's concave corner go first
+ * together, whichever overflows. smlib_blend does the same, without the flags. */
 int32_t smlib_blend_dropping(const smlib_brep *brep, int32_t kind, const double *points, const double *sizes, int64_t n_points,
                              double tolerance, smlib_brep **out, int64_t *out_failed_point, int64_t *out_dropped);
 
