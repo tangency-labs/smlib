@@ -2920,6 +2920,62 @@ void rails_trimmed_next_to_a_knot()
     }
 }
 
+// A vertex where the body touches itself split into one vertex per fan of faces round it, and
+// joined again (SmBrep::SplitVertexByFans, JoinVertexFans): the up-down squares (data:
+// up-down-squares, as in concave_chamfers_at_a_vertex_the_body_touches_itself_at) touch
+// themselves at the origin, where the faces round the two missing octants make two fans of
+// three edges each. Split, the origin is two vertices of three edges each and the body one
+// closed valid solid with one vertex more; joined, it is the body it was. A box's corner has
+// one fan and stays as it is.
+void vertex_fans_split_and_joined()
+{
+    smlib_brep *b = read_flat(SMLIB_TEST_DATA "/up-down-squares.txt");
+    if (b == nullptr)
+    {
+        CHECK(!"the up-down squares read");
+        return;
+    }
+    auto at = [](SmBrep *brep, const SmPoint3d &p) {
+        std::vector<SmVertex *> out;
+        SmTArray<SmVertex *> vs;
+        brep->GetVertices(vs);
+        for (ULONG i = 0; i < vs.GetSize(); ++i)
+        {
+            if (vs[i]->GetPoint().DistanceBetween(p) < 1e-9)
+            {
+                out.push_back(vs[i]);
+            }
+        }
+        return out;
+    };
+    auto edges = [](SmVertex *v) {
+        SmTArray<SmEdge *> es;
+        v->GetEdges(es);
+        return es.GetSize();
+    };
+    const ULONG before = b->p->GetNumVertices();
+    const double volume = volume_of(b);
+    std::vector<SmVertex *> origin = at(b->p, SmPoint3d(0, 0, 0));
+    CHECK(origin.size() == 1 && edges(origin[0]) == 6);
+    SmTArray<SmVertex *> made;
+    CHECK(!origin.empty() && b->p->SplitVertexByFans(origin[0], made) == SM_SUCCESS);
+    CHECK(made.GetSize() == 1 && b->p->GetNumVertices() == before + 1);
+    origin = at(b->p, SmPoint3d(0, 0, 0));
+    CHECK(origin.size() == 2 && edges(origin[0]) == 3 && edges(origin[1]) == 3);
+    CHECK(b->p->IsManifoldSolid() && sound(b) && near(volume_of(b), volume, 1e-12));
+    CHECK(origin.size() == 2 && b->p->JoinVertexFans(origin[0], origin[1]) == SM_SUCCESS);
+    origin = at(b->p, SmPoint3d(0, 0, 0));
+    CHECK(origin.size() == 1 && edges(origin[0]) == 6 && b->p->GetNumVertices() == before);
+    CHECK(sound(b) && near(volume_of(b), volume, 1e-12));
+    smlib_brep_free(b);
+
+    smlib_brep *cube = box(0, 0, 0, 10, 10, 10);
+    std::vector<SmVertex *> corner = at(cube->p, SmPoint3d(10, 10, 10));
+    made.RemoveAll();
+    CHECK(corner.size() == 1 && cube->p->SplitVertexByFans(corner[0], made) == SM_SUCCESS && made.GetSize() == 0 && cube->p->GetNumVertices() == 8);
+    smlib_brep_free(cube);
+}
+
 // SolidCraft rig case fillets/cov-chamfer-concave-edge-through-up-down-joined-squares
 // (up-down-squares): four 10 x 10 squares drawn edge to edge, three extruded 10 up and three 10
 // down and joined. The down part lacks the square x, y < 0 and the up part x, y > 0, so the line
@@ -6487,6 +6543,7 @@ int main(int argc, char **argv)
     corner_patch_edge_lies_on_its_patch();
     corner_patch_drop_from_a_guess_is_its_foot();
     chamfer_ending_on_a_boss_wall_above_it();
+    vertex_fans_split_and_joined();
     rails_trimmed_next_to_a_knot();
     concave_chamfers_at_a_vertex_the_body_touches_itself_at();
     chamfer_of_a_shelled_box_corner_ending_under_its_lip();
