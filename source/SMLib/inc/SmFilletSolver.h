@@ -332,6 +332,7 @@ public:
   SmStatus     TestRollOver(SmTArray<SmFilletCorner*> & rAdjustedCorners);
   SmStatus     RailsFitTheirFaces(SmBoolean & rbFit, SmBoolean & rbRollsOver, SmBoolean & rbIntoMaterial); // SolidCraft change: whether every rail stays on the face it rolls on, rolls over a tangent edge, or runs into the body
   SmStatus     BallFitsItsFaces(SmBoolean & rbFits); // SolidCraft change: whether the rolling ball fits the faces' curvature at each section (no face curves tighter than it)
+  static SmBoolean IsKnifeEdge(SmEdge * pEdge, double dTangencyTolRad); // SolidCraft change: faces tangent along the edge and folded back on each other
   static SmStatus IsConcaveEdge(const SmEdge & crEdge, SmBoolean & rbConcave); // SolidCraft change: whether the body's material wedge at the edge exceeds a half turn
   SmStatus     LeavesPastAnEnd(const SmFace & crFace, const SmCurve & crRail, double dRailParam, const SmPointClassification & crLeave, SmBoolean & rbPastAnEnd, const SmVertex ** ppEnd = NULL, SmBoolean * pbBySide = NULL) const; // SolidCraft change: whether a rail leaves its face past an end of the filleted edge, and which
   SmStatus     TrimRails();

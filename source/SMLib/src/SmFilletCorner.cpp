@@ -1455,6 +1455,21 @@ static int iDebugLevel = 0; // Note: Can't call DebugLevel() from a static metho
           {
             SmEdgeuse * pEU0 = (*pSolverEUs)[0];
             SmEdgeuse * pEU1 = (*pSolverEUs)[1];
+            // SolidCraft change: no two-edge corner is built where an edge not blended there is
+            // a knife edge (its faces folded back on each other, as where a hole's wall touches
+            // the bottom face along a line): the corners take its faces to meet at an angle.
+            SmBoolean bKnife = FALSE;
+            for (ii=0; ii<lTotalEUs && !bKnife; ii++)
+              {
+                SmEdge * pE = (*pAllEUs)[ii]->GetEdge();
+                if ( pE != pEU0->GetEdge() && pE != pEU1->GetEdge() && SmFilletSolver::IsKnifeEdge( pE, dTangencyTolRadians ))
+                  { bKnife = TRUE; }
+              }
+            if ( bKnife )
+              {
+                MSG(_T("Corner Case Not Implemented"));
+                break;
+              }
             switch (lTotalEUs) 
               {
                 case 2: // 2x2: we can handle this only if it's a tangent fillet:
