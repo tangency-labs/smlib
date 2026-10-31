@@ -3188,7 +3188,9 @@ static SmStatus my_test_surface_cover_domains()
       if(iCase == 0 ? (pCover != &sFirst || dMaxDist > 1.0e-7) : pCover != NULL)
         { return SM_ERR; }
     }
-  // Full domains cross the other cylinder's seam; their face subsets do not.
+  // Full domains cross the other cylinder's seam; their face subsets do not. SolidCraft: a seam
+  // crossed in a direction the covering surface wraps is no failure (16bf1cb), so the full
+  // cylinders, one surface with seams a quarter turn apart, cover each other too.
   SmCylinder *pFirst = new(sContext) SmCylinder(SmPoint3d(0,0,-100), SmVector3d(1,0,0), SmVector3d(0,1,0),
                     50, 0, 360, 200, FALSE, FALSE, FALSE, &sContext);
   SmCylinder *pOther = new(sContext) SmCylinder(SmPoint3d(0,0,-100), SmVector3d(0,-1,0), SmVector3d(1,0,0),
@@ -3197,7 +3199,7 @@ static SmStatus my_test_surface_cover_domains()
   SmSurface *pCover = NULL;
   double dMaxDist;
   SER(pFirst->CoverOtherCoincidentSurface(pOther, 1.0e-7, dMaxDist, pCover));
-  if(pCover != NULL)
+  if(pCover != pFirst || dMaxDist > 1.0e-7)
     { return SM_ERR; }
   SmExtent2d sFirstDomain = sm_coaxial_face_uv_box(pFirst, 50, -10, 10);
   SmExtent2d sOtherDomain = sm_coaxial_face_uv_box(pOther, 50, 10, 13);
