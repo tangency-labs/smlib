@@ -991,7 +991,7 @@ double sm_CellDivision( const SmTArray<double> & crKnots, double dLo, double dHi
   return dAt;
 }
 
-// The greatest S.d over crCell of pFace's surface, and whether a point taking it lies in the
+// The greatest S.d over crCell of pFace's surface, and whether a point taking it lies inside the
 // face (the solver's solutions within its tolerance of the greatest, each classified).
 // rbFound is FALSE when the solver gives no solution.
 SmStatus sm_CellDirectedMax
@@ -1023,7 +1023,12 @@ SmStatus sm_CellDirectedMax
       rbFound = TRUE;
       rdTop = std::max( rdTop, dValue );
       SER( pFace->PointClassify( sEval.GetUV(), sFaceZoneTol3d, FALSE, TRUE, sPtClass ) );
-      if ( sPtClass.GetPointClass() != SM_PC_UNKNOWN )
+      // Inside the face only (SM_PC_FACE). A point classified on an edge or a vertex lies within
+      // the face's zone tolerance of its boundary, inside or out: where the surface runs on past
+      // the boundary it is up to that tolerance outside the face (4e-5 past a sphere octant's arc
+      // on a box's rounded corner, so the octant boxed to 1.0000243 where it ends at 1). The
+      // boundary's own extremes come from the edges' tight boxes rdBest starts from.
+      if ( sPtClass.GetPointClass() == SM_PC_FACE )
         { dInFace = std::max( dInFace, dValue ); }
     }
   // Every solution takes the greatest value to the solver's tolerance.
