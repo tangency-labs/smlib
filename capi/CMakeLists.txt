@@ -218,6 +218,8 @@ if(SMLIB_CAPI_TESTS)
   # The tangent-end blends that fail today (tests/ops_kernel.cpp, TANGENT_END_CASES): fails if
   # one of them passes, so a fix drops its reason there.
   add_test(NAME smlib_test_ops_kernel_tangent_ends_known_failing COMMAND smlib_test_ops_kernel --tangent-ends-known-failing)
+  # The exact-class rounds that fail today (tests/ops_kernel.cpp, EXACT_CLASS_CASES), held the same way.
+  add_test(NAME smlib_test_ops_kernel_exact_classes_known_failing COMMAND smlib_test_ops_kernel --exact-classes-known-failing)
 
   # Flat arrays: SmBrep -> arrays -> SmBrep round trips, and hostile arrays. The test builds its
   # solids with SM_API directly and hands them to the C API as native files.
