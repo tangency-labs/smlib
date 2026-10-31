@@ -226,10 +226,6 @@ public:
 
   // side effects
   virtual SmStatus  CalcFilletGeom           (); // after SmFilletCorner:: Builds topology, Compute filletSurface and railCurve geometry
-  virtual SmStatus  CalcCylinderFilletGeom   (SmTArray<SmTsectPnt*> & rTsectPnts, SmFilletGeom * pFG = NULL);
-  virtual SmStatus  CalcConeFilletGeom       (SmTArray<SmTsectPnt*> & rTsectPnts, SmFilletGeom * pFG = NULL);
-  virtual SmStatus  CalcTorusFilletGeom      (SmTArray<SmTsectPnt*> & rTsectPnts, SmFilletGeom * pFG = NULL);
-  virtual SmStatus  CalcSphereFilletGeom     (SmTArray<SmTsectPnt*> & rTsectPnts, SmFilletGeom * pFG = NULL);
 
   // SolidCraft change: the exact class of this constant round, from its faces' kinds and placement
   // at rTsectPnt (SmFilletExact.cpp), and its exact surface by that class. rbBuilt is FALSE for
@@ -237,6 +233,11 @@ public:
   SmStatus          ClassifyExactBlend       (SmTsectPnt & rTsectPnt, SmExactBlend & rBlend);
   SmStatus          CalcExactFilletGeom      (const SmExactBlend & crBlend, SmTArray<SmTsectPnt*> & rTsectPnts,
                                               SmFilletGeom * pFG, SmBoolean bRecalc, SmBoolean & rbBuilt);
+  // SolidCraft change: the exact rounds by class: a cylinder on a straight spine (SM_BS_LINE), the
+  // section turned about the common axis (SM_BS_CIRCLE), a piece of the ball (SM_BS_POINT).
+  SmStatus          CalcLineSpineFilletGeom  (const SmExactBlend & crBlend, SmTArray<SmTsectPnt*> & rTsectPnts, SmFilletGeom * pFG);
+  SmStatus          CalcCircleSpineFilletGeom(const SmExactBlend & crBlend, SmTArray<SmTsectPnt*> & rTsectPnts, SmFilletGeom * pFG);
+  SmStatus          CalcPointSpineFilletGeom (const SmExactBlend & crBlend, SmTArray<SmTsectPnt*> & rTsectPnts, SmFilletGeom * pFG);
   // SolidCraft change: a round whose spine is a conic or a nodal quartic (SM_BS_CONIC,
   // SM_BS_CONIC_PAIR, SM_BS_NODAL_QUARTIC), built as the exact rational surface of the ball's arcs.
   SmStatus          CalcRationalSpineFilletGeom(const SmExactBlend & crBlend, SmTArray<SmTsectPnt*> & rTsectPnts,
