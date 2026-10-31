@@ -822,9 +822,9 @@ SmStatus SmFilletExecutive::SetFilletParameters
   SmFilletSurfaceGenerator *pFSG = NULL;
 
   if ( eXSectType == SM_FSG_LINEAR )
-    { pFSG = new (*pContext) SmLinearCrossSectionFSG; }
+    { pFSG = new(*pContext) SmGnSectionFSG( 0 ); }
   else if ( eXSectType == SM_FSG_CIRCULAR )
-    { pFSG = new (*pContext) SmCircularCrossSectionFSG( TRUE, dXSectTol ); }
+    { pFSG = new(*pContext) SmGnSectionFSG( SmArcSection( TRUE, dXSectTol ) ); }
   else if ( eXSectType == SM_FSG_BLEND_CURVE )
     {
           if ( !SmGnSectionFSG::IsValid( lContinuity, dThumbweight ) )
@@ -1018,9 +1018,9 @@ SmStatus SmFilletExecutive::SetFilletParameters
   if ( bSingleXSectType )
     {
       if ( eXSectType == SM_FSG_LINEAR )
-        { pFSG = new (*pContext) SmLinearCrossSectionFSG; }
+        { pFSG = new(*pContext) SmGnSectionFSG( 0 ); }
       else if ( eXSectType == SM_FSG_CIRCULAR )
-        { pFSG = new (*pContext) SmCircularCrossSectionFSG( TRUE, dXSectTol ); }
+        { pFSG = new(*pContext) SmGnSectionFSG( SmArcSection( TRUE, dXSectTol ) ); }
       else if ( eXSectType == SM_FSG_BLEND_CURVE )
         {
           if ( !SmGnSectionFSG::IsValid( lContinuity, dThumbweight ) )
@@ -1136,9 +1136,9 @@ SmStatus SmFilletExecutive::SetFilletParameters
           eXSectType = rXSectTypes[ii];
 
           if ( eXSectType == SM_FSG_LINEAR )
-            { pFSG = new (*pContext) SmLinearCrossSectionFSG; }
+            { pFSG = new(*pContext) SmGnSectionFSG( 0 ); }
           else if ( eXSectType == SM_FSG_CIRCULAR )
-            { pFSG = new (*pContext) SmCircularCrossSectionFSG( TRUE, 0.1 ); }
+            { pFSG = new(*pContext) SmGnSectionFSG( SmArcSection( TRUE, 0.1 ) ); }
           else if ( eXSectType == SM_FSG_BLEND_CURVE )
             {
           if ( !SmGnSectionFSG::IsValid( lContinuity, dThumbweight ) )
@@ -1542,18 +1542,18 @@ SmBoolean bDebugMe = FALSE;
   
   // Create the fillet surface generator for the cross section.
   // The three possibilites are:
-  //   0: SmLinearCrossSectionFSG
-  //   1: SmCircularCrossSectionFSG approximated.
-  //   2: SmCircularCrossSectionFSG with exact rational (default)
+  //   0: SmGnSectionFSG of order 0 (the chord)
+  //   1: SmGnSectionFSG of order 1 (the circle), approximated.
+  //   2: SmGnSectionFSG of order 1 with exact rational circles (default)
 
   // Create one of each (Linear and Circular) on the stack, and set
   // the pFSG pointer appropriately.
 
-  SmLinearCrossSectionFSG sFSGLinear;
+  SmGnSectionFSG sFSGLinear( 0 );
 
   // Note, all of the user options apply only to Circular.
   SmBoolean bApprox = (lXSectType == 1);
-  SmCircularCrossSectionFSG sFSGCircular( bApprox, dXSectAccuracy, bMirror, bComplement );
+  SmGnSectionFSG sFSGCircular( SmArcSection( bApprox, dXSectAccuracy, bMirror, bComplement ) );
 
   SmFilletSurfaceGenerator *pFSG =   (lXSectType == 0)
                                    ? (SmFilletSurfaceGenerator *)(&sFSGLinear)
@@ -2723,7 +2723,7 @@ SmStatus SmFilletExecutive::EaseSetBackSections()
 PURPOSE: Keep copies of the fillet surfaces of solvers whose radius has a
    corner, where those surfaces turn (a C0 knot).
 
-NOTES: SolidCraft change. SmCircularCrossSectionFSG::CreateSurface joins such
+NOTES: SolidCraft change. SmGnSectionFSG::CircleSurface joins such
    a surface from smooth pieces, C0 where the radius turns, and SMLib's check
    refuses a face (and the edges round it) with a kink inside. The merge gives
    the target Brep copies of the fillet faces and deletes m_pFilletBrep, so
@@ -6622,7 +6622,7 @@ NOTES:
    SmTArray< SmFilletLaw* > sLawList;
    SmStatus eStat = SmFilletLaw::CreateSequenceOfLaws( *pContext, pLaw, sFilletEdges, sLawList );
 
-   SmCircularCrossSectionFSG sFSG( TRUE, 0.001 ),  // (for example)
+   SmGnSectionFSG sFSG( SmArcSection( TRUE, 0.001 ) ),  // (for example)
 
    for ( ii=0; ii<lNumEdges; ii++ )
    {

@@ -17,7 +17,7 @@ separate:
 - **Corner strategy:** how several incident fillet rails and surfaces terminate and join.
 
 Chamfer semantics come from composing `SmConstantDistanceFS` with
-`SmLinearCrossSectionFSG`. A linear generator is not sufficient by itself:
+`SmGnSectionFSG` of order 0. The chord is not sufficient by itself:
 `SmApiFilletEdges` can combine `SM_FSG_LINEAR` with a constant-radius solver.
 
 Surface-surface filleting solves directly between support surfaces. Topology/edge filleting adds

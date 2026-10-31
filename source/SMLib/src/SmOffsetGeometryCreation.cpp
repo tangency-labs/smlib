@@ -3424,7 +3424,7 @@ static ULONG lDebugCount = 0 ;
   if (!pNewSurface) 
     {
       // Now that we have the curves create the geometry for the surface.
-      SmCircularCrossSectionFSG sFSG(FALSE);
+      SmGnSectionFSG sFSG( SmArcSection( FALSE ) );
       SER(sFSG.CreateSurfaceFromCurves(crContext,
                                       *pCenterLine, *pRail1Curve, *pRail2Curve,
                                       m_dThisApproxTol3d,
