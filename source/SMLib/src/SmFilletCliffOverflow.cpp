@@ -49,6 +49,8 @@
 #include <SmVertex.h>
 #include <SmLine.h>
 #include <SmPlane.h>
+#include <SmOffsetSurface.h>
+#include <SmSurfOfRevolution.h>
 #include <SmSurface.h>
 #include <SmCurve.h>
 #include <SmRegion.h>
@@ -152,9 +154,93 @@ SmStatus sm_PlaneOf(const SmSurface & crSurface, SmPoint3d & rOrigin, SmVector3d
   return SM_SUCCESS;
 }
 
+// The surface of crFace continued exactly as far as it must to hold the feet of crPoints (all
+// on it, or near it): over its own domain (a copy) where that holds them; a cylinder, cone,
+// sphere or torus continued as itself (SmOffsetSurface::ContinueAsItself) where a point farther
+// than dTol from it has its foot on a side of the domain it can grow past, each such side grown
+// by the domain's size times the least power of two that takes the feet off it. rdGap is the
+// farthest point's distance from the surface given. rbExact is FALSE when a point's foot lies on
+// a side of a surface that does not continue exactly (any other kind) and the point is farther
+// than dTol from it. Round the axis a surface of revolution grows only where it does not close
+// its turn already. A plane is sm_PlaneOf's, not continued here.
+SmStatus sm_ContinuedSurface(const SmContext & crContext, const SmFace & crFace, const std::vector<SmPoint3d> & crPoints,
+                             double dTol, SmSurface *& rpSurface, double & rdGap, SmBoolean & rbExact)
+{
+  rpSurface = NULL;
+  rdGap     = 0.0;
+  rbExact   = TRUE;
+  const SmSurface * pBase = crFace.GetSurface();   NER(pBase);
+  const SmExtent2d  sDomain = pBase->GetNaturalUVDomain();
+  const SmPoint2d   sSize   = sDomain.GetSize();
+  const SmBoolean   bAsItself = SmOffsetSurface::ContinuesAsItself( pBase );
+  // the directions that can grow: both, but round the axis of a full turn
+  SmBoolean abGrows[2] = { TRUE, TRUE };
+  if ( bAsItself )
+    {
+      const SmSurfOfRevolution * pRev = (const SmSurfOfRevolution *)pBase;
+      SmSurfParamType eRot = SM_SP_U;
+      (void)pRev->GetRotateParamExtent( &eRot );
+      if ( pRev->GetEndAngleDeg() - pRev->GetStartAngleDeg() >= 360.0 - SM_EFF_ZERO_SQRT )
+        { abGrows[( eRot == SM_SP_U ) ? 0 : 1] = FALSE; }
+    }
+  SmPoint2d sLo = sDomain.GetMin(), sHi = sDomain.GetMax();
+  for (ULONG lRound=0; lRound<32; lRound++)
+    {
+      SmSurface * pSurface = NULL;
+      if ( lRound == 0 )
+        { SER( pBase->Copy( crContext, pSurface )); }
+      else
+        { SER( SmOffsetSurface::ContinueAsItself( crContext, pBase, sLo, sHi, pSurface )); }
+      NER(pSurface);
+      SmObjDelete sClean( pSurface );
+      const SmExtent2d sHave = pSurface->GetNaturalUVDomain();
+      const double     dEdge[2] = { 1.0e-9 * smos_Max( sHave.GetSize().x, 1.0 ), 1.0e-9 * smos_Max( sHave.GetSize().y, 1.0 ) };
+      SmBoolean abLow[2] = { FALSE, FALSE }, abHigh[2] = { FALSE, FALSE }, bOnSide = FALSE;
+      double dGap = 0.0;
+      for (const SmPoint3d & rP : crPoints)
+        {
+          SmBoolean bDropped = FALSE, bMulti = FALSE;
+          SmPoint2d sUV;
+          double    dDist = SM_BIG_DOUBLE;
+          SER( pSurface->DropPoint( rP, sHave, NULL, bDropped, sUV, dDist, bMulti ));
+          if ( !bDropped )
+            { dDist = SM_BIG_DOUBLE; }
+          dGap = smos_Max( dGap, dDist );
+          if ( !bDropped || dDist <= dTol )
+            { continue; }
+          const double adUV[2] = { sUV.x, sUV.y };
+          const double adLo[2] = { sHave.GetMin().x, sHave.GetMin().y }, adHi[2] = { sHave.GetMax().x, sHave.GetMax().y };
+          for (ULONG d=0; d<2; d++)
+            {
+              if ( adUV[d] <= adLo[d] + dEdge[d] ) { abLow[d]  = TRUE; bOnSide = TRUE; }
+              if ( adUV[d] >= adHi[d] - dEdge[d] ) { abHigh[d] = TRUE; bOnSide = TRUE; }
+            }
+        }
+      const SmBoolean bGrow = bOnSide && ( ( abGrows[0] && ( abLow[0] || abHigh[0] )) || ( abGrows[1] && ( abLow[1] || abHigh[1] )));
+      if ( !bGrow || !bAsItself )
+        {
+          rbExact   = ( bGrow && !bAsItself ) ? FALSE : TRUE;
+          rdGap     = dGap;
+          rpSurface = pSurface;
+          sClean.Clear();
+          return SM_SUCCESS;
+        }
+      const double dK = (double)( 1UL << smos_Min( lRound, 20UL ));
+      if ( abGrows[0] && abLow[0] )  { sLo.x -= dK * sSize.x; }
+      if ( abGrows[0] && abHigh[0] ) { sHi.x += dK * sSize.x; }
+      if ( abGrows[1] && abLow[1] )  { sLo.y -= dK * sSize.y; }
+      if ( abGrows[1] && abHigh[1] ) { sHi.y += dK * sSize.y; }
+    }
+  // no foot comes off the sides: the points are not on the surface's continuation
+  SER( pBase->Copy( crContext, rpSurface ));
+  rdGap = SM_BIG_DOUBLE;
+  return SM_SUCCESS;
+}
+
 // The distance from crPnt to the surface of crFace continued, as far as it continues exactly:
-// a planar surface's to its whole plane, any other surface's to its own domain.
-SmStatus sm_DistanceToSurface(const SmFace & crFace, const SmPoint3d & crPnt, double & rdDist)
+// a planar surface's to its whole plane, a cylinder's, cone's, sphere's or torus's to itself
+// continued (sm_ContinuedSurface), any other surface's to its own domain.
+SmStatus sm_DistanceToSurface(const SmContext & crContext, const SmFace & crFace, const SmPoint3d & crPnt, double & rdDist)
 {
   rdDist = SM_BIG_DOUBLE;
   const SmSurface * pSurface = crFace.GetSurface();   NER(pSurface);
@@ -167,12 +253,10 @@ SmStatus sm_DistanceToSurface(const SmFace & crFace, const SmPoint3d & crPnt, do
       rdDist = smos_Fabs( ( crPnt - sOrigin ).Dot( sZ ));
       return SM_SUCCESS;
     }
-  SmBoolean bDropped = FALSE, bMulti = FALSE;
-  SmPoint2d sUV;
-  double    dGap = SM_BIG_DOUBLE;
-  SER( pSurface->DropPoint( crPnt, pSurface->GetNaturalUVDomain(), NULL, bDropped, sUV, dGap, bMulti ));
-  if ( bDropped )
-    { rdDist = dGap; }
+  SmSurface * pContinued = NULL;
+  SmBoolean   bExact = TRUE;
+  SER( sm_ContinuedSurface( crContext, crFace, { crPnt }, 0.0, pContinued, rdDist, bExact ));
+  delete pContinued;
   return SM_SUCCESS;
 }
 
@@ -190,8 +274,9 @@ SmStatus sm_Samples(const SmCurve & crCurve, ULONG lCount, std::vector<SmPoint3d
 }
 
 // A surface that is crFace's surface, whose domain holds every point of crPoints (all on it):
-// a planar surface its plane over a domain that covers them, any other surface a copy of itself
-// when its own domain does (rbExact FALSE when it does not).
+// a planar surface its plane over a domain that covers them, a cylinder, cone, sphere or torus
+// itself continued as far as they reach (sm_ContinuedSurface), any other surface a copy of
+// itself when its own domain does (rbExact FALSE when it does not).
 SmStatus sm_CoveringSurface(const SmContext & crContext, const SmFace & crFace, const std::vector<SmPoint3d> & crPoints,
                             double dTol, SmSurface *& rpSurface, SmBoolean & rbExact)
 {
@@ -223,18 +308,15 @@ SmStatus sm_CoveringSurface(const SmContext & crContext, const SmFace & crFace, 
       NER(rpSurface);
       return SM_SUCCESS;
     }
-  // Within its own domain, or not exactly.
-  for (const SmPoint3d & rP : crPoints)
+  // Continued as itself, or within its own domain, or not exactly.
+  double dGap = SM_BIG_DOUBLE;
+  SER( sm_ContinuedSurface( crContext, crFace, crPoints, dTol, rpSurface, dGap, rbExact ));
+  if ( !rbExact || dGap > dTol )
     {
-      double dDist = SM_BIG_DOUBLE;
-      SER( sm_DistanceToSurface( crFace, rP, dDist ));
-      if ( dDist > dTol )
-        {
-          rbExact = FALSE;
-          return SM_SUCCESS;
-        }
+      rbExact = FALSE;
+      delete rpSurface;
+      rpSurface = NULL;
     }
-  SER( pSurface->Copy( crContext, rpSurface ));      NER(rpSurface);
   return SM_SUCCESS;
 }
 
@@ -247,7 +329,7 @@ SmBoolean sm_Same(const SmPoint3d & crA, const SmPoint3d & crB, double dTol)
 // Whether the sheet face crSheetFace lies on the surface of crFace continued: its surface, over
 // a grid across the face's UV box, within dTol of it (an end face of a corner on the end face's
 // surface extended, SmFilletCorner::CreateCornerPatch).
-SmStatus sm_LiesOnSurface(const SmFace & crSheetFace, const SmFace & crFace, double dTol, SmBoolean & rbOn)
+SmStatus sm_LiesOnSurface(const SmContext & crContext, const SmFace & crSheetFace, const SmFace & crFace, double dTol, SmBoolean & rbOn)
 {
   rbOn = TRUE;
   const SmSurface * pSurface = crSheetFace.GetSurface();   NER(pSurface);
@@ -261,7 +343,7 @@ SmStatus sm_LiesOnSurface(const SmFace & crSheetFace, const SmFace & crFace, dou
           SER( pSurface->EvaluatePoint( SmPoint2d( sBox.GetMin().x + sSize.x * i / 4.0,
                                                    sBox.GetMin().y + sSize.y * j / 4.0 ), sPnt ));
           double dDist = SM_BIG_DOUBLE;
-          SER( sm_DistanceToSurface( crFace, sPnt, dDist ));
+          SER( sm_DistanceToSurface( crContext, crFace, sPnt, dDist ));
           rbOn = ( dDist <= dTol ) ? TRUE : FALSE;
         }
     }
@@ -453,6 +535,151 @@ SmStatus sm_CloseRoundLoop(const SmContext & crContext, SmBrep * pSheet, const s
   SER( pSheet->MakeFaceWithCurves( pSheet->GetInfiniteRegion(), sLoopCounts, &s3DCurves, NULL, sOrients,
                                    sLoopPoints, pSurface, pSurface->GetNaturalUVDomain(), SM_OT_SAME,
                                    pNewRegion, pNewShell, pNewFace ));
+  NER(pNewFace);
+  return SM_SUCCESS;
+}
+
+/*
+ * The closing face, on pHost's surface continued as itself, of a chain of the sheet's boundary
+ * that closes on that one face where it is a full turn of a cylinder, cone, sphere or torus (a
+ * closed rim's wall, the rim rounded or chamfered past the wall's far end): the band of the
+ * surface between the chain and the blended edge of the host the chain's fillet faces blend,
+ * each a full circle round the axis, a parameter line of the surface. Refused (rcWhy set,
+ * reError the error) when the host is no such surface, no edge or more than one is found, or the
+ * chain or the edge is not a parameter line round the axis (SM_FILERR_NOT_EXACT: the band would
+ * need curves on the surface it has no exact construction for).
+ */
+SmStatus sm_CloseBand(const SmContext & crContext, SmBrep * pSheet, const std::vector<SmEdge*> & crChain, SmFace * pHost,
+                      const std::map<SmFace*, SmEdge*> & crEdgeOfFillet, double dOnTol, const TCHAR *& rcWhy,
+                      SmFilletErrorType & reError)
+{
+  rcWhy   = NULL;
+  reError = SM_FILERR_NO_ROOM;
+  NER(pSheet);
+  NER(pHost);
+  const SmSurface * pBase = pHost->GetSurface();   NER(pBase);
+  if ( !SmOffsetSurface::ContinuesAsItself( pBase ))
+    {
+      rcWhy = _T("Fillet Error: a cliff overflow's fillet boundary closes on one face that is neither planar nor a full turn of a surface of revolution");
+      return SM_ERR;
+    }
+  const SmSurfOfRevolution * pRev = (const SmSurfOfRevolution *)pBase;
+  SmSurfParamType eRot = SM_SP_U;
+  (void)pRev->GetRotateParamExtent( &eRot );
+  if ( pRev->GetEndAngleDeg() - pRev->GetStartAngleDeg() < 360.0 - SM_EFF_ZERO_SQRT )
+    {
+      rcWhy = _T("Fillet Error: a cliff overflow's fillet boundary closes on one face that is neither planar nor a full turn of a surface of revolution");
+      return SM_ERR;
+    }
+  const ULONG lGen = ( eRot == SM_SP_U ) ? 1 : 0;
+
+  // the filleted edge of the host the chain's fillet faces blend
+  std::set<SmEdge*> sAlong;
+  for (SmEdge * pE : crChain)
+    {
+      SmTArray<SmFace*> sFaces;
+      pE->GetFaces( sFaces );
+      for (ULONG f=0; f<sFaces.GetSize(); f++)
+        {
+          auto it = crEdgeOfFillet.find( sFaces[f] );
+          if ( it != crEdgeOfFillet.end() )
+            { sAlong.insert( it->second ); }
+        }
+    }
+  SmTArray<SmEdge*> sHostEdges;
+  pHost->GetEdges( sHostEdges );
+  SmEdge * pRim = NULL;
+  for (ULONG e=0; e<sHostEdges.GetSize(); e++)
+    {
+      if ( !sAlong.count( sHostEdges[e] ))
+        { continue; }
+      if ( pRim != NULL && pRim != sHostEdges[e] )
+        {
+          rcWhy = _T("Fillet Error: a cliff overflow's fillet boundary closes on one face round two of its blended edges");
+          return SM_ERR;
+        }
+      pRim = sHostEdges[e];
+    }
+  if ( pRim == NULL || pRim->GetStartVertex() != pRim->GetEndVertex() )
+    {
+      rcWhy = _T("Fillet Error: a cliff overflow's fillet boundary closes on one face round no closed blended edge of it");
+      return SM_ERR;
+    }
+
+  // the host's surface continued over the chain, and each run's parameter round the axis
+  std::vector<SmPoint3d> avPoints[2];   // [0] the rim's, [1] the chain's
+  {
+    SmCurve * pCurve = NULL;
+    SER( sm_EdgeCurve( crContext, *pRim, pCurve ));
+    SmStatus eStat = sm_Samples( *pCurve, 16, avPoints[0] );
+    delete pCurve;
+    SER( eStat );
+  }
+  for (SmEdge * pE : crChain)
+    {
+      SmCurve * pCurve = NULL;
+      SER( sm_EdgeCurve( crContext, *pE, pCurve ));
+      SmStatus eStat = sm_Samples( *pCurve, 16, avPoints[1] );
+      delete pCurve;
+      SER( eStat );
+    }
+  std::vector<SmPoint3d> vAll( avPoints[0] );
+  vAll.insert( vAll.end(), avPoints[1].begin(), avPoints[1].end() );
+  SmSurface * pSurface = NULL;
+  SmBoolean   bExact = TRUE;
+  SER( sm_CoveringSurface( crContext, *pHost, vAll, dOnTol, pSurface, bExact ));
+  if ( !bExact || pSurface == NULL )
+    {
+      reError = SM_FILERR_NOT_EXACT;
+      rcWhy   = _T("Fillet Error: a cliff overflow's fillet boundary closes on one face's surface continued, which does not hold it");
+      return SM_ERR;
+    }
+  SmObjDelete sCleanSurface( pSurface );
+  const SmExtent2d sDomain = pSurface->GetNaturalUVDomain();
+  double adGen[2] = { 0.0, 0.0 };
+  for (ULONG k=0; k<2; k++)
+    {
+      // the parameter along the generator: the same at every point, a parameter line round the axis
+      std::vector<SmPoint2d> vUV;
+      for (const SmPoint3d & rP : avPoints[k])
+        {
+          SmBoolean bDropped = FALSE, bMulti = FALSE;
+          SmPoint2d sUV;
+          double    dGap = SM_BIG_DOUBLE;
+          SER( pSurface->DropPoint( rP, sDomain, NULL, bDropped, sUV, dGap, bMulti ));
+          if ( !bDropped )
+            { SER( SM_ERR ); }
+          vUV.push_back( sUV );
+          adGen[k] += ( lGen == 0 ) ? sUV.x : sUV.y;
+        }
+      adGen[k] /= (double)vUV.size();
+      for (size_t p=0; p<vUV.size(); p++)
+        {
+          SmPoint2d sOn = vUV[p];
+          ( lGen == 0 ? sOn.x : sOn.y ) = adGen[k];
+          SmPoint3d sPnt;
+          SER( pSurface->EvaluatePoint( sOn, sPnt ));
+          if ( sPnt.DistanceBetween( avPoints[k][p] ) > dOnTol )
+            {
+              reError = SM_FILERR_NOT_EXACT;
+              rcWhy   = _T("Fillet Error: a cliff overflow's fillet boundary closes on a surface of revolution off its circles round the axis");
+              return SM_ERR;
+            }
+        }
+    }
+  if ( smos_Fabs( adGen[0] - adGen[1] ) <= SM_EFF_ZERO_SQRT )
+    {
+      rcWhy = _T("Fillet Error: a cliff overflow's fillet boundary closes on one face along its blended edge");
+      return SM_ERR;
+    }
+  // the band: round the whole turn, from the one circle to the other
+  SmPoint2d sLo = sDomain.GetMin(), sHi = sDomain.GetMax();
+  ( lGen == 0 ? sLo.x : sLo.y ) = smos_Min( adGen[0], adGen[1] );
+  ( lGen == 0 ? sHi.x : sHi.y ) = smos_Max( adGen[0], adGen[1] );
+  SmShell * pNewShell = NULL;
+  SmFace  * pNewFace  = NULL;
+  sCleanSurface.Clear();
+  SER( pSheet->CreateFaceInRegionFromSurface( pSheet->GetInfiniteRegion(), pSurface, SmExtent2d( sLo, sHi ), pNewShell, pNewFace ));
   NER(pNewFace);
   return SM_SUCCESS;
 }
@@ -769,14 +996,14 @@ SmStatus SmFilletExecutive::CloseRemovalRegion()
           // stands in for that face there: its lamina edge along a side edge lies on both faces'
           // surfaces, and the sheet's boundary passes along it onto the other face.
           SmBoolean bOwn = FALSE;
-          SER( sm_LiesOnSurface( *sSheetFaces[0], *pFace, dOnTol, bOwn ));
+          SER( sm_LiesOnSurface( m_crContext, *sSheetFaces[0], *pFace, dOnTol, bOwn ));
           if ( bOwn )
             { continue; }
           SmBoolean bOn = TRUE;
           for (size_t p=0; p<vPoints.size() && bOn; p++)
             {
               double dDist = SM_BIG_DOUBLE;
-              SER( sm_DistanceToSurface( *pFace, vPoints[p], dDist ));
+              SER( sm_DistanceToSurface( m_crContext, *pFace, vPoints[p], dDist ));
               bOn = ( dDist <= dOnTol ) ? TRUE : FALSE;
             }
           if ( !bOn )
@@ -837,8 +1064,9 @@ SmStatus SmFilletExecutive::CloseRemovalRegion()
       sChain.m_vVerts.push_back( pFirst->GetStartVertex() );
       sChain.m_vVerts.push_back( pFirst->GetEndVertex() );
       sDone.insert( pFirst );
-      SmBoolean bClosed = FALSE;
-      for (;;)
+      // a closed edge alone (a closed rim's rail, one circle) closes its chain at once
+      SmBoolean bClosed = ( pFirst->GetStartVertex() == pFirst->GetEndVertex() ) ? TRUE : FALSE;
+      for (; !bClosed;)
         {
           SmEdge * pNext = NULL;
           if ( fNext( sChain.m_vVerts.back(), sChain.m_vEdges.back(), pNext ) != SM_SUCCESS )
@@ -907,10 +1135,17 @@ SmStatus SmFilletExecutive::CloseRemovalRegion()
       SmFace * pHost = rChain.m_pHost;
       if ( rChain.m_bClosed )
         {
+          // on a plane, round a loop of blended edges; on a full turn of a surface of revolution,
+          // the band from its blended rim
           const TCHAR     * cWhy   = NULL;
           SmFilletErrorType eError = SM_FILERR_NO_ROOM;
-          SmStatus eStat = sm_CloseRoundLoop( m_crContext, m_pFilletBrep, rChain.m_vEdges, rChain.m_vVerts, pHost,
-                                              sBlended, sEdgeOfFillet, dOnTol, cWhy, eError );
+          SmPoint3d  sOrigin;
+          SmVector3d sX, sY, sZ;
+          SmBoolean  bPlanar = FALSE;
+          SER( sm_PlaneOf( *pHost->GetSurface(), sOrigin, sX, sY, sZ, bPlanar ));
+          SmStatus eStat = bPlanar ? sm_CloseRoundLoop( m_crContext, m_pFilletBrep, rChain.m_vEdges, rChain.m_vVerts, pHost,
+                                                        sBlended, sEdgeOfFillet, dOnTol, cWhy, eError )
+                                   : sm_CloseBand( m_crContext, m_pFilletBrep, rChain.m_vEdges, pHost, sEdgeOfFillet, dOnTol, cWhy, eError );
           if ( eStat != SM_SUCCESS && cWhy != NULL )
             {
               GetFilletErrorInfo()->NoteError( eError, cWhy );
