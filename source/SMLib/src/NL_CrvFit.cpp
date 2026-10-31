@@ -14828,15 +14828,85 @@ NL_FLAG N_FitCrvApproxClosedConditions( NL_POINT *P, NL_INDEX n, NL_DEGREE p, NL
 
 NL_FLAG N_FitCrvHighDerivs( NL_POINT *P, NL_INDEX nn, NL_DEGREE p, NL_VECTOR *Ds, NL_INDEX kk, NL_VECTOR *De, NL_INDEX ll, NL_FLAG par, NL_CURVE *cur, NL_STACKS *SG )
 {
-    NL_PRIVATE NL_STRING rname = _T("N_FitCrvHighDerivs");
+
+    NL_FLAG error = NL_NO;
+
+    NL_PARAMETER *u;
+
+    NL_STACKS SL;
+
+    /* Start NURBS */
+
+    N_InitNurbs( &SL );
+
+    /* Get parameters, and interpolate at them */
+
+    u = N_AllocReal1dArray( nn, &SL );
+
+    if( u EQ NULL )
+        NL_QUIT;
+
+    error = N_FitCalcCrvParamValues( (NL_VOID *)P, nn, NL_EPOINT, par, u );
+
+    if( error EQ NL_YES )
+        NL_OUT;
+
+    error = N_FitCrvHighDerivsParams( P, nn, p, Ds, kk, De, ll, u, cur, SG );
+
+    /* End NURBS and Exit */
+
+    EXIT:
+
+    N_EndNurbs( &SL );
+
+    return (error);
+}
+
+/**********************************************************************/
+/* N_FITCRVHIGHDERIVSPARAMS: Curve interpolation with given parameters and higher end derivatives */
+/**********************************************************************/
+
+/*******************************************************************//**
+
+
+   DESCRIPTION:
+
+     SolidCraft change: N_FitCrvHighDerivs with the parameters of the
+     points passed in (increasing); the end derivatives are taken with
+     respect to them. N_FitCrvHighDerivs computes them by
+     its parametrization flag and calls this.
+
+
+   ACCESS:
+
+     P     , input  ,  Points to be interpolated
+     nn    , input  ,  Highest index in P
+     p     , input  ,  Degree of interpolating curve (p <= nn+kk+ll)
+     Ds    , input  ,  Start derivatives Ds[1],...,Ds[kk]
+     kk    , input  ,  Highest start derivative (kk < p)
+     De    , input  ,  End derivatives De[1],...,De[ll]
+     ll    , input  ,  Highest end derivative (ll < p)
+     u     , input  ,  Parameters of P, strictly increasing
+     cur   , output ,  Interpolating curve
+     SG    , input  ,  cur's memory stack
+
+
+   RETURN CODES:
+
+     0 : No error
+     1 : Error saved in NL_ERROR
+
+   ***********************************************************************/
+
+NL_FLAG N_FitCrvHighDerivsParams( NL_POINT *P, NL_INDEX nn, NL_DEGREE p, NL_VECTOR *Ds, NL_INDEX kk, NL_VECTOR *De, NL_INDEX ll, NL_PARAMETER *u, NL_CURVE *cur, NL_STACKS *SG )
+{
+    NL_PRIVATE NL_STRING rname = _T("N_FitCrvHighDerivsParams");
 
     NL_FLAG error = NL_NO;
 
     NL_INDEX i, j, k, l, n, bw, sbw, row;
 
     NL_REAL ** A, ** ND, *U, *N;
-
-    NL_PARAMETER *u;
 
     NL_POINT *Q;
 
@@ -14872,17 +14942,7 @@ NL_FLAG N_FitCrvHighDerivs( NL_POINT *P, NL_INDEX nn, NL_DEGREE p, NL_VECTOR *Ds
 
     N_CrvGetCPtsKnotVectorAndKnots( cur, &Pw, &knt, &U );
 
-    /* Get parameters and compute knot vector */
-
-    u = N_AllocReal1dArray( nn, &SL );
-
-    if( u EQ NULL )
-        NL_QUIT;
-
-    error = N_FitCalcCrvParamValues( (NL_VOID *)P, nn, NL_EPOINT, par, u );
-
-    if( error EQ NL_YES )
-        NL_OUT;
+    /* Compute knot vector */
 
     N_FitCalcKnotsHighEndDerivs( u, nn, p, kk, ll, knt );
 

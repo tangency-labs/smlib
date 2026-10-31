@@ -338,7 +338,9 @@ public:
                                            const SmTArray<SmVector3d> * cpMoreVectorsToInterpolate,  ///< [in] : If this exists then it contains higher order derivatives (2nd and 3rd) <br>
                                            SmBoolean                    bIgnoreVectorMagnitude,      ///< [in] : This only applies to case where more than two vectors are used.        <br>
                                                                                                      ///<      : TRUE = use vector directions - not their magnitudes                    <br>
-                                           SmBSplineCurve            *& rpNewBSplineCurve) ;         ///< [out]: the newly constructed curve                                            <br>
+                                           SmBSplineCurve            *& rpNewBSplineCurve,           ///< [out]: the newly constructed curve                                            <br>
+                                           const SmTArray<double>     * cpOptParams = NULL) ;        ///< [in] : SolidCraft change: opt increasing parameters of the points, in place   <br>
+                                                                                                     ///<      : of eParameterization; not with a vector for each point. NULL to ignore <br>
   
   static SmStatus CreateLineSegment(const SmContext  & crContext,                   ///< [in] : context for new object construction <br>
                                     ULONG              lDimensionOfResult,          ///< [in] : specify desired dimension: 2 or 3   <br>
