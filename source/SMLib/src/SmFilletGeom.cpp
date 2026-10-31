@@ -2923,6 +2923,7 @@ SmStatus SmFilletVertex::CalcRailIntExtendedEdgeuse()
 
   // get OtherFaceSurface
   SmFilletVertex * pOtherFV  = NULL;
+  SmBoolean        bEndOnSideEdge = FALSE; // this vertex found where the rail meets its side edge (or its continuation)
   SmFace         * pSideFace = NULL; // Face used for surface-surface-interection
   SmFace         * pOnFace   = NULL; // Face where 'THIS' is on(for 'SM_FCR_3_x_2_MIXED' cases only)
   if (b3x2MixedCornerCase)
@@ -2955,6 +2956,7 @@ SmStatus SmFilletVertex::CalcRailIntExtendedEdgeuse()
 
       // get face (sometimes its extended) upon which this filletEdge was originated
       pSideFace = pCurrEdge->GetOriginalFace() ;
+
     }
   NER(pSideFace) ;
 
@@ -2962,6 +2964,32 @@ SmStatus SmFilletVertex::CalcRailIntExtendedEdgeuse()
   SmSurface        * pSurface  = m_cpCorner->GetExtendedSurface(pSideFace);
   SmBSplineSurface * pSurface2 = SM_CAST_PTR(SmBSplineSurface,pSurface);
   NER(pSurface2);
+
+  // SolidCraft change: this vertex is where this rail meets its side edge, or that edge's
+  // continuation past the corner: the solver's rail/edge intersection, as for
+  // SM_FV_RAIL_X_EDGEUSE (SmFilletSolver::RailEdgeuseIntersect continues a straight side
+  // edge). It lies on the end face's surface, and the end curve below runs between the two
+  // known ends. It is not where the fillet/end-face intersection leaves the fillet surface: at
+  // a tangent end (the side face running tangentially into the end face along the side edge)
+  // that curve meets the rail tangentially (a chamfer: the plane's section of the cylinder
+  // touches the rail) and runs on past it to the surface's far side, or meets it where the two
+  // surfaces touch (a round). Only where the solver finds no crossing on the end face (a
+  // curved side edge's continuation, which it does not continue) is the end found from the
+  // intersection.
+  if ( ! b3x2MixedCornerCase && GetPointClass() == SM_PC_EDGEUSE && GetPointClassObject() != NULL )
+    {
+      SER( CalcRailIntEdgeuse() );
+      if ( IsProcessed() )
+        {
+          SmBoolean bDropped = FALSE, bMulti = FALSE;
+          SmPoint2d sUV;
+          double    dGap = SM_BIG_DOUBLE;
+          SER( pSurface2->DropPoint( GetPoint(), pSurface2->GetNaturalUVDomain(), NULL, bDropped, sUV, dGap, bMulti ));
+          bEndOnSideEdge = bDropped && dGap <= pFilletGeom->GetFilletSolver()->GetThisApproxTol3d();
+        }
+      if ( ! bEndOnSideEdge )
+        { SetStatus( SM_FIL_UNPROCESSED ); }
+    }
 
   // locals surface/surface intersection
   SmFilletSolver * pFilSolver  = pFilletGeom->GetFilletSolver() ;
@@ -2979,7 +3007,7 @@ iDebugLevel = DebugLevel();
   // do surface/surface intersection
   if (SM_SUCCESS != sm_SrfSrfIntersection(m_cpCorner->GetContext(), // in : context for new object construction
                                           pOtherFV,                 // in : 1st point known to be on intersection curve
-                                          NULL,                     // in : 2nd point known to be on intersection curve,
+                                          bEndOnSideEdge ? this : NULL, // in : 2nd point known to be on intersection curve,
                                                                     //      NULL to ignore
                                           NULL,                     // in : expected general direction of intersection curve from 1st point
                                           NULL,                     // in   expected intersection end direction
@@ -3071,6 +3099,33 @@ iDebugLevel = DebugLevel();
     } // end b3x2MixedCornerCase check
 
   // arrive here for SM_FE_FILLET_X_SIDE_FACE cases
+  if ( bEndOnSideEdge )
+    {
+      // The end curve between its two known ends: this vertex and the other one.
+      double adParam[2] = { 0.0, 0.0 };
+      SmFilletVertex * apEnd[2] = { pOtherFV, this };
+      for ( ULONG kk=0; kk<2; kk++ )
+        {
+          SmBoolean bOn = FALSE;
+          double    dDist = SM_BIG_DOUBLE;
+          SER( pNew3DCurve->DropPoint( sIvl, apEnd[kk]->GetPoint(), NULL, SM_BIG_DOUBLE, NULL, bOn, adParam[kk], dDist ));
+          if ( ! bOn || dDist > 10.0 * dApproxTol )
+            {
+              delete pNew3DCurve; delete pUVCurve1; delete pUVCurve2;
+              this->SetStatus(SM_FIL_SURF_INT_FAILURE);
+              pCurrEdge->SetStatus(SM_FIL_SURF_INT_FAILURE);
+              SER_MSG(SM_ERR, _T("CalcRailIntExtendedEdgeuse(): the end curve misses an end of the rails"));
+            }
+        }
+      SmExtent1d sTrim;
+      (void)sTrim.SetMinMax( smos_Min( adParam[0], adParam[1] ), smos_Max( adParam[0], adParam[1] ));
+      SER( pNew3DCurve->Trim( sTrim ));
+      SER( pUVCurve1->Trim( sTrim ));
+      SER( pUVCurve2->Trim( sTrim ));
+      sIvl = pNew3DCurve->GetNaturalInterval();
+      SER( pNew3DCurve->EvaluatePoint( sIvl.GetMin(), sPnt1 ));
+      SER( pNew3DCurve->EvaluatePoint( sIvl.GetMax(), sPnt2 ));
+    }
   SmPoint3d sVertGeom      = sPnt1;
   SmBoolean bReverseCurves = FALSE;
   SmPoint3d sOtherPnt      = pOtherFV->GetPoint();
