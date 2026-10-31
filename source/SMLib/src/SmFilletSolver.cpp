@@ -6368,11 +6368,13 @@ NOTES: At a vertex of three edges where only this edge is filleted (an
     (SmFilletNx1Corner::CalcCornerEdgeGeom builds it as the end rib). The
     end face must hold all of it. Where E is narrower than the fillet and
     something stands on it next to the vertex (a lip on a shelled box's rim,
-    the section running under the lip's foot), part of the section lies
-    beyond E's boundary: the corner's end rib leaves its face and the fillet
-    comes back unsewn. The fillet then overflows its end face, and is built
-    as an overflow is (the executive's m_bCliffOverflow): cut off by E's
-    surface continued, and the material it removes subtracted. The section
+    the section running under the lip's foot: off E across a concave edge of
+    it), part of the section lies beyond E's boundary under material: the
+    corner's end rib leaves its face and the fillet comes back unsewn. The
+    fillet then overflows its end face, and is built as an overflow is (the
+    executive's m_bCliffOverflow): cut off by E's surface continued, and the
+    material it removes subtracted. (A section off E across a convex edge,
+    a hole's rim or a cliff, is not judged here.) The section
     is the surfaces' exact intersection between the two crossings
     (sm_SrfSrfIntersection), classified against E (SmFace::CurveOnClassify).
     Judged where the corner takes the end face as it is: both side edges
@@ -6503,7 +6505,21 @@ SmStatus SmFilletSolver::EndSectionsFitTheirFaces
                   if ( sA.DistanceBetween( sB ) <= GetThisApproxTol3d() )
                     { continue; }
                 }
-              rbFit = FALSE;
+              // Off the face across a wall's foot (a concave edge of the end face: something
+              // standing on it), the section runs under material. Across a convex edge (a hole's
+              // rim, a cliff) it runs into the open, which this does not judge.
+              SmBoolean bUnder = FALSE;
+              for (const SmPointClassification * pPC : { &sSection[j].m_vStart, &sSection[j].m_vEnd })
+                {
+                  if ( pPC->GetPointClass() != SM_PC_EDGE || pPC->GetObject() == NULL )
+                    { continue; }
+                  SmBoolean bWallFoot = FALSE;
+                  SER( IsConcaveEdge( *(const SmEdge*)pPC->GetObject(), bWallFoot ));
+                  if ( bWallFoot )
+                    { bUnder = TRUE; }
+                }
+              if ( bUnder )
+                { rbFit = FALSE; }
             }
         }
     }
