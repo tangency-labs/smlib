@@ -3006,9 +3006,9 @@ SmStatus SmFilletCorner::MakeVariableRadiusFillet
   SmObjDelete sDeleteFS(pNewFS);
 
   pNewFS->SetFilletExecutive(m_pExecutive);
-  SmLinearCrossSectionFSG     sFSGLinear;                               // Create Linear
-  SmCircularCrossSectionFSG   sFSGCircular(bApproxArcs,dApproxArcTol);  // Creates Circular
-  SmGnSectionFSG              sFSGBlend(lMaxContinuity > 1 ? lMaxContinuity : 2, dThumbweight); // Create blend
+  SmGnSectionFSG sFSGLinear( 0 );                               // Create Linear
+  SmGnSectionFSG sFSGCircular( SmArcSection( bApproxArcs, dApproxArcTol ) );  // Creates Circular
+  SmGnSectionFSG sFSGBlend(lMaxContinuity > 1 ? lMaxContinuity : 2, dThumbweight); // Create blend
 
   switch (eType) 
     {   // RCLxx I hope we have etype set by here
@@ -3339,9 +3339,9 @@ SmStatus SmFilletCorner::MakeConstantRadiusFillet
   // Make a constant radius fillet solver
   SmFilletSolver            * pNewFS = NULL;
   SmFilletLaw               * pLaw   = NULL;
-  SmLinearCrossSectionFSG     sFSGLinear;                            // Create Linear
-  SmCircularCrossSectionFSG   sFSGCircular(TRUE,1.0e-3);             // Creates Circular
-  SmGnSectionFSG              sFSGBlend(lMaxContinuity > 1 ? lMaxContinuity : 2, dThumbweight); // Create blend
+  SmGnSectionFSG sFSGLinear( 0 );                            // Create Linear
+  SmGnSectionFSG sFSGCircular( SmArcSection( TRUE, 1.0e-3 ) );             // Creates Circular
+  SmGnSectionFSG sFSGBlend(lMaxContinuity > 1 ? lMaxContinuity : 2, dThumbweight); // Create blend
   switch (eType) 
     {
       case SM_FSG_CIRCULAR:

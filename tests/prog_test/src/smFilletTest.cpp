@@ -270,10 +270,10 @@ SmBoolean bDebugMe = FALSE ;
   SmApproxTol3d sApproxTol3d = SmTol::GetApproxTol3d(pNewBrep) ;
 
   // Creates circular cross section fillet when used in SmFilletSolver::SetFilletSurfaceGenerator
-  SmCircularCrossSectionFSG sFSGCircular(FALSE);
+  SmGnSectionFSG sFSGCircular( SmArcSection( FALSE ) );
 
   // Creates Linear cross section fillet (chamfering) when used in SmFilletSolver::SetFilletSurfaceGenerator
-  SmLinearCrossSectionFSG sFSGLinear;
+  SmGnSectionFSG sFSGLinear( 0 );
 
   // Define self-intersection handler for edge fillets
   double dStepBackFactor = 1.0;
@@ -2346,8 +2346,8 @@ SmStatus my_test_suite_3
 
   // Creates circular cross section fillet
   // that approximates the arc to within 0.1 of it's radius.
-  SmCircularCrossSectionFSG sFSGCircular(FALSE, SM_ZONE_TOL_3D);
-  SmLinearCrossSectionFSG sFSGLinear;          // Create Linear
+  SmGnSectionFSG sFSGCircular( SmArcSection( FALSE, SM_ZONE_TOL_3D ) );
+  SmGnSectionFSG sFSGLinear( 0 );          // Create Linear
   double dStepBackFactor = 1.0;
   SmMakeSurfaceBlendSIH sSIH(dStepBackFactor);
   
@@ -3254,8 +3254,8 @@ SmStatus my_test_suite_4
 
 	  SmGnSectionFSG sFSGBlend(2);
 	  // Creates circular or approx circular cross section fillet
-	  SmCircularCrossSectionFSG sFSGCircular(TRUE, dTolPercentRadius);
-	  SmLinearCrossSectionFSG sFSGLinear;
+	  SmGnSectionFSG sFSGCircular( SmArcSection( TRUE, dTolPercentRadius ) );
+	  SmGnSectionFSG sFSGLinear( 0 );
 
 	  // Specify the Cross Section type
 	  SmFilletSurfaceGenerator *pFSG;
@@ -3812,9 +3812,9 @@ USAGE NOTES ---
   my_read_fsg() block 
     line 1 - { CrossSectionType, RelativeAccuracy, Mirror, Complement }
 
-     where CrossSectionType == 1 returns an SmLinearCrossSectionFSG   object
-           CrossSectionType == 2 returns an SmCircularCrossSectionFSG object
-           CrossSectionType == 3 returns an SmCircularCrossSectionFSG object
+     where CrossSectionType == 1 returns an SmGnSectionFSG of order 0
+           CrossSectionType == 2 returns an SmGnSectionFSG of order 1
+           CrossSectionType == 3 returns an SmGnSectionFSG of order 1
 
   GWC NOTE: should CrossSectionType == 3 be changed to return a
     SmBlendCurveCrossSectionFSG object
@@ -3840,14 +3840,13 @@ static SmFilletSurfaceGenerator * my_read_fsg
   // create new FilletSurfaceGenerator - branch on lCrossSectionType
   if (lCrossSectionType == 1) 
     {
-      SmLinearCrossSectionFSG *pFSGLinear = new(crContext) SmLinearCrossSectionFSG();
+      SmGnSectionFSG *pFSGLinear = new(crContext) SmGnSectionFSG( 0 );
       return pFSGLinear;
     }
   if (lCrossSectionType == 2) 
     {
       SmBoolean bApprox = FALSE;
-      SmCircularCrossSectionFSG *pFSGCircular = new(crContext) 
-          SmCircularCrossSectionFSG(bApprox,dRelativeAccuracy,bMirror,bComplement);
+      SmGnSectionFSG *pFSGCircular = new(crContext) SmGnSectionFSG( SmArcSection( bApprox, dRelativeAccuracy, bMirror, bComplement ) );
       return pFSGCircular;
     }
   if (lCrossSectionType == 3) 
@@ -3856,8 +3855,7 @@ static SmFilletSurfaceGenerator * my_read_fsg
       // SmBlendCurveCrossSectionFSG object
 
       SmBoolean bApprox = TRUE;
-      SmCircularCrossSectionFSG *pFSGCircular = new(crContext)
-          SmCircularCrossSectionFSG(bApprox,dRelativeAccuracy,bMirror,bComplement);
+      SmGnSectionFSG *pFSGCircular = new(crContext) SmGnSectionFSG( SmArcSection( bApprox, dRelativeAccuracy, bMirror, bComplement ) );
       return pFSGCircular;
     }
 
@@ -4276,9 +4274,9 @@ USAGE NOTES ---
 
   2. my_read_fsg() block 
        line 1 - { CrossSectionType, RelativeAccuracy, Mirror, Complement }
-        where CrossSectionType == 1 returns an SmLinearCrossSectionFSG   object
-              CrossSectionType == 2 returns an SmCircularCrossSectionFSG object
-              CrossSectionType == 3 returns an SmCircularCrossSectionFSG object
+        where CrossSectionType == 1 returns an SmGnSectionFSG of order 0
+              CrossSectionType == 2 returns an SmGnSectionFSG of order 1
+              CrossSectionType == 3 returns an SmGnSectionFSG of order 1
 
 ********************************************************/
 PT_EXPORT SmStatus my_read_fillet_definition_file

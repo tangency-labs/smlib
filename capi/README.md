@@ -673,7 +673,7 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   `SmBSplineFilletLaw::GetCornerParameters`, `SmFilletExecutive::DoFillet`, `DoFilleting`,
   `NoteRadiusCornerSurfaces`, `SplitFilletFacesAtRadiusCorners`; `SmFilletSolver.h`,
   `SmFilletStandardSolver.h`/`.cpp`, `SmVariableRadiusFS::GetRadiusCornerParameters`,
-  `IsAtRadiusCorner`, `GetRadiusParameter`, `SmCircularCrossSectionFSG::CreateSurface`;
+  `IsAtRadiusCorner`, `GetRadiusParameter`, `SmGnSectionFSG::CircleSurface`;
   `SmFilletSolver.cpp`, `CalcFilletGeom`; `SmFilletIntersector.cpp`, `ComputeNextPoint`,
   `FlushCurve`): a radius law whose slope jumps inside the edge (straight 4 to 2 and back to 4)
   turns the round's center curve and rails there. The trace's tangent there was a central

@@ -38,7 +38,6 @@
 #endif
 
 class SmFilletSurfaceGenerator;
-class SmLinearCrossSectionFSG;
 class SmGnSectionFSG;
 class SmFilletExecutive;
 class SmSelfIntersectionHandler;
@@ -406,134 +405,53 @@ public:
 
 } ; // end class SmFilletSurfaceGenerator
 
-/*******************************************************************//**
-PURPOSE: Create a fillet surface with a linear cross section.  This
-    is simply a ruled surface or in some special cases a plane or a cone.
-
-NOTES: 
-***********************************************************************/
-class SM_EXPORT SmLinearCrossSectionFSG : public SmFilletSurfaceGenerator
-{
-public:
-  SmLinearCrossSectionFSG() {}
-
-  virtual ~SmLinearCrossSectionFSG() {}
-
-  virtual SmStatus CreateSurface(SmFilletSolver              & rFilletSolver,     // in : 
-                                 SmBSplineCurve              * pCenterLine,       // NotUsed: in :
-                                 SmBSplineCurve              * pRail1Curve,       // in : 
-                                 SmBSplineCurve              * pRail2Curve,       // in : 
-                                 const SmTArray<SmTsectPnt*> & crFilletPoints,    // NotUsed: in :
-                                 SmSurface                   * pSurf1,            // NotUsed: in :
-                                 SmBSplineCurve              * pUV1,              // NotUsed: in :
-                                 SmSurface                   * pSurf2,            // NotUsed: in :
-                                 SmBSplineCurve              * pUV2,              // NotUsed: in :
-                                 SmBSplineSurface           *& rpFilletSurface) ; // in : 
-
-  virtual SmFilletSurfaceGeneratorType GetFilletSurfaceGeneratorType()
-  { return SM_FSG_LINEAR; }
-
-  // SolidCraft change: a line from rail to rail cuts across both faces.
-  virtual SmBoolean MeetsItsFacesTangentially() const
-  { return FALSE; }
-
-} ; // end class SmLinearCrossSectionFSG
-
-/*******************************************************************//**
-PURPOSE: Create a fillet surface with a circular cross section.  This
-    is a lofted surface or in some special cases a cylinder or a torus.
-
-NOTES: 
-***********************************************************************/
-class SM_EXPORT SmCircularCrossSectionFSG : public SmFilletSurfaceGenerator
-{
-protected:
-  SmBoolean   m_bApproximateArcs;     // TRUE = interpolate rail curves with as circular arcs as possible
-                                      // FALSE= circular cross-sections even when rail curves are
-                                      //        not aligned on a circle centered on the centerCurve
-                                      // default:[TRUE]
-                                               
-  double      m_dTolPercentRadius;    // max allowed percentage deviation of output curve from circular arc
-                                      // used when m_bApproximateArcs == TRUE
-                                      // default:[0.05] 
-                                            
-  SmBoolean   m_bMirror;              // TRUE = CrossSections are mirrored about RailCurve Chord
-                                      // default:[FALSE] 
-                                          
-  SmBoolean   m_bComplement;          // TRUE = Fillet Surface made with larger half of circular arcs
-                                      // FALSE= Fillet Surface made with smaller half of circular arcs     
-                                      // default:[FALSE]
-public:
-  SmCircularCrossSectionFSG(SmBoolean bApproximateArcs=TRUE,
-                            double    dTolPercentRadius=0.05,
-                            SmBoolean bMirror=FALSE,
-                            SmBoolean bComplement=FALSE)      : m_bApproximateArcs(bApproximateArcs), 
-                                                                m_dTolPercentRadius(dTolPercentRadius), 
-                                                                m_bMirror(bMirror),
-                                                                m_bComplement(bComplement)
-                                                              { }
-
-  virtual ~SmCircularCrossSectionFSG() {}
-
-  double    GetTolPercentRadius() { return m_dTolPercentRadius; }
-  SmBoolean GetApproximateArcs()  { return m_bApproximateArcs; }
-
-  virtual SmStatus CreateSurface(SmFilletSolver   & rFilletSolver,
-                                 SmBSplineCurve   * pCenterLine,
-                                 SmBSplineCurve   * pRail1Curve,
-                                 SmBSplineCurve   * pRail2Curve,
-                                 const SmTArray<SmTsectPnt*> & crFilletPoints,
-                                 SmSurface         * pSurf1,  
-                                 SmBSplineCurve    * pUV1,
-                                 SmSurface         * pSurf2,
-                                 SmBSplineCurve    * pUV2,
-                                 SmBSplineSurface *& rpFilletSurface);
-
-  virtual SmStatus CreateSurfaceFromCurves(const SmContext   & crContext,
-                                           SmBSplineCurve    & rCenterLine,
-                                           SmBSplineCurve    & rRail1Curve,
-                                           SmBSplineCurve    & rRail2Curve,
-                                           double              dThisApproxTol3d,
-                                           SmBoolean           bNeedG1Continuity,
-                                           SmSurface         * pSurf1,  
-                                           SmBSplineCurve    * pUV1,
-                                           SmSurface         * pSurf2,
-                                           SmBSplineCurve    * pUV2,
-                                           SmBSplineSurface *& rpFilletSurface);
-
-  virtual SmFilletSurfaceGeneratorType GetFilletSurfaceGeneratorType()
-  { return SM_FSG_CIRCULAR; }
-
-  // SolidCraft change: the arc about the ball's centre is square at each rail to the radius
-  // there, which is the face's normal, so it is tangent to the face; the larger arc
-  // (m_bComplement) too. An arc mirrored about the rails' chord (m_bMirror) is not.
-  virtual SmBoolean MeetsItsFacesTangentially() const
-  { return !m_bMirror; }
-
-} ; // end class SmCircularCrossSectionFSG
-
 // SolidCraft change: the highest order of SmGnSectionFSG, and its default thumbweight: 0, the G^n
 // section with no thumbweight (p1(t) = p2(t) = t).
 #define SM_GN_MAX_ORDER 4
 #define SM_GN_DEFAULT_THUMBWEIGHT 0.0
 
-/*******************************************************************//**
-PURPOSE: SolidCraft change. A blend's cross-section of contact order n with
-    its faces along the rails, n = 2 to SM_GN_MAX_ORDER: the G^n section
-    f T1(1 - p1) + (1 - f) T2(p2) between the rails, T_i the order-n jets of
-    the faces along the rails, with thumbweight w (SmFilletSection.cpp).
+// SolidCraft change: how SmGnSectionFSG's order-1 section, the ball's circle, is built: with
+// circular arcs as far as the rails allow (bApproximateArcs, within dTolPercentRadius of the
+// radius) or exactly; mirrored about the rails' chord; or the larger arc (bComplement).
+struct SmArcSection
+{
+  SmBoolean bApproximateArcs;
+  double    dTolPercentRadius;
+  SmBoolean bMirror;
+  SmBoolean bComplement;
 
-NOTES: It needs a ball of one radius (constant offsets).
+  explicit SmArcSection(SmBoolean bApprox = TRUE, double dTolPercent = 0.05, SmBoolean bMirrored = FALSE,
+                        SmBoolean bLarger = FALSE)
+    : bApproximateArcs(bApprox), dTolPercentRadius(dTolPercent), bMirror(bMirrored), bComplement(bLarger) {}
+};
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. A blend's cross-section by its order n of contact
+    with its faces along the rails: 0 the chord between the rails (a
+    chamfer), 1 the ball's circle (a round: the canal surface of the balls,
+    each section the circle the balls' envelope touches the ball along), 2 to
+    SM_GN_MAX_ORDER the G^n section f T1(1 - p1) + (1 - f) T2(p2) between the
+    rails, T_i the order-n jets of the faces along the rails, with
+    thumbweight w (SmFilletSection.cpp).
+
+NOTES: The G^n section needs a ball of one radius (constant offsets).
 ***********************************************************************/
 class SM_EXPORT SmGnSectionFSG : public SmFilletSurfaceGenerator
 {
 protected:
+  SmArcSection m_sArcs;     // order 1: how the circles are built
   ULONG  m_lOrder;          // n
   double m_dThumbweight;    // w, 0 <= w < 1
   double m_dCertifiedBound; // the last surface built: its certified distance from the blend, mm (-1: none yet)
   ULONG  m_lCertifiedSpans; // and its number of spans along the rails
 public:
   SmGnSectionFSG(ULONG lOrder, double dThumbweight = SM_GN_DEFAULT_THUMBWEIGHT);
+
+  // the order-1 section, the ball's circle, built as crArcs says
+  explicit SmGnSectionFSG(const SmArcSection & crArcs);
+
+  double    GetTolPercentRadius() const { return m_sArcs.dTolPercentRadius; }
+  SmBoolean GetApproximateArcs() const  { return m_sArcs.bApproximateArcs; }
 
   virtual ~SmGnSectionFSG() {}
 
@@ -577,14 +495,25 @@ public:
   ULONG  GetCertifiedSpans() const { return m_lCertifiedSpans; }
   double GetThumbweight() const { return m_dThumbweight; }
 
+  // the kind of section: the chord (order 0), the circle (1), the G^n section (2 and up)
   virtual SmFilletSurfaceGeneratorType GetFilletSurfaceGeneratorType()
-  { return SM_FSG_BLEND_CURVE; }
+  { return m_lOrder == 0 ? SM_FSG_LINEAR : (m_lOrder == 1 ? SM_FSG_CIRCULAR : SM_FSG_BLEND_CURVE); }
 
-  // its derivatives across each rail are the face's, to order n
+  // a chord cuts across both faces; the circle about the ball's centre is square at each rail to
+  // the radius there, the face's normal (not when mirrored about the rails' chord); the G^n
+  // section's derivatives across each rail are the face's, to order n
   virtual SmBoolean MeetsItsFacesTangentially() const
-  { return TRUE; }
+  { return m_lOrder == 0 ? FALSE : (m_lOrder == 1 ? !m_sArcs.bMirror : TRUE); }
 
 protected:
+  // the order-1 section's surface (the ball's circles skinned, swept or revolved)
+  SmStatus CircleSurface(SmFilletSolver & rFilletSolver, SmBSplineCurve * pCenterLine, SmBSplineCurve * pRail1Curve,
+                         SmBSplineCurve * pRail2Curve, SmSurface * pSurf1, SmBSplineCurve * pUV1, SmSurface * pSurf2,
+                         SmBSplineCurve * pUV2, SmBSplineSurface *& rpFilletSurface);
+  SmStatus CircleSurfaceFromCurves(const SmContext & crContext, SmBSplineCurve & rCenterLine, SmBSplineCurve & rRail1Curve,
+                                   SmBSplineCurve & rRail2Curve, double dThisApproxTol3d, SmBoolean bNeedG1Continuity,
+                                   SmSurface * pSurf1, SmBSplineCurve * pUV1, SmSurface * pSurf2, SmBSplineCurve * pUV2,
+                                   SmBSplineSurface *& rpFilletSurface);
   SmStatus Build(const SmContext   & crContext,
                  SmBSplineCurve    & rCenterLine,
                  SmBSplineCurve    & rRail1Curve,
