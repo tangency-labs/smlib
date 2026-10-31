@@ -2835,11 +2835,242 @@ void chamfer_of_a_rim_loop_past_its_rim()
     }
 }
 
+// Blends that end where their face runs tangent into another (SolidCraft rig fillets/report-peg-*,
+// the test-peg part): a bar 40 x 16 x 10 whose far end is a half disc R8 about (40, 8), a disc R8
+// about the same centre standing 10 on its top, joined. The bar's front face y = 0 runs tangent
+// into the cylinder along x = 40, so its front top edge (convex) and the concave arc where its
+// top meets the cylinder are tangent where they meet, at V = (40, 0, 10), and a blend of either
+// ends on a face tangent to the face it rolls on. V0 = 6400 + 960 pi. The plane of every flat
+// face and the cylinder's top bound the whole body, and every blend lies within them: the
+// body's exact box stays (0, 0, 0) .. (48, 16, 20), to the blends' tolerance 4e-5.
+// `draft` (radians, inward) leans every wall: the drafted front face then runs tangent into a
+// cone along its generator through x = 40, the disc on top continuing the same cone.
+smlib_brep *tangent_peg(double draft)
+{
+    const double up[3] = {0, 0, 1};
+    const double d = 10.0 * std::tan(draft);
+    Profile bar, disc;
+    bar.line(0, 0, 40, 0, 0).arc(40, 8, 0, 1, 8, -PI / 2, PI / 2).line(40, 16, 0, 16, 0).line(0, 16, 0, 0, 0);
+    disc.arc(40, 8, 10, 1, 8 - d, 0, 2 * PI);
+    smlib_brep *a = nullptr, *b = nullptr, *peg = nullptr;
+    CHECK(smlib_extrude(bar.kinds.data(), static_cast<int64_t>(bar.kinds.size()), bar.reals.data(), static_cast<int64_t>(bar.reals.size()), up, 10.0,
+                        draft, SMLIB_DRAFT_CORNER_CURVATURE, 1, &a, nullptr) == SMLIB_OK);
+    CHECK(smlib_extrude(disc.kinds.data(), static_cast<int64_t>(disc.kinds.size()), disc.reals.data(), static_cast<int64_t>(disc.reals.size()), up, 10.0,
+                        draft, SMLIB_DRAFT_CORNER_CURVATURE, 1, &b, nullptr) == SMLIB_OK);
+    CHECK(a != nullptr && b != nullptr && smlib_boolean(a, b, SMLIB_BOOLEAN_UNION, &peg) == SMLIB_OK);
+    smlib_brep_free(a);
+    smlib_brep_free(b);
+    return peg;
+}
+
+// The quadratures of the rig's expected answers (tanh-sinh, converged to 1e-13): along x the
+// front blends remove their section up to the cylinder's wall, x = 40 - sqrt(64 - (8 - y)^2);
+// the concave blends add their spandrel ring, clipped by the bar's sides.
+const double PEG_V0 = 6400.0 + 960.0 * PI;
+const double PEG_FRONT_ROUND_R2 = 32.30647504387316;    // int_0^2 (2 - sqrt(4 - (2 - y)^2)) (40 - sqrt(64 - (8 - y)^2)) dy
+const double PEG_FRONT_CURVATURE_R2 = 22.621011133536857; // the quintic section of setback 2, as rig report-peg-front-curvature-round-r2
+const double PEG_FRONT_CHAMFER_D2 = 74.1305705753116;   // int_0^2 (2 - y) (40 - sqrt(64 - (8 - y)^2)) dy
+const double PEG_CONCAVE_CHAMFER_D2 = 41.65678424889758; // int_8^10 (10 - rho) rho 2 asin(8 / rho) d rho
+
+const double PEG_FRONT[3] = {20, 0, 10}, PEG_CONCAVE[3] = {32, 8, 10};
+
+// One blend of `brep` (consumed) at `kind`, its points and sizes; null when it fails.
+smlib_brep *peg_blend(smlib_brep *brep, int32_t kind, std::vector<double> points, std::vector<double> sizes)
+{
+    smlib_brep *r = nullptr;
+    int32_t s = brep == nullptr ? SMLIB_ERR_ARG
+                                : smlib_blend(brep, kind, points.data(), sizes.data(), static_cast<int64_t>(sizes.size()), 0.1, &r, nullptr);
+    std::printf("  blend kind %d of %zu edge(s): status %d\n", static_cast<int>(kind), sizes.size(), static_cast<int>(s));
+    CHECK(s == SMLIB_OK && r != nullptr);
+    smlib_brep_free(brep);
+    return s == SMLIB_OK ? r : nullptr;
+}
+
+// A blended peg: sound, within the unblended box, and of volume `want` when it is known (> 0).
+void peg_result(smlib_brep *&r, double want, bool boxed)
+{
+    if (r == nullptr)
+    {
+        return;
+    }
+    if (boxed)
+    {
+        double lo[3], hi[3];
+        CHECK(smlib_brep_bounds(r, lo, hi) == SMLIB_OK);
+        std::printf("  box (%.7f %.7f %.7f) .. (%.7f %.7f %.7f)\n", lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+        const double want_lo[3] = {0, 0, 0}, want_hi[3] = {48, 16, 20};
+        for (int k = 0; k < 3; k++)
+        {
+            CHECK(lo[k] >= want_lo[k] - 4e-5 && hi[k] <= want_hi[k] + 4e-5);
+        }
+    }
+    if (want > 0)
+    {
+        std::printf("  volume %.9f, want %.9f\n", volume_of(r), want);
+        CHECK(near(volume_of(r), want, 1e-6));
+    }
+    done(r);
+}
+
+// A point on the edge the second blend's chain runs on into: after the front round r, its end
+// on the cylinder (the round's section at 45 deg, s = r (1 - cos 45), on x = 40 - sqrt(s (16 - s)));
+// after the concave round r, its end on the front face (the torus's section at 45 deg).
+std::vector<double> peg_front_end(double r)
+{
+    const double c = std::sqrt(0.5), s = r * (1 - c);
+    return {40 - std::sqrt(s * (16 - s)), s, 10 - r + r * c};
+}
+std::vector<double> peg_concave_end(double r)
+{
+    const double c = std::sqrt(0.5), rho = 8 + r * (1 - c);
+    return {40 - std::sqrt(rho * rho - 64), 0, 10 + r - r * c};
+}
+
+void peg_rounds_together(double r)
+{
+    smlib_brep *b = peg_blend(tangent_peg(0), SMLIB_BLEND_ROUND, {20, 0, 10, 32, 8, 10}, {r, r});
+    peg_result(b, 0, true);
+}
+void tangent_end_rounds_together_r2() { peg_rounds_together(2); }
+void tangent_end_rounds_together_r5() { peg_rounds_together(5); }
+
+void peg_rounds_in_turn(double front, double concave, bool front_first)
+{
+    smlib_brep *b = tangent_peg(0);
+    if (front_first)
+    {
+        b = peg_blend(b, SMLIB_BLEND_ROUND, {20, 0, 10}, {front});
+        std::vector<double> pts = {32, 8, 10}, end = peg_front_end(front);
+        pts.insert(pts.end(), end.begin(), end.end());
+        b = peg_blend(b, SMLIB_BLEND_ROUND, pts, {concave, concave});
+    }
+    else
+    {
+        b = peg_blend(b, SMLIB_BLEND_ROUND, {32, 8, 10}, {concave});
+        std::vector<double> pts = {20, 0, 10}, end = peg_concave_end(concave);
+        pts.insert(pts.end(), end.begin(), end.end());
+        b = peg_blend(b, SMLIB_BLEND_ROUND, pts, {front, front});
+    }
+    peg_result(b, 0, true);
+}
+void tangent_end_front_round_then_concave_round_r2() { peg_rounds_in_turn(2, 2, true); }
+void tangent_end_concave_round_then_front_round_r2() { peg_rounds_in_turn(2, 2, false); }
+void tangent_end_front_round_r1_5_then_concave_round_r3() { peg_rounds_in_turn(1.5, 3, true); }
+void tangent_end_concave_round_r3_then_front_round_r1_5() { peg_rounds_in_turn(1.5, 3, false); }
+
+void tangent_end_front_round_r2()
+{
+    smlib_brep *b = peg_blend(tangent_peg(0), SMLIB_BLEND_ROUND, {20, 0, 10}, {2});
+    peg_result(b, PEG_V0 - PEG_FRONT_ROUND_R2, true);
+}
+void tangent_end_front_curvature_round_r2()
+{
+    smlib_brep *b = peg_blend(tangent_peg(0), SMLIB_BLEND_CURVATURE, {20, 0, 10}, {2});
+    peg_result(b, PEG_V0 - PEG_FRONT_CURVATURE_R2, true);
+}
+void tangent_end_front_chamfer_d2()
+{
+    smlib_brep *b = peg_blend(tangent_peg(0), SMLIB_BLEND_CHAMFER, {20, 0, 10}, {2});
+    peg_result(b, PEG_V0 - PEG_FRONT_CHAMFER_D2, true);
+}
+void tangent_end_concave_chamfer_d2()
+{
+    smlib_brep *b = peg_blend(tangent_peg(0), SMLIB_BLEND_CHAMFER, {32, 8, 10}, {2});
+    peg_result(b, PEG_V0 + PEG_CONCAVE_CHAMFER_D2, true);
+}
+void tangent_end_chamfers_together_d2()
+{
+    smlib_brep *b = peg_blend(tangent_peg(0), SMLIB_BLEND_CHAMFER, {20, 0, 10, 32, 8, 10}, {2, 2});
+    peg_result(b, 0, true);
+}
+void tangent_end_drafted_front_round_r2()
+{
+    const double d = 10.0 * std::tan(5.0 * PI / 180.0);
+    smlib_brep *b = peg_blend(tangent_peg(5.0 * PI / 180.0), SMLIB_BLEND_ROUND, {20, d, 10}, {2});
+    peg_result(b, 0, false);
+}
+void tangent_end_drafted_rounds_together_r2()
+{
+    const double d = 10.0 * std::tan(5.0 * PI / 180.0);
+    smlib_brep *b = peg_blend(tangent_peg(5.0 * PI / 180.0), SMLIB_BLEND_ROUND, {20, d, 10, 32 + d, 8, 10}, {2, 2});
+    peg_result(b, 0, false);
+}
+
+// The tangent-end cases, and why each that fails today fails (null: it passes, and runs with
+// the others). `--tangent-ends-known-failing` runs the failing ones and fails if one passes, the
+// way SolidCraft's KNOWN_FAILING lists hold: a fix that makes one pass deletes its reason here.
+struct TangentEndCase
+{
+    const char *name;
+    void (*run)();
+    const char *fails_today;
+};
+const TangentEndCase TANGENT_END_CASES[] = {
+    {"chamfers_together_d2", tangent_end_chamfers_together_d2,
+     "status 1001: SmFilletNx1Corner, Corner Edge Computation Failure (the chamfers' tangent ends, as front_chamfer_d2 and concave_chamfer_d2)"},
+    {"concave_chamfer_d2", tangent_end_concave_chamfer_d2,
+     "status 1001: SmFilletNx1Corner, Corner Edge Computation Failure, where the cone runs out over the front top edge and its end on the front face leaves its contact line tangentially"},
+    {"concave_round_r3_then_front_round_r1_5", tangent_end_concave_round_r3_then_front_round_r1_5, nullptr},
+    {"concave_round_then_front_round_r2", tangent_end_concave_round_then_front_round_r2, nullptr},
+    {"drafted_front_round_r2", tangent_end_drafted_front_round_r2,
+     "SMLib's check refuses the round: Test #13 (a 2D curve with a radius of curvature of 8.6e-6) and Tests #7 and #8 (kinks at interior knots) on its end on the cone"},
+    {"drafted_rounds_together_r2", tangent_end_drafted_rounds_together_r2,
+     "status 1001 before any geometry: the corner where the front top edge runs tangent into the concave arc, on the cone, is of no kind SMLib's blend corners take"},
+    {"front_chamfer_d2", tangent_end_front_chamfer_d2,
+     "status 1001: SmFilletNx1Corner, Corner Edge Computation Failure, where the chamfer's end on the cylinder leaves its contact line on the front face tangentially"},
+    {"front_curvature_round_r2", tangent_end_front_curvature_round_r2, nullptr},
+    {"front_round_r1_5_then_concave_round_r3", tangent_end_front_round_r1_5_then_concave_round_r3, nullptr},
+    {"front_round_r2", tangent_end_front_round_r2, nullptr},
+    {"front_round_then_concave_round_r2", tangent_end_front_round_then_concave_round_r2, nullptr},
+    {"rounds_together_r2", tangent_end_rounds_together_r2,
+     "the corner patch where the rounds meet stands 0.0374 out of the front face (box y min -0.0374099)"},
+    {"rounds_together_r5", tangent_end_rounds_together_r5,
+     "the corner patch where the rounds meet stands 0.128 out of the front face (box y min -0.1278205)"},
+};
+
+// Runs every case, those that fail today (`known_failing`) or the others; a known failure that
+// passes is a failure. One case alone by `only`.
+int tangent_end_cases(bool known_failing, const char *only)
+{
+    int wrong = 0;
+    for (const TangentEndCase &c : TANGENT_END_CASES)
+    {
+        if ((only != nullptr && std::strcmp(only, c.name) != 0) || (only == nullptr && known_failing != (c.fails_today != nullptr)))
+        {
+            continue;
+        }
+        const int before = failures;
+        std::printf("tangent end %s:\n", c.name);
+        c.run();
+        const bool failed = failures != before;
+        failures = before;
+        if (failed != (c.fails_today != nullptr))
+        {
+            std::fprintf(stderr, "tangent end %s: %s\n", c.name, failed ? "FAILS" : "PASSES, though listed as failing today: drop its reason");
+            wrong++;
+        }
+        else if (failed)
+        {
+            std::printf("  fails, as known: %s\n", c.fails_today);
+        }
+    }
+    return wrong;
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 4 && std::strcmp(argv[1], "--solidcore-1173") == 0)
     {
         return corner_child(argv[2], argv[3]);
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--tangent-ends-known-failing") == 0)
+    {
+        return tangent_end_cases(true, nullptr) == 0 ? 0 : 1;
+    }
+    if (argc == 3 && std::strcmp(argv[1], "--tangent-end") == 0)
+    {
+        smlib_set_log([](void *, int32_t level, const char *line) { std::fprintf(stderr, "log %d %s\n", static_cast<int>(level), line); }, nullptr);
+        return tangent_end_cases(false, argv[2]) == 0 ? 0 : 1;
     }
 
     loops_touching_at_a_vertex_in_any_order();
@@ -6358,6 +6589,7 @@ int main(int argc, char **argv)
     tabbed_plate_rounds_mitred_on_the_arcs_continuation();
     corner_patch_edge_lies_on_its_patch();
     corner_patch_drop_from_a_guess_is_its_foot();
+    failures += tangent_end_cases(false, nullptr);
 
     // SolidCraft surface.offset of a ball's one face: the face taken off as a sheet is a closed
     // shell whose regions are all voids, which smlib_offset_sheet refused as a solid
