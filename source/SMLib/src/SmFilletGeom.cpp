@@ -33,6 +33,7 @@
 #endif
 
 #include <SmCone.h>
+#include <vector>
 #include <SmPlane.h>
 #include <SmLine.h>
 #include <SmTrimmingTools.h>
@@ -596,6 +597,267 @@ static int sm_ClassifyFacePoint( const SmPoint3d & rPos, SmFace *pOrigFace, SmFa
 } // end static sm_ClassifyFacePoint
 
 /*******************************************************************//**
+PURPOSE: SolidCraft change. The curve where surface pSurf meets the plane
+    pPlane between two points known on both: the zero set of
+    g(u, v) = (S(u, v) - O) . N on pSurf, O and N the plane's point and
+    normal, traced from one point to the other, its points solved on pSurf
+    onto the plane's equation. A plane is unbounded: its own domain (the
+    face it was made for) does not limit the curve, which only has to
+    reach the given end.
+
+NOTES: Each station is the surface's point nearest the predicted one on
+    g = 0 (Newton's minimum-norm step on g), the step along the level line
+    (g_v, -g_u) cut to keep the turn of its 3D tangent under dAngTol; the
+    three curves are cubic Hermite interpolants of the stations' points and
+    tangents (the 3D curve, its uv on pSurf, and its uv on the plane, a
+    linear map of the 3D one), a span halved where its midpoint is off the
+    exact curve by more than dTol.
+***********************************************************************/
+static SmStatus sm_SurfacePlaneCurve
+ (const SmContext & crContext,   // in : context for new objects
+  const SmSurface & crSurf,      // in : the surface
+  const SmSurface & crPlane,     // in : the plane (an SmPlane)
+  const SmPoint3d & crStart,     // in : a point on both
+  const SmPoint3d & crEnd,       // in : another, the curve's end
+  double            dTol,        // in : the curves' tolerance
+  double            dAngTol,     // in : the most a step's tangent may turn (radians)
+  SmBSplineCurve *& rp3D,        // out: the 3D curve
+  SmBSplineCurve *& rpUVSurf,    // out: its uv on crSurf
+  SmBSplineCurve *& rpUVPlane)   // out: its uv on the plane
+{
+  rp3D = rpUVSurf = rpUVPlane = NULL;
+  // the plane: O + u Pu + v Pv
+  SmVector3d asP[4]; // D, Dv, Du, Duv
+  SER( crPlane.Evaluate( SmPoint2d( 0.0, 0.0 ), 1, 1, TRUE, TRUE, FALSE, asP, FALSE ));
+  const SmPoint3d  sO  = asP[0];
+  const SmVector3d sPu = asP[2], sPv = asP[1];
+  SmVector3d sN = sPu * sPv;
+  SER( sN.Unitize() );
+  const double dG11 = sPu.Dot( sPu ), dG12 = sPu.Dot( sPv ), dG22 = sPv.Dot( sPv ), dDetG = dG11 * dG22 - dG12 * dG12;
+  if ( !( dDetG > 0.0 ))
+    { SER( SM_ERR ); }
+  auto PlaneUV = [&]( const SmVector3d & crV ) // the plane's uv of a vector in it
+    {
+      const double a = crV.Dot( sPu ), b = crV.Dot( sPv );
+      return SmVector3d( ( dG22 * a - dG12 * b ) / dDetG, ( dG11 * b - dG12 * a ) / dDetG, 0.0 );
+    };
+  const double dScale = smos_Max( 1.0, crStart.DistanceBetween( crEnd ));
+  // g and its gradient on the surface
+  auto Eval = [&]( const SmPoint2d & crUV, SmVector3d (&rD)[4], double & rG ) -> SmStatus
+    {
+      SER( crSurf.Evaluate( crUV, 1, 1, TRUE, TRUE, FALSE, rD, FALSE ));
+      rG = ( rD[0] - sO ).Dot( sN );
+      return SM_SUCCESS;
+    };
+  // onto g = 0 from a guess, by minimum-norm Newton steps
+  auto OntoPlane = [&]( SmPoint2d & rUV, SmBoolean & rbOK ) -> SmStatus
+    {
+      rbOK = FALSE;
+      for ( int it=0; it<40; it++ )
+        {
+          SmVector3d sD[4];
+          double g = 0.0;
+          SER( Eval( rUV, sD, g ));
+          const double gu = sD[2].Dot( sN ), gv = sD[1].Dot( sN ), gg = gu * gu + gv * gv;
+          if ( !( gg > 0.0 ))
+            { return SM_SUCCESS; }
+          const double du = -g * gu / gg, dv = -g * gv / gg;
+          rUV = SmPoint2d( rUV.x + du, rUV.y + dv );
+          if ( smos_Fabs( g ) <= 1.0e-12 * dScale && smos_Fabs( du ) + smos_Fabs( dv ) <= 1.0e-14 * ( 1.0 + smos_Fabs( rUV.x ) + smos_Fabs( rUV.y )))
+            { rbOK = TRUE; return SM_SUCCESS; }
+        }
+      SmVector3d sD[4];
+      double g = 0.0;
+      SER( Eval( rUV, sD, g ));
+      rbOK = ( smos_Fabs( g ) <= 1.0e-10 * dScale ) ? TRUE : FALSE;
+      return SM_SUCCESS;
+    };
+  // the unit 3D tangent at uv along the level line, its uv rate, oriented by crDir
+  auto Tangent = [&]( const SmPoint2d & crUV, const SmVector3d & crDir, SmVector3d & rT, SmVector2d & rUVRate ) -> SmStatus
+    {
+      SmVector3d sD[4];
+      double g = 0.0;
+      SER( Eval( crUV, sD, g ));
+      const double gu = sD[2].Dot( sN ), gv = sD[1].Dot( sN );
+      SmVector3d sT = sD[2] * gv - sD[1] * gu;
+      double dLen = sT.Length();
+      if ( !( dLen > 0.0 ))
+        { SER_MSG( SM_ERR, _T("sm_SurfacePlaneCurve(): the surface touches the plane") ); }
+      double a = gv / dLen, b = -gu / dLen;
+      sT = sT * ( 1.0 / dLen );
+      if ( sT.Dot( crDir ) < 0.0 ) { sT = -sT; a = -a; b = -b; }
+      rT = sT;
+      rUVRate = SmVector2d( a, b );
+      return SM_SUCCESS;
+    };
+
+  // both ends on the surface
+  SmExtent2d sDom = crSurf.GetNaturalUVDomain();
+  SmPoint2d asUV[2];
+  const SmPoint3d * apEnd[2] = { &crStart, &crEnd };
+  for ( ULONG k=0; k<2; k++ )
+    {
+      SmBoolean bDropped = FALSE, bMulti = FALSE;
+      double dGap = SM_BIG_DOUBLE;
+      SER( crSurf.DropPoint( *apEnd[k], sDom, NULL, bDropped, asUV[k], dGap, bMulti ));
+      SmBoolean bOK = FALSE;
+      if ( bDropped )
+        { SER( OntoPlane( asUV[k], bOK )); }
+      SmPoint3d sOn;
+      SER( crSurf.EvaluatePoint( asUV[k], sOn ));
+      if ( !bOK || sOn.DistanceBetween( *apEnd[k] ) > dTol || smos_Fabs( ( *apEnd[k] - sO ).Dot( sN )) > dTol )
+        { SER_MSG( SM_ERR, _T("sm_SurfacePlaneCurve(): an end is off the surface or the plane") ); }
+    }
+
+  // the stations: from the start, along the level line, to the end
+  std::vector<SmPoint2d>  sUV;
+  std::vector<SmVector3d> sX, sT;
+  std::vector<SmVector2d> sR;
+  // the ends are the given points (on both surfaces to the tolerance)
+  const SmPoint3d sX0 = crStart;
+  SmVector3d sT0;
+  SmVector2d sR0;
+  SER( Tangent( asUV[0], crEnd - crStart, sT0, sR0 ));
+  sUV.push_back( asUV[0] ); sX.push_back( sX0 ); sT.push_back( sT0 ); sR.push_back( sR0 );
+  double h = 0.0625 * crStart.DistanceBetween( crEnd );
+  for ( int it=0; it<100000; it++ )
+    {
+      const SmPoint3d sXEnd = crEnd;
+      const double dLeft = sX.back().DistanceBetween( sXEnd );
+      if ( dLeft <= 1.5 * h )
+        {
+          // the last step: onto the end itself
+          SmVector3d sTE;
+          SmVector2d sRE;
+          SER( Tangent( asUV[1], sT.back(), sTE, sRE ));
+          if ( sTE.Dot( sT.back() ) < 0.0 )
+            { SER_MSG( SM_ERR, _T("sm_SurfacePlaneCurve(): the curve turns back before its end") ); }
+          sUV.push_back( asUV[1] ); sX.push_back( sXEnd ); sT.push_back( sTE ); sR.push_back( sRE );
+          break;
+        }
+      // predict: a step of h along the tangent, in uv by its rate
+      SmPoint2d sNext( sUV.back().x + h * sR.back().x / 1.0, sUV.back().y + h * sR.back().y / 1.0 );
+      {
+        SmVector3d sD[4];
+        double g = 0.0;
+        SER( Eval( sUV.back(), sD, g ));
+        const SmVector3d sStep = sD[2] * sR.back().x + sD[1] * sR.back().y;
+        const double dSpeed = sStep.Length();
+        if ( !( dSpeed > 0.0 ))
+          { SER( SM_ERR ); }
+        sNext = SmPoint2d( sUV.back().x + h * sR.back().x / dSpeed, sUV.back().y + h * sR.back().y / dSpeed );
+      }
+      SmBoolean bOK = FALSE;
+      SER( OntoPlane( sNext, bOK ));
+      SmVector3d sTN;
+      SmVector2d sRN;
+      if ( bOK )
+        { SER( Tangent( sNext, sT.back(), sTN, sRN )); }
+      double dTurn = 0.0;
+      if ( bOK )
+        { SER( sTN.AngleBetween( sT.back(), dTurn )); }
+      if ( !bOK || dTurn > dAngTol )
+        {
+          h *= 0.5;
+          if ( h < 1.0e-9 * dScale )
+            { SER_MSG( SM_ERR, _T("sm_SurfacePlaneCurve(): the trace's step vanished") ); }
+          continue;
+        }
+      SmPoint3d sXN;
+      SER( crSurf.EvaluatePoint( sNext, sXN ));
+      sUV.push_back( sNext ); sX.push_back( sXN ); sT.push_back( sTN ); sR.push_back( sRN );
+      if ( dTurn < 0.25 * dAngTol ) { h *= 1.5; }
+    }
+
+  // the Hermite spans, by arc length estimated by the chords, halved until their middles are on
+  // the exact curve
+  for ( int lPass=0; lPass<20; lPass++ )
+    {
+      std::vector<double> sS( 1, 0.0 );
+      for ( size_t j=1; j<sX.size(); j++ ) { sS.push_back( sS.back() + sX[j].DistanceBetween( sX[j-1] )); }
+      // the 3D curve's control points (tangent magnitude: the span's chord)
+      SmTArray<SmPoint3d> sCP3, sCPUV, sCPPl;
+      SmTArray<double> sKnots;
+      SmTArray<ULONG> sMult;
+      for ( size_t j=0; j<sX.size(); j++ ) { sKnots.Add( sS[j] ); sMult.Add( ( j == 0 || j + 1 == sX.size() ) ? 4 : 3 ); }
+      for ( size_t j=0; j+1<sX.size(); j++ )
+        {
+          const double dH = sS[j+1] - sS[j];
+          // uv rates per unit 3D length
+          auto UVRate = [&]( size_t i ) -> SmVector3d
+            {
+              SmVector3d sD[4];
+              double g = 0.0;
+              (void)Eval( sUV[i], sD, g );
+              const double dSpeed = ( sD[2] * sR[i].x + sD[1] * sR[i].y ).Length();
+              return SmVector3d( sR[i].x / dSpeed, sR[i].y / dSpeed, 0.0 );
+            };
+          const SmVector3d sRa = UVRate( j ), sRb = UVRate( j + 1 );
+          const SmVector3d sUa( sUV[j].x, sUV[j].y, 0.0 ), sUb( sUV[j+1].x, sUV[j+1].y, 0.0 );
+          const SmVector3d sPa = PlaneUV( sX[j] - sO ), sPb = PlaneUV( sX[j+1] - sO );
+          if ( j == 0 ) { sCP3.Add( sX[j] ); sCPUV.Add( sUa ); sCPPl.Add( sPa ); }
+          sCP3.Add( sX[j] + sT[j] * ( dH / 3.0 ));     sCP3.Add( sX[j+1] - sT[j+1] * ( dH / 3.0 ));     sCP3.Add( sX[j+1] );
+          sCPUV.Add( sUa + sRa * ( dH / 3.0 ));        sCPUV.Add( sUb - sRb * ( dH / 3.0 ));            sCPUV.Add( sUb );
+          sCPPl.Add( sPa + PlaneUV( sT[j] ) * ( dH / 3.0 )); sCPPl.Add( sPb - PlaneUV( sT[j+1] ) * ( dH / 3.0 )); sCPPl.Add( sPb );
+        }
+      SmBSplineCurve * p3D = NULL, * pUV = NULL, * pPl = NULL;
+      SER( SmBSplineCurve::CreateCanonical( crContext, 3, 3, sCP3, SM_CF_UNSPECIFIED, sMult, sKnots, SM_KT_PIECEWISE_BEZIER_KNOTS, NULL, NULL, p3D ));
+      SmObjDelete sDel3D( p3D );
+      SER( SmBSplineCurve::CreateCanonical( crContext, 2, 3, sCPUV, SM_CF_UNSPECIFIED, sMult, sKnots, SM_KT_PIECEWISE_BEZIER_KNOTS, NULL, NULL, pUV ));
+      SmObjDelete sDelUV( pUV );
+      SER( SmBSplineCurve::CreateCanonical( crContext, 2, 3, sCPPl, SM_CF_UNSPECIFIED, sMult, sKnots, SM_KT_PIECEWISE_BEZIER_KNOTS, NULL, NULL, pPl ));
+      SmObjDelete sDelPl( pPl );
+      // each span's middle against the exact curve there
+      std::vector<size_t> sOff;
+      std::vector<SmPoint2d> sOffUV;
+      for ( size_t j=0; j+1<sX.size(); j++ )
+        {
+          const double dMid = 0.5 * ( sS[j] + sS[j+1] );
+          SmPoint3d sM, sW;
+          SER( p3D->EvaluatePoint( dMid, sM ));
+          SER( pUV->EvaluatePoint( dMid, sW ));
+          SmPoint2d sMUV( sW.x, sW.y );
+          SmBoolean bOK = FALSE;
+          SER( OntoPlane( sMUV, bOK ));
+          SmPoint3d sExact;
+          SER( crSurf.EvaluatePoint( sMUV, sExact ));
+          SmPoint3d sOnUV;
+          SER( crSurf.EvaluatePoint( SmPoint2d( sW.x, sW.y ), sOnUV ));
+          if ( !bOK || sM.DistanceBetween( sExact ) > dTol || sOnUV.DistanceBetween( sExact ) > dTol )
+            { sOff.push_back( j ); sOffUV.push_back( sMUV ); }
+        }
+      if ( sOff.empty() )
+        {
+          sDel3D.Clear(); sDelUV.Clear(); sDelPl.Clear();
+          rp3D = p3D; rpUVSurf = pUV; rpUVPlane = pPl;
+          return SM_SUCCESS;
+        }
+      // insert those middles as stations
+      std::vector<SmPoint2d>  sUV2;
+      std::vector<SmVector3d> sX2, sT2;
+      std::vector<SmVector2d> sR2;
+      size_t k = 0;
+      for ( size_t j=0; j<sX.size(); j++ )
+        {
+          sUV2.push_back( sUV[j] ); sX2.push_back( sX[j] ); sT2.push_back( sT[j] ); sR2.push_back( sR[j] );
+          if ( k < sOff.size() && sOff[k] == j )
+            {
+              SmPoint3d sXM;
+              SER( crSurf.EvaluatePoint( sOffUV[k], sXM ));
+              SmVector3d sTM;
+              SmVector2d sRM;
+              SER( Tangent( sOffUV[k], sT[j], sTM, sRM ));
+              sUV2.push_back( sOffUV[k] ); sX2.push_back( sXM ); sT2.push_back( sTM ); sR2.push_back( sRM );
+              k++;
+            }
+        }
+      sUV.swap( sUV2 ); sX.swap( sX2 ); sT.swap( sT2 ); sR.swap( sR2 );
+    }
+  SER_MSG( SM_ERR, _T("sm_SurfacePlaneCurve(): the curves could not be fitted within the tolerance") );
+  return SM_ERR;
+} // end sm_SurfacePlaneCurve
+
+/*******************************************************************//**
 PURPOSE: Find the intersection curve of two surfaces.
 
 NOTES:
@@ -707,6 +969,58 @@ static ULONG lDebugCount = 0 ;
                                  &sSSITol, &dAngleTol, bNeedsMoreIntersections,
                                  &s3DCurves, &sSurface1UVCurves, &sSurface2UVCurves,
                                  NULL, NULL);
+    }
+
+  // SolidCraft change: a surface and a plane between two given points that lie on both, where
+  // they cross: the zero set of the plane's equation on the surface, traced from one to the
+  // other (sm_SurfacePlaneCurve). The plane goes on as itself past the face it was made for, so
+  // its domain does not end the curve. (Points off a surface, and an end where the surface
+  // touches the plane, a singular point of the curve with several branches out of it, are met
+  // by the intersectors below.)
+  SmBoolean bEndsOnBoth = FALSE;
+  if (   s3DCurves.GetSize() == 0
+      && pStartV != NULL && pEndV != NULL
+      && ( pSurf1->GetType() == SmPlane_TYPE ) != ( pSurf2->GetType() == SmPlane_TYPE ))
+    {
+      bEndsOnBoth = TRUE;
+      SmVector3d asNormal[2][2]; // [surface][end]
+      const SmSurface * apS[2] = { pSurf1, pSurf2 };
+      const SmVertex * apV[2] = { pStartV, pEndV };
+      for ( ULONG f=0; f<2 && bEndsOnBoth; f++ )
+        for ( ULONG e=0; e<2 && bEndsOnBoth; e++ )
+          {
+            SmBoolean bDropped = FALSE, bMulti = FALSE;
+            SmPoint2d sUV;
+            double dGap = SM_BIG_DOUBLE;
+            SER( apS[f]->DropPoint( apV[e]->GetPoint(), apS[f]->GetNaturalUVDomain(), NULL, bDropped, sUV, dGap, bMulti ));
+            SmPoint3d sOn;
+            if ( bDropped )
+              {
+                SER( apS[f]->EvaluatePoint( sUV, sOn ));
+                SER( apS[f]->EvaluateNormal( sUV, TRUE, TRUE, asNormal[f][e] ));
+              }
+            if ( !bDropped || sOn.DistanceBetween( apV[e]->GetPoint() ) > dApproxTol )
+              { bEndsOnBoth = FALSE; }
+          }
+      // and cross there: their normals are not parallel (the plane's equation has a gradient on
+      // the surface)
+      for ( ULONG e=0; e<2 && bEndsOnBoth; e++ )
+        {
+          SmVector3d sCross = asNormal[0][e] * asNormal[1][e];
+          if ( sCross.Length() <= SM_EFF_ZERO_SQRT * asNormal[0][e].Length() * asNormal[1][e].Length() )
+            { bEndsOnBoth = FALSE; }
+        }
+    }
+  if ( bEndsOnBoth )
+    {
+      const SmBoolean bPlaneFirst = ( pSurf1->GetType() == SmPlane_TYPE ) ? TRUE : FALSE;
+      SmBSplineCurve * pUVSurf = NULL, * pUVPlane = NULL;
+      SER( sm_SurfacePlaneCurve( crContext, bPlaneFirst ? *pSurf2 : *pSurf1, bPlaneFirst ? *pSurf1 : *pSurf2,
+                                 pStartV->GetPoint(), pEndV->GetPoint(), dApproxTol, dAngleTol,
+                                 rp3DCurve, pUVSurf, pUVPlane ));
+      rpUVCurve1 = bPlaneFirst ? pUVPlane : pUVSurf;
+      rpUVCurve2 = bPlaneFirst ? pUVSurf : pUVPlane;
+      return SM_SUCCESS;
     }
 
   // Use two-pts intersector.
