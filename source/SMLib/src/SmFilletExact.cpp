@@ -1120,11 +1120,13 @@ NOTES: Q1(q + s v) = 2 s g1.v + s^2 v.A1.v and Q2 likewise with g2 = k g1 at
    the node: they meet again where v.(A2 - k A1).v = 0, a cone. That cone is
    swept rationally by the second point on it of the lines through one of its
    rays v0 (a branch's tangent there: g1.v0 = 0) in the directions w(s) =
-   s0 (1 - s) from + s to; the point of the quartic along v is
-   q - 2 (g1.v) / (v.A1.v) v. bOther: the other arc from `from` to `to`.
+   (1 - s) from + s to (from and to on the cone, either way round: the two
+   arcs between them); the point of the quartic along v is
+   q - 2 (g1.v) / (v.A1.v) v. iBase picks the branch whose tangent is v0;
+   aBranch: both branches' tangents.
 ***********************************************************************/
 static SmStatus sm_NodalQuartic(const SmBlendQuadric & crO1, const SmBlendQuadric & crO2, const SmPoint3d & crNode,
-                                const SmVector3d & crFrom, const SmVector3d & crTo, double dSign,
+                                const SmVector3d & crFrom, const SmVector3d & crTo, int iBase, SmVector3d aBranch[2],
                                 std::vector<double> aX[3], std::vector<double> & rW, std::vector<double> & rG)
 {
   double aA1[3][3], aB1[3], dC1, aA2[3][3], aB2[3], dC2;
@@ -1157,23 +1159,21 @@ static SmStatus sm_NodalQuartic(const SmBlendQuadric & crO1, const SmBlendQuadri
   const SmVector3d sT2( sN * sT1 );
   const double t1[3] = { sT1.x, sT1.y, sT1.z }, t2[3] = { sT2.x, sT2.y, sT2.z };
   const double c11 = bil( aC, t1, t1 ), c12 = bil( aC, t1, t2 ), c22 = bil( aC, t2, t2 );
-  // c11 cos^2 + 2 c12 cos sin + c22 sin^2 = 0
-  double dTheta;
-  if ( smos_Fabs( c22 ) > smos_Fabs( c11 ) )
+  // c11 cos^2 + 2 c12 cos sin + c22 sin^2 = 0: the two branches' tangents
+  const double d = c12 * c12 - c11 * c22;
+  if ( d < 0.0 || ( c11 == 0.0 && c22 == 0.0 ) )
+    { SER_MSG( SM_ERR, _T("sm_NodalQuartic(): the node is isolated") ); }
+  for ( int k=0; k<2; k++ )
     {
-      const double d = c12 * c12 - c11 * c22;
-      if ( d < 0.0 ) { SER_MSG( SM_ERR, _T("sm_NodalQuartic(): the node is isolated") ); }
-      dTheta = smos_ArcTangent( ( -c12 + smos_Sqrt( d ) ) / c22 );
+      const double dRoot = ( k == 0 ? 1.0 : -1.0 ) * smos_Sqrt( d );
+      // (cos, sin) along (c22, -c12 + root) or (-c12 - root, c11), the better conditioned
+      SmVector3d sB( smos_Fabs( c22 ) >= smos_Fabs( c11 ) ? sT1 * c22 + sT2 * ( -c12 + dRoot ) : sT1 * ( -c12 - dRoot ) + sT2 * c11 );
+      SER( sB.Unitize() );
+      aBranch[k] = sB;
     }
-  else
-    {
-      const double d = c12 * c12 - c11 * c22;
-      if ( d < 0.0 || c11 == 0.0 ) { SER_MSG( SM_ERR, _T("sm_NodalQuartic(): the node is isolated") ); }
-      dTheta = 0.5 * SM_PI - smos_ArcTangent( ( -c12 + smos_Sqrt( d ) ) / c11 );
-    }
-  const SmVector3d sV0( sT1 * smos_Cosine( dTheta ) + sT2 * smos_Sine( dTheta ) );
+  const SmVector3d sV0( aBranch[iBase] );
   const double v0[3] = { sV0.x, sV0.y, sV0.z };
-  const double w0[3] = { dSign * crFrom.x, dSign * crFrom.y, dSign * crFrom.z };
+  const double w0[3] = { crFrom.x, crFrom.y, crFrom.z };
   const double w1[3] = { crTo.x - w0[0], crTo.y - w0[1], crTo.z - w0[2] };
   // v(s) = Qc(w) v0 - 2 B(v0, w) w, w = w0 + s w1
   const double q0c = bil( aC, w0, w0 ), q1c = 2.0 * bil( aC, w0, w1 ), q2c = bil( aC, w1, w1 );
@@ -1232,8 +1232,12 @@ SmStatus SmFilletSolver::CalcRationalSpineFilletGeom(const SmExactBlend & crBlen
   SER( SetupOffsetValues( *rTsectPnts[lLast], NULL ) );
   SER( GetSurface(0)->EvaluatePoint( rTsectPnts[lLast]->UVPos(0), sEnd ) );
   const SmBoolean bClosed = pCurve->IsClosed( pEdge->GetInterval() );
+  // the edge's middle, and its direction at the trace's first point (for a closed edge, the way
+  // round the trace runs)
+  SmPoint3d  sEdgeMid;
   SmVector3d sEdgeDir;
   {
+    SER( pCurve->EvaluatePoint( pEdge->GetInterval().Evaluate( 0.5 ), sEdgeMid ) );
     SmSolutionArray sSol;
     SER( pCurve->GlobalPointSolve( pEdge->GetInterval(), SM_SO_MINIMIZE, sStart, SM_EFF_ZERO_SQRT, NULL, NULL, SM_SR_SINGLE, sSol ) );
     if ( sSol.GetSize() < 1 ) { SER( SM_ERR ); }
@@ -1254,23 +1258,34 @@ SmStatus SmFilletSolver::CalcRationalSpineFilletGeom(const SmExactBlend & crBlen
       if ( sK.eKind == SM_CK_HYPERBOLA && ( sStart - sK.sC ).Dot( sK.sA1 ) < 0.0 )
         { sK.dBranch = -1.0; }
       double t0 = sm_ConicParam( sK, sStart ), t1 = sm_ConicParam( sK, sEnd );
-      // the direction the edge runs
-      const double h = 1e-6;
-      const SmVector3d sTan( sm_ConicPoint( sK, t0 + h ) - sm_ConicPoint( sK, t0 - h ) );
-      const double dDir = ( sTan.Dot( sEdgeDir ) >= 0.0 ) ? 1.0 : -1.0;
+      // from the first point to the last: round the loop the way the edge runs on a closed edge,
+      // else the way along an ellipse that passes the edge's middle
       double dSpan = t1 - t0;
+      double dDir  = ( dSpan >= 0.0 ) ? 1.0 : -1.0;
       if ( sK.eKind == SM_CK_ELLIPSE )
         {
           if ( bClosed )
-            { dSpan = dDir * 2.0 * SM_PI; }
+            {
+              const double h = 1e-6;
+              const SmVector3d sTan( sm_ConicPoint( sK, t0 + h ) - sm_ConicPoint( sK, t0 - h ) );
+              dDir  = ( sTan.Dot( sEdgeDir ) >= 0.0 ) ? 1.0 : -1.0;
+              dSpan = dDir * 2.0 * SM_PI;
+            }
           else
             {
-              while ( dSpan * dDir <= 0.0 ) { dSpan += dDir * 2.0 * SM_PI; }
-              while ( dSpan * dDir > 2.0 * SM_PI ) { dSpan -= dDir * 2.0 * SM_PI; }
+              // the arc t0 -> t1 one way or the other, by where the edge's middle lies
+              const double dMid = sm_ConicParam( sK, sEdgeMid );
+              auto within = [&]( double a, double span, double t ) {
+                double d = ( t - a ) * ( span >= 0.0 ? 1.0 : -1.0 );
+                d -= 2.0 * SM_PI * smos_Floor( d / ( 2.0 * SM_PI ) );
+                return d <= smos_Fabs( span ); };
+              while ( dSpan <= 0.0 ) { dSpan += 2.0 * SM_PI; }
+              while ( dSpan > 2.0 * SM_PI ) { dSpan -= 2.0 * SM_PI; }
+              if ( !within( t0, dSpan, dMid ) )
+                { dSpan -= 2.0 * SM_PI; }
+              dDir = ( dSpan >= 0.0 ) ? 1.0 : -1.0;
             }
         }
-      else if ( dSpan * dDir <= 0.0 )
-        { SER_MSG( SM_ERR, _T("CalcRationalSpineFilletGeom(): the trace's ends run against the edge on the conic") ); }
       // extensions
       if ( !bClosed )
         {
@@ -1289,33 +1304,45 @@ SmStatus SmFilletSolver::CalcRationalSpineFilletGeom(const SmExactBlend & crBlen
     }
   else if ( crBlend.m_eSpine == SM_BS_NODAL_QUARTIC )
     {
-      const SmVector3d sFrom( sStart - crBlend.m_sPoint ), sTo( sEnd - crBlend.m_sPoint );
+      // from the node toward the trace's ends; an end at the node (the round fading out there)
+      // leaves it along a branch's tangent
+      const SmVector3d sFromPt( sStart - crBlend.m_sPoint ), sToPt( sEnd - crBlend.m_sPoint );
+      const SmBoolean bFromNode = sFromPt.Length() <= dTol, bToNode = sToPt.Length() <= dTol;
+      if ( bFromNode && bToNode )
+        { SER_MSG( SM_ERR, _T("CalcRationalSpineFilletGeom(): the trace starts and ends at the node") ); }
       std::vector<double> aX[3], sW, sG;
-      // the arc from start to end that keeps off the node: G (g1.v) keeps its sign on it
+      SmVector3d aBranch[2];
+      SER( sm_NodalQuartic( crO0, crO1, crBlend.m_sPoint, sFromPt, sToPt, 0, aBranch, aX, sW, sG ) );
+      // the arc from start to end that keeps off the node: G (g1.v) is not zero inside it, nor W
       SmBoolean bFound = FALSE;
-      for ( double dSign : { 1.0, -1.0 } )
+      for ( int iCand=0; iCand<4 && !bFound; iCand++ )
         {
-          SER( sm_NodalQuartic( crO0, crO1, crBlend.m_sPoint, sFrom, sTo, dSign, aX, sW, sG ) );
+          const int iEndBranch = iCand / 2;
+          const double dSign = ( iCand % 2 == 0 ) ? 1.0 : -1.0;
+          const SmVector3d sFrom = ( bFromNode ? aBranch[iEndBranch] : sFromPt ) * dSign;
+          const SmVector3d sTo   = bToNode ? aBranch[iEndBranch] : sToPt;
+          if ( !bFromNode && !bToNode && iEndBranch == 1 )
+            { continue; }
+          // the base ray: the branch no end leaves along
+          const int iBase = ( bFromNode || bToNode ) ? 1 - iEndBranch : 0;
+          SER( sm_NodalQuartic( crO0, crO1, crBlend.m_sPoint, sFrom, sTo, iBase, aBranch, aX, sW, sG ) );
           SmBoolean bOk = TRUE;
-          const double g0 = sm_PowerEval( sG, 0.0 ), w0 = sm_PowerEval( sW, 0.0 );
-          for ( int k=1; k<=64 && bOk; k++ )
+          const double g = sm_PowerEval( sG, 0.5 ), w = sm_PowerEval( sW, 0.5 );
+          for ( int k=1; k<64 && bOk; k++ )
             {
-              const double s = k / 64.0;
-              if ( sm_PowerEval( sG, s ) * g0 <= 0.0 || sm_PowerEval( sW, s ) * w0 <= 0.0 ) { bOk = FALSE; }
+              const double t = k / 64.0;
+              if ( !( sm_PowerEval( sG, t ) * g > 0.0 ) || !( sm_PowerEval( sW, t ) * w > 0.0 ) ) { bOk = FALSE; }
             }
-          if ( bOk ) { bFound = TRUE; break; }
+          if ( !( sm_PowerEval( sW, 0.0 ) * w > 0.0 ) || !( sm_PowerEval( sW, 1.0 ) * w > 0.0 ) ) { bOk = FALSE; }
+          bFound = bOk;
         }
       if ( !bFound )
         { SER_MSG( SM_ERR, _T("CalcRationalSpineFilletGeom(): the quartic's arc between the trace's ends runs through its node") ); }
-      // the direction: s from start to end must run along the edge
+      // s runs from the trace's first point to its last
       double s0 = 0.0, s1 = 1.0;
       {
-        auto pt = [&]( double s ) { const double w = sm_PowerEval( sW, s );
-          return SmPoint3d( sm_PowerEval( aX[0], s ) / w, sm_PowerEval( aX[1], s ) / w, sm_PowerEval( aX[2], s ) / w ); };
-        if ( ( pt( 1e-6 ) - pt( 0.0 ) ).Dot( sEdgeDir ) < 0.0 )
-          { SER_MSG( SM_ERR, _T("CalcRationalSpineFilletGeom(): the trace's ends run against the edge on the quartic") ); }
         // extend, as far as the node and the point at infinity allow
-        const double g0 = sm_PowerEval( sG, 0.0 ), w0 = sm_PowerEval( sW, 0.0 );
+        const double g0 = sm_PowerEval( sG, 0.5 ), w0 = sm_PowerEval( sW, 0.5 );
         auto clear = [&]( double s ) { return sm_PowerEval( sG, s ) * g0 > 0.0 && sm_PowerEval( sW, s ) * w0 > 0.0; };
         const double dExt = m_dSurfaceExtensionFactor;
         for ( int k=1; k<=32; k++ ) { const double s = -dExt * k / 32.0; if ( !m_bExtendBefore || !clear( s - dExt / 32.0 ) ) break; s0 = s; }
@@ -1593,6 +1620,25 @@ SmStatus SmFilletSolver::CalcExactFilletGeom(const SmExactBlend & crBlend, SmTAr
       break;
     case SM_BS_POINT:
       rbBuilt = !bRecalc && CalcSphereFilletGeom( rTsectPnts, pFG ) == SM_SUCCESS;
+      break;
+    case SM_BS_NODAL_QUARTIC:
+      {
+        // A round that runs into the node ends there tangentially: its contacts merge, the end
+        // event of the trace (the tangent end), which takes the traced round only. Such a round
+        // is traced until that event takes the exact one.
+        const SmBrep * pBrep = GetEdgeuse(0)->GetEdge()->GetBrep();
+        const double dTol = ( pBrep != NULL ) ? static_cast<double>( pBrep->GetTolerance() ) : GetThisApproxTol3d();
+        for ( ULONG k : { 0UL, static_cast<ULONG>( rTsectPnts.GetSize() - 1 ) } )
+          {
+            SmPoint3d sCentre;
+            SER( SetupOffsetValues( *rTsectPnts[k], NULL ) );
+            SER( GetSurface(0)->EvaluatePoint( rTsectPnts[k]->UVPos(0), sCentre ) );
+            if ( sCentre.DistanceBetween( crBlend.m_sPoint ) <= dTol )
+              { return SM_SUCCESS; }
+          }
+      }
+      SER( CalcRationalSpineFilletGeom( crBlend, rTsectPnts, pFG ) );
+      rbBuilt = TRUE;
       break;
     case SM_BS_CONIC:
     case SM_BS_CONIC_PAIR:

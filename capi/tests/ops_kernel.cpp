@@ -4263,7 +4263,7 @@ const TangentEndCase EXACT_CLASS_CASES[] = {
     {"coaxial_cones", exact_class_coaxial_cones, nullptr},
     {"cone_cylinder_sharing_a_ball", exact_class_cone_cylinder_sharing_a_ball, nullptr},
     {"cylinders_touching_at_a_point", exact_class_cylinders_touching_at_a_point,
-     "status 1001: the round is traced, the analytic chain taking no pair of cylinders but along a line or an arc, and the trace fails"},
+     "status 1001: SmFilletNx1Corner, Corner Edge Computation Failure, where the round ends on the cut at z = -2 (the exact round is built)"},
     {"oblique_plane_cone", exact_class_oblique_plane_cone, nullptr},
     {"oblique_plane_cylinder", exact_class_oblique_plane_cylinder, nullptr},
     {"sphere_coaxial_cone", exact_class_sphere_coaxial_cone, nullptr},
