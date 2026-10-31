@@ -2835,6 +2835,36 @@ void chamfer_of_a_rim_loop_past_its_rim()
     }
 }
 
+// Two variable rounds, 0.5 at their far ends to 2 at the corner (10, 10, 10) of a box of 10 they
+// meet at: the top edges along y at x = 10 and along x at y = 10 (the third edge there is not
+// rounded). The removed volume, or -1 when the rounds fail or the body is unsound.
+static double variable_rounds_meeting_volume()
+{
+    SmApiGetOrCreateContext();
+    SmBrep *p = nullptr;
+    CHECK(SmApiCreateBox(SmVector3d(0, 0, 0), 10, 10, 10, p) == SM_SUCCESS && p != nullptr);
+    smlib_brep *b = new smlib_brep{p};
+    SmTArray<SmEdge *> all, edges;
+    p->GetEdges(all);
+    const SmPoint3d corner(10, 10, 10), far0(10, 0, 10), far1(0, 10, 10);
+    for (ULONG i = 0; i < all.GetSize(); ++i)
+    {
+        const SmPoint3d a = all[i]->GetStartVertex()->GetPoint(), e = all[i]->GetEndVertex()->GetPoint();
+        if (e.DistanceBetween(corner) < 1e-9 && (a.DistanceBetween(far0) < 1e-9 || a.DistanceBetween(far1) < 1e-9))
+        {
+            edges.Add(all[i]);
+        }
+    }
+    CHECK(edges.GetSize() == 2);
+    double v = -1.0;
+    if (edges.GetSize() == 2 && SmApiVariableRadiusFillet(p, edges, 0.5, 2.0, 1, 1) == SM_SUCCESS && sound(b))
+    {
+        v = 1000.0 - volume_of(b);
+    }
+    smlib_brep_free(b);
+    return v;
+}
+
 // The three edges of an s x s x s box at the origin rounded r through SmApiVariableRadiusFillet
 // (constant law, circular sections, G1), its corner a Coons patch; the volume removed, or -1
 // when the round fails, the body is unsound or it has not the 10 faces (6, 3 rounds, the corner).
@@ -6356,6 +6386,19 @@ int main(int argc, char **argv)
         {
             smlib_brep_free(x);
         }
+    }
+
+    // Two variable rounds 0.5 to 2 meeting at a box's corner (SM_API test TestSmVariableRadiusFillet
+    // rounds four top edges so). The rails' meeting point was found with both radii held at their
+    // end value 2, at y = 8 where the law gives 1.7, and the trace from that rail end, its spans
+    // held to the fillet solved inside them, found none it could take (1001). Each round alone
+    // takes (1 - pi/4) times the integral of r^2, (1 - pi/4) 17.5; together they take more than
+    // one and less than both, which share the corner.
+    {
+        const double one = (1.0 - PI / 4.0) * 17.5;
+        const double removed = variable_rounds_meeting_volume();
+        std::printf("variable rounds meeting at a corner: removed %.9g (one round %.9g)\n", removed, one);
+        CHECK(removed > one && removed < 2.0 * one);
     }
 
     // A three-edge corner of variable rounds (constant law) builds at any size: the box 10 with

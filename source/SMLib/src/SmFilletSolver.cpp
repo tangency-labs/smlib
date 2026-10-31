@@ -4302,7 +4302,8 @@ SmStatus SmFilletSolver::RailRailIntersect
    ULONG             lOtherRailIndex,       // in : 2nd Target Rail index in other FilletSolver
    SmBoolean       & rbFoundIntersection,   // out: TRUE = Found an intersection Point
    SmTsectPnt      & rTsectPnt,             // out: 
-   SmTsectPnt      & rOtherTsectPnt)        // out: 
+   SmTsectPnt      & rOtherTsectPnt,        // out: 
+   SmBoolean         bHoldEndRadii)         // in : hold variable radii at their end values (a corner calculated as constant radius)
 {
   // init output
   rbFoundIntersection = FALSE;
@@ -4365,8 +4366,15 @@ static ULONG lDebugCount = 0 ;
 
   // Temporarily replace the variable-radius functions with a constant. [Reg Iter:306]
   // See notes in the class header.
-  SmTemporaryRadiusChange sTempRadThis ( this, lRailIndex, pOtherFillet->GetEdgeuse( lOtherRailIndex ) );
-  SmTemporaryRadiusChange sTempRadOther( pOtherFillet, lOtherRailIndex, this->GetEdgeuse( lRailIndex ) );
+  // SolidCraft change: only at a corner calculated as constant radius, as the rail/side-edge
+  // search holds it (SmFilletVertex::CalcRailIntEdgeuse): there the radius laws are then mapped
+  // to end at the rail ends found (SmFilletCorner::CalcCornerVertGeom). Held at any other corner,
+  // the rails' meeting point is found at the laws' end radii, short of the edges' ends where the
+  // laws are smaller: two variable rounds 0.5 to 2 meeting at a box's corner met at y = 8 with
+  // radius 2 where the law gives 1.7, and the trace from that rail end, held to the law by the
+  // fillet solved inside each span (4438859), found no span it could take (1001).
+  SmTemporaryRadiusChange sTempRadThis ( bHoldEndRadii ? this : NULL, lRailIndex, pOtherFillet->GetEdgeuse( lOtherRailIndex ) );
+  SmTemporaryRadiusChange sTempRadOther( bHoldEndRadii ? pOtherFillet : NULL, lOtherRailIndex, this->GetEdgeuse( lRailIndex ) );
 
   // Locals for LoadInitialValues() 
   SmSurface * pSurface1     = GetSurface(lRailIndex);

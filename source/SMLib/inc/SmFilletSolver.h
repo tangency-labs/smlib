@@ -298,7 +298,8 @@ public:
                              ULONG             lOtherRailIndex,
                              SmBoolean       & rbFoundIntersection,
                              SmTsectPnt      & rThisTsectPnt,
-                             SmTsectPnt      & rOtherTsectPnt);
+                             SmTsectPnt      & rOtherTsectPnt,
+                             SmBoolean         bHoldEndRadii);  // SolidCraft: TRUE at a corner calculated as constant radius
 
   virtual void ReloadSurfaceOffsets();
   virtual void SetupOffsetExtension(const SmSurface * pSurf, SmExtent2d & rDomain) ;

@@ -1575,9 +1575,11 @@ static ULONG lDebugCount = 0 ;
   SmTsectPnt        & rTsectPnt2 = pVU2->GetTsectPnt();
   SmBoolean bFoundIntersection;
 
+  SmFilletCorner * pRailCorner = GetFilletCorner();
   SER( pFilSolver1->RailRailIntersect(sUVGuess, lRailIndex1,
                                       pFilSolver2, lRailIndex2,
-                                      bFoundIntersection, rTsectPnt1, rTsectPnt2));
+                                      bFoundIntersection, rTsectPnt1, rTsectPnt2,
+                                      pRailCorner != NULL && pRailCorner->IsCalcAsConstRad()));
 
   if (!bFoundIntersection)
     {
@@ -4089,7 +4091,8 @@ static SmStatus sm_CreateCubicRailRailInterpolant
    SmVector3d & rEndTangent,
    double dBulgeFactor,
    SmBSplineCurve *& rp3DCurve,
-   int iDebugLevel)
+   int iDebugLevel,
+   SmBoolean bHoldEndRadii)   // SolidCraft: TRUE at a corner calculated as constant radius
 {
     rp3DCurve = NULL;
     // First, calculate the intersection of two rails
@@ -4125,7 +4128,7 @@ static SmStatus sm_CreateCubicRailRailInterpolant
     SmBoolean bFoundIntersection;
     SmTsectPnt sTsectPnt1, sTsectPnt2;
     SER(pFilSolver1->RailRailIntersect(sUVGuess,lRailIndex,pFilSolver2,
-        lOtherRailIndex,bFoundIntersection,sTsectPnt1,sTsectPnt2));
+        lOtherRailIndex,bFoundIntersection,sTsectPnt1,sTsectPnt2,bHoldEndRadii));
     if (!bFoundIntersection) SER(SM_ERR);
     SmPoint2d sUVPnt = sTsectPnt1.UVPos(lRailIndex);
 #ifdef SM_DEBUG_CODE
@@ -7157,7 +7160,8 @@ int iDebugLevel = 0;
                                                 sEndUVPnt,sEndUVVec,
                                                 0.3,
                                                 pUVCurve,
-                                                iDebugLevel ));
+                                                iDebugLevel,
+                                                pCorner->IsCalcAsConstRad() ));
           // Lift the UV-curve
           SM_ASSERT(p3DCurve != NULL) ; delete p3DCurve ; p3DCurve = NULL ;
           p3DCurve = NULL;
@@ -7520,7 +7524,8 @@ SmStatus SmFilletEdge::CalcRailRailInterpolation
                                                   sStartUVPnt,sStartUVVec,
                                                   sEndUVPnt,sEndUVVec,
                                                   0.3,pUVCurve,
-                                                  DebugLevel() ));
+                                                  DebugLevel(),
+                                                  pCorner->IsCalcAsConstRad() ));
             // Lift the UV-curve
             SM_ASSERT(pCurve != NULL) ; delete pCurve ; pCurve = NULL ;
             pCurve = NULL;
