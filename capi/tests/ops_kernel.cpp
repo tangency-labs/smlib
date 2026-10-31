@@ -2661,10 +2661,9 @@ static void shells_the_rig_must_build()
     {
         const char *data;
         double pick[3], tolerance, wall;
-    } cases[4] = {
+    } cases[3] = {
         {SMLIB_TEST_DATA "/lid-rib-open-at-its-side.txt", {102.8, 17, 6.85}, 0.11862452211935036, 0.5},
         {SMLIB_TEST_DATA "/ring-cut-frame-thin-floor.txt", {97.5, 89.583333333333329, 11.666666666666666}, 0.14456932294800962, 0.5},
-        {SMLIB_TEST_DATA "/plate-hole-through-arc-side.txt", {42.5, 3.333333333333333, 21.388888888888886}, 0.062550980015984026, 2.0},
         {SMLIB_TEST_DATA "/up-down-joined-squares.txt", {8.3333333333333321, 0, 6.6666666666666661}, 0.034642016151377554, 0.346},
     };
     for (const auto &c : cases)
@@ -2712,6 +2711,55 @@ static void four_faces_meeting_at_a_vertex_shell()
         }
         smlib_brep_free(part);
     }
+}
+
+// SolidCraft rig shell/cov-shell-plate-with-a-hole-through-its-arc-side (tangency-labs/solidcore#1795;
+// tests/data/plate-hole-through-arc-side.txt, as smlib_shell was handed it): a 42.5 x 20 x 27.5
+// plate closed by a half-round side (r10 about z through (0, 10)), a blind hole r5 drilled in
+// along x through that side (axis y = z = 12.5, bottom at x = 7.5), shelled 2 open at the far
+// end (x = 42.5). The hole's offset (r7) pokes out through the half-round's offset (r8) where
+// y > 18: their intersection is no longer one closed curve, so the two offsets cannot be mated
+// along the edge they came from (MateEdges); the merge then has to intersect them, and it was
+// told they already shared that edge (1001). The cavity is the plate inset by 2 (the half disc
+// r8 and the rectangle 0..42.5 x 2..18, z 2..25.5) less the hole's offset where it lies in it:
+// over the disc r7, y <= 18, x from the r8 side to 9.5.
+static void hole_whose_offset_leaves_the_round_side_shell()
+{
+    auto simpson = [](auto f, double a, double b)
+    {
+        const int n = 20000;
+        double h = (b - a) / n, t = f(a) + f(b);
+        for (int i = 1; i < n; i++)
+        {
+            t += (i % 2 ? 4.0 : 2.0) * f(a + i * h);
+        }
+        return t * h / 3.0;
+    };
+    // The hole's offset in the cavity, its length over the disc integrated in y (substituted at
+    // either end, where the square roots fall to zero, so the integrand is smooth).
+    auto across = [](double y)
+    {
+        return 2.0 * std::sqrt(std::max(0.0, 49.0 - (y - 12.5) * (y - 12.5))) * (9.5 + std::sqrt(std::max(0.0, 64.0 - (y - 10.0) * (y - 10.0))));
+    };
+    double tube = simpson([&](double v) { return across(5.5 + v * v) * 2.0 * v; }, 0.0, std::sqrt(6.5)) +
+                  simpson([&](double u) { return across(18.0 - u * u) * 2.0 * u; }, 0.0, std::sqrt(6.0));
+    double cavity = (PI * 32.0 + 42.5 * 16.0) * 23.5 - tube;
+    smlib_flat *f = nullptr;
+    smlib_brep *plate = nullptr, *r = nullptr;
+    CHECK(smlib_flat_read(SMLIB_TEST_DATA "/plate-hole-through-arc-side.txt", &f) == SMLIB_OK && smlib_brep_import(f, &plate) == SMLIB_OK);
+    smlib_flat_free(f);
+    const double end[3] = {42.5, 3.333333333333333, 21.388888888888886};
+    CHECK(plate != nullptr && smlib_shell(plate, end, 1, 0.062550980015984026, -2.0, &r, nullptr) == SMLIB_OK);
+    if (r != nullptr && plate != nullptr)
+    {
+        double v = volume_of(r), v0 = volume_of(plate);
+        std::printf("plate with a hole through its arc side shelled 2: %.9f, the plate less its cavity %.9f\n", v, v0 - cavity);
+        CHECK(near(v, v0 - cavity, 1e-6));
+        int64_t counts[3] = {0, 0, 0};
+        CHECK(smlib_brep_counts(r, counts) == SMLIB_OK && counts[0] == 15);
+        done(r);
+    }
+    smlib_brep_free(plate);
 }
 
 static void loops_touching_at_a_vertex_in_any_order()
@@ -3421,6 +3469,7 @@ int main(int argc, char **argv)
     loops_touching_at_a_vertex_in_any_order();
     four_faces_meeting_at_a_vertex_shell();
     shells_the_rig_must_build();
+    hole_whose_offset_leaves_the_round_side_shell();
     loops_touching_from_outside_close_apart();
 
     smlib_brep *cube = box(0, 0, 0, 20, 20, 20);
