@@ -2996,7 +2996,10 @@ PT_EXPORT SmStatus my_test_extent2d()
   v3.Set( 8.9, 3.0 );
   bFlag = e1.ContainsPeriodicPoint2d( v3, 4, 0, 0.2, &v4 );
   if ( ! bFlag ) { SER(SM_ERR); } // does contain it, at this tol
-  if ( v4.x != 1.0 || v4.y != 3.0 ) { SER(SM_ERR); }
+  // SolidCraft: 8.9 is 4.9 in the period [1, 5), 0.1 under its top, so it lies a period down at
+  // 0.9, inside [1, 3] by the tolerance: the value with no snapping, as 0.9 itself gives (922f333;
+  // the interval's start, 1.0, before it).
+  if ( smos_Fabs( v4.x - 0.9 ) > SM_EFF_ZERO || v4.y != 3.0 ) { SER(SM_ERR); }
 
 //##test ContainsPeriodicPoint2d() with one default argument: e1( (1,2), (3,4) ), v3( 8.9, 3.0 );
   bFlag = e1.ContainsPeriodicPoint2d( v3, 4, 0, 0.2 );
