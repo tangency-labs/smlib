@@ -3246,14 +3246,13 @@ SmStatus my_test_suite_4
 	  int mFilletType = 0;
 	  double dBallRadius = 5;
 	  int mCrossSectionType = 2;
-	  double blendValue0 = 1.5;
 
 	  double tol1 = 30.0*SM_PI / 180.0;
 	  double tol2 = 2.0*SM_PI / 180.0;
 	  double dTolPercentRadius = 0.001; // 0.1 -> new Default value from sm api
 	  double dThisApproxTol3d = pBrep->GetTolerance();
 
-	  SmBlendCurveCrossSectionFSG sFSGBlend(blendValue0);
+	  SmGnSectionFSG sFSGBlend(2);
 	  // Creates circular or approx circular cross section fillet
 	  SmCircularCrossSectionFSG sFSGCircular(TRUE, dTolPercentRadius);
 	  SmLinearCrossSectionFSG sFSGLinear;

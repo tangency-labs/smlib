@@ -3552,7 +3552,7 @@ smlib_brep *tangent_peg(double draft)
 // the concave blends add their spandrel ring, clipped by the bar's sides.
 const double PEG_V0 = 6400.0 + 960.0 * PI;
 const double PEG_FRONT_ROUND_R2 = 32.30647504387316;    // int_0^2 (2 - sqrt(4 - (2 - y)^2)) (40 - sqrt(64 - (8 - y)^2)) dy
-const double PEG_FRONT_CURVATURE_R2 = 22.621011133536857; // the quintic section of setback 2, as rig report-peg-front-curvature-round-r2
+const double PEG_FRONT_CURVATURE_R2 = 23.3237146876438;   // the order-2 section at thumbweight 0, size 2 (Green's theorem on it), as rig report-peg-front-curvature-round-r2
 const double PEG_FRONT_CHAMFER_D2 = 74.1305705753116;   // int_0^2 (2 - y) (40 - sqrt(64 - (8 - y)^2)) dy
 const double PEG_CONCAVE_CHAMFER_D2 = 41.65678424889758; // int_8^10 (10 - rho) rho 2 asin(8 / rho) d rho
 
@@ -3648,20 +3648,15 @@ void tangent_end_front_round_r2()
     peg_result(b, PEG_V0 - PEG_FRONT_ROUND_R2, true);
 }
 
-// The front curvature round's quintic section (SMLIB_BLEND_CURVATURE's, its inner control points
-// at a third and two thirds of the way from each contact to the corner (0, 10)): (y, z) at w in
-// [0, 1] from the contact on the front face, (0, 8), to the one on the top, (2, 10).
-void peg_curvature_section(double w, double &y, double &z)
+// The front curvature round's section (SMLIB_BLEND_CURVATURE's: order 2, thumbweight 0) between
+// the square planes y = 0 and z = 10, their feet linear: (y, z) at t in [0, 1] from the contact on
+// the front face, (0, 8), to the one on the top, (2, 10): y = 2 (1 - f) t, z = 10 - 2 f (1 - t),
+// f = (1 - t)^3 / ((1 - t)^3 + t^3).
+void peg_curvature_section(double t, double &y, double &z)
 {
-    const double Y[6] = {0, 0, 0, 2.0 / 3, 4.0 / 3, 2}, Z[6] = {8, 8 + 2.0 / 3, 8 + 4.0 / 3, 10, 10, 10};
-    const double binom[6] = {1, 5, 10, 10, 5, 1};
-    y = z = 0;
-    for (int i = 0; i < 6; i++)
-    {
-        const double b = binom[i] * std::pow(1 - w, 5 - i) * std::pow(w, i);
-        y += b * Y[i];
-        z += b * Z[i];
-    }
+    const double a = std::pow(1 - t, 3), b = std::pow(t, 3), f = a / (a + b);
+    y = 2 * (1 - f) * t;
+    z = 10 - 2 * f * (1 - t);
 }
 
 // The exact end rib of the front curvature round at section parameter w: where the section's
@@ -3707,18 +3702,17 @@ double peg_curvature_rib_distance(const SmPoint3d &x)
 
 // The front curvature round's end rib on the cylinder, from the tangent end P = (40, 0, 8), where
 // its rail on the front face crosses the seam T: x = 40 on y = 0, to its rail on the top. The
-// quintic section stands off the front face as y = c s^3 at s = z - 8 along T, c = 9/50: y =
-// 20/3 w^3 + O(w^4) and s = 10/3 w + O(w^4). On the cylinder the rib is then x = 40 - 4 sqrt(c)
-// s^(3/2) (1 + O(s)), whose curvature grows as 3 sqrt(c) s^(-1/2): kappa sqrt(s) -> 9 / sqrt(50).
-// No regular B-spline has that: the rib is one in t ~ sqrt(s), with zero speed at P, its second
-// derivative along T. Its knots: a cubic interpolant is within the tolerance 4e-5 where h^4 5/384
-// |C''''| is, and the exact rib's |C''''| in t (from 0 at P to 4813 at the top, where s ~ t^2
-// raises its degree) gives 18.9 spans equidistributed, so at most 2 x 18.9 for spans halved where
-// they are off: 38 knots.
+// section stands off the front face as y = c s^4 at s = z - 8 along T (k = 4: between square planes
+// the order-2 section is G3, its t^3 term vanishing), c = 1/8: y = 2 t^4 + O(t^5), s = 2 t + O(t^4).
+// On the cylinder, x = 40 - sqrt(16 y - y^2), the rib is x = 40 - 4 sqrt(c) s^2 (1 + O(s)) = 40 -
+// sqrt 2 s^2: regular at P, leaving along T, its curvature there 8 sqrt(c) = 2 sqrt 2. Its knots: a
+// cubic interpolant is within the tolerance 4e-5 where h^4 / 384 |C''''| is, and the exact rib's
+// |C''''| in t (at most 5518) takes h <= 0.041: the stations, 8 doubled until they are within it,
+// are 32 at most, 33 knots.
 void peg_curvature_end_rib(const smlib_brep *b)
 {
     const SmPoint3d p(40, 0, 8), q(40 - std::sqrt(28.0), 2, 10);
-    const double tol = 4e-5, limit = 9 / std::sqrt(50.0);
+    const double tol = 4e-5, limit = 2 * std::sqrt(2.0);
     SmTArray<SmEdge *> es;
     b->p->GetEdges(es);
     SmEdge *rib = nullptr;
@@ -3742,21 +3736,15 @@ void peg_curvature_end_rib(const smlib_brep *b)
     const double tp = at_start ? ivl.GetMin() : ivl.GetMax(), sign = at_start ? 1.0 : -1.0;
     const SmVector3d along(0, 0, 1);
 
-    // zero speed at P, leaving along T
+    // regular at P, leaving along T, its curvature there 2 sqrt 2: the rib is the cubic interpolant
+    // of exact points (stations uniform in t, doubled until within the tolerance), its end
+    // direction and curvature as good as that interpolant's, to 2e-3 and 3 %
     SmVector3d d[3];
     CHECK(c->Evaluate(tp, 2, at_start ? TRUE : FALSE, d) == SM_SUCCESS);
-    std::printf("  end rib at P: |C'| %.3g, |C''| %.6g, angle of C'' from T %.3g\n", d[1].Length(), d[2].Length(), (d[2] * along).Length() / d[2].Length());
-    CHECK(d[1].Length() == 0.0 && d[2].Length() > 0 && (d[2] * along).Length() <= 1e-6 * d[2].Length());
-
-    // kappa sqrt(s) towards P
-    for (double f : {1e-2, 1e-3, 1e-4})
-    {
-        SmVector3d e[3];
-        CHECK(c->Evaluate(tp + sign * f * ivl.GetLength(), 2, TRUE, e) == SM_SUCCESS);
-        const double speed = e[1].Length(), kappa = (e[1] * e[2]).Length() / (speed * speed * speed), s = e[0].z - 8;
-        std::printf("  s %.3e: kappa sqrt(s) %.7f, limit %.7f\n", s, kappa * std::sqrt(s), limit);
-        CHECK(s > 0 && std::fabs(kappa * std::sqrt(s) / limit - 1) <= 0.03);
-    }
+    const double kappa = (d[1] * d[2]).Length() / std::pow(d[1].Length(), 3);
+    std::printf("  end rib at P: |C'| %.3g, angle of C' from T %.3g, curvature %.7f, exact %.7f\n", d[1].Length(),
+                d[1].Length() > 0 ? (d[1] * along).Length() / d[1].Length() : -1.0, kappa, limit);
+    CHECK(d[1].Length() > 0 && (d[1] * along).Length() <= 2e-3 * d[1].Length() && std::fabs(kappa / limit - 1) <= 0.03);
 
     // its knots, and its distance from the exact rib
     SmTArray<double> knots;
@@ -3770,12 +3758,11 @@ void peg_curvature_end_rib(const smlib_brep *b)
     }
     std::printf("  end rib: %lu knots, %lu control points, off the exact rib by %.3g\n", static_cast<unsigned long>(knots.GetSize()),
                 static_cast<unsigned long>(c->GetNumberControlPoints()), err);
-    CHECK(knots.GetSize() <= 38 && err <= tol);
+    CHECK(knots.GetSize() <= 33 && err <= tol);
 
-    // SMLib's own uses of the tangent at P, where the rib's first derivative vanishes: each face's
-    // binormal there (SmEdgeuse::EvaluateBinormal, what OrientTrimmedSurfaces turns faces by)
-    // runs across T, and the rib dropped onto each face anew (SmSurface::DropCurve's Hermite
-    // spans, from its end on) lies on the rib, leaving P along T with zero speed in t
+    // SMLib's own uses of the tangent at P: each face's binormal there (SmEdgeuse::EvaluateBinormal,
+    // what OrientTrimmedSurfaces turns faces by) runs across T, and the rib dropped onto each face
+    // anew (SmSurface::DropCurve's Hermite spans, from its end on) lies on the rib
     SmTArray<SmEdgeuse *> eus;
     CHECK(rib->GetEdgeuses(eus) == SM_SUCCESS);
     std::vector<const SmFace *> faces;
@@ -3791,7 +3778,7 @@ void peg_curvature_end_rib(const smlib_brep *b)
         SmPoint3d at;
         SmVector3d binormal, tangent;
         CHECK(eu->EvaluateBinormal(tp, TRUE, at, binormal, &tangent) == SM_SUCCESS);
-        CHECK(tangent.Length() > 0 && (tangent * along).Length() <= 1e-6 * tangent.Length() && std::fabs(binormal.Dot(along)) <= 1e-6);
+        CHECK(tangent.Length() > 0 && (tangent * along).Length() <= 2e-3 * tangent.Length() && std::fabs(binormal.Dot(along)) <= 2e-3);
         double dist = -1;
         SmBSplineCurve *dropped = nullptr;
         CHECK(eu->CreateUVTrimCurve(dist, dropped) == SM_SUCCESS && dropped != nullptr);
@@ -3812,15 +3799,12 @@ void peg_curvature_end_rib(const smlib_brep *b)
             off = std::max(off, on_face.DistanceBetween(on_rib));
         }
         std::printf("  rib dropped onto a face: %.3g off it, %.3g off it near P, |uv'| %.3g against |uv''| %.3g at P\n", dist, off, uv[1].Length(), uv[2].Length());
-        CHECK(dist <= tol && off <= tol && uv[1].Length() <= 1e-9 * uv[2].Length());
+        CHECK(dist <= tol && off <= tol && uv[1].Length() > 0);
         delete dropped;
     }
     CHECK(faces.size() == 2);
 
-    // SMLib's check takes the coincident end control points and the radius vanishing as sqrt(s)
-    // at P, where the rib's faces touch, and nowhere else: the same curve on no edge fails both.
-    // The rib's own curve has its knots refined first, the curve unchanged, so that the check's
-    // search for the smallest radius finds the one at P.
+    // SMLib's check passes the rib on its edge, its knots refined first (the curve unchanged).
     auto failed = [](const SmBSplineCurve *curve) {
         std::vector<ULONG> tests;
         SmAssertArray reports;
@@ -3840,7 +3824,7 @@ void peg_curvature_end_rib(const smlib_brep *b)
     {
         const std::vector<ULONG> on_edge = failed(own), off_edge = failed(loose);
         std::printf("  the rib's curve refined fails %zu of SMLib's curve tests, on no edge %zu\n", on_edge.size(), off_edge.size());
-        CHECK(on_edge.empty() && off_edge == std::vector<ULONG>({3, 14}));
+        CHECK(on_edge.empty());
     }
     delete loose;
 }
@@ -4895,16 +4879,16 @@ void section_variable_round_on_its_cone()
 const TangentEndCase SECTION_CASES[] = {
     {"box_edge_chamfer", section_box_edge_chamfer, nullptr},
     {"box_edge_round", section_box_edge_round, nullptr},
-    {"box_edge_g2", section_box_edge_g2, "status -1105: the order-2 section is not built"},
-    {"box_edge_g2_thumbweight_w_star", section_box_edge_g2_thumbweight_w_star, "status -1105: the order-2 section is not built"},
-    {"box_edge_g2_thumbweight_half", section_box_edge_g2_thumbweight_half, "status -1105: the order-2 section is not built"},
+    {"box_edge_g2", section_box_edge_g2, nullptr},
+    {"box_edge_g2_thumbweight_w_star", section_box_edge_g2_thumbweight_w_star, nullptr},
+    {"box_edge_g2_thumbweight_half", section_box_edge_g2_thumbweight_half, nullptr},
     {"boss_root_chamfer", section_boss_root_chamfer, nullptr},
     {"boss_root_round", section_boss_root_round, nullptr},
-    {"boss_root_g2", section_boss_root_g2, "status -1105: the order-2 section is not built"},
+    {"boss_root_g2", section_boss_root_g2, nullptr},
     {"pipe_on_plate_chamfer", section_pipe_on_plate_chamfer, nullptr},
     {"pipe_on_plate_round", section_pipe_on_plate_round, nullptr},
-    {"pipe_on_plate_g2", section_pipe_on_plate_g2, "status -1105: the order-2 section is not built"},
-    {"pipe_on_plate_g2_thumbweight_half", section_pipe_on_plate_g2_thumbweight_half, "status -1105: the order-2 section is not built"},
+    {"pipe_on_plate_g2", section_pipe_on_plate_g2, nullptr},
+    {"pipe_on_plate_g2_thumbweight_half", section_pipe_on_plate_g2_thumbweight_half, nullptr},
     {"variable_round_on_its_cone", section_variable_round_on_its_cone,
      "the round's sections are the balls' great circles, not the circles the balls' envelope touches them along: 0.0166 off the cone, volume 11955.6466 against 11956.2224"},
 };

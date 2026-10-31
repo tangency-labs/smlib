@@ -512,7 +512,6 @@ SmFilletExecutive::SmFilletExecutive
    m_bDoPiecewiseMerge(FALSE),
    m_bDoTopologyInsertion(TRUE),
    m_bDoGlobalMerge(FALSE),
-   m_bBlendCurveAtThirds(FALSE),
    m_bMarkCornerPatches(FALSE),
    m_bDoTrimming(TRUE),
    m_bDoClassification(TRUE),
@@ -610,11 +609,10 @@ SmStatus SmFilletExecutive::SetFilletParameters // same type fillet on all edges
   double                       dAngTolDeg,     // default (if <= 0): 20 degrees
   double                       dTanTolDeg,     // default (if <= 0): 10 degrees
   double                       dXSectTol,      // default (if <= 0): 0.05
-  ULONG                        lContinuity,    // 1, 2, or 3 for G1, G2, or G3
+  ULONG                        lContinuity,    // n, 2 to SM_GN_MAX_ORDER, of a G^n section
                                                // Used only when eXSectType == SM_FSG_BLEND_CURVE
-                                               // default:[1]
-  double                       dThumbweight)   // Used only when eXSectType == SM_FSG_BLEND_CURVE
-                                               // default:[1.0]
+  double                       dThumbweight)   // the G^n section's thumbweight, in [0, 1)
+                                               // Used only when eXSectType == SM_FSG_BLEND_CURVE
 {
   m_bIsInitialized = FALSE;
   TCHAR sBuff[SM_TBLOCK_SIZE];
@@ -770,11 +768,10 @@ SmStatus SmFilletExecutive::SetFilletParameters
   double                       dAngTolDeg,       // default (if <= 0): 20 degrees
   double                       dTanTolDeg,       // default (if <= 0): 10 degrees
   double                       dXSectTol,        // default (if <= 0): 0.05
-  ULONG                        lContinuity,      // 1, 2, or 3 for G1, G2, or G3                   
+  ULONG                        lContinuity,      // n, 2 to SM_GN_MAX_ORDER, of a G^n section
                                                  // Used only when eXSectType == SM_FSG_BLEND_CURVE
-                                                 // default:[1]                                    
-  double                       dThumbweight)     // Used only when eXSectType == SM_FSG_BLEND_CURVE
-                                                 // default:[1.0]
+  double                       dThumbweight)     // the G^n section's thumbweight, in [0, 1)
+                                                 // Used only when eXSectType == SM_FSG_BLEND_CURVE
 {
   m_bIsInitialized = FALSE;
 
@@ -829,7 +826,15 @@ SmStatus SmFilletExecutive::SetFilletParameters
   else if ( eXSectType == SM_FSG_CIRCULAR )
     { pFSG = new (*pContext) SmCircularCrossSectionFSG( TRUE, dXSectTol ); }
   else if ( eXSectType == SM_FSG_BLEND_CURVE )
-    { pFSG = new (*pContext) SmBlendCurveCrossSectionFSG( dThumbweight, lContinuity, m_bBlendCurveAtThirds) ; }
+    {
+          if ( !SmGnSectionFSG::IsValid( lContinuity, dThumbweight ) )
+            {
+              GetFilletErrorInfo()->NoteError( SM_FILERR_INVALID_INPUT,
+                         _T("SetFilletParameters: a G^n section's order must be 2 to 4 and its thumbweight in [0, 1).") );
+              return SM_ERR_INVALID_INPUT;
+            }
+          pFSG = new (*pContext) SmGnSectionFSG( lContinuity, dThumbweight );
+        }
   else
     {
       GetFilletErrorInfo()->NoteError( SM_FILERR_INVALID_INPUT,
@@ -1017,7 +1022,15 @@ SmStatus SmFilletExecutive::SetFilletParameters
       else if ( eXSectType == SM_FSG_CIRCULAR )
         { pFSG = new (*pContext) SmCircularCrossSectionFSG( TRUE, dXSectTol ); }
       else if ( eXSectType == SM_FSG_BLEND_CURVE )
-        { pFSG = new (*pContext) SmBlendCurveCrossSectionFSG( dThumbweight, lContinuity, m_bBlendCurveAtThirds); }
+        {
+          if ( !SmGnSectionFSG::IsValid( lContinuity, dThumbweight ) )
+            {
+              GetFilletErrorInfo()->NoteError( SM_FILERR_INVALID_INPUT,
+                         _T("SetFilletParameters: a G^n section's order must be 2 to 4 and its thumbweight in [0, 1).") );
+              return SM_ERR_INVALID_INPUT;
+            }
+          pFSG = new (*pContext) SmGnSectionFSG( lContinuity, dThumbweight );
+        }
       else
         {
           GetFilletErrorInfo()->NoteError( SM_FILERR_INVALID_INPUT,
@@ -1127,7 +1140,15 @@ SmStatus SmFilletExecutive::SetFilletParameters
           else if ( eXSectType == SM_FSG_CIRCULAR )
             { pFSG = new (*pContext) SmCircularCrossSectionFSG( TRUE, 0.1 ); }
           else if ( eXSectType == SM_FSG_BLEND_CURVE )
-            { pFSG = new (*pContext) SmBlendCurveCrossSectionFSG( dThumbweight, lContinuity, m_bBlendCurveAtThirds) ; }
+            {
+          if ( !SmGnSectionFSG::IsValid( lContinuity, dThumbweight ) )
+            {
+              GetFilletErrorInfo()->NoteError( SM_FILERR_INVALID_INPUT,
+                         _T("SetFilletParameters: a G^n section's order must be 2 to 4 and its thumbweight in [0, 1).") );
+              return SM_ERR_INVALID_INPUT;
+            }
+          pFSG = new (*pContext) SmGnSectionFSG( lContinuity, dThumbweight );
+        }
           else
             {
               GetFilletErrorInfo()->NoteError( SM_FILERR_INVALID_INPUT,
@@ -2499,9 +2520,9 @@ NOTES: SolidCraft change. Runs once the fillet surfaces exist and before
    parameter from where the plane square to the edge at the setback plus
    the ease cuts the rail to where the setback's section meets it, by the
    C2 blend (sm_EaseSurface) of its own surface into the one
-   SmBlendCurveCrossSectionFSG builds on the same rails (G2, the inner
-   control points at thirds: zero cross curvature at planar faces). A
-   round whose sections are already that (SM_FSG_BLEND_CURVE) keeps them.
+   order-2 section SmGnSectionFSG builds on the same rails (at the default
+   thumbweight: the faces' curvature across the rails). A round whose
+   sections are G^n already (SM_FSG_BLEND_CURVE) keeps them.
    Ramps on both ends of one round go into one blend.
 ***********************************************************************/
 SmStatus SmFilletExecutive::EaseSetBackSections()
@@ -2678,7 +2699,7 @@ SmStatus SmFilletExecutive::EaseSetBackSections()
           asDeleteCopies[k].SetObj(apCopies[k]);
           NER(SM_CAST_PTR(SmBSplineCurve, apCopies[k]));
         }
-      SmBlendCurveCrossSectionFSG sG2(1.0, 2, TRUE);
+      SmGnSectionFSG sG2(2, SM_GN_DEFAULT_THUMBWEIGHT);
       SmBSplineSurface * pG2 = NULL;
       SmBoolean bNeedG1 = (pFS->GetSolverType() == SM_FS_CONST_RADIUS) ? TRUE : FALSE;
       SER(sG2.CreateSurfaceFromCurves(m_crContext, *SM_CAST_PTR(SmBSplineCurve, apCopies[0]), *SM_CAST_PTR(SmBSplineCurve, apCopies[1]),

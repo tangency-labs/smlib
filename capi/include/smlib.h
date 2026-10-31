@@ -654,10 +654,10 @@ int32_t smlib_chamfer(const smlib_brep *brep, const double *points, int64_t n_po
 /* What smlib_blend makes of each selected edge. */
 /* Rounded by a circular cross-section at constant radius (as smlib_fillet). */
 #define SMLIB_BLEND_ROUND 0
-/* Rounded by a curvature-continuous (G2) blend-curve cross-section between the contact lines
- * the round of that radius has: the quintic whose first and last three control points lie on
- * the contacts' tangent lines, the inner ones a third and two thirds of the way from each
- * contact to where the two tangent lines meet (on planar faces, zero curvature at the contacts). */
+/* Rounded by a curvature-continuous (G2) cross-section between the contact lines the round of
+ * that radius has: smlib_blend_order's section of order 2 at SMLIB_BLEND_THUMBWEIGHT, which
+ * meets each face with the face's own curvature across its contact line (between two planes,
+ * its third derivative too). */
 #define SMLIB_BLEND_CURVATURE 1
 /* Rounded by a circular cross-section whose width from contact line to contact line (the
  * chord) is constant: the size is that width. */
@@ -667,8 +667,8 @@ int32_t smlib_chamfer(const smlib_brep *brep, const double *points, int64_t n_po
 
 /* The highest section order smlib_blend_order builds. */
 #define SMLIB_BLEND_ORDER_MAX 4
-/* The default thumbweight of a section of order 2 and up: 0, the G^n section with no
- * thumbweight (p1(t) = p2(t) = t). */
+/* The thumbweight of SMLIB_BLEND_CURVATURE's sections: 0, the G^n section with no thumbweight
+ * (p1(t) = p2(t) = t). */
 #define SMLIB_BLEND_THUMBWEIGHT 0.0
 
 /* A new body: `brep` with the selected edges blended by a cross-section of contact order `order`
@@ -749,17 +749,17 @@ int32_t smlib_blend_setback_open(const smlib_brep *brep, int32_t kind, const dou
 /* As smlib_blend_setback, each corner with an ease before its setback: `eases[j]` (>= 0, mm,
  * one per point in `corners`, as `setbacks`) is the length along each edge, ending at the
  * setback, over which each round's cross-section changes from its own to the curvature-continuous
- * one between the same contact lines (SMLIB_BLEND_CURVATURE's quintic), by the law
+ * one between the same contact lines (SMLIB_BLEND_CURVATURE's section), by the law
  * w = 10 s^3 - 15 s^4 + 6 s^5 (s running 0 to 1 over the ease, the section (1 - w) the round's
- * plus w the quintic), which is flat to second order at both ends: the round is curvature-
+ * plus w the curvature-continuous one), which is flat to second order at both ends: the round is curvature-
  * continuous across where the ease starts, and at the setback its section meets planar faces
  * with zero curvature across the contact lines. The curve where the corner's patch meets each
  * face then meets the two contact lines curvature-continuously (on a planar face, a straight
  * contact line, with zero curvature at its ends). An ease of 0 is the call without one, the
- * same body as smlib_blend_setback gives. The geometry is exact: the round's surface and the
- * quintic's (both B-splines on the same contact lines) blended by the law's Bernstein form,
- * so the round keeps its own surface up to where its ease starts. A round whose section is the
- * quintic already (SMLIB_BLEND_CURVATURE) keeps it; its face curves still meet the contact
+ * same body as smlib_blend_setback gives. The round's surface and the curvature-continuous
+ * section's (both B-splines on the same contact lines) are blended by the law's Bernstein form,
+ * so the round keeps its own surface up to where its ease starts. A round whose section is
+ * curvature-continuous already (SMLIB_BLEND_CURVATURE) keeps it; its face curves still meet the contact
  * lines curvature-continuously. A setback and its ease together as long as an edge at their
  * corner, or two on the ends of one edge that together are, is SMLIB_ERR_NO_ROOM; an ease that
  * is negative, not finite or above 1e6, or `eases` NULL, is SMLIB_ERR_ARG; anything else as

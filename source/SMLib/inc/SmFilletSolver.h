@@ -39,7 +39,7 @@
 
 class SmFilletSurfaceGenerator;
 class SmLinearCrossSectionFSG;
-class SmBlendCurveCrossSectionFSG;
+class SmGnSectionFSG;
 class SmFilletExecutive;
 class SmSelfIntersectionHandler;
 struct SmExactBlend; // SolidCraft change: SmFilletExact.h
@@ -512,63 +512,92 @@ public:
 
 } ; // end class SmCircularCrossSectionFSG
 
-/*******************************************************************//**
-PURPOSE: Create a fillet surface with a circular cross section.  This
-    is a lofted surface or in some special cases a cylinder or a torus.
+// SolidCraft change: the highest order of SmGnSectionFSG, and its default thumbweight: 0, the G^n
+// section with no thumbweight (p1(t) = p2(t) = t).
+#define SM_GN_MAX_ORDER 4
+#define SM_GN_DEFAULT_THUMBWEIGHT 0.0
 
-NOTES: 
+/*******************************************************************//**
+PURPOSE: SolidCraft change. A blend's cross-section of contact order n with
+    its faces along the rails, n = 2 to SM_GN_MAX_ORDER: the G^n section
+    f T1(1 - p1) + (1 - f) T2(p2) between the rails, T_i the order-n jets of
+    the faces along the rails, with thumbweight w (SmFilletSection.cpp).
+
+NOTES: It needs a ball of one radius (constant offsets).
 ***********************************************************************/
-class SM_EXPORT SmBlendCurveCrossSectionFSG : public SmFilletSurfaceGenerator
+class SM_EXPORT SmGnSectionFSG : public SmFilletSurfaceGenerator
 {
 protected:
-  ULONG  m_lContinuity; // 1, 2, or 3 for G1, G2 or G3
-  double m_dBlendScale;
-  SmBoolean m_bAtThirds; // TRUE = inner control points at thirds towards the tangent lines' meeting point
+  ULONG  m_lOrder;          // n
+  double m_dThumbweight;    // w, 0 <= w < 1
+  double m_dCertifiedBound; // the last surface built: its certified distance from the blend, mm (-1: none yet)
+  ULONG  m_lCertifiedSpans; // and its number of spans along the rails
 public:
-  SmBlendCurveCrossSectionFSG(double dBlendScale=1.5, ULONG lContinuity=1, SmBoolean bAtThirds=FALSE)
-     : m_lContinuity(lContinuity), 
-       m_dBlendScale(dBlendScale),
-       m_bAtThirds(bAtThirds)
-  {}
+  SmGnSectionFSG(ULONG lOrder, double dThumbweight = SM_GN_DEFAULT_THUMBWEIGHT);
 
-  virtual ~SmBlendCurveCrossSectionFSG() {}
+  virtual ~SmGnSectionFSG() {}
 
   virtual SmStatus CreateSurface(SmFilletSolver    & rFilletSolver,
                                  SmBSplineCurve    * pCenterLine,
                                  SmBSplineCurve    * pRail1Curve,
                                  SmBSplineCurve    * pRail2Curve,
                                  const SmTArray<SmTsectPnt*> & crFilletPoints,
-                                 SmSurface         * pSurf1,  
+                                 SmSurface         * pSurf1,
                                  SmBSplineCurve    * pUV1,
                                  SmSurface         * pSurf2,
                                  SmBSplineCurve    * pUV2,
                                  SmBSplineSurface *& rpFilletSurface);
 
+  // The surface between rails on the faces' surfaces pSurf1, pSurf2 (their uv curves pUV1,
+  // pUV2) about the centre line; the rails are not changed.
   virtual SmStatus CreateSurfaceFromCurves(const SmContext   & crContext,
                                            SmBSplineCurve    & rCenterLine,
                                            SmBSplineCurve    & rRail1Curve,
                                            SmBSplineCurve    & rRail2Curve,
                                            double              dThisApproxTol3d,
                                            SmBoolean           bNeedG1Continuity,
-                                           SmSurface         * pSurf1,  
+                                           SmSurface         * pSurf1,
                                            SmBSplineCurve    * pUV1,
                                            SmSurface         * pSurf2,
                                            SmBSplineCurve    * pUV2,
                                            SmBSplineSurface *& rpFilletSurface);
 
-  double GetBlendScale() { return m_dBlendScale; }
+  // whether an order and a thumbweight make a G^n section: 2 <= n <= SM_GN_MAX_ORDER, 0 <= w < 1
+  static SmBoolean IsValid(ULONG lOrder, double dThumbweight)
+  { return (lOrder >= 2 && lOrder <= SM_GN_MAX_ORDER && dThumbweight >= 0.0 && dThumbweight < 1.0) ? TRUE : FALSE; }
 
-  ULONG GetContinuity() { return m_lContinuity; }
+  ULONG  GetOrder() const       { return m_lOrder; }
+
+  // The order k of this section's contact with face lRail at the station of the centre line's
+  // parameter dS (the section stands off the face as c s^k): n + 1, or n + 2 where the jets make
+  // the t^(n+1) term vanish (two planes).
+  SmStatus ContactOrderAt(const SmSurface * apFace[2], const SmBSplineCurve & crCenter, double dS, const double (&crSeed)[4],
+                          const SmPoint3d (&crRail)[2], ULONG lRail, ULONG & rlOrder) const;
+  double GetCertifiedBound() const { return m_dCertifiedBound; }
+  ULONG  GetCertifiedSpans() const { return m_lCertifiedSpans; }
+  double GetThumbweight() const { return m_dThumbweight; }
 
   virtual SmFilletSurfaceGeneratorType GetFilletSurfaceGeneratorType()
   { return SM_FSG_BLEND_CURVE; }
 
-  // SolidCraft change: the blend curve takes its end tangents from the circular arc between
-  // the same rails (and, for G2 and G3, the faces' curvature too), so it is tangent to the faces.
+  // its derivatives across each rail are the face's, to order n
   virtual SmBoolean MeetsItsFacesTangentially() const
   { return TRUE; }
 
-} ; // end class SmBlendCurveCrossSectionFSG
+protected:
+  SmStatus Build(const SmContext   & crContext,
+                 SmBSplineCurve    & rCenterLine,
+                 SmBSplineCurve    & rRail1Curve,
+                 SmBSplineCurve    & rRail2Curve,
+                 double              dTol,
+                 SmSurface         * pFace1,
+                 SmBSplineCurve    * pUV1,
+                 SmSurface         * pFace2,
+                 SmBSplineCurve    * pUV2,
+                 SmBoolean           bReplaceRails,
+                 SmBSplineSurface *& rpFilletSurface);
+
+} ; // end class SmGnSectionFSG
 
 /*******************************************************************//**
 PURPOSE: Describes the type of operation to perform when self-

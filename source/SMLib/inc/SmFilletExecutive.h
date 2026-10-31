@@ -265,11 +265,6 @@ protected:
                                                     //        This catches large radius cases where original Brep pieces get cut away.
                                                     // FALSE= use faster local operations that might miss some large radius cases.
 
-  SmBoolean                 m_bBlendCurveAtThirds;  // TRUE = blend-curve sections place their inner control points a third
-                                                    //        and two thirds of the way from each contact to where the two
-                                                    //        contacts' tangent lines meet (SmBlendCurveCrossSectionFSG).
-                                                    // FALSE= the fairest equally spaced Hermite scaled by the thumbweight.
-
   SmBoolean                 m_bMarkCornerPatches;   // SolidCraft change: TRUE = each face of a set-back corner's patch carries an
                                                     //        SM_AI_FILLET_CORNER_FACE SmTagAttribute whose primary ID is the corner's
                                                     //        index in m_vFilletCorners (set before the merge, so it travels with the
@@ -320,9 +315,9 @@ public:
     double                        dAngTolDeg,                     ///< [in] : default (if <= 0): 20 degrees                       <br>
     double                        dTanTolDeg,                     ///< [in] : default (if <= 0): 10 degrees                       <br>
     double                        dXSectTol,                      ///< [in] : default (if <= 0): 0.05                             <br>
-    ULONG                         lContinuity=1,                  ///< [in] : 1, 2, or 3 for G1, G2, or G3                        <br>
+    ULONG                         lContinuity=2,                  ///< [in] : n of a G^n section, 2 to SM_GN_MAX_ORDER                     <br>
                                                                   ///< [in] : Used only when eXSectType == SM_FSG_BLEND_CURVE     <br>
-    double                        dThumbweight=1.0                ///< [in] : Used only when eXSectType == SM_FSG_BLEND_CURVE     <br>
+    double                        dThumbweight=SM_GN_DEFAULT_THUMBWEIGHT ///< [in] : its thumbweight, in [0, 1); used only when eXSectType == SM_FSG_BLEND_CURVE     <br>
   ); 
 
   // Different parameters on each edge.
@@ -338,9 +333,9 @@ public:
     double                                     dAngTolDeg,        ///< [in] : default (if <= 0): 20 degrees                        <br>
     double                                     dTanTolDeg,        ///< [in] : default (if <= 0): 10 degrees                        <br>
     double                                     dXSectTol,         ///< [in] : default (if <= 0): 0.05                              <br>
-    ULONG                                      lContinuity=1,     ///< [in] : 1, 2, or 3 for G1, G2, or G3                         <br>
+    ULONG                                      lContinuity=2,     ///< [in] : n of a G^n section, 2 to SM_GN_MAX_ORDER                      <br>
                                                                   ///< [in] : Used only when eXSectType == SM_FSG_BLEND_CURVE      <br>
-    double                                     dThumbweight=1.0,  ///< [in] : Used only when eXSectType == SM_FSG_BLEND_CURVE      <br>
+    double                                     dThumbweight=SM_GN_DEFAULT_THUMBWEIGHT, ///< [in] : its thumbweight, in [0, 1); used only when eXSectType == SM_FSG_BLEND_CURVE      <br>
     SmTArray< double >                       * pOptSecondRadii=NULL ///< [in] : SM_FS_CONST_RADIUS only: per edge, the offset of   <br>
                                                                   ///<        the second edgeuse's surface (unequal chamfers)     <br>
   );  
@@ -358,9 +353,9 @@ public:
     double                       dAngTolDeg,                      ///< [in] : default (if <= 0): 20 degrees                         <br>
     double                       dTanTolDeg,                      ///< [in] : default (if <= 0): 10 degrees                         <br>
     double                       dXSectTol,                       ///< [in] : default (if <= 0): 0.05                               <br>
-    ULONG                        lContinuity=1,                   ///< [in] : 1, 2, or 3 for G1, G2, or G3                          <br>
+    ULONG                        lContinuity=2,                   ///< [in] : n of a G^n section, 2 to SM_GN_MAX_ORDER                       <br>
                                                                   ///< [in] : Used only when eXSectType == SM_FSG_BLEND_CURVE       <br>
-    double                       dThumbweight=1.0                 ///< [in] : Used only when eXSectType == SM_FSG_BLEND_CURVE       <br>
+    double                       dThumbweight=SM_GN_DEFAULT_THUMBWEIGHT ///< [in] : its thumbweight, in [0, 1); used only when eXSectType == SM_FSG_BLEND_CURVE       <br>
   );     
 
   // Different parameters on each edge, taking edge numbers instead of pointers.
@@ -376,9 +371,9 @@ public:
     double                                     dAngTolDeg,        ///< [in] : default (if <= 0): 20 degrees                         <br>
     double                                     dTanTolDeg,        ///< [in] : default (if <= 0): 10 degrees                         <br>
     double                                     dXSectTol,         ///< [in] : default (if <= 0): 0.05                               <br>
-    ULONG                                      lContinuity=1,     ///< [in] : 1, 2, or 3 for G1, G2, or G3                          <br>
+    ULONG                                      lContinuity=2,     ///< [in] : n of a G^n section, 2 to SM_GN_MAX_ORDER                       <br>
                                                                   ///< [in] : Used only when eXSectType == SM_FSG_BLEND_CURVE       <br>
-    double                                     dThumbweight=1.0   ///< [in] : Used only when eXSectType == SM_FSG_BLEND_CURVE       <br>
+    double                                     dThumbweight=SM_GN_DEFAULT_THUMBWEIGHT ///< [in] : its thumbweight, in [0, 1); used only when eXSectType == SM_FSG_BLEND_CURVE       <br>
   ); 
 
 private:
@@ -473,7 +468,6 @@ public:
 
   SmBoolean                   GetDoClassification()   { return m_bDoClassification; }
   SmBoolean                   GetDoGlobalMerge()      { return m_bDoGlobalMerge; }
-  SmBoolean                   GetBlendCurveAtThirds() { return m_bBlendCurveAtThirds; }
 
   SmTArray<SmFilletCorner*> & GetFilletCorners()      { return m_vFilletCorners; }
   SmTArray<SmFilletSolver*> & GetFilletSolvers()      { return m_vFilletSolvers; }
@@ -501,7 +495,6 @@ public:
   void     SetDoTopologyInsertion    (SmBoolean bDoInsert)         { m_bDoTopologyInsertion = bDoInsert; }
   void     SetDoGlobalMerge          (SmBoolean bDoGlobalMerge)    { m_bDoGlobalMerge       = bDoGlobalMerge; }
   // Before SetFilletParameters, which creates the section generators with it.
-  void     SetBlendCurveAtThirds     (SmBoolean bAtThirds)         { m_bBlendCurveAtThirds  = bAtThirds; }
   // SolidCraft change: before DoFilleting; the caller removes the marks (SM_AI_FILLET_CORNER_FACE) once read.
   void     SetMarkCornerPatches      (SmBoolean bMark)             { m_bMarkCornerPatches   = bMark; }
   void     SetDoTrimming             (SmBoolean bDoTrim)           { m_bDoTrimming          = bDoTrim; }

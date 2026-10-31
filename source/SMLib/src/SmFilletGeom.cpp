@@ -5679,9 +5679,10 @@ SmStatus SmFilletEdge::AdjustCrossSection
       // Don't need to adjust cases SM_FSG_LINEAR & SM_FSG_CIRCULAR
       return SM_SUCCESS;
     }
-  SmBlendCurveCrossSectionFSG * pBlendFSG    = (SmBlendCurveCrossSectionFSG*)pFSG;
-  ULONG                         lContinuity  = pBlendFSG->GetContinuity(); // 1, 2, or 3 for G1, G2 or G3
-  //dBlendScale = pBlendFSG->GetBlendScale();
+  SmGnSectionFSG              * pBlendFSG    = (SmGnSectionFSG*)pFSG;
+  ULONG                         lContinuity  = pBlendFSG->GetOrder(); // n for Gn
+  if (lContinuity > 3)
+    { SER_MSG(SM_ERR, _T("AdjustCrossSection(): a corner's sections are adjusted to order 3 at most")); }
 
   // gwc: I think pSideSurface no longer has to be a BBSplineSurface - replace 1 line
   // rm : SmBSplineSurface * pFilletSurface = pFilletGeom->GetFilletSurface();
@@ -6480,9 +6481,11 @@ int iDebugLevel = 0;
 } // end SmFilletEdge::CalcFilletIntFillet
 
 /*******************************************************************//**
-PURPOSE: The order of contact of a fillet's cross-section with the faces it
-    meets: 1 for a chamfer's straight section, 2 for a round's circular one,
-    n + 1 for a blend curve of Gn continuity.
+PURPOSE: The order of contact k of a fillet's cross-section with the face
+    it meets at crAt, a point of one of its rails: 1 for a chamfer's straight
+    section, 2 for a round's circular one; for a G^n section n + 1, or n + 2
+    where its jets make the t^(n+1) term vanish (SmGnSectionFSG::ContactOrderAt:
+    two planes), found at that rail's station there.
 
 NOTES: The section stands off its face as c s^k at distance s from the
   contact line, k this order. Where the face runs tangent into an end face
@@ -6490,20 +6493,59 @@ NOTES: The section stands off its face as c s^k at distance s from the
   the tangent end as a ~ s^(k/2) along the rail (c s^k = dk a^2 / 2).
 ***********************************************************************/
 static SmStatus sm_SectionContactOrder
- (SmFilletSolver * pFilSolver,   // in : the fillet's solver
-  ULONG          & rlOrder)      // out: k
+ (SmFilletSolver  * pFilSolver,   // in : the fillet's solver
+  SmFilletGeom    * pFG,          // in : the fillet's geometry
+  const SmPoint3d & crAt,         // in : a point of a rail
+  ULONG           & rlOrder)      // out: k
 {
   NER(pFilSolver);
   SmFilletSurfaceGenerator * pFSG = pFilSolver->GetFilletSurfaceGenerator();
   NER(pFSG);
   switch ( pFSG->GetFilletSurfaceGeneratorType() )
     {
-      case SM_FSG_LINEAR      : rlOrder = 1; break;
-      case SM_FSG_CIRCULAR    : rlOrder = 2; break;
-      case SM_FSG_BLEND_CURVE : rlOrder = ((SmBlendCurveCrossSectionFSG*)pFSG)->GetContinuity() + 1; break;
+      case SM_FSG_LINEAR      : rlOrder = 1; return SM_SUCCESS;
+      case SM_FSG_CIRCULAR    : rlOrder = 2; return SM_SUCCESS;
+      case SM_FSG_BLEND_CURVE : break;
       case SM_FSG_UNKNOWN     :
       default                 : SER(SM_ERR);
     }
+  NER(pFG);
+  SmBSplineCurve * pCenter = pFG->GetCenterLineCurve(); NER(pCenter);
+  const SmSurface * apFace[2] = { NULL, NULL };
+  SmBSplineCurve * apRail[2] = { NULL, NULL }, * apUV[2] = { NULL, NULL };
+  for ( ULONG r=0; r<2; r++ )
+    {
+      SmOffsetSurface * pOff = pFilSolver->GetSurface( r ); NER(pOff);
+      apFace[r] = pOff->GetBaseSurface(); NER(apFace[r]);
+      SmFilletEdge * pRail = pFG->GetRail( r ); NER(pRail);
+      apRail[r] = SM_CAST_PTR( SmBSplineCurve, pRail->GetCurve() ); NER(apRail[r]);
+      apUV[r] = pRail->GetOriginalUVCurve(); NER(apUV[r]);
+    }
+  // the rail through crAt, and its parameter there
+  ULONG lRail = 2;
+  double dS = 0.0, dBest = SM_BIG_DOUBLE;
+  const double dTol = pFilSolver->GetThisApproxTol3d();
+  for ( ULONG r=0; r<2; r++ )
+    {
+      SmBoolean bFound = FALSE;
+      double dT = 0.0, dDist = SM_BIG_DOUBLE;
+      SER( apRail[r]->DropPoint( apRail[r]->GetNaturalInterval(), crAt, NULL, dTol, NULL, bFound, dT, dDist ));
+      if ( bFound && dDist < dBest )
+        { dBest = dDist; lRail = r; dS = dT; }
+    }
+  if ( lRail > 1 || dBest > dTol )
+    { SER_MSG( SM_ERR, _T("sm_SectionContactOrder(): the point is on no rail") ); }
+  double adSeed[4];
+  SmPoint3d asRail[2];
+  for ( ULONG r=0; r<2; r++ )
+    {
+      SmPoint3d sW;
+      SER( apUV[r]->EvaluatePoint( dS, sW ));
+      adSeed[2*r] = sW.x;
+      adSeed[2*r+1] = sW.y;
+      SER( apRail[r]->EvaluatePoint( dS, asRail[r] ));
+    }
+  SER( ((SmGnSectionFSG*)pFSG)->ContactOrderAt( apFace, *pCenter, dS, adSeed, asRail, lRail, rlOrder ));
   return SM_SUCCESS;
 
 } // end sm_SectionContactOrder
@@ -6954,7 +6996,7 @@ iDebugLevel = DebugLevel();
           if ( pStartFV->IsTangentEnd() && pEndFV->IsTangentEnd() )
             { SER_MSG( SM_ERR, _T("CalcFilletIntSideFace(): an end rib between two tangent ends") ); }
           ULONG lOrder = 0;
-          SER( sm_SectionContactOrder( pFilSolver1, lOrder ));
+          SER( sm_SectionContactOrder( pFilSolver1, pFilletGeom1, pStartFV->IsTangentEnd() ? sStartPnt : sEndPnt, lOrder ));
           eRib = sm_TangentEndRib( sContext, pFilletSurface1, pSurface, lOrder,
                                    pStartFV->IsTangentEnd() ? sStartPnt : sEndPnt,
                                    pStartFV->IsTangentEnd() ? sEndPnt   : sStartPnt,
@@ -7408,7 +7450,7 @@ SmStatus SmFilletEdge::CalcRailRailInterpolation
               case SM_FSG_LINEAR:      lNumDerivatives = 0;
                                        break;
 
-              case SM_FSG_BLEND_CURVE: lNumDerivatives = ((SmBlendCurveCrossSectionFSG*)pFSG)->GetContinuity();
+              case SM_FSG_BLEND_CURVE: lNumDerivatives = ((SmGnSectionFSG*)pFSG)->GetOrder();
                                        break;
 
               case SM_FSG_CIRCULAR:
