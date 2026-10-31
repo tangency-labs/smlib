@@ -3603,6 +3603,9 @@ SmStatus SmFilletExecutive::CreateFilletBrep
       SER( pFilSolver->RailsFitTheirFaces( bFit, bRolls, bIntoMaterial ));
       if ( bRolls )
         { bRollsOver = TRUE; }
+      // SolidCraft change: an end section that runs off its end face overflows it the same way
+      if ( bFit )
+        { SER( pFilSolver->EndSectionsFitTheirFaces( bFit )); }
       if ( bFit )
         { continue; }
       bOverflow = TRUE;

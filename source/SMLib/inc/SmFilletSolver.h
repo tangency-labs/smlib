@@ -331,6 +331,7 @@ public:
                          SmTsectPnt       & rNextPoint);
                
   SmStatus     TestRollOver(SmTArray<SmFilletCorner*> & rAdjustedCorners);
+  SmStatus     EndSectionsFitTheirFaces(SmBoolean & rbFit); // SolidCraft change: whether the fillet's end section at each Nx1 end lies on its end face
   SmStatus     RailsFitTheirFaces(SmBoolean & rbFit, SmBoolean & rbRollsOver, SmBoolean & rbIntoMaterial); // SolidCraft change: whether every rail stays on the face it rolls on, rolls over a tangent edge, or runs into the body
   SmStatus     BallFitsItsFaces(SmBoolean & rbFits); // SolidCraft change: whether the rolling ball fits the faces' curvature at each section (no face curves tighter than it)
   static SmBoolean IsKnifeEdge(SmEdge * pEdge, double dTangencyTolRad); // SolidCraft change: faces tangent along the edge and folded back on each other

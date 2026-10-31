@@ -3243,13 +3243,19 @@ void concave_chamfers_at_a_vertex_the_body_touches_itself_at()
 // of its rim. Its outer corner edge x = 0, y = 50 chamfered 3: the chamfer's plane
 // x + (50 - y) = 3 clears the inside corner (2, 48), and its end section at the top crosses the
 // lip's foot. The chamfer face came back unsewn: not a closed solid (SMLIB_ERR_NOT_SOLID).
+// The section's triangle (0, 50), (3, 50), (0, 47) lies in the walls all the way up, 4.5 x 30 =
+// 135 taken off V0 = 22608. Where it ends at the top is a ruling (one line, below): the chamfer
+// cut off by its end face's plane z = 30, the lip left over it (a 0.5 triangle of its underside
+// open there); or run on up through the lip to its top, taking that triangle's 0.5 x 2 too.
 void chamfer_of_a_shelled_box_corner_ending_under_its_lip()
 {
+    const bool through_the_lip = false; // the owner's ruling: false = cut off at the end face's plane
+    const double want = 22608.0 - 135.0 - (through_the_lip ? 1.0 : 0.0);
     smlib_brep *b = read_flat(SMLIB_TEST_DATA "/shelled-box-lip.txt"), *r = nullptr;
     const double edge[3] = {0, 50, 15};
     const double d = 3;
     const int32_t s = b != nullptr ? smlib_blend(b, SMLIB_BLEND_CHAMFER, edge, &d, 1, 0.1, &r, nullptr) : -1;
-    if (s != SMLIB_OK || r == nullptr || !sound(r))
+    if (s != SMLIB_OK || r == nullptr || !near(volume_of(r), want, 1e-9) || !sound(r))
     {
         std::fprintf(stderr, "  the shelled box's corner edge chamfered 3 up to its lip: status %d\n", static_cast<int>(s));
         failures++;
