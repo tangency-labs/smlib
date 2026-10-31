@@ -3,8 +3,8 @@
 
 // smlib_extend_sheet: a square plane sheet continued past one side in each mode, a bilinear
 // B-spline sheet and a parabolic one continued naturally (by the distance along the surface), a
-// cylinder's strip continued round its axis as the cylinder, and the shapes and arguments it
-// refuses.
+// cylinder's strip continued round its axis as the cylinder and by run-offs the distance long
+// across it, and the shapes and arguments it refuses.
 
 #include "../src/smlib_shim.h"
 
@@ -122,6 +122,22 @@ int main()
             round->p->GetFaces(faces);
         }
         CHECK(faces.GetSize() == 1 && faces[0]->GetSurface()->IsKindOf(SmCone_TYPE));
+        // Its G1 and G2 run-offs past the same side, 5 long across the surface whatever their
+        // curvature: the strip stays its section swept 20 along z, so each adds 5 x 20, 100 pi +
+        // 100. (CreateExtendedSurface's G2 run-off of the circle runs about 2.3 times the distance
+        // asked and more than doubles with it, which an ask scaled by distance over length alone
+        // left 0.28% short after 12 rounds.)
+        for (int32_t mode : {SMLIB_EXTEND_TANGENT, SMLIB_EXTEND_CURVATURE})
+        {
+            smlib_brep *runoff = nullptr;
+            CHECK(smlib_extend_sheet(strip, straight, 1e-3, 5.0, mode, &runoff) == SMLIB_OK);
+            const double want_runoff = 100.0 * 3.14159265358979323846 + 100.0;
+            std::printf("cylinder strip run-off (mode %d) 5 long: area %.9f, want %.9f\n", mode, area_of(runoff), want_runoff);
+            CHECK(std::fabs(area_of(runoff) - want_runoff) < 1e-5);
+            int64_t n[3] = {0, 0, 0};
+            CHECK(smlib_brep_counts(runoff, n) == SMLIB_OK && n[0] == 1);
+            smlib_brep_free(runoff);
+        }
         smlib_brep_free(strip);
         smlib_brep_free(round);
     }
