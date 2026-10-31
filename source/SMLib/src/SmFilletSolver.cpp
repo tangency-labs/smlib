@@ -6491,8 +6491,19 @@ SmStatus SmFilletSolver::EndSectionsFitTheirFaces
           SER( pEndFace->CurveOnClassify( TRUE, sSection, TRUE ));
           for (ULONG j=0; j<sSection.GetSize() && rbFit; j++)
             {
-              if ( sSection[j].m_vMid.GetPointClass() == SM_PC_UNKNOWN )
-                { rbFit = FALSE; }
+              if ( sSection[j].m_vMid.GetPointClass() != SM_PC_UNKNOWN )
+                { continue; }
+              // The section's ends lie on the side edges: a first or last run off the face no
+              // longer than the classification's tolerance is its end on that edge.
+              if ( j == 0 || j + 1 == sSection.GetSize() )
+                {
+                  SmPoint3d sA, sB;
+                  SER( p3D->EvaluatePoint( sSection[j].GetMin(), sA ));
+                  SER( p3D->EvaluatePoint( sSection[j].GetMax(), sB ));
+                  if ( sA.DistanceBetween( sB ) <= GetThisApproxTol3d() )
+                    { continue; }
+                }
+              rbFit = FALSE;
             }
         }
     }
