@@ -665,6 +665,30 @@ int32_t smlib_chamfer(const smlib_brep *brep, const double *points, int64_t n_po
 /* Cut by an equal-distance chamfer (as smlib_chamfer): the size is the setback. */
 #define SMLIB_BLEND_CHAMFER 3
 
+/* The highest section order smlib_blend_order builds. */
+#define SMLIB_BLEND_ORDER_MAX 4
+/* The default thumbweight of a section of order 2 and up: 0, the G^n section with no
+ * thumbweight (p1(t) = p2(t) = t). */
+#define SMLIB_BLEND_THUMBWEIGHT 0.0
+
+/* A new body: `brep` with the selected edges blended by a cross-section of contact order `order`
+ * with each face, between the lines where the rolling ball of the point's size touches the two
+ * faces (its contact lines):
+ *   0  the chord between the contact lines (a chamfer, as SMLIB_BLEND_CHAMFER);
+ *   1  the ball's circle (a round, as SMLIB_BLEND_ROUND);
+ *   2 to SMLIB_BLEND_ORDER_MAX  the G^n section of order n = `order`, which meets each face with
+ *      the face's own derivatives across the contact line up to order n (order 2: the face's
+ *      curvature). In the plane square to the ball's path, with the edge's point at distance 0
+ *      and the contact at distance r (the size), let F_i(d) be the foot on face i of the point at
+ *      distance d from both faces, and T_i(u) the order-n Taylor polynomial of F_i(u r) at u = 1.
+ *      The section is S(t) = f(t) T1(1 - p1(t)) + (1 - f(t)) T2(p2(t)), t from 0 to 1, with
+ *      f(t) = (1-t)^(n+1) / ((1-t)^(n+1) + t^(n+1)), p1(t) = t / (1 - w + w t) and
+ *      p2(t) = t (1 - w) / (1 - w t), w the `thumbweight` (0 <= w < 1; raising it pulls the
+ *      section towards the edge). `thumbweight` shapes only these sections.
+ * Selection, sizes and the rest as for smlib_blend. */
+int32_t smlib_blend_order(const smlib_brep *brep, int32_t order, double thumbweight, const double *points, const double *sizes,
+                          int64_t n_points, double tolerance, smlib_brep **out, int64_t *out_failed_point);
+
 /* A new body: `brep` with the selected edges blended as `kind` (SMLIB_BLEND_*), each at its
  * point's size (`sizes`, one per point, each > 0): exactly those edges, as for smlib_fillet; an
  * edge reached from several points takes the first point's size.

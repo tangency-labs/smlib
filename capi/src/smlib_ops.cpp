@@ -2034,6 +2034,22 @@ extern "C" int32_t smlib_blend(const smlib_brep *brep, int32_t kind, const doubl
     return blend_call("smlib_blend", brep, kind, points, sizes, false, n_points, tolerance, out, out_failed_point);
 }
 
+extern "C" int32_t smlib_blend_order(const smlib_brep *brep, int32_t order, double thumbweight, const double *points, const double *sizes,
+                                     int64_t n_points, double tolerance, smlib_brep **out, int64_t *out_failed_point)
+{
+    if (order < 0 || order > SMLIB_BLEND_ORDER_MAX || !(std::isfinite(thumbweight) && thumbweight >= 0.0 && thumbweight < 1.0))
+    {
+        return SMLIB_ERR_ARG;
+    }
+    // The G^n sections are not built yet (SMLIB_BLEND_CURVATURE's blend curve is none of them).
+    if (order >= 2)
+    {
+        return SMLIB_ERR_UNSUPPORTED;
+    }
+    return blend_call("smlib_blend_order", brep, order == 0 ? SMLIB_BLEND_CHAMFER : SMLIB_BLEND_ROUND, points, sizes, false, n_points,
+                      tolerance, out, out_failed_point);
+}
+
 extern "C" int32_t smlib_blend_dropping(const smlib_brep *brep, int32_t kind, const double *points, const double *sizes, int64_t n_points,
                                         double tolerance, smlib_brep **out, int64_t *out_failed_point, int64_t *out_dropped)
 {
