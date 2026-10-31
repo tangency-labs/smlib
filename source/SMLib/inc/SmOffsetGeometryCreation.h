@@ -55,6 +55,11 @@ class SM_EXPORT SmOffsetGeometryCreation
 protected:
     double    m_dOffsetDistance;       //
     double    m_dThisApproxTol3d;     //
+    // SolidCraft change: half a degree, not two. Faces meeting at a crease up to two degrees were
+    // taken as tangent, their offsets left to meet by extending their trims instead of being
+    // intersected: the four facets of a floor falling 1 degree to a drain, which meet at 1.2
+    // degrees, then had no edge where their offsets cross. Half a degree is SolidCraft's one
+    // threshold for a smooth edge (its shaded view, tangent chains, blends).
     double    m_dTangencyTolRadians;   //
     SmBoolean m_bMakeAnalytics;        // TRUE =
                                        // FALSE=
@@ -66,7 +71,7 @@ public:
        double dThisApproxTol3d) 
      : m_dOffsetDistance(dOffsetDistance), 
        m_dThisApproxTol3d(dThisApproxTol3d), 
-       m_dTangencyTolRadians(2.0*SM_PI/180.0),
+       m_dTangencyTolRadians(0.5*SM_PI/180.0),
        m_bMakeAnalytics(TRUE) 
        { }
 

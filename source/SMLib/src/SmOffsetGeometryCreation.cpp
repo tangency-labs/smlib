@@ -1258,6 +1258,7 @@ SmBoolean bDebugMe2 = FALSE;
       
       // for every sOffAdjEU - try letting trimPoint = OffAdjEu->ExtendedSurface/3DCurve intersection
       SmFace *pLastFace = NULL;
+      std::vector<std::pair<ULONG,ULONG>> vFaceSolutions; // each adjacent face's candidates in sSolutions
       for (ULONG jj=0; jj<sOffAdjEUs.GetSize(); jj++) 
         {
           SmEdgeuse * pOffAdjEU = sOffAdjEUs[jj];
@@ -1319,6 +1320,7 @@ SmBoolean bDebugMe2 = FALSE;
 
           // Note that the adjacent surface intersection overrides tangent intersections
           // Test the solutions to see if they are not nearly tangent.
+          vFaceSolutions.emplace_back(sSolutions.GetSize(), sSolutions.GetSize());
           for (ULONG kk=0; kk<sSolutions2.GetSize(); kk++) 
             {
               SmSolution & rSol = sSolutions2[kk];
@@ -1331,11 +1333,37 @@ SmBoolean bDebugMe2 = FALSE;
               double dAngleRad = 0.0;
               SER(sPV[1].AngleBetween(sNormal,dAngleRad));
               double dAngleDeg = dAngleRad * 180.0/SM_PI;
+              // SolidCraft change: a curve that crosses the surface at a shallow angle crosses it
+              // all the same (a trough's floor facets falling 1 degree, whose offsets cut the
+              // offset edges along the walls 0.6 degrees off them): only a touch, the curve
+              // meeting the surface without passing through it, is no trim point. The curve
+              // crosses where it lies on either side of the surface just before and just after
+              // the point; dropped as nearly tangent (within 5 degrees), that cut was missing and
+              // the edge ran on to the next face's offset, past the cavity's corner.
+              SmBoolean bCrosses = FALSE;
+              if (!(dAngleDeg < 85 || dAngleDeg > 95))
+                {
+                  SmExtent1d sCIvl = p3DCurve->GetNaturalInterval();
+                  double dStep = 1.0e-3 * sCIvl.GetLength();
+                  double dBefore = rSol.m_vStart[0] - dStep, dAfter = rSol.m_vStart[0] + dStep;
+                  if (dBefore >= sCIvl.GetMin() && dAfter <= sCIvl.GetMax())
+                    {
+                      SmPoint3d sOn, sB, sA;
+                      SER( pExtSurface->EvaluatePoint(sUV, sOn) );
+                      SER( p3DCurve->EvaluatePoint(dBefore, sB) );
+                      SER( p3DCurve->EvaluatePoint(dAfter, sA) );
+                      double dB = (sB - sOn).Dot(sNormal), dA = (sA - sOn).Dot(sNormal);
+                      double dLeast = 10.0 * SM_EFF_ZERO * (1.0 + sOn.DistanceBetween(SmPoint3d(0.0,0.0,0.0)));
+                      bCrosses = (dB * dA < 0.0 && smos_Fabs(dB) > dLeast && smos_Fabs(dA) > dLeast);
+                    }
+                }
               if (   dAngleDeg < 85 
-                  || dAngleDeg > 95) 
+                  || dAngleDeg > 95
+                  || bCrosses) 
                 {
                   // save solution as possible trimPoint
                   sSolutions.Add(rSol);
+                  vFaceSolutions.back().second = sSolutions.GetSize();
                 }
             }
         } // end iter every sOffAdjEU
@@ -1399,6 +1427,81 @@ SmBoolean bDebugMe2 = FALSE;
                 dFoundDist       = dDistMoved;
                 bFound           = TRUE;
               }
+            }
+        }
+
+      // SolidCraft change: where more than three faces meet at the vertex, the faces on either
+      // side of the edge's ends there (the next face round the vertex from each of its two faces)
+      // are different faces, and their offsets cut the edge's offset at two points: four offset
+      // planes do not meet in one point (a trough's floor of four facets falling to a drain, and
+      // its corners, where two walls meet two facets). The offset vertex is two vertices, joined
+      // by a new edge between two faces that did not meet before, and the edge ends at the one of
+      // the two its offset reaches first, coming from its other end: where every edge at the
+      // vertex is convex, the cavity lies inside every offset face, and past the first cut the
+      // edge has left it; where every one is concave, the cavity is the union of their sides,
+      // and past the first cut the edge lies inside another face's side. The point nearest the
+      // vertex, taken before, is the other one: the edge ran past the cavity's corner, the loops
+      // of the faces round the vertex had gaps off their surfaces, and the shell failed (1001).
+      // With a vertex of mixed edges the nearest point stays.
+      if (bFound && vFaceSolutions.size() == 2)
+        {
+          SmBoolean bConvex = TRUE, bConcave = TRUE;
+          SmTArray<SmEdge*> sVEdges;
+          pBaseVertex->GetEdges(sVEdges);
+          const SmShell *pShell = pBaseEdgeuse->GetFaceuse()->GetShell();
+          for (ULONG ee=0; ee<sVEdges.GetSize() && (bConvex || bConcave); ee++)
+            {
+              SmTArray<SmEdgeuse*> sEUs;
+              SER(sVEdges[ee]->GetEdgeuses(sEUs));
+              const SmEdgeuse *pSide = NULL;
+              for (ULONG uu=0; uu<sEUs.GetSize() && pSide == NULL; uu++)
+                {
+                  if (sEUs[uu]->GetFaceuse() != NULL && sEUs[uu]->GetFaceuse()->GetShell() == pShell) { pSide = sEUs[uu]; }
+                }
+              if (pSide == NULL || pSide->GetRadial() == pSide || pSide->IsTangentSector(dTanTolDeg))
+                { bConvex = bConcave = FALSE; continue; }
+              if (pSide->IsConvexRadialSector(10)) { bConcave = FALSE; } else { bConvex = FALSE; }
+            }
+          // Each face's cut nearest the vertex, and which comes first from the edge's other end:
+          // the cut nearer, along the curve, to the base edge's middle.
+          double    dFaceParam[2] = { 0.0, 0.0 };
+          SmBoolean bFaceFound[2] = { FALSE, FALSE };
+          for (ULONG ff=0; ff<2 && (bConvex || bConcave); ff++)
+            {
+              double dBest = SM_BIG_DOUBLE;
+              for (ULONG kk=vFaceSolutions[ff].first; kk<vFaceSolutions[ff].second; kk++)
+                {
+                  SmPoint3d sPnt;
+                  SER(p3DCurve->EvaluatePoint(sSolutions[kk].m_vStart[0],sPnt));
+                  double dDist = sPnt.DistanceBetween(pBaseVertex->GetPoint());
+                  if (   dDist < dBest
+                      && !SM_ARE_SAME(sSolutions[kk].m_vStart[0],sTrimIvl.GetMin())
+                      && !bFirstAgain(sPnt))
+                    {
+                      dBest            = dDist;
+                      dFaceParam[ff]   = sSolutions[kk].m_vStart[0];
+                      bFaceFound[ff]   = TRUE;
+                    }
+                }
+            }
+          if (bFaceFound[0] && bFaceFound[1])
+            {
+              SmPoint3d sCut0, sCut1, sMid;
+              SER(p3DCurve->EvaluatePoint(dFaceParam[0],sCut0));
+              SER(p3DCurve->EvaluatePoint(dFaceParam[1],sCut1));
+              if (sCut0.DistanceBetween(sCut1) > dSameTol)
+                {
+                  SER(((SmEdgeuse *)pBaseEdgeuse)->NormalizedEvaluate(0.5,FALSE,sMid));  // TRUE = UV Eval, FALSE = 3d Eval
+                  SmSolution      sMData[16];
+                  SmSolutionArray sMSolutions(16, sMData);
+                  SER(p3DCurve->GlobalPointSolve(p3DCurve->GetNaturalInterval(), SM_SO_MINIMIZE, sMid, pBaseEdgeuse->GetEdge()->GetBrep()->GetTolerance(), NULL, NULL,
+                                                 SM_SR_SINGLE, sMSolutions));
+                  if (sMSolutions.GetSize() > 0)
+                    {
+                      double dMid = sMSolutions[0].m_vStart[0];
+                      dFoundParam = (smos_Fabs(dFaceParam[0] - dMid) <= smos_Fabs(dFaceParam[1] - dMid)) ? dFaceParam[0] : dFaceParam[1];
+                    }
+                }
             }
         }
 
