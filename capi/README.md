@@ -784,10 +784,18 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   sloped basin's front rim chamfered past it, solidcraft#1080, had been refused as on two
   faces' surfaces). Where every edge of a loop of a planar face is blended (a pocket's rim
   loop), the sheet's boundary closes on that face round the loop, and the region's face there
-  lies between the two, one inside the other (it had been refused as closing on one face). Refused: a round whose rail runs on into the body's
+  lies between the two, one inside the other (it had been refused as closing on one face). A
+  cylinder, cone, sphere or torus continues as itself (`SmOffsetSurface::ContinueAsItself`,
+  `sm_ContinuedSurface`), and a straight side edge on a cylinder or cone (a ruling, a closed
+  rim's seam) runs on along its line, its UV line evaluated past its ends: a closed rim blended
+  past its wall's far end (solidcraft#190's disc, a hole's top rim past the plate's bottom,
+  solidcraft#2893's chamfer past the bottom) closes on the band of the wall continued, between
+  the rim and the rail, each a circle round the axis (`sm_CloseBand`); a chain that is one closed
+  edge is closed. Refused: a round whose rail runs on into the body's
   material (beyond a wall: the knife edge it would leave under the wall, `SM_FILERR_NO_ROOM`,
-  solidcraft#3435); a needed continuation of a non-planar surface past its domain or of a side
-  edge that is not a line (`SM_FILERR_NOT_EXACT`); an overflow with a tangent rollover, a fillet
+  solidcraft#3435); a needed continuation of a surface that does not continue as itself past its
+  domain, of a side edge that is not a line, or a band off the circles of its surface
+  (`SM_FILERR_NOT_EXACT`); an overflow with a tangent rollover, a fillet
   end on several faces or on a non-planar face, concave blends in the same call, a sheet
   boundary that does not pass from face to face along side edges, or a variable round on planes
   whose surface misses its law (`sm_HoldsItsLaw`): too large, `SM_FILERR_NO_ROOM`, as before.

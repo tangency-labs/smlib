@@ -289,6 +289,24 @@ public:
     ULONG             lDBVersionNumber    // in : database version to get proper sequence of writes                               
   );
 
+  // SolidCraft change: whether pSurface continues as itself past its domain (a cylinder, cone,
+  // sphere or torus: ContinueAsItself).
+  static SmBoolean ContinuesAsItself( const SmSurface * pSurface );
+
+  // SolidCraft change: pSurface (ContinuesAsItself) continued as itself over at least crLo to
+  // crHi, as the fillet's offset surfaces continue their bases: each end span's rational arc or
+  // straight line carried on, the same surface at the same parameters over its own domain, its
+  // analytic kind given back. Round its axis it reaches no further than closing the turn. A new
+  // surface, the caller's.
+  static SmStatus ContinueAsItself
+  (
+    const SmContext & crContext,     // in : context for the new surface
+    const SmSurface * pSurface,      // in : the surface (ContinuesAsItself)
+    const SmPoint2d & crLo,          // in : the domain's least corner to reach
+    const SmPoint2d & crHi,          // in : the domain's greatest corner to reach
+    SmSurface      *& rpContinued    // out: the surface continued
+  );
+
   // Define  GetType(), IsKindOf(), and virtual Dump() (Dump needs local implementation)
   SM_COMMON( SmOffsetSurface, SmSurface, SmOffsetSurface_TYPE );
 
