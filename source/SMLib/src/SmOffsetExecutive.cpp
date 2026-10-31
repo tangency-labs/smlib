@@ -1289,6 +1289,69 @@ static void sm_OrderEdgeusesByBrep
 } // end sm_OrderEdgeusesByBrep
 
 /*******************************************************************//**
+PURPOSE: Whether a finite region of an inset's merged offset is cavity.
+NOTES: SolidCraft fork. A face of the cavity is the offset of a face of the
+   body, the wall's thickness from it, and the body's face lies behind it,
+   outside the cavity: from a point inside the face, the wall's thickness
+   back along the normal of the faceuse that bounds the region (which
+   points into it) reaches the body's boundary. A region the merge closes
+   where two faces' offsets cross (a floor no thicker than the wall, whose
+   two offsets cross: the region between them) has no such face: its faces
+   lie on the body's own faces, or with nothing the wall behind them, or
+   with the body's face on the region's side.
+***********************************************************************/
+static SmStatus sm_IsCavityRegion
+ (const SmBrep    & crBody,      // in : the body offset
+  const SmRegion  & crRegion,    // in : a finite region of the merged offset
+  double            dWall,       // in : the wall's thickness
+  SmBoolean       & rbCavity)    // out: TRUE = the region is cavity
+{
+  rbCavity = FALSE;
+  const double dHit = 10.0 * crBody.GetTolerance();
+  ULONG lBehind = 0, lAhead = 0;
+  SmBrep &rBody = *SM_CONST_CAST(SmBrep*, &crBody);
+  SmTemporaryChangeValue<SmBoolean> sNoEdit(rBody.m_bEditingEnabled, FALSE);
+  auto sOnBody = [&](const SmPoint3d & crP, SmBoolean & rbOn) -> SmStatus
+    {
+      SmSolution      sData[16];
+      SmSolutionArray sSolutions(16, sData);
+      SER(SmTopologySolver::BrepPointSolve(&rBody, crP, SM_SO_MINIMIZE, SM_SR_SINGLE, rBody.GetTolerance(), SM_BIG_DOUBLE, NULL, sSolutions));
+      rbOn = (sSolutions.GetSize() > 0 && sSolutions[0].m_vStart.m_dSolutionValue <= dHit);
+      return SM_SUCCESS;
+    };
+  SmTArray<SmShell*> sShells;
+  crRegion.GetShells(sShells);
+  for (ULONG ss=0; ss<sShells.GetSize(); ss++)
+    {
+      SmTArray<SmFaceuse*> sFUs;
+      sShells[ss]->GetFaceuses(sFUs);
+      for (ULONG ff=0; ff<sFUs.GetSize(); ff++)
+        {
+          SmFace *pFace = sFUs[ff]->GetFace();
+          SmPoint3d sP;
+          if (pFace->CalculateAnInternalPoint(sP) != SM_SUCCESS) { continue; }
+          SmSolution      sData[16];
+          SmSolutionArray sSolutions(16, sData);
+          SER(pFace->GetSurface()->GlobalPointSolve(pFace->GetUVDomain(), SM_SO_MINIMIZE, sP, dHit, NULL, SM_SR_SINGLE, sSolutions));
+          if (sSolutions.GetSize() < 1) { continue; }
+          SmVector3d sN;
+          SER(pFace->GetSurface()->EvaluateNormal(SmPoint2d(sSolutions[0].m_vStart[0], sSolutions[0].m_vStart[1]), TRUE, TRUE, sN));
+          if (sN.Unitize(FALSE) != SM_SUCCESS) { continue; }
+          if (sFUs[ff]->GetOrientation() != SM_OT_SAME) { sN = sN * (-1.0); }
+          SmBoolean bOn = FALSE, bBehind = FALSE, bAhead = FALSE;
+          SER(sOnBody(sP, bOn));
+          if (bOn) { continue; } // an open face's copy, or a face on the body's own
+          SER(sOnBody(sP - sN * dWall, bBehind));
+          SER(sOnBody(sP + sN * dWall, bAhead));
+          if (bBehind) { lBehind++; }
+          if (bAhead)  { lAhead++; }
+        }
+    }
+  rbCavity = (lBehind > 0 && lAhead == 0);
+  return SM_SUCCESS;
+} // end sm_IsCavityRegion
+
+/*******************************************************************//**
 PURPOSE: This is the main top level method to offset a solid brep
     that extends convex edges instead of making rounded fillets.
 
@@ -2217,7 +2280,28 @@ SmBoolean bDebugMe4 = FALSE;
   // Make manifold and set void regions [B550]
   // Here we will need to select regions to keep and
   // send in to make manifold.
-  if (pResult->MakeManifold() == SM_SUCCESS) 
+  // SolidCraft change: an inset keeps the regions that are cavity, not every finite region
+  // (the TODO above): where the body is no thicker than the wall (a 0.5 floor between a recess
+  // and a ring cut, shelled 0.5), the offsets of its two faces cross and the merge closes the
+  // region between them, touching the cavity's pieces along edges; kept, the cavity was no
+  // manifold solid and the shell failed (1001).
+  SmTArray<SmRegion*> sCavities;
+  SmBoolean bSelect = FALSE;
+  if (m_bInset && m_eOffsetOperation == SM_OO_SOLID_OFFSET)
+    {
+      SmTArray<SmRegion*> sAll;
+      pResult->GetRegions(sAll);
+      for (ULONG rr=0; rr<sAll.GetSize(); rr++)
+        {
+          if (sAll[rr] == pResult->GetInfiniteRegion()) { continue; }
+          SmBoolean bCavity = FALSE;
+          SER(sm_IsCavityRegion(*m_pOriginalBrep, *sAll[rr], m_rGeometryCreation.GetOffsetDistance(), bCavity));
+          if (bCavity) { sCavities.Add(sAll[rr]); }
+          else         { bSelect = TRUE; }
+        }
+      if (sCavities.GetSize() == 0) { bSelect = FALSE; }
+    }
+  if (pResult->MakeManifold(bSelect ? &sCavities : NULL) == SM_SUCCESS) 
     {
       // make sure infinite regions are set correctly
       SmTArray<SmRegion*> sRegions;
