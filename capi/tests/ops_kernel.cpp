@@ -4665,10 +4665,44 @@ void section_box_edge_round()
     section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 1, SMLIB_BLEND_THUMBWEIGHT, 3.0), box_edge_grade(1, 0.0, 1.0 - PI / 4));
 }
 
-void section_box_edge_g2()
+// The order-2 section between square planes at thumbweight 0 cuts 0.154192655384275 s^2 off the
+// corner (Green's theorem on the section).
+void section_box_edge_g2_thumbweight_zero()
 {
+    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, 0.0, 3.0), box_edge_grade(2, 0.0, 0.154192655384275));
+}
+
+// The area the order-n section between the box's top and back cuts off the edge's corner, over s^2:
+// Green's theorem on the section, by the trapezium rule on 20000 pieces.
+double box_edge_section_cut(int n, double w)
+{
+    const int N = 20000;
+    double a = 0.0;
+    P2 q = gn_section(n, w, BOX_TOP_JETS, BOX_BACK_JETS, 0.0);
+    for (int i = 1; i <= N; i++)
+    {
+        const P2 r = gn_section(n, w, BOX_TOP_JETS, BOX_BACK_JETS, static_cast<double>(i) / N);
+        // about the edge (30, 20), the region between the section and the two faces
+        a += 0.5 * ((q.x - 30.0) * (r.y - 20.0) - (r.x - 30.0) * (q.y - 20.0));
+        q = r;
+    }
+    return std::fabs(a) / 9.0;
+}
+
+// The default thumbweight is equal area: the curvature section takes off what the circle does on
+// the same rails, (1 - pi/4) s^2 at a square corner. The thumbweight it needs is the root of
+// box_edge_section_cut(2, w) = 1 - pi/4, bisected here on (-1, 1) independently of SMLib's own solve.
+void section_box_edge_g2_equal_area()
+{
+    double lo = -0.999999, hi = 0.999999;
+    for (int it = 0; it < 80; it++)
+    {
+        const double mid = 0.5 * (lo + hi);
+        if (box_edge_section_cut(2, mid) > 1.0 - PI / 4) { lo = mid; } else { hi = mid; }
+    }
+    const double w = 0.5 * (lo + hi);
     section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, SMLIB_BLEND_THUMBWEIGHT, 3.0),
-                  box_edge_grade(2, SMLIB_BLEND_THUMBWEIGHT, 0.154192655384275));
+                  box_edge_grade(2, w, 1.0 - PI / 4));
 }
 
 // The thumbweight at which the order-2 section between square planes, set back s, cuts 113/756 s^2
@@ -4695,7 +4729,7 @@ void section_box_edge_g2_thumbweight_half()
 // each section adds, revolved (Pappus), 2 pi (8 A + M), A its area and M its first moment about
 // the wall: the chord's triangle 2, centroid 2/3 off the wall (V = 26119.5278436219); the circle's
 // spandrel (1 - pi/4) 4, centroid 2 (5/6 - pi/4) / (1 - pi/4) off the wall (26056.1770421533); the
-// order-2 section at the default thumbweight 0, the square corner's, A = 0.616770621537099, M =
+// order-2 section at thumbweight 0, the square corner's, A = 0.616770621537099, M =
 // 0.233402636580288 (Green's theorem on the section; 26043.0880831714), G3 with the faces (box_edge_grade's
 // note): their lines in the meridian are its faces' jets. The round turns about the axis, its
 // jets with it: it is the certified fit, within the certificate's target, a tenth of the fillet's
@@ -4723,7 +4757,7 @@ SectionGrade boss_root_grade(int order, double volume)
     else
     {
         g.off = [=](const SmPoint3d &x)
-        { return distance_to_curve([&](double t) { return gn_section(order, SMLIB_BLEND_THUMBWEIGHT, plate, wall, t); }, rho_z(x)); };
+        { return distance_to_curve([&](double t) { return gn_section(order, 0.0, plate, wall, t); }, rho_z(x)); };
     }
     g.off_tol = order >= 2 ? 4e-6 : 1e-9;
     g.faces = {{ExactFace::PLANE, {0, 0, 0}, {1, 0, 0}, 0},   {ExactFace::PLANE, {60, 0, 0}, {1, 0, 0}, 0},
@@ -4752,7 +4786,7 @@ void section_boss_root_round()
 
 void section_boss_root_g2()
 {
-    section_blend(by_order(boss_on_plate(), {30 + 4 * std::sqrt(2.0), 20 + 4 * std::sqrt(2.0), 10}, 2, SMLIB_BLEND_THUMBWEIGHT, 2.0), boss_root_grade(2, 26043.0880831714));
+    section_blend(by_order(boss_on_plate(), {30 + 4 * std::sqrt(2.0), 20 + 4 * std::sqrt(2.0), 10}, 2, 0.0, 2.0), boss_root_grade(2, 26043.0880831714));
 }
 
 // A plate 60 x 40 x 10 and a pipe R 10 along x (0 to 60), its axis at (y, z) = (20, 16), joined:
@@ -4821,8 +4855,8 @@ void section_pipe_on_plate_round()
 
 void section_pipe_on_plate_g2()
 {
-    section_blend(by_order(pipe_on_plate(), {30, 28, 10}, 2, SMLIB_BLEND_THUMBWEIGHT, 2.0),
-                  pipe_on_plate_grade(2, SMLIB_BLEND_THUMBWEIGHT, 2.0, 40258.5435962825));
+    section_blend(by_order(pipe_on_plate(), {30, 28, 10}, 2, 0.0, 2.0),
+                  pipe_on_plate_grade(2, 0.0, 2.0, 40258.5435962825));
 }
 
 void section_pipe_on_plate_g2_thumbweight_half()
@@ -4879,7 +4913,8 @@ void section_variable_round_on_its_cone()
 const TangentEndCase SECTION_CASES[] = {
     {"box_edge_chamfer", section_box_edge_chamfer, nullptr},
     {"box_edge_round", section_box_edge_round, nullptr},
-    {"box_edge_g2", section_box_edge_g2, nullptr},
+    {"box_edge_g2_thumbweight_zero", section_box_edge_g2_thumbweight_zero, nullptr},
+    {"box_edge_g2_equal_area", section_box_edge_g2_equal_area, nullptr},
     {"box_edge_g2_thumbweight_w_star", section_box_edge_g2_thumbweight_w_star, nullptr},
     {"box_edge_g2_thumbweight_half", section_box_edge_g2_thumbweight_half, nullptr},
     {"boss_root_chamfer", section_boss_root_chamfer, nullptr},

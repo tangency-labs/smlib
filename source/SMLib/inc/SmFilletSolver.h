@@ -405,10 +405,13 @@ public:
 
 } ; // end class SmFilletSurfaceGenerator
 
-// SolidCraft change: the highest order of SmGnSectionFSG, and its default thumbweight: 0, the G^n
-// section with no thumbweight (p1(t) = p2(t) = t).
+// SolidCraft change: the highest order of SmGnSectionFSG, and its default thumbweight: the equal
+// area one, a value outside the thumbweights' range that SmGnSectionFSG resolves per blend to the w
+// at which its section, on the same rails, takes off the area the ball's circle does
+// (SmGnSectionFSG::EqualAreaThumbweight).
 #define SM_GN_MAX_ORDER 4
-#define SM_GN_DEFAULT_THUMBWEIGHT 0.0
+#define SM_GN_THUMBWEIGHT_EQUAL_AREA (-2.0)
+#define SM_GN_DEFAULT_THUMBWEIGHT SM_GN_THUMBWEIGHT_EQUAL_AREA
 
 // SolidCraft change: how SmGnSectionFSG's order-1 section, the ball's circle, is built: with
 // circular arcs as far as the rails allow (bApproximateArcs, within dTolPercentRadius of the
@@ -441,7 +444,7 @@ class SM_EXPORT SmGnSectionFSG : public SmFilletSurfaceGenerator
 protected:
   SmArcSection m_sArcs;     // order 1: how the circles are built
   ULONG  m_lOrder;          // n
-  double m_dThumbweight;    // w, 0 <= w < 1
+  mutable double m_dThumbweight; // w, -1 < w < 1, or SM_GN_THUMBWEIGHT_EQUAL_AREA until resolved
   double m_dCertifiedBound; // the last surface built: its certified distance from the blend, mm (-1: none yet)
   ULONG  m_lCertifiedSpans; // and its number of spans along the rails
 public:
@@ -480,9 +483,21 @@ public:
                                            SmBSplineCurve    * pUV2,
                                            SmBSplineSurface *& rpFilletSurface);
 
-  // whether an order and a thumbweight make a G^n section: 2 <= n <= SM_GN_MAX_ORDER, 0 <= w < 1
+  // whether an order and a thumbweight make a G^n section: 2 <= n <= SM_GN_MAX_ORDER, and
+  // -1 < w < 1 (the section's weights 1 - w + w t and 1 - w t stay positive and its
+  // reparametrizations monotone) or the equal area default
   static SmBoolean IsValid(ULONG lOrder, double dThumbweight)
-  { return (lOrder >= 2 && lOrder <= SM_GN_MAX_ORDER && dThumbweight >= 0.0 && dThumbweight < 1.0) ? TRUE : FALSE; }
+  { return (lOrder >= 2 && lOrder <= SM_GN_MAX_ORDER
+            && (dThumbweight == SM_GN_THUMBWEIGHT_EQUAL_AREA || (dThumbweight > -1.0 && dThumbweight < 1.0))) ? TRUE : FALSE; }
+
+  // The thumbweight at which the order-n section between two planes meeting at the angle dAlpha
+  // (radians, the angle of the wedge the ball sits in, 0 < alpha < pi) takes off, on the same
+  // rails, the area the ball's circle does: r^2 (cot(alpha/2) - (pi - alpha)/2).
+  static SmStatus EqualAreaThumbweight(ULONG lOrder, double dAlpha, double & rdW);
+
+  // the thumbweight used: the one given, or the equal area one for the wedge whose ball has its
+  // centre at crCentre and touches the faces at crRail1 and crRail2
+  SmStatus ResolveThumbweight(const SmPoint3d & crCentre, const SmPoint3d & crRail1, const SmPoint3d & crRail2) const;
 
   ULONG  GetOrder() const       { return m_lOrder; }
 
