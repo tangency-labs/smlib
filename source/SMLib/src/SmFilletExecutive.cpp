@@ -792,6 +792,7 @@ SmStatus SmFilletExecutive::SetFilletParameters
   m_bCliffOverflow       = FALSE; // SolidCraft change
   m_vOpenEnds.clear();
   m_vOverflowEdges.RemoveAll(); // SolidCraft change
+  m_vMitredEdges.RemoveAll();   // SolidCraft change
 
   ULONG lNumFilletedEdges = rEdgePtrs.GetSize();
   if ( lNumFilletedEdges < 1 ) { return SM_SUCCESS; }
@@ -963,6 +964,7 @@ SmStatus SmFilletExecutive::SetFilletParameters
   m_bCliffOverflow       = FALSE; // SolidCraft change
   m_vOpenEnds.clear();
   m_vOverflowEdges.RemoveAll(); // SolidCraft change
+  m_vMitredEdges.RemoveAll();   // SolidCraft change
 
   ULONG lNumFilletedEdges = rEdgePtrs.GetSize();
   if ( lNumFilletedEdges < 1 ) { return SM_SUCCESS; }
@@ -3622,6 +3624,19 @@ SmStatus SmFilletExecutive::CreateFilletBrep
   if ( m_bClassifyOnly || ( m_bOverflowFirst && bOverflow && m_vFilletSolvers.GetSize() > 1 && !bConcaveOverflow && !bConcave && !bRoundIntoMaterial ))
     {
       m_vOverflowEdges = vOverflowing;
+      // Two blends mitred at a face's concave corner meet in their mitre, each run on past the
+      // corner: one corner of the two, built with both, whichever overflows.
+      m_vMitredEdges.RemoveAll();
+      for (ULONG c=0; c<m_vFilletCorners.GetSize(); c++)
+        {
+          SmFilletCorner * pCorner = m_vFilletCorners[c];
+          if ( pCorner == NULL || pCorner->GetCornerType() != SM_FCR_N_x_2 || !((SmFilletNx2Corner*)pCorner)->IsMitre() )
+            { continue; }
+          SmEdgeuse * apEUs[2] = { NULL, NULL };
+          SER( ((SmFilletNx2Corner*)pCorner)->GetFilletedEdgeuses( apEUs[0], apEUs[1] ));
+          m_vMitredEdges.Add( apEUs[0]->GetEdge() );
+          m_vMitredEdges.Add( apEUs[1]->GetEdge() );
+        }
       GetFilletErrorInfo()->NoteError( SM_FILERR_OVERFLOW_FIRST, _T("Fillet Note: stopped after classifying the rails (blends that overflow go first)") );
       return SM_ERR;
     }
