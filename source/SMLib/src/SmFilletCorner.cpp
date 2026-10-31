@@ -2715,7 +2715,7 @@ SmStatus SmFilletCorner::MakeVariableRadiusFillet
   double           dTol                   = m_dThisApproxTol3d;
   double           dStartRad              = 0.0, dEndRad = 0.0;
   SmFilletSurfaceGeneratorType eType      = SM_FSG_UNKNOWN;
-  double           dBlendScale            = 1.0; // For use in SmBlendCurveCrossSectionFSG cases only
+  double           dThumbweight           = SM_GN_DEFAULT_THUMBWEIGHT; // For use in SmGnSectionFSG cases only
   ULONG            lMaxContinuity         = 0;
   SmVector3d       sStartAxis,      sEndAxis;
   SmPoint3d        sStartArcCenter, sEndArcCenter;
@@ -2739,11 +2739,9 @@ SmStatus SmFilletCorner::MakeVariableRadiusFillet
           eType = pFSG->GetFilletSurfaceGeneratorType();
           if (eType == SM_FSG_BLEND_CURVE) 
             {
-              //return SM_ERR;  // Right now blend curve one is disabled
-              SmBlendCurveCrossSectionFSG * pBlendFSG =
-                  (SmBlendCurveCrossSectionFSG*)pFSG;
-              dBlendScale = pBlendFSG->GetBlendScale();
-              ULONG lContinuity = pBlendFSG->GetContinuity();
+              SmGnSectionFSG * pBlendFSG = (SmGnSectionFSG*)pFSG;
+              dThumbweight = pBlendFSG->GetThumbweight();
+              ULONG lContinuity = pBlendFSG->GetOrder();
               if (lContinuity > lMaxContinuity) 
                 { lMaxContinuity = lContinuity; }
             }
@@ -2754,9 +2752,8 @@ SmStatus SmFilletCorner::MakeVariableRadiusFillet
         
       else if (eType == SM_FSG_BLEND_CURVE) 
         {
-          SmBlendCurveCrossSectionFSG * pBlendFSG = (SmBlendCurveCrossSectionFSG*)pFSG;
-          double dOtherScale = pBlendFSG->GetBlendScale();
-          if (smos_Fabs(dBlendScale-dOtherScale) > SM_EFF_ZERO) 
+          SmGnSectionFSG * pBlendFSG = (SmGnSectionFSG*)pFSG;
+          if (smos_Fabs(dThumbweight-pBlendFSG->GetThumbweight()) > SM_EFF_ZERO || pBlendFSG->GetOrder() != lMaxContinuity) 
             { return SM_ERR; } // Unable to convert
         }
 
@@ -3011,7 +3008,7 @@ SmStatus SmFilletCorner::MakeVariableRadiusFillet
   pNewFS->SetFilletExecutive(m_pExecutive);
   SmLinearCrossSectionFSG     sFSGLinear;                               // Create Linear
   SmCircularCrossSectionFSG   sFSGCircular(bApproxArcs,dApproxArcTol);  // Creates Circular
-  SmBlendCurveCrossSectionFSG sFSGBlend(dBlendScale,lMaxContinuity);    // Create blend
+  SmGnSectionFSG              sFSGBlend(lMaxContinuity > 1 ? lMaxContinuity : 2, dThumbweight); // Create blend
 
   switch (eType) 
     {   // RCLxx I hope we have etype set by here
@@ -3318,21 +3315,22 @@ SmStatus SmFilletCorner::MakeConstantRadiusFillet
   SmFilletSurfaceGenerator   * pFSG0         = pFG0->GetFilletSolver()->GetFilletSurfaceGenerator();
   SmFilletSurfaceGenerator   * pFSG1         = pFG1->GetFilletSolver()->GetFilletSurfaceGenerator();
   SmFilletSurfaceGeneratorType eType         = pFSG0->GetFilletSurfaceGeneratorType();
-  double                      dBlendScale    = 1.5; // For use in SmBlendCurveCrossSectionFSG cases only
+  double                      dThumbweight   = SM_GN_DEFAULT_THUMBWEIGHT; // For use in SmGnSectionFSG cases only
   ULONG                       lMaxContinuity = 0;
   if (eType != pFSG1->GetFilletSurfaceGeneratorType()) 
     { return SM_ERR ; }
 
   if (eType == SM_FSG_BLEND_CURVE) 
     {
-      SmBlendCurveCrossSectionFSG * pBlendFSG = (SmBlendCurveCrossSectionFSG*)pFSG0;
-      dBlendScale                             = pBlendFSG->GetBlendScale();
-      pBlendFSG                               = (SmBlendCurveCrossSectionFSG*)pFSG1;
+      SmGnSectionFSG * pBlendFSG = (SmGnSectionFSG*)pFSG0;
+      dThumbweight               = pBlendFSG->GetThumbweight();
+      ULONG lFirstOrder          = pBlendFSG->GetOrder();
+      pBlendFSG                  = (SmGnSectionFSG*)pFSG1;
 
-      if (smos_Fabs(dBlendScale-pBlendFSG->GetBlendScale()) > SM_EFF_ZERO) 
+      if (smos_Fabs(dThumbweight-pBlendFSG->GetThumbweight()) > SM_EFF_ZERO || pBlendFSG->GetOrder() != lFirstOrder) 
         { return SM_ERR ; } // Unable to convert
      
-      ULONG lContinuity = pBlendFSG->GetContinuity();
+      ULONG lContinuity = pBlendFSG->GetOrder();
 
       if (lContinuity > lMaxContinuity) 
         { lMaxContinuity = lContinuity; }
@@ -3343,7 +3341,7 @@ SmStatus SmFilletCorner::MakeConstantRadiusFillet
   SmFilletLaw               * pLaw   = NULL;
   SmLinearCrossSectionFSG     sFSGLinear;                            // Create Linear
   SmCircularCrossSectionFSG   sFSGCircular(TRUE,1.0e-3);             // Creates Circular
-  SmBlendCurveCrossSectionFSG sFSGBlend(dBlendScale,lMaxContinuity); // Create blend
+  SmGnSectionFSG              sFSGBlend(lMaxContinuity > 1 ? lMaxContinuity : 2, dThumbweight); // Create blend
   switch (eType) 
     {
       case SM_FSG_CIRCULAR:

@@ -87,9 +87,13 @@ moving the sheet back by half with `SmApiOffsetBrepFull`.
 
 `smlib_blend` gives each picked edge its own size and one of four
 blends: a round (circular section, constant radius, as `smlib_fillet`), a curvature-continuous
-round (SMLib's G2 blend-curve section between the contact lines of the round of that radius), a
+round (the G^2 section between the contact lines of the round of that radius, as
+`smlib_blend_order` builds at order 2), a
 chord round (circular section at a constant width from contact to contact, SMLib's
-constant-distance solver) and the chamfer above. `smlib_fillet_variable` rounds one edge with a
+constant-distance solver) and the chamfer above. `smlib_blend_order` blends by a section of a
+given order of contact with the faces along the contact lines: 0 the chord (the chamfer), 1 the
+ball's circle (the round), 2 to 4 the G^n section f T1(1 - p1) + (1 - f) T2(p2) between them
+(`SmGnSectionFSG`), its fullness set by a thumbweight. `smlib_fillet_variable` rounds one edge with a
 radius that follows a clamped B-spline law (degree 1 to 3) over the edge's parameter, 0 at the
 end nearest a given point; it becomes an `SmBSplineFilletLaw` on SMLib's variable-radius solver,
 whose law curve carries the radius as x and, as SMLib's own laws do, the parameter itself as y

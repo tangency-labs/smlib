@@ -1799,7 +1799,7 @@ int main(int argc, char **argv)
         SmApiCreateBox(SmVector3d(0, 0, 0), 10, 10, 10, b);
         SmTArray<SmEdge *> edges;
         SmApiGetEdges(b, edges);
-        SmApiStatus s = SmApiFilletEdges(b, edges, 1.0, 2, 2, 1.0);
+        SmApiStatus s = SmApiFilletEdges(b, edges, 1.0, 2, 2, SM_GN_DEFAULT_THUMBWEIGHT);
         if (s != SM_SUCCESS)
         {
             std::fprintf(stderr, "blend: SmApiFilletEdges -> %d\n", (int)s);
@@ -1815,7 +1815,7 @@ int main(int argc, char **argv)
         SmTArray<SmEdge *> edges, one;
         SmApiGetEdges(b, edges);
         one.Add(edges[0]);
-        SmApiStatus s = SmApiFilletEdges(b, one, 2.0, 2, 2, 1.0);
+        SmApiStatus s = SmApiFilletEdges(b, one, 2.0, 2, 2, SM_GN_DEFAULT_THUMBWEIGHT);
         if (s != SM_SUCCESS)
         {
             std::fprintf(stderr, "blend1: SmApiFilletEdges -> %d\n", (int)s);
