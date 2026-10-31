@@ -299,7 +299,7 @@ NOTES:
     Unlike sm_CheckTangentialEdgeuse(), the faces are compared at the
     vertex, and a knife edge (opposite normals) is not tangential.
 ********************************************************************/
-static SmBoolean sm_CheckTangentialEdgeuseAtVertex
+SmBoolean sm_CheckTangentialEdgeuseAtVertex
  (SmEdgeuse      * pEU,
   const SmVertex * cpVertex,
   double           dAngTolDeg)
@@ -324,6 +324,64 @@ static SmBoolean sm_CheckTangentialEdgeuseAtVertex
   return ( sNorm1.Dot( sNorm2 ) > 0.0 && sNorm1.IsParallelTo( sNorm2, dAngTolDeg ) ) ? TRUE : FALSE;
 
 } // end sm_CheckTangentialEdgeuseAtVertex
+
+/********************************************************************
+PURPOSE: Determine whether a side edge of a filleted edge at a vertex is a
+            tangent seam T that the rail on its side crosses: a tangent end
+            (SmFilletNx1Corner::MakeCornerTopology)
+NOTES:
+    The edge's faces meet tangentially at the vertex, and across it
+    their normal curvatures differ, so that the face across it is a
+    different surface touching the rail's face along T (a bar's flat
+    side running into the cylinder of its round end). Faces on one
+    surface split by a tangent edge (two pieces of one cone) are not
+    T: the rail rolls on across such an edge. Nor is an edge that
+    continues the filleted edge tangentially across the vertex: the
+    rail runs alongside it and never crosses it.
+********************************************************************/
+static SmBoolean sm_IsTangentSeamAtVertex
+ (SmEdgeuse      * pFilEdgeuse,
+  SmEdgeuse      * pEU,
+  const SmVertex * cpVertex,
+  double           dAngTolDeg)
+{
+  if ( ! sm_CheckTangentialEdgeuseAtVertex( pEU, cpVertex, dAngTolDeg ) )
+    { return FALSE; }
+  if ( sm_TestG1Continuity( cpVertex, pFilEdgeuse->GetEdge(), pEU->GetEdge(), dAngTolDeg, NULL, 0 ) )
+    { return FALSE; }
+
+  SmEdge   * pEdge = pEU->GetEdge();
+  SmExtent1d sIvl  = pEdge->GetInterval();
+  SmPoint3d  sLo, sHi;
+  if (   pEdge->GetCurve()->EvaluatePoint( sIvl.GetMin(), sLo ) != SM_SUCCESS
+      || pEdge->GetCurve()->EvaluatePoint( sIvl.GetMax(), sHi ) != SM_SUCCESS )
+    { return FALSE; }
+  SmPoint3d sAt = cpVertex->GetPoint();
+  double    dT  = ( sLo.DistanceBetweenSquared( sAt ) <= sHi.DistanceBetweenSquared( sAt ) ) ? sIvl.GetMin() : sIvl.GetMax();
+
+  // each face's normal curvature across T, its binormal there, signed by the faceuse normal
+  double      adKappa[2] = { 0.0, 0.0 };
+  SmEdgeuse * apEU[2]    = { pEU, pEU->GetRadial() };
+  for ( ULONG kk=0; kk<2; kk++ )
+    {
+      SmPoint3d  sPnt;
+      SmVector3d sBin, sNormal;
+      SmPoint2d  sUV;
+      SmVector2d sUVDir;
+      if (   apEU[kk]->EvaluateBinormal( dT, FALSE, sPnt, sBin, NULL, &sNormal, &sUV, &sUVDir ) != SM_SUCCESS
+          || apEU[kk]->GetFace() == NULL || apEU[kk]->GetFace()->GetSurface() == NULL )
+        { return FALSE; }
+      SmVector3d aDerivs[3];
+      if ( apEU[kk]->GetFace()->GetSurface()->EvaluateDirectionalDerivs( sUV, sUVDir, 2, aDerivs ) != SM_SUCCESS )
+        { return FALSE; }
+      double dSpeedSq = aDerivs[1].Dot( aDerivs[1] );
+      if ( dSpeedSq < SM_EFF_ZERO )
+        { return FALSE; }
+      adKappa[kk] = sNormal.Dot( aDerivs[2] ) / dSpeedSq;
+    }
+  return ( smos_Fabs( adKappa[0] - adKappa[1] ) > SM_EFF_ZERO_SQRT * ( 1.0 + smos_Fabs( adKappa[0] ) + smos_Fabs( adKappa[1] ))) ? TRUE : FALSE;
+
+} // end sm_IsTangentSeamAtVertex
 
 /********************************************************************
 PURPOSE: Classify a face's corner at a given vertex as convex or
@@ -6434,12 +6492,18 @@ int iDebugLevel = 0;
   // G1 edge needs the step off), so the two ends of one arc read differently with the sketch
   // solver's residues. It is never of the opposite convexity: the side face runs on across it.
   // (Edges reached past such an edge round the vertex are read the same way below.)
+  // Such an edge is a tangent seam T, and the rail on its side ends at a tangent end there:
+  // where it crosses T, on the edge or on T continued past the vertex (bTangentSide).
+  SmBoolean bTangentSide[2] = { FALSE, FALSE };
   {
     double dTanTolDeg = SM_RAD2DEG( GetTangencyTolRadians() );
     for ( ULONG kk=0; kk<2; kk++ )
       {
         if ( sm_CheckTangentialEdgeuseAtVertex( pEU[kk], m_cpVertex, dTanTolDeg ) )
-          { bSideEdgeSameCvxty[kk] = TRUE; }
+          {
+            bSideEdgeSameCvxty[kk] = TRUE;
+            bTangentSide[kk]       = sm_IsTangentSeamAtVertex( pFilEdgeuse, pEU[kk], m_cpVertex, dTanTolDeg );
+          }
       }
   }
 
@@ -6466,7 +6530,8 @@ int iDebugLevel = 0;
       for ( ULONG kk=0; kk<2; kk++ )
         {
           ULONG lOther = 1 - kk;
-          if (   bSideEdgeSameCvxty[ lOther ]
+          if (   bTangentSide[ kk ]
+              || bSideEdgeSameCvxty[ lOther ]
               || sm_CheckTangentialEdgeuseAtVertex( pEU[ lOther ], m_cpVertex, dTanTolDeg ) )
             { continue; }
 
@@ -6509,6 +6574,7 @@ int iDebugLevel = 0;
             {
               pCornerEU[ kk ]           = pNextEU;
               bSideEdgeSameCvxty[ kk ]  = TRUE;
+              bTangentSide[ kk ]        = FALSE;  // the end face lies past the tangent edge
               lCornerEUs               -= lSkipped;
               break;
             }
@@ -6578,7 +6644,16 @@ int iDebugLevel = 0;
 
       if ( bMixedCvxty  &&  bSideEdgeSameCvxty[ lThisRailIdx ] )
         {
-          pFVArray[ lThisRailIdx ]->SetFilletVertexType(SM_FV_RAIL_X_EXTENDED_EDGEUSE);
+          // At a tangent side edge the rail's end is the tangent end, where the rail crosses
+          // the seam T: an event of the fillet's trace, found with the other rail ends by the
+          // solver's rail/edge crossing (SmFilletSolver::RailEdgeuseIntersect, which follows T
+          // on as itself past the vertex), and the end rib starts there. It is never found
+          // afterwards on the fillet surface: there the fillet surface and the end face touch,
+          // and the end rib leaves the rail tangentially or at the node of their intersection.
+          pFVArray[ lThisRailIdx ]->SetFilletVertexType(  bTangentSide[ lThisRailIdx ]
+                                                        ? SM_FV_RAIL_X_EDGEUSE
+                                                        : SM_FV_RAIL_X_EXTENDED_EDGEUSE );
+          pFVArray[ lThisRailIdx ]->SetTangentEnd( bTangentSide[ lThisRailIdx ] );
 
           // Use the next edgeuse around the vertex, past the current one
           //SmEdgeuse * pExtendEdgeuse =
@@ -6595,8 +6670,21 @@ int iDebugLevel = 0;
 
           // Find original EndFace to be extended:
           //   the EndFace between the extended edge and the other side edge.
-          pEndFace = sm_GetFaceByTwoEdgeuses(
-                          pExtendEdgeuse, pCornerEU[ lOtherRailIdx ], NULL );
+          // At a tangent end, the face across the seam T from the rail's face, whose surface
+          // the end rib lies on (faces on that surface split by a tangent edge between T and
+          // the other side edge are one end face).
+          if ( bTangentSide[ lThisRailIdx ] )
+            {
+              pEndFace = pExtendEdgeuse->GetFace();
+              if (   pEndFace == pFilEdgeuse->GetFace()
+                  || pEndFace == pFilEdgeuse->GetRadial()->GetFace() )
+                { pEndFace = pExtendEdgeuse->GetRadial()->GetFace(); }
+            }
+          else
+            {
+              pEndFace = sm_GetFaceByTwoEdgeuses(
+                              pExtendEdgeuse, pCornerEU[ lOtherRailIdx ], NULL );
+            }
           pExtendEdge = pExtendEdgeuse->GetEdge();
 
           // Point Edgeuse to the Fillet (side) Face containing the cliff edge.
@@ -6772,7 +6860,14 @@ int iDebugLevel = 0;
       SmSurface * pNewSurface = NULL;
 
       // create an extended surface large enough to fill in the endCap requirements
-      SER( pSurface->CreateExtendedSurface(m_crContext, dExtDist, SM_CT_G1, pNewSurface ));
+      // At a tangent end the end face is continued as itself: the end rib's shape there
+      // depends on how its curvature differs from the rail's face across the seam, which a
+      // linear (G1) extension would not keep.
+      SmContinuityType eExtension = (   bMixedCvxty
+                                     && ( bTangentSide[0] || bTangentSide[1] ))
+                                    ? SM_CT_CINFINITY
+                                    : SM_CT_G1;
+      SER( pSurface->CreateExtendedSurface(m_crContext, dExtDist, eExtension, pNewSurface ));
       SmObjDelete sCleanSurf( pNewSurface );
 
       // Copy pNewSurface, when possible as an analytic surface
@@ -6815,7 +6910,8 @@ int iDebugLevel = 0;
                                        this));          // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
                                                         //      NULL to ignore, default:[NULL]
       // set FilletEdgeType based on analysis done and saved in filletVertexType
-      if (m_vVertices[1]->GetFilletVertexType() == SM_FV_RAIL_X_EXTENDED_EDGEUSE)
+      if (   m_vVertices[1]->GetFilletVertexType() == SM_FV_RAIL_X_EXTENDED_EDGEUSE
+          || ( bMixedCvxty && bTangentSide[1] ) )
         {
           pNewFilletEdge2->SetFilletEdgeType( SM_FE_ON_EXTEND_EDGE );
           pNewFilletEdge2->SetOriginalEdge( pExtendEdge );
@@ -6845,7 +6941,8 @@ int iDebugLevel = 0;
                                        this));          // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
                                                         //      NULL to ignore, default:[NULL]
       // set FilletEdgeType based on analysis done and saved in filletVertexType
-      if (m_vVertices[0]->GetFilletVertexType() == SM_FV_RAIL_X_EXTENDED_EDGEUSE)
+      if (   m_vVertices[0]->GetFilletVertexType() == SM_FV_RAIL_X_EXTENDED_EDGEUSE
+          || ( bMixedCvxty && bTangentSide[0] ) )
         {
           pNewFilletEdge1->SetFilletEdgeType( SM_FE_ON_EXTEND_EDGE );
           pNewFilletEdge1->SetOriginalEdge( pExtendEdge );

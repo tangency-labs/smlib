@@ -3715,11 +3715,18 @@ static SmBoolean sbDumpFVUs=FALSE;
           const SmEdge * pFilleted = GetEdgeuse(0)->GetEdge();
           auto bOnFilleted = [pFilleted]( const SmVertex * cpV )
             { return cpV != NULL && pFilleted != NULL && ( cpV == pFilleted->GetStartVertex() || cpV == pFilleted->GetEndVertex() ); };
+          // A tangent seam T (the side edge's faces meet tangentially at that vertex) is the
+          // exception: past the vertex T runs on in the rail's face, which continues across it
+          // into the end face, and a rail that leaves the filleted edge's end on that side (a
+          // concave round on the wall above a flat side running tangent into it) crosses T there.
           const SmBoolean bCornerAtStart = bOnFilleted( pSideEdge->GetStartVertex() );
           const SmBoolean bCornerAtEnd   = bOnFilleted( pSideEdge->GetEndVertex() );
+          const SmVertex * cpCornerV     = bCornerAtStart ? pSideEdge->GetStartVertex() : pSideEdge->GetEndVertex();
+          const SmBoolean bTangentSeam   =    ( bCornerAtStart || bCornerAtEnd )
+                                           && sm_CheckTangentialEdgeuseAtVertex( pSideEU, cpCornerV, SM_RAD2DEG( GetTangencyTolerance() ));
           double dPast = dReach * sEdgeIvl.GetLength() / dLength;
-          double dBefore = ( bCornerAtStart && !bCornerAtEnd ) ? 0.0 : dPast;
-          double dAfter  = ( bCornerAtEnd && !bCornerAtStart ) ? 0.0 : dPast;
+          double dBefore = ( bCornerAtStart && !bCornerAtEnd && !bTangentSeam ) ? 0.0 : dPast;
+          double dAfter  = ( bCornerAtEnd && !bCornerAtStart && !bTangentSeam ) ? 0.0 : dPast;
           sIntervals[0] = SmExtent1d( sEdgeIvl.GetMin() - dBefore, sEdgeIvl.GetMax() + dAfter );
           bAlongLine = TRUE;
         }

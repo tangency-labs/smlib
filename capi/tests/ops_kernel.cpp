@@ -3380,11 +3380,9 @@ void rails_trimmed_next_to_a_knot()
         const char *file;
         std::vector<double> points;
         double r, pick;
-        // Still refused by SMLib's check for another cause: the end rib on the boss, where the
-        // round and the boss are tangent, is marched into its tangential start in spans too short
-        // for the tolerance. Listed so that this test fails once it builds, and the mark comes off.
+        // Refused by SMLib's check for another cause, a mark that comes off once it builds.
         bool known_failing;
-    } cases[2] = {{SMLIB_TEST_DATA "/bar-boss-arc-rounded.smb", {58.046738469715542, -15, 10, 14.289893382452973, -14.999999999999996, 10.475338853397696}, 0.5, 0.1, true},
+    } cases[2] = {{SMLIB_TEST_DATA "/bar-boss-arc-rounded.smb", {58.046738469715542, -15, 10, 14.289893382452973, -14.999999999999996, 10.475338853397696}, 0.5, 0.1, false},
                   {SMLIB_TEST_DATA "/oblique-cut-bar.txt", {149.60309403593678, -458.87269130746967, 848.84285884468318}, 0.1, 1.0, false}};
     for (const auto &c : cases)
     {
@@ -3691,13 +3689,11 @@ struct TangentEndCase
 };
 const TangentEndCase TANGENT_END_CASES[] = {
     {"chamfers_together_d2", tangent_end_chamfers_together_d2,
-     "status 1001: SmFilletNx1Corner, Corner Edge Computation Failure (the chamfers' tangent ends, as front_chamfer_d2 and concave_chamfer_d2)"},
-    {"concave_chamfer_d2", tangent_end_concave_chamfer_d2,
-     "status 1001: SmFilletNx1Corner, Corner Edge Computation Failure, where the cone runs out over the front top edge and its end on the front face leaves its contact line tangentially"},
+     "status 1001: SmFillet3x2MixedConvexityCorner, Vertex Computation Failure, where the two chamfers meet at the tangent seam (the corner, not the tangent ends: each chamfer alone passes)"},
+    {"concave_chamfer_d2", tangent_end_concave_chamfer_d2, nullptr},
     {"concave_round_r3_then_front_round_r1_5", tangent_end_concave_round_r3_then_front_round_r1_5, nullptr},
     {"concave_round_then_front_round_r2", tangent_end_concave_round_then_front_round_r2, nullptr},
-    {"drafted_front_round_r2", tangent_end_drafted_front_round_r2,
-     "SMLib's check refuses the round: Test #13 (a 2D curve with a radius of curvature of 8.6e-6) and Tests #7 and #8 (kinks at interior knots) on its end on the cone"},
+    {"drafted_front_round_r2", tangent_end_drafted_front_round_r2, nullptr},
     {"drafted_rounds_together_r2", tangent_end_drafted_rounds_together_r2,
      "status 1001 before any geometry: the corner where the front top edge runs tangent into the concave arc, on the cone, is of no kind SMLib's blend corners take"},
     {"front_chamfer_d2", tangent_end_front_chamfer_d2, nullptr},

@@ -1318,7 +1318,8 @@ SmFilletVertex::SmFilletVertex
    m_vPointClass(SmTol::GetZoneTol3d(), m_cpContext),  // needs thought: What's the right ZoneTol3d here? 
    m_pMate(),
    m_eStatus(SM_FIL_UNPROCESSED),
-   m_cpCorner(cpCorner)
+   m_cpCorner(cpCorner),
+   m_bTangentEnd(FALSE)
 {
   m_vPointClass.SetContext(GetContext()) ;
   m_pMate[0] = m_pMate[1] = NULL;
@@ -6219,6 +6220,272 @@ int iDebugLevel = 0;
 } // end SmFilletEdge::CalcFilletIntFillet
 
 /*******************************************************************//**
+PURPOSE: The order of contact of a fillet's cross-section with the faces it
+    meets: 1 for a chamfer's straight section, 2 for a round's circular one,
+    n + 1 for a blend curve of Gn continuity.
+
+NOTES: The section stands off its face as c s^k at distance s from the
+  contact line, k this order. Where the face runs tangent into an end face
+  whose normal curvature across the seam differs by dk, the end rib leaves
+  the tangent end as a ~ s^(k/2) along the rail (c s^k = dk a^2 / 2).
+***********************************************************************/
+static SmStatus sm_SectionContactOrder
+ (SmFilletSolver * pFilSolver,   // in : the fillet's solver
+  ULONG          & rlOrder)      // out: k
+{
+  NER(pFilSolver);
+  SmFilletSurfaceGenerator * pFSG = pFilSolver->GetFilletSurfaceGenerator();
+  NER(pFSG);
+  switch ( pFSG->GetFilletSurfaceGeneratorType() )
+    {
+      case SM_FSG_LINEAR      : rlOrder = 1; break;
+      case SM_FSG_CIRCULAR    : rlOrder = 2; break;
+      case SM_FSG_BLEND_CURVE : rlOrder = ((SmBlendCurveCrossSectionFSG*)pFSG)->GetContinuity() + 1; break;
+      case SM_FSG_UNKNOWN     :
+      default                 : SER(SM_ERR);
+    }
+  return SM_SUCCESS;
+
+} // end sm_SectionContactOrder
+
+/*******************************************************************//**
+PURPOSE: The end rib's point at one fillet section: the point of the fillet
+    surface at section parameter dSigma on the end surface, by Newton on
+    (dAlpha, the end surface's uv).
+
+NOTES: lSection is the fillet surface's section parameter (0 = u, 1 = v),
+  dAlpha the other one. Converged to rounding: returns rbFound FALSE when
+  Newton does not converge or the system is singular.
+***********************************************************************/
+static SmStatus sm_TangentEndRibPoint
+ (const SmSurface & crFillet,    // in : fillet surface
+  const SmSurface & crEnd,       // in : end surface
+  ULONG             lSection,    // in : section parameter index of crFillet
+  double            dSigma,      // in : section parameter value
+  double          & rdAlpha,     // i/o: along parameter, guess in, solution out
+  SmPoint2d       & rEndUV,      // i/o: end surface uv, guess in, solution out
+  SmPoint3d       & rPoint,      // out: the point
+  SmBoolean       & rbFound)     // out: converged
+{
+  rbFound = FALSE;
+  for ( ULONG lIter=0; lIter<40; lIter++ )
+    {
+      SmPoint2d  sFilUV = ( lSection == 0 ) ? SmPoint2d( dSigma, rdAlpha ) : SmPoint2d( rdAlpha, dSigma );
+      SmVector3d sF[2][2], sE[2][2];
+      SER( crFillet.Evaluate( sFilUV, 1, 1, TRUE, TRUE, TRUE, sF[0], FALSE ));
+      SER( crEnd.Evaluate( rEndUV, 1, 1, TRUE, TRUE, TRUE, sE[0], FALSE ));
+      SmVector3d sR     = sF[0][0] - sE[0][0];
+      SmVector3d sA     = ( lSection == 0 ) ? sF[0][1] : sF[1][0];  // d/d alpha
+      SmVector3d sEu    = -sE[1][0];
+      SmVector3d sEv    = -sE[0][1];
+      double     dScale = smos_Max( 1.0, sF[0][0].GetMaxDimension() );
+      if ( sR.Length() <= 4.0 * SM_EFF_ZERO * dScale && lIter > 0 )
+        {
+          rPoint  = sE[0][0];
+          rbFound = TRUE;
+          return SM_SUCCESS;
+        }
+      double dDet = sA.Dot( sEu * sEv );
+      if ( smos_Fabs( dDet ) <= SM_EFF_ZERO * sA.Length() * sEu.Length() * sEv.Length() )
+        { return SM_SUCCESS; }
+      SmVector3d sMinusR = -sR;
+      double dDA  = sMinusR.Dot( sEu * sEv ) / dDet;
+      double dDEu = sA.Dot( sMinusR * sEv ) / dDet;
+      double dDEv = sA.Dot( sEu * sMinusR ) / dDet;
+      rdAlpha   += dDA;
+      rEndUV.x  += dDEu;
+      rEndUV.y  += dDEv;
+    }
+  return SM_SUCCESS;
+
+} // end sm_TangentEndRibPoint
+
+/*******************************************************************//**
+PURPOSE: Build the end rib of a fillet at a tangent end: the fillet
+    surface's intersection with the end surface, from the tangent end
+    crTangentEnd (on one rail, where the fillet surface touches the end
+    surface) to crOtherEnd (on the other rail).
+
+NOTES: The rib is solved section by section from the tangent end outward,
+  each point exact (sm_TangentEndRibPoint), and never marched into the
+  tangent end, where the two surfaces touch. With s the section parameter
+  from the tangent end's rail and a the along parameter, a ~ s^(k/2) there
+  (sm_SectionContactOrder); the rib is taken in t with s ~ t^2 for odd k
+  and s ~ t for even k, in which a is analytic: for a chamfer (k = 1) the
+  rib leaves the rail tangentially, for a round (k = 2) at the node's
+  branch, for a curvature-continuous blend (k = 3) with zero speed along
+  the seam. The three curves (3D, on the fillet surface, on the end
+  surface) interpolate the same exact points in t, with the stations
+  doubled until each span's midpoint is within dApproxTol of the exact
+  point there. bReverse: the rib runs from crOtherEnd to crTangentEnd.
+***********************************************************************/
+static SmStatus sm_TangentEndRib
+ (const SmContext & crContext,     // in : context for new object construction
+  SmSurface       * pFillet,       // in : fillet surface
+  SmSurface       * pEnd,          // in : end surface
+  ULONG             lOrder,        // in : the section's contact order k
+  const SmPoint3d & crTangentEnd,  // in : the tangent end
+  const SmPoint3d & crOtherEnd,    // in : the rib's other end
+  SmBoolean         bReverse,      // in : TRUE = the rib runs from crOtherEnd to crTangentEnd
+  double            dApproxTol,    // in : max allowed distance of the curves from the exact rib
+  SmBSplineCurve *& rp3DCurve,     // out: 3D curve
+  SmBSplineCurve *& rpFilletUV,    // out: its UV curve on pFillet
+  SmBSplineCurve *& rpEndUV)       // out: its UV curve on pEnd
+{
+  rp3DCurve = rpFilletUV = rpEndUV = NULL;
+  NER(pFillet);
+  NER(pEnd);
+
+  // both ends on the fillet surface and on the end surface
+  SmExtent2d sFilDom = pFillet->GetNaturalUVDomain();
+  SmExtent2d sEndDom = pEnd->GetNaturalUVDomain();
+  SmPoint2d  sFilUV[2], sEndUV[2];
+  const SmPoint3d * apEnd[2] = { &crTangentEnd, &crOtherEnd };
+  for ( ULONG kk=0; kk<2; kk++ )
+    {
+      SmBoolean bDropped = FALSE, bMulti = FALSE;
+      double    dGap     = SM_BIG_DOUBLE;
+      SER( pFillet->DropPoint( *apEnd[kk], sFilDom, NULL, bDropped, sFilUV[kk], dGap, bMulti ));
+      if ( !bDropped || dGap > dApproxTol )
+        { SER_MSG( SM_ERR, _T("sm_TangentEndRib(): an end of the rib is off the fillet surface") ); }
+      SER( pEnd->DropPoint( *apEnd[kk], sEndDom, NULL, bDropped, sEndUV[kk], dGap, bMulti ));
+      if ( !bDropped || dGap > dApproxTol )
+        { SER_MSG( SM_ERR, _T("sm_TangentEndRib(): an end of the rib is off the end surface") ); }
+    }
+
+  // the section parameter: the rails bound the fillet surface across it, one end on each
+  double dTolU = SM_EFF_ZERO_SQRT * smos_Max( 1.0, sFilDom.GetUInterval().GetLength() );
+  double dTolV = SM_EFF_ZERO_SQRT * smos_Max( 1.0, sFilDom.GetVInterval().GetLength() );
+  auto bAcross = []( double dA, double dB, const SmExtent1d & crIvl, double dTol )
+    {
+      return (   ( smos_Fabs( dA - crIvl.GetMin() ) <= dTol && smos_Fabs( dB - crIvl.GetMax() ) <= dTol )
+              || ( smos_Fabs( dA - crIvl.GetMax() ) <= dTol && smos_Fabs( dB - crIvl.GetMin() ) <= dTol )) ? TRUE : FALSE;
+    };
+  ULONG lSection = 2;
+  if      ( bAcross( sFilUV[0].x, sFilUV[1].x, sFilDom.GetUInterval(), dTolU )) { lSection = 0; }
+  else if ( bAcross( sFilUV[0].y, sFilUV[1].y, sFilDom.GetVInterval(), dTolV )) { lSection = 1; }
+  else
+    { SER_MSG( SM_ERR, _T("sm_TangentEndRib(): the rib's ends are not on the fillet surface's two rails") ); }
+  double dSigma0 = ( lSection == 0 ) ? sFilUV[0].x : sFilUV[0].y;
+  double dSigma1 = ( lSection == 0 ) ? sFilUV[1].x : sFilUV[1].y;
+  double dAlpha0 = ( lSection == 0 ) ? sFilUV[0].y : sFilUV[0].x;
+  double dAlpha1 = ( lSection == 0 ) ? sFilUV[1].y : sFilUV[1].x;
+  if ( smos_Fabs( dAlpha1 - dAlpha0 ) <= SM_EFF_ZERO_SQRT * smos_Max( 1.0, smos_Fabs( dAlpha0 )))
+    { SER_MSG( SM_ERR, _T("sm_TangentEndRib(): the rib's ends lie on one section") ); }
+  const SmBoolean bOdd = ( lOrder % 2 == 1 ) ? TRUE : FALSE;
+  auto dSigmaAt = [&]( double dT ) { return dSigma0 + ( dSigma1 - dSigma0 ) * ( bOdd ? dT * dT : dT ); };
+  // The curves' parameter: t, but for an odd order past 1, in which the rib leaves the tangent
+  // end with zero speed in t (a ~ t^k with s ~ t^2), s = t^2: regular there, the stations
+  // closing in on the tangent end as t^2.
+  const SmBoolean bInS = ( bOdd && lOrder > 1 ) ? TRUE : FALSE;
+  auto dParamAt = [&]( double dT ) { return bInS ? dT * dT : dT; };
+
+  // the exact rib point at t, from a guess; on the other end's side of the tangent end
+  auto Solve = [&]( double dT, double & rdAlpha, SmPoint2d & rEndUV, SmPoint3d & rPnt, SmBoolean & rbOK ) -> SmStatus
+    {
+      SER( sm_TangentEndRibPoint( *pFillet, *pEnd, lSection, dSigmaAt( dT ), rdAlpha, rEndUV, rPnt, rbOK ));
+      if ( rbOK && ( rdAlpha - dAlpha0 ) * ( dAlpha1 - dAlpha0 ) <= 0.0 )
+        { rbOK = FALSE; }
+      return SM_SUCCESS;
+    };
+
+  for ( ULONG lSpans=8; lSpans<=1024; lSpans*=2 )
+    {
+      // stations t = j / lSpans, and the exact points there
+      SmTArray<double>    sT;
+      SmTArray<double>    sAlpha;
+      SmTArray<SmPoint2d> sE;
+      SmTArray<SmPoint3d> sX;
+      sT.Add( 0.0 ); sAlpha.Add( dAlpha0 ); sE.Add( sEndUV[0] ); sX.Add( crTangentEnd );
+      SmBoolean bAll = TRUE;
+      for ( ULONG jj=1; jj<=lSpans && bAll; jj++ )
+        {
+          double dT = (double)jj / (double)lSpans;
+          // guess: the chord to the other end first, then the last two points carried on
+          double    dAlpha = ( jj == 1 ) ? dAlpha0 + ( dAlpha1 - dAlpha0 ) * dT
+                                       : 2.0 * sAlpha[jj-1] - sAlpha[jj-2];
+          SmPoint2d sUV    = ( jj == 1 ) ? sEndUV[0] + ( sEndUV[1] - sEndUV[0] ) * dT
+                                       : SmPoint2d( 2.0 * sE[jj-1].x - sE[jj-2].x, 2.0 * sE[jj-1].y - sE[jj-2].y );
+          SmPoint3d sPnt;
+          SmBoolean bOK = FALSE;
+          if ( jj == lSpans )
+            { dAlpha = dAlpha1; sUV = sEndUV[1]; }
+          SER( Solve( dT, dAlpha, sUV, sPnt, bOK ));
+          if ( !bOK )
+            { bAll = FALSE; break; }
+          sT.Add( dT ); sAlpha.Add( dAlpha ); sE.Add( sUV ); sX.Add( sPnt );
+        }
+      if ( !bAll )
+        { continue; }
+      if ( sX[lSpans].DistanceBetween( crOtherEnd ) > dApproxTol )
+        { SER_MSG( SM_ERR, _T("sm_TangentEndRib(): the rib does not reach its other end") ); }
+      sX[lSpans] = crOtherEnd;
+
+      // the three curves through the exact points
+      SmTArray<SmPoint3d> sFilPts, sEndPts;
+      SmTArray<double>    sParams;
+      for ( ULONG jj=0; jj<=lSpans; jj++ )
+        {
+          sParams.Add( dParamAt( sT[jj] ));
+          double dSig = dSigmaAt( sT[jj] );
+          sFilPts.Add( ( lSection == 0 ) ? SmPoint3d( dSig, sAlpha[jj], 0.0 ) : SmPoint3d( sAlpha[jj], dSig, 0.0 ));
+          sEndPts.Add( SmPoint3d( sE[jj].x, sE[jj].y, 0.0 ));
+        }
+      SmBSplineCurve * p3D = NULL, * pFilUV = NULL, * pEndUV = NULL;
+      SER( SmBSplineCurve::InterpolatePoints( crContext, sX,      &sParams, 3, NULL, NULL, FALSE, SM_IT_UNIFORM, p3D ));
+      SmObjDelete sDel3D( p3D );
+      SER( SmBSplineCurve::InterpolatePoints( crContext, sFilPts, &sParams, 3, NULL, NULL, FALSE, SM_IT_UNIFORM, pFilUV ));
+      SmObjDelete sDelFil( pFilUV );
+      SER( SmBSplineCurve::InterpolatePoints( crContext, sEndPts, &sParams, 3, NULL, NULL, FALSE, SM_IT_UNIFORM, pEndUV ));
+      SmObjDelete sDelEnd( pEndUV );
+      NER(p3D); NER(pFilUV); NER(pEndUV);
+
+      // each span's midpoint against the exact rib point there
+      SmBoolean bWithin = TRUE;
+      for ( ULONG jj=0; jj<lSpans && bWithin; jj++ )
+        {
+          double    dT     = 0.5 * ( sT[jj] + sT[jj+1] );
+          double    dAlpha = 0.5 * ( sAlpha[jj] + sAlpha[jj+1] );
+          SmPoint2d sUV( 0.5 * ( sE[jj].x + sE[jj+1].x ), 0.5 * ( sE[jj].y + sE[jj+1].y ));
+          SmPoint3d sExact, sOn3D, sOnFilUV, sOnEndUV, sOnFil, sOnEnd;
+          SmBoolean bOK = FALSE;
+          SER( Solve( dT, dAlpha, sUV, sExact, bOK ));
+          if ( !bOK )
+            { bWithin = FALSE; break; }
+          SER( p3D->EvaluatePoint( dParamAt( dT ), sOn3D ));
+          SER( pFilUV->EvaluatePoint( dParamAt( dT ), sOnFilUV ));
+          SER( pEndUV->EvaluatePoint( dParamAt( dT ), sOnEndUV ));
+          SER( pFillet->EvaluatePoint( SmPoint2d( sOnFilUV.x, sOnFilUV.y ), sOnFil ));
+          SER( pEnd->EvaluatePoint( SmPoint2d( sOnEndUV.x, sOnEndUV.y ), sOnEnd ));
+          if (   sOn3D.DistanceBetween( sExact )  > dApproxTol
+              || sOnFil.DistanceBetween( sExact ) > dApproxTol
+              || sOnEnd.DistanceBetween( sExact ) > dApproxTol )
+            { bWithin = FALSE; }
+        }
+      if ( !bWithin )
+        { continue; }
+
+      SER( pFilUV->ConvertTo2D() );
+      SER( pEndUV->ConvertTo2D() );
+      if ( bReverse )
+        {
+          SmExtent1d sIvl = p3D->GetNaturalInterval();
+          SER( p3D->ReverseParameterization( sIvl, sIvl ));
+          SER( pFilUV->ReverseParameterization( sIvl, sIvl ));
+          SER( pEndUV->ReverseParameterization( sIvl, sIvl ));
+        }
+      rp3DCurve  = p3D;    sDel3D.Clear();
+      rpFilletUV = pFilUV; sDelFil.Clear();
+      rpEndUV    = pEndUV; sDelEnd.Clear();
+      return SM_SUCCESS;
+    }
+
+  SE_MSG( SM_ERR, _T("sm_TangentEndRib(): no stations give the rib within tolerance") );
+  return SM_ERR;
+
+} // end sm_TangentEndRib
+
+/*******************************************************************//**
 PURPOSE: Calculate edge geometry of type SM_FE_FILLET_X_SIDE_FACE.
     (intersection of fillet & side face)
 
@@ -6317,28 +6584,46 @@ iDebugLevel = DebugLevel();
 
         } // end not building extendedSurface endFace patch branch
 
-      // do Surface/surface xSect
+      // SolidCraft change: at a tangent end (SmFilletNx1Corner::MakeCornerTopology) the fillet
+      // surface and the end face touch where the rail crosses the seam, and the end rib is built
+      // from that end outward (sm_TangentEndRib), never intersected into it.
       double     dAngTol = pFilSolver1->GetThisAngTolRad();
       SmVector3d sDir    = sEndPnt - sStartPnt;
       const SmContext & sContext = m_cpCorner->GetContext();
-      if(SM_SUCCESS != sm_SrfSrfIntersection( sContext,       // in : context for new object construction
-                                             pStartFV,        // in : 1st point known to be on intersection curve
-                                             pEndFV,          // in : 2nd point known to be on intersection curve,
-                                                              //      NULL to ignore
-                                             &sDir,           // in : expected general direction of intersection curve from 1st point
-                                             NULL,            // in   expected intersection end direction
-                                             pFilletSurface1, // in : 1st intersecting surface
-                                             pSurface,        // in : 2nd intersecting surface
-                                             dApproxTol,      // in : max allowed distance between xSect Curve and surfaces
-                                             dAngTol,         // in : max allowed angle between consecutive xSect curve segment tangents
-                                             pNew3DCurve,     // out: 3d intersection curve
-                                             pUVCurve1,       // out: associated UVTrimCurve on 1st surface
-                                             pUVCurve2,       // out: associated UVTrimCurve on 2nd surface
-                                             FALSE,           // in : FALSE= try cheap sm_TwoPntsIntersection() before
-                                                              //             resorting to expensive general surf/surf xSect solver
-                                             NULL,            // in : reference point
-                                             iDebugLevel)     // in : iDebugLevel, 0 = No Debug output
-          || !pNew3DCurve )
+      SmStatus eRib = SM_SUCCESS;
+      if ( pStartFV->IsTangentEnd() || pEndFV->IsTangentEnd() )
+        {
+          if ( pStartFV->IsTangentEnd() && pEndFV->IsTangentEnd() )
+            { SER_MSG( SM_ERR, _T("CalcFilletIntSideFace(): an end rib between two tangent ends") ); }
+          ULONG lOrder = 0;
+          SER( sm_SectionContactOrder( pFilSolver1, lOrder ));
+          eRib = sm_TangentEndRib( sContext, pFilletSurface1, pSurface, lOrder,
+                                   pStartFV->IsTangentEnd() ? sStartPnt : sEndPnt,
+                                   pStartFV->IsTangentEnd() ? sEndPnt   : sStartPnt,
+                                   pStartFV->IsTangentEnd() ? FALSE     : TRUE,
+                                   dApproxTol, pNew3DCurve, pUVCurve1, pUVCurve2 );
+        }
+      else
+        {
+          eRib = sm_SrfSrfIntersection( sContext,       // in : context for new object construction
+                                        pStartFV,        // in : 1st point known to be on intersection curve
+                                        pEndFV,          // in : 2nd point known to be on intersection curve,
+                                                         //      NULL to ignore
+                                        &sDir,           // in : expected general direction of intersection curve from 1st point
+                                        NULL,            // in   expected intersection end direction
+                                        pFilletSurface1, // in : 1st intersecting surface
+                                        pSurface,        // in : 2nd intersecting surface
+                                        dApproxTol,      // in : max allowed distance between xSect Curve and surfaces
+                                        dAngTol,         // in : max allowed angle between consecutive xSect curve segment tangents
+                                        pNew3DCurve,     // out: 3d intersection curve
+                                        pUVCurve1,       // out: associated UVTrimCurve on 1st surface
+                                        pUVCurve2,       // out: associated UVTrimCurve on 2nd surface
+                                        FALSE,           // in : FALSE= try cheap sm_TwoPntsIntersection() before
+                                                         //             resorting to expensive general surf/surf xSect solver
+                                        NULL,            // in : reference point
+                                             iDebugLevel);    // in : iDebugLevel, 0 = No Debug output
+        }
+      if ( eRib != SM_SUCCESS || !pNew3DCurve )
         {
 
 #ifdef SM_DEBUG_CODE
@@ -7748,6 +8033,18 @@ SmStatus SmFilletEdge::CalcEdgeOnExtendedEdge
     pEdge->GetFaces(sFaces);
     if (sFaces.GetSize() < 2) SER(SM_ERR);
 
+    // SolidCraft change: a tangent seam T, the edge whose faces meet tangentially, where a
+    // tangent end's rail crosses it (SmFilletNx1Corner::MakeCornerTopology). The cap edge from
+    // that end to the corner's vertex is a piece of T, on the edge or on its continuation past
+    // the vertex: the edge's own curve, continued as itself. Its faces' surfaces touch along T,
+    // so it is never their intersection.
+    SmTArray<SmEdgeuse*> sSeamEUs;
+    SER( pEdge->GetEdgeuses( sSeamEUs ));
+    if (   sSeamEUs.GetSize() > 0
+        && sm_CheckTangentialEdgeuseAtVertex( sSeamEUs[0], pOptCorner->GetFilletedVertex(),
+                                              SM_RAD2DEG( pOptCorner->GetTangencyTolRadians() )))
+      { return CalcEdgeOnTangentSeam( crContext, pOptCorner ); }
+
     // Past a tangent side edge (SmFilletNx1Corner::MakeCornerTopology), the
     // extended edge bounds the end face and a face that is not the side face
     // this edge runs in. Its extension is where that side face meets the end
@@ -7853,6 +8150,94 @@ int iDebugLevel = 0;
     return SM_SUCCESS;
 
 } // end SmFilletEdge::CalcEdgeOnExtendedEdge
+
+/*******************************************************************//**
+PURPOSE: Calculate the geometry of an edge of type SM_FE_ON_EXTEND_EDGE
+    on a tangent seam T: the cap edge from a tangent end, where a rail
+    crosses T, to the corner's vertex.
+
+NOTES: The edge is T's own curve between its two vertices, the original
+  edge's curve continued as itself where the tangent end lies past the
+  vertex (on a line or a conic, the continuation is exact).
+***********************************************************************/
+SmStatus SmFilletEdge::CalcEdgeOnTangentSeam
+  (const SmContext & crContext,
+   SmFilletCorner  * pCorner)
+{
+    NER(pCorner);
+    SmFilletVertex * pStartFV = (SmFilletVertex*)GetVertex();
+    SmFilletVertex * pEndFV   = (SmFilletVertex*)GetOtherVertex(pStartFV);
+    NER(pStartFV);
+    NER(pEndFV);
+    SmEdge * pEdge = GetOriginalEdge();
+    NER(pEdge);
+    NER(pEdge->GetCurve());
+
+    SmCurve * pCopyCurve = NULL;
+    SER( pEdge->GetCurve()->Copy( crContext, pCopyCurve ));
+    SmBSplineCurve * pSeam = SM_CAST_PTR( SmBSplineCurve, pCopyCurve );
+    NER(pSeam);
+    SmObjDelete sCleanSeam( pSeam );
+
+    // Continue T at both ends by as far as the farther vertex lies from the edge's ends.
+    SmExtent1d sIvl = pEdge->GetInterval();
+    SmPoint3d  sEnds[2];
+    SER( pSeam->EvaluatePoint( sIvl.GetMin(), sEnds[0] ));
+    SER( pSeam->EvaluatePoint( sIvl.GetMax(), sEnds[1] ));
+    double dReach = 0.0;
+    SmFilletVertex * apFV[2] = { pStartFV, pEndFV };
+    for ( ULONG kk=0; kk<2; kk++ )
+      {
+        dReach = smos_Max( dReach, smos_Min( apFV[kk]->GetPoint().DistanceBetween( sEnds[0] ),
+                                             apFV[kk]->GetPoint().DistanceBetween( sEnds[1] )));
+      }
+    SmBSplineCurve * pCurve = pSeam;
+    if ( dReach > SM_EFF_ZERO )
+      {
+        SER( pSeam->Trim( sIvl ));
+        for ( int iEnd=1; iEnd<=2; iEnd++ )
+          {
+            SmBSplineCurve * pExtended = NULL;
+            SER( pCurve->CreateExtendedCurve( crContext, 2.0 * dReach, iEnd, SM_CT_CINFINITY, pExtended ));
+            NER(pExtended);
+            if ( pCurve != pSeam ) { delete pCurve; }
+            pCurve = pExtended;
+          }
+      }
+    SmObjDelete sCleanCurve( pCurve != pSeam ? pCurve : NULL );
+
+    // T's points at the two vertices: both lie on it, to the fillet's tolerance.
+    double dTol = smos_Max( (double)pEdge->GetTolerance(), (double)pCorner->GetThisApproxTol3d() );
+    SmExtent1d sCurveIvl = pCurve->GetNaturalInterval();
+    double adParam[2] = { 0.0, 0.0 };
+    for ( ULONG kk=0; kk<2; kk++ )
+      {
+        SmBoolean bOn   = FALSE;
+        double    dDist = SM_BIG_DOUBLE;
+        SER( pCurve->DropPoint( sCurveIvl, apFV[kk]->GetPoint(), NULL, dTol, NULL, bOn, adParam[kk], dDist ));
+        if ( ! bOn || dDist > dTol )
+          {
+            SetStatus( SM_FE_END_PNT_DROP_FAILURE );
+            SER_MSG( SM_ERR, _T("CalcEdgeOnTangentSeam(): a vertex of the cap edge is off the tangent seam") );
+          }
+      }
+
+    SmBSplineCurve * pNew3DCurve = NULL;
+    SER( pCurve->Copy( crContext, pNew3DCurve ));
+    NER(pNew3DCurve);
+    SmObjDelete sNewObj( pNew3DCurve );
+    SmExtent1d sTrimIvl;
+    (void)sTrimIvl.SetMinMax( smos_Min( adParam[0], adParam[1] ), smos_Max( adParam[0], adParam[1] )); // SolidCraft: ordered by the test, it cannot fail
+    SER( pNew3DCurve->Trim( sTrimIvl ));
+    if ( adParam[0] > adParam[1] )
+      { SER( pNew3DCurve->ReverseParameterization( sTrimIvl, sTrimIvl )); }
+
+    SetCurve( pNew3DCurve, TRUE ); // side effect: delete current this->UVTrimCurves
+    pNew3DCurve->SetOwner( this );
+    sNewObj.Clear();
+    return SM_SUCCESS;
+
+} // end SmFilletEdge::CalcEdgeOnTangentSeam
 
 /*******************************************************************//**
 PURPOSE: Calculate edge geometry of type SM_FE_FILLET_END.
