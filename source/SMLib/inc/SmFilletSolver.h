@@ -237,6 +237,10 @@ public:
   SmStatus          ClassifyExactBlend       (SmTsectPnt & rTsectPnt, SmExactBlend & rBlend);
   SmStatus          CalcExactFilletGeom      (const SmExactBlend & crBlend, SmTArray<SmTsectPnt*> & rTsectPnts,
                                               SmFilletGeom * pFG, SmBoolean bRecalc, SmBoolean & rbBuilt);
+  // SolidCraft change: a round whose spine is a conic or a nodal quartic (SM_BS_CONIC,
+  // SM_BS_CONIC_PAIR, SM_BS_NODAL_QUARTIC), built as the exact rational surface of the ball's arcs.
+  SmStatus          CalcRationalSpineFilletGeom(const SmExactBlend & crBlend, SmTArray<SmTsectPnt*> & rTsectPnts,
+                                                SmFilletGeom * pFG);
 
   SmStatus          ComputeSurfaceValues     (SmPoint2d               aUVValues[2], SmTsectPnt  & rTsectPnt);
   SmStatus          ComputePointValues       (SmPoint2d          aUVValues[2],
