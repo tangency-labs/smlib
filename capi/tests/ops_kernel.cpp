@@ -32,6 +32,7 @@
 #include <SmSphere.h>
 #include <SmSurface.h>
 #include <SmSurfOfRevolution.h>
+#include <SmTorus.h>
 #include <SmTrimmingTools.h>
 #include <SmLine.h>
 #include <SmVector3d.h>
@@ -3944,8 +3945,376 @@ int tangent_end_cases(bool known_failing, const char *only)
     return wrong;
 }
 
+// Constant rounds whose rolling ball's centre line (the spine, where the faces' offsets by the
+// radius meet) is a rational curve, so the round is an exact rational surface, and one whose
+// spine is not, which is a B-spline within the fillet's tolerance. Each case: the faces' exact
+// quadrics, the round's expected surface, and the volume, (1/3) of the flux of the position
+// through the boundary of the material the round adds or removes, every piece of it written out
+// exactly (the ball's circles about the spine, the face strips between the edge and the contact
+// lines, the end pieces in an end plane) and integrated by Gauss-Legendre quadrature.
+
+// The faces a round rolls on, as exact quadrics: the distance of a point from each.
+struct ExactFace
+{
+    enum Kind
+    {
+        PLANE,
+        CYLINDER,
+        CONE,
+        SPHERE
+    } kind;
+    std::array<double, 3> p; // plane: a point; cylinder: an axis point; cone: the apex; sphere: the centre
+    std::array<double, 3> d; // plane: unit normal; cylinder: unit axis; cone: unit axis into its nappe
+    double size;             // cylinder, sphere: radius; cone: half-angle (radians)
+
+    double distance(const SmPoint3d &c) const
+    {
+        const double w[3] = {c.x - p[0], c.y - p[1], c.z - p[2]};
+        const double along = w[0] * d[0] + w[1] * d[1] + w[2] * d[2];
+        const double across = std::sqrt(std::max(0.0, w[0] * w[0] + w[1] * w[1] + w[2] * w[2] - along * along));
+        switch (kind)
+        {
+        case PLANE:
+            return std::fabs(along);
+        case CYLINDER:
+            return std::fabs(across - size);
+        case CONE:
+            return std::fabs(across * std::cos(size) - along * std::sin(size));
+        case SPHERE:
+            return std::fabs(std::sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]) - size);
+        }
+        return HUGE_VAL;
+    }
+};
+
+// What the round's surface must be.
+enum class RoundKind
+{
+    RATIONAL, // a rational B-spline of the given degrees, either way round
+    REVOLVED, // the ball's arc turned about the faces' common axis
+    FITTED    // a B-spline within the fillet's tolerance of the canal surface
+};
+
+// A primitive placed: its x, y and z axes onto `x`, `y`, `z`, then moved by `t` (consumes `b`).
+smlib_brep *placed(smlib_brep *b, std::array<double, 3> x, std::array<double, 3> y, std::array<double, 3> z, std::array<double, 3> t)
+{
+    const double m[4][4] = {{x[0], x[1], x[2], 0}, {y[0], y[1], y[2], 0}, {z[0], z[1], z[2], 0}, {t[0], t[1], t[2], 1}};
+    smlib_brep *out = nullptr;
+    CHECK(b != nullptr && smlib_brep_transform(b, m, &out) == SMLIB_OK && out != nullptr);
+    smlib_brep_free(b);
+    return out;
+}
+
+smlib_brep *combined(smlib_brep *a, smlib_brep *b, int32_t op)
+{
+    smlib_brep *out = nullptr;
+    CHECK(a != nullptr && b != nullptr && smlib_boolean(a, b, op, &out) == SMLIB_OK && out != nullptr);
+    smlib_brep_free(a);
+    smlib_brep_free(b);
+    return out;
+}
+
+// A disc of radius 100 and height 100 standing on the plane through `on` with unit normal `n`:
+// cuts away the half-space above it, as far as any case here reaches.
+smlib_brep *cutter(std::array<double, 3> on, std::array<double, 3> n)
+{
+    const double o[3] = {0, 0, 0};
+    smlib_brep *c = nullptr;
+    CHECK(smlib_make_cylinder(o, 100.0, 100.0, &c) == SMLIB_OK);
+    // x: unit(y x n), y: n x x
+    double lx = std::sqrt(n[2] * n[2] + n[0] * n[0]);
+    std::array<double, 3> x = {n[2] / lx, 0.0, -n[0] / lx};
+    std::array<double, 3> y = {n[1] * x[2] - n[2] * x[1], n[2] * x[0] - n[0] * x[2], n[0] * x[1] - n[1] * x[0]};
+    return placed(c, x, y, n, on);
+}
+
+// Rounds `body` (consumed) at the edges under `points` by `r` and grades the result: sound, of
+// volume `want`, every round face of the expected kind (`degrees` for RATIONAL), and every point of
+// those faces' surfaces the contact of a ball of radius r touching each of `faces` (to 1e-9 mm
+// when exact, to the fillet's tolerance when fitted).
+void exact_round(smlib_brep *body, std::vector<double> points, double r, double want, RoundKind kind, std::array<ULONG, 2> degrees,
+                 std::vector<ExactFace> faces)
+{
+    smlib_brep *b = nullptr;
+    // the fillet's tolerance: SMLib's default, 100 times the body's
+    const double fitted_tol = body != nullptr ? 100.0 * static_cast<double>(body->p->GetTolerance()) : 0.0;
+    const int32_t s = body == nullptr ? SMLIB_ERR_ARG
+                                      : smlib_fillet(body, points.data(), static_cast<int64_t>(points.size() / 3), 0.1, r, &b, nullptr);
+    std::printf("  round r %g of %zu point(s): status %d\n", r, points.size() / 3, static_cast<int>(s));
+    smlib_brep_free(body);
+    CHECK(s == SMLIB_OK && b != nullptr);
+    if (b == nullptr)
+    {
+        return;
+    }
+    std::printf("  volume %.9f, want %.9f\n", volume_of(b), want);
+    CHECK(near(volume_of(b), want, 1e-6));
+    CHECK(sound(b));
+    SmTArray<SmFace *> all;
+    b->p->GetFaces(all);
+    int rounds = 0;
+    for (ULONG i = 0; i < all.GetSize(); i++)
+    {
+        SmSurface *srf = all[i]->GetSurface();
+        if (srf == nullptr)
+        {
+            continue;
+        }
+        const bool spline = srf->GetType() == SmBSplineSurface_TYPE;
+        const bool revolved = srf->GetType() == SmSurfOfRevolution_TYPE || srf->GetType() == SmTorus_TYPE;
+        if (!spline && !revolved)
+        {
+            continue; // a face of the body's own quadrics
+        }
+        rounds++;
+        SmBSplineSurface *bs = SM_CAST_PTR(SmBSplineSurface, srf);
+        const ULONG du = bs != nullptr ? bs->GetDegree(SM_SP_U) : 0, dv = bs != nullptr ? bs->GetDegree(SM_SP_V) : 0;
+        const bool rational = bs != nullptr && bs->IsRational();
+        std::printf("  round face %lu: %s, degrees (%lu, %lu), rational %d\n", static_cast<unsigned long>(i),
+                    spline ? "B-spline" : "revolved", static_cast<unsigned long>(du), static_cast<unsigned long>(dv), rational ? 1 : 0);
+        switch (kind)
+        {
+        case RoundKind::RATIONAL:
+            CHECK(spline && rational &&
+                  ((du == degrees[0] && dv == degrees[1]) || (du == degrees[1] && dv == degrees[0])));
+            break;
+        case RoundKind::REVOLVED:
+            CHECK(revolved);
+            break;
+        case RoundKind::FITTED:
+            CHECK(spline);
+            break;
+        }
+        // the ball: every point of the round, moved r along its normal (either way), is at r from each face
+        SmExtent2d dom = srf->GetNaturalUVDomain();
+        double worst = 0.0;
+        for (int a = 0; a <= 12; a++)
+        {
+            for (int c = 0; c <= 12; c++)
+            {
+                SmPoint2d uv(dom.GetMin().x + (dom.GetMax().x - dom.GetMin().x) * a / 12.0,
+                             dom.GetMin().y + (dom.GetMax().y - dom.GetMin().y) * c / 12.0);
+                SmPoint3d x;
+                SmVector3d n;
+                if (srf->EvaluatePoint(uv, x) != SM_SUCCESS || srf->EvaluateNormal(uv, TRUE, TRUE, n) != SM_SUCCESS)
+                {
+                    worst = HUGE_VAL;
+                    continue;
+                }
+                double best = HUGE_VAL;
+                for (double side : {1.0, -1.0})
+                {
+                    SmPoint3d centre = x + n * (side * r);
+                    double off = 0.0;
+                    for (const ExactFace &f : faces)
+                    {
+                        off = std::max(off, std::fabs(f.distance(centre) - r));
+                    }
+                    best = std::min(best, off);
+                }
+                worst = std::max(worst, best);
+            }
+        }
+        const double allowed = kind == RoundKind::FITTED ? fitted_tol : 1e-9;
+        std::printf("    off the ball's sphere by %.3g (allowed %.3g)\n", worst, allowed);
+        CHECK(worst <= allowed);
+    }
+    CHECK(rounds > 0);
+    done(b);
+}
+
+const std::array<double, 3> X_AXIS = {1, 0, 0}, Y_AXIS = {0, 1, 0}, Z_AXIS = {0, 0, 1};
+
+// A cylinder R 10 about z, cut by the plane z = 20 + x / 2; its elliptical top rim rounded r 2.
+// The spine is the ellipse where the cylinder R 8 meets the plane moved 2 down: rational, and the
+// round with it, of degrees (4, 2). V0 = 2000 pi; the round removes 68.775042921067.
+void exact_class_oblique_plane_cylinder()
+{
+    const double c0[3] = {0, 0, 0}, s = std::sqrt(1.25);
+    smlib_brep *cyl = nullptr;
+    CHECK(smlib_make_cylinder(c0, 10.0, 40.0, &cyl) == SMLIB_OK);
+    const std::array<double, 3> n = {-0.5 / s, 0, 1 / s};
+    smlib_brep *post = combined(cyl, cutter({0, 0, 20}, n), SMLIB_BOOLEAN_SUBTRACT);
+    const double h = std::sqrt(0.5); // the rim at 45 deg, clear of the cylinder's seam
+    exact_round(post, {10 * h, 10 * h, 20 + 5 * h}, 2.0, 6214.410264258520, RoundKind::RATIONAL, {4, 2},
+                {{ExactFace::PLANE, {0, 0, 20}, n, 0}, {ExactFace::CYLINDER, {0, 0, 0}, Z_AXIS, 10}});
+}
+
+// A frustum about z, R 10 at z = 0 narrowing at 10 degrees, 30 high, cut by the plane
+// z = 15 + 0.3 x; its top rim rounded r 1.5. The spine: the plane moved 1.5 down meets the cone
+// moved 1.5 in (its apex lower by 1.5 / sin 10 deg) in an ellipse; the round is of degrees (4, 2).
+// V0 = 3565.939077141579; the round removes 16.021667699147.
+void exact_class_oblique_plane_cone()
+{
+    const double c0[3] = {0, 0, 0}, al = 10.0 * PI / 180.0, ta = std::tan(al), za = 10.0 / ta, s = std::sqrt(1.09);
+    smlib_brep *cone = nullptr;
+    CHECK(smlib_make_cone(c0, 10.0, 10.0 - 30.0 * ta, 30.0, &cone) == SMLIB_OK);
+    const std::array<double, 3> n = {-0.3 / s, 0, 1 / s};
+    smlib_brep *post = combined(cone, cutter({0, 0, 15}, n), SMLIB_BOOLEAN_SUBTRACT);
+    const double h = std::sqrt(0.5), rho = (za - 15.0) * ta / (1.0 + 0.3 * ta * h); // the rim at 45 deg
+    exact_round(post, {rho * h, rho * h, 15 + 0.3 * rho * h}, 1.5, 3549.917409442432, RoundKind::RATIONAL, {4, 2},
+                {{ExactFace::PLANE, {0, 0, 15}, n, 0}, {ExactFace::CONE, {0, 0, za}, {0, 0, -1}, al}});
+}
+
+// A ball R 10 cut flat at z = 4; its rim rounded r 2. Ball and plane share the ball's axis square
+// to the plane: the spine is the circle of radius sqrt 60 at z = 2, the round a torus piece.
+// V0 = 4000 pi / 3 - 288 pi; the round removes 22.492758031524.
+void exact_class_sphere_plane()
+{
+    const double c0[3] = {0, 0, 0};
+    smlib_brep *ball = nullptr;
+    CHECK(smlib_make_sphere(c0, 10.0, &ball) == SMLIB_OK);
+    smlib_brep *cut = combined(ball, cutter({0, 0, 4}, Z_AXIS), SMLIB_BOOLEAN_SUBTRACT);
+    exact_round(cut, {0, std::sqrt(84.0), 4}, 2.0, 3261.518762521006, RoundKind::REVOLVED, {0, 0},
+                {{ExactFace::PLANE, {0, 0, 4}, Z_AXIS, 0}, {ExactFace::SPHERE, {0, 0, 0}, Z_AXIS, 10}});
+}
+
+// Two coaxial frusta joined: R 10 to 6 over z 0..8, then R 6 to 1 over z 8..9; the convex circle
+// at (6, 8) between their cones rounded r 2: a torus piece. V0 = 1687.035254977719; the round
+// removes 5.065333649310 (Pappus on its section).
+void exact_class_coaxial_cones()
+{
+    const double c0[3] = {0, 0, 0}, c8[3] = {0, 0, 8};
+    smlib_brep *a = nullptr, *b = nullptr;
+    CHECK(smlib_make_cone(c0, 10.0, 6.0, 8.0, &a) == SMLIB_OK);
+    CHECK(smlib_make_cone(c8, 6.0, 1.0, 1.0, &b) == SMLIB_OK);
+    smlib_brep *top = combined(a, b, SMLIB_BOOLEAN_UNION);
+    const double alA = std::atan(0.5), alB = std::atan(5.0);
+    exact_round(top, {0, 6, 8}, 2.0, 1681.969921328409, RoundKind::REVOLVED, {0, 0},
+                {{ExactFace::CONE, {0, 0, 20}, {0, 0, -1}, alA}, {ExactFace::CONE, {0, 0, 9.2}, {0, 0, -1}, alB}});
+}
+
+// A ball R 10 and a frustum about z through its centre, R 5 at z = 0 to R 3 at z = 20, joined;
+// the concave circle where the cone leaves the ball rounded r 3: a torus piece about z.
+// V0 = 4597.853510151037; the round adds 9.688315962175.
+void exact_class_sphere_coaxial_cone()
+{
+    const double c0[3] = {0, 0, 0};
+    smlib_brep *ball = nullptr, *cone = nullptr;
+    CHECK(smlib_make_sphere(c0, 10.0, &ball) == SMLIB_OK);
+    CHECK(smlib_make_cone(c0, 5.0, 3.0, 20.0, &cone) == SMLIB_OK);
+    smlib_brep *spike = combined(ball, cone, SMLIB_BOOLEAN_UNION);
+    const double ze = (1.0 + std::sqrt(1.0 + 4.0 * 1.01 * 75.0)) / (2.0 * 1.01); // (5 - z/10)^2 + z^2 = 100
+    exact_round(spike, {0, 5.0 - ze / 10.0, ze}, 3.0, 4607.541826113212, RoundKind::REVOLVED, {0, 0},
+                {{ExactFace::SPHERE, {0, 0, 0}, Z_AXIS, 10}, {ExactFace::CONE, {0, 0, 50}, {0, 0, -1}, std::atan(0.1)}});
+}
+
+// A cone about z (apex (0, 0, 10 sqrt 2), half-angle 45 deg, base at z = -10) and a post R 10 whose
+// axis, tilted 20 deg from z in the xz plane, passes through the origin (from 0 to 30 along it):
+// both touch the ball R 10 about the origin, along circles that do not meet. Joined; the concave
+// edge where the cone leaves the post rounded r 1. The offsets touch the ball R 11: they meet in
+// two plane conics, the spine one of them, and the round is of degrees (6, 2).
+// V0 = 21763.823377543333; the round adds 1.884007899126.
+void exact_class_cone_cylinder_sharing_a_ball()
+{
+    const double g = 20.0 * PI / 180.0, a = 10.0 * std::sqrt(2.0);
+    const double base[3] = {0, 0, -10}, c0[3] = {0, 0, 0};
+    smlib_brep *cone = nullptr, *post = nullptr;
+    CHECK(smlib_make_cone(base, a + 10.0, 0.0, a + 10.0, &cone) == SMLIB_OK);
+    CHECK(smlib_make_cylinder(c0, 10.0, 30.0, &post) == SMLIB_OK);
+    const std::array<double, 3> u = {std::sin(g), 0, std::cos(g)};
+    post = placed(post, {std::cos(g), 0, -std::sin(g)}, Y_AXIS, u, {0, 0, 0});
+    smlib_brep *both = combined(cone, post, SMLIB_BOOLEAN_UNION);
+    // the edge where the post's +y generator meets the cone: s^2 cos 2g - 2 a s cos g + a^2 - 100 = 0
+    const double s = (a * std::cos(g) - std::sqrt(a * a * std::cos(g) * std::cos(g) - 100.0 * std::cos(2 * g))) / std::cos(2 * g);
+    exact_round(both, {s * u[0], 10, s * u[2]}, 1.0, 21765.707385442460, RoundKind::RATIONAL, {6, 2},
+                {{ExactFace::CONE, {0, 0, a}, {0, 0, -1}, PI / 4}, {ExactFace::CYLINDER, {0, 0, 0}, u, 10}});
+}
+
+// Two pipes that touch at one point: A R 10 about the line y = 0, z = -10 (x within 20) and B R 5
+// about x = 0, z = -5 (y within 20), both touching z = 0 at the origin from below. Joined, then
+// cut at z = -2, which takes their touching point away; the concave arc of their edge on the +y
+// side, from (4, 6, -2) down through (0, 10, -10) and up to (-4, 6, -2), rounded r 1. The offsets
+// touch at (0, 0, 1) too: they meet in a quartic with a node there, rational, and the round is of
+// degrees (12, 2). V0 = 13437.742049099792; the round adds 4.961081486747.
+void exact_class_cylinders_touching_at_a_point()
+{
+    const double c0[3] = {0, 0, 0};
+    smlib_brep *a = nullptr, *b = nullptr;
+    CHECK(smlib_make_cylinder(c0, 10.0, 40.0, &a) == SMLIB_OK);
+    CHECK(smlib_make_cylinder(c0, 5.0, 40.0, &b) == SMLIB_OK);
+    a = placed(a, {0, 0, -1}, Y_AXIS, X_AXIS, {-20, 0, -10});
+    b = placed(b, X_AXIS, {0, 0, -1}, Y_AXIS, {0, -20, -5});
+    smlib_brep *both = combined(combined(a, b, SMLIB_BOOLEAN_UNION), cutter({0, 0, -2}, Z_AXIS), SMLIB_BOOLEAN_SUBTRACT);
+    const double z = -5.0 - 5.0 * std::cos(1.0), y = std::sqrt(100.0 - (z + 10.0) * (z + 10.0));
+    exact_round(both, {5.0 * std::sin(1.0), y, z, -5.0 * std::sin(1.0), y, z}, 1.0, 13442.703130586538, RoundKind::RATIONAL, {12, 2},
+                {{ExactFace::CYLINDER, {0, 0, -10}, X_AXIS, 10}, {ExactFace::CYLINDER, {0, 0, -5}, Y_AXIS, 5}});
+}
+
+// A tee: a branch R 8 about z from z = 0 to 40 standing on a pipe R 20 about x (x within 50),
+// joined; the saddle edge rounded r 3. The spine, where the cylinders R 23 and R 11 meet, is a
+// quartic with no node: not rational, so the round is a B-spline, within the fillet's tolerance
+// of the ball's surface. V0 = 129767.064584659383; the round adds 62.888321009560.
+void exact_class_tee_is_fitted()
+{
+    const double c0[3] = {0, 0, 0};
+    smlib_brep *pipe = nullptr, *branch = nullptr;
+    CHECK(smlib_make_cylinder(c0, 20.0, 100.0, &pipe) == SMLIB_OK);
+    CHECK(smlib_make_cylinder(c0, 8.0, 40.0, &branch) == SMLIB_OK);
+    pipe = placed(pipe, {0, 0, -1}, Y_AXIS, X_AXIS, {-50, 0, 0});
+    smlib_brep *tee = combined(pipe, branch, SMLIB_BOOLEAN_UNION);
+    exact_round(tee, {8 * std::sqrt(0.5), 8 * std::sqrt(0.5), std::sqrt(368.0)}, 3.0, 129829.952905668950, RoundKind::FITTED, {0, 0},
+                {{ExactFace::CYLINDER, {0, 0, 0}, X_AXIS, 20}, {ExactFace::CYLINDER, {0, 0, 0}, Z_AXIS, 8}});
+}
+
+// The exact-class cases, and why each that fails today fails (null: it passes). As
+// TANGENT_END_CASES: `--exact-classes-known-failing` runs the failing ones and fails if one passes.
+const TangentEndCase EXACT_CLASS_CASES[] = {
+    {"coaxial_cones", exact_class_coaxial_cones, nullptr},
+    {"cone_cylinder_sharing_a_ball", exact_class_cone_cylinder_sharing_a_ball,
+     "the round is traced: a B-spline of degrees (3, 3), not rational, 3.96e-4 off the ball's surface"},
+    {"cylinders_touching_at_a_point", exact_class_cylinders_touching_at_a_point,
+     "status 1001: the round is traced, the analytic chain taking no pair of cylinders but along a line or an arc, and the trace fails"},
+    {"oblique_plane_cone", exact_class_oblique_plane_cone,
+     "the round is traced: a B-spline of degrees (3, 3), not rational, 9.4e-4 off the ball's surface"},
+    {"oblique_plane_cylinder", exact_class_oblique_plane_cylinder,
+     "the round is traced: a B-spline of degrees (3, 3), not rational, 2.26e-3 off the ball's surface"},
+    {"sphere_coaxial_cone", exact_class_sphere_coaxial_cone,
+     "the round is traced (the analytic chain takes no sphere): a B-spline of degrees (3, 3), 1.47e-3 off the ball's surface"},
+    {"sphere_plane", exact_class_sphere_plane,
+     "status 1001: the round is traced (the analytic chain takes no sphere), and the trace extends the offset sphere too far (SmOffsetSurface)"},
+    {"tee_is_fitted", exact_class_tee_is_fitted,
+     "the traced round is 1.47e-3 off the ball's surface, over the fillet's tolerance 1e-3: its fit is not checked against the true round"},
+};
+
+int exact_class_cases(bool known_failing, const char *only)
+{
+    int wrong = 0;
+    for (const TangentEndCase &c : EXACT_CLASS_CASES)
+    {
+        if ((only != nullptr && std::strcmp(only, c.name) != 0) || (only == nullptr && known_failing != (c.fails_today != nullptr)))
+        {
+            continue;
+        }
+        const int before = failures;
+        std::printf("exact class %s:\n", c.name);
+        c.run();
+        const bool failed = failures != before;
+        failures = before;
+        if (failed != (c.fails_today != nullptr))
+        {
+            std::fprintf(stderr, "exact class %s: %s\n", c.name, failed ? "FAILS" : "PASSES, though listed as failing today: drop its reason");
+            wrong++;
+        }
+        else if (failed)
+        {
+            std::printf("  fails, as known: %s\n", c.fails_today);
+        }
+    }
+    return wrong;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc == 2 && std::strcmp(argv[1], "--exact-classes-known-failing") == 0)
+    {
+        return exact_class_cases(true, nullptr) == 0 ? 0 : 1;
+    }
+    if (argc == 3 && std::strcmp(argv[1], "--exact-class") == 0)
+    {
+        smlib_set_log([](void *, int32_t level, const char *line) { std::fprintf(stderr, "log %d %s\n", static_cast<int>(level), line); }, nullptr);
+        return exact_class_cases(false, argv[2]) == 0 ? 0 : 1;
+    }
     if (argc == 4 && std::strcmp(argv[1], "--solidcore-1173") == 0)
     {
         return corner_child(argv[2], argv[3]);
@@ -7491,6 +7860,7 @@ int main(int argc, char **argv)
     concave_chamfers_at_a_vertex_the_body_touches_itself_at();
     chamfer_of_a_shelled_box_corner_ending_under_its_lip();
     failures += tangent_end_cases(false, nullptr);
+    failures += exact_class_cases(false, nullptr);
 
     // SolidCraft surface.offset of a ball's one face: the face taken off as a sheet is a closed
     // shell whose regions are all voids, which smlib_offset_sheet refused as a solid
