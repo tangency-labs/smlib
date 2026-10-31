@@ -36,6 +36,9 @@
 #include <SmPlane.h>
 #include <SmSphere.h>
 #include <SmSurface.h>
+#include <SmAxis2Placement.h>
+#include <SmSurfOfRevolution.h>
+#include <SmLine.h>
 
 #include <algorithm>
 #include <cmath>
@@ -713,6 +716,961 @@ SmStatus sm_ClassifyBlendSpine(const SmPoint3d & crCentre, double dTol, SmExactB
   }
   return SM_SUCCESS;
 } // end sm_ClassifyBlendSpine
+
+/*******************************************************************//**
+PURPOSE: If an Edge's curve has a bigger domain than the Edge,
+   copy the curve and trim it to the Edge's domain.
+
+NOTES:
+   Sometimes the Edge curve can be bigger than the Edge, for example within
+   a sequence of smoothly-connected Edges.  In that case, if we are not
+   extending the fillet, we are interested in only that portion of the
+   Edge curve that corresponds to the Edge itself.  Check for that.  [B 686; Iter: 115]
+
+   If the fillet might be extended (at start or end), don't trim.
+***********************************************************************/
+static SmBoolean sm_CheckEdgeCurveDomains( const SmContext * pContext,        // in:
+                                           const SmEdge     *  pEdge,         // in:
+                                                 SmCurve    *& pCurve,        // out: either the Edge's curve or a trimmed copy
+                                                 SmBoolean     bExtendBefore, // in:
+                                                 SmBoolean     bExtendAfter,  // in:
+                                                 SmObjDelete & sDelCurve )    // out: set if a copy was made
+{
+  SmBoolean bRet = FALSE;
+
+  pCurve = SM_CAST_PTR(SmCurve, pEdge->GetCurve());
+  SmExtent1d sEdgeIvl = pEdge->GetInterval();
+  SmExtent1d sCurvIvl = pCurve->GetNaturalInterval();
+  double dT0 = sCurvIvl.GetMin();
+  double dT1 = sCurvIvl.GetMax();
+  SmBoolean bTrim = FALSE;
+
+  if ( ! bExtendBefore && sCurvIvl.GetMin() < sEdgeIvl.GetMin() - SM_EFF_ZERO )
+  {
+      bTrim = TRUE;
+      dT0 = sEdgeIvl.GetMin();
+  }
+  if ( ! bExtendAfter  && sCurvIvl.GetMax() > sEdgeIvl.GetMax() + SM_EFF_ZERO )
+  {
+      bTrim = TRUE;
+      dT1 = sEdgeIvl.GetMax();
+  }
+
+  if ( bTrim )
+  {
+      SmCurve *pCopyCurve = NULL;
+      (void)pCurve->Copy( *pContext, pCopyCurve ); // SolidCraft: a failed copy is NULL, checked next
+      if ( pCopyCurve != NULL )
+      {
+          SmExtent1d sTrimIvl( dT0, dT1 );
+          // SolidCraft change: a copy that could not be trimmed is no trimmed curve.
+          if ( pCopyCurve->Trim( sTrimIvl ) == SM_SUCCESS )
+          {
+              pCurve = pCopyCurve;
+              sDelCurve.SetObj( pCurve );
+              bRet = TRUE;
+          }
+          else
+          { delete pCopyCurve; }
+      }
+  }
+
+  return bRet;
+
+} // end static sm_CheckEdgeCurveDomains
+
+/*******************************************************************//**
+PURPOSE: Create a cylinder surface for fillet geometry: a circular section
+    on a straight spine (SM_BS_LINE).
+
+NOTES:
+  With pFilletGeom set as
+    if(pFilletGeom == NULL) pFilletGeom = m_vFilletGeoms[0],
+  creates and stores
+    1. pFilletGeom->m_pFilletSurface      = new cylinder surface
+    2. pFilletGeom->m_vRails[0]->m_pCurve = new line
+    3. pFilletGeom->m_vRails[0]->m_pCurve = new line
+    4. pFilletGeom->m_pCenterLineCurve    = new line
+
+***********************************************************************/
+SmStatus SmFilletSolver::CalcLineSpineFilletGeom
+  (const SmExactBlend    & /*crBlend*/,       // in : the round's class, SM_BS_LINE
+   SmTArray<SmTsectPnt*> & rTsectPnts,      // in : a ordered sequence of sample points specifying
+                                            //      fillet rail and center-curve point property values.
+   SmFilletGeom * pFilletGeom)              // in : pointer to m_vFilletGeom array component in which to
+                                            //      store new fillet Cylinder surface,
+                                            //      NULL to store in m_vFilletGeoms[0]
+
+{
+  SmEdge  *pEdge  = GetEdgeuse(0)->GetEdge();
+  SmCurve *pCurve = NULL;
+
+  // Check for Edge's curve domain being bigger than the Edge domain.
+  SmObjDelete sDelCurve; // In case we create a copy of pCurve.
+  sm_CheckEdgeCurveDomains( this->GetContext(), pEdge, pCurve, m_bExtendBefore, m_bExtendAfter, sDelCurve );
+  NER(pCurve);
+
+  // fillet parameter locals
+  double            dRadius0, dRadius1;
+  SmPoint3d         sCenter0, sCenter1;
+  ULONG             lMaxIndex = rTsectPnts.GetSize()-1;
+
+  // get offset surfaces
+  SmOffsetSurface * pSurf0 = GetSurface(0);
+  SmOffsetSurface * pSurf1 = GetSurface(1);
+
+  // get start and end Offset Surface UV points
+  SmPoint2d sStartUV0 = rTsectPnts[0]->UVPos(0);
+  SmPoint2d sStartUV1 = rTsectPnts[0]->UVPos(1);
+  SmPoint2d sEndUV0   = rTsectPnts[lMaxIndex]->UVPos(0);
+  SmPoint2d sEndUV1   = rTsectPnts[lMaxIndex]->UVPos(1);
+
+  // set OffsetSurface offset = radius for begin point and get sCenter0
+  SER(SetupOffsetValues(*rTsectPnts[0], &dRadius0));
+  SER(pSurf0->EvaluatePoint(sStartUV0,sCenter0));
+
+#ifdef SM_DEBUG_CODE
+  SmPoint3d sCenterOther0 ;
+  SER(pSurf1->EvaluatePoint(sStartUV1,sCenterOther0));
+  double dStartCenterTol = sCenter0.DistanceBetween(sCenterOther0) ;
+  SM_ASSERT(dStartCenterTol < SM_EFF_ZERO_SQRT) ;
+#endif 
+
+  // set OffsetSurface offset = radius for end point and get sCenter0
+  SER(SetupOffsetValues(*rTsectPnts[lMaxIndex], &dRadius1));
+  SER(pSurf0->EvaluatePoint(sEndUV0,sCenter1));
+
+#ifdef SM_DEBUG_CODE
+  SmPoint3d sCenterOther1 ;
+  SER(pSurf1->EvaluatePoint(sEndUV1,sCenterOther1));
+  double dEndCenterTol = sCenter1.DistanceBetween(sCenterOther1) ;
+  SM_ASSERT(dEndCenterTol < SM_EFF_ZERO_SQRT) ;
+#endif
+
+  // check state - cylinder case = constant radius fillets
+  if (smos_Fabs(dRadius1-dRadius0) > SM_EFF_ZERO)
+    {
+      SER_MSG(SM_ERR, _T("CalcLineSpineFilletGeom(): the radius changes along a straight spine"));
+    }
+
+  // Evaluate points on base surfaces.  Use a zero-offset offset surface
+  // instead of the base surface, in order to handle extended surfaces.
+  SmPoint3d sStartPnt0, sStartPnt1, sEndPnt0, sEndPnt1;
+  SetSurfacesToZeroOffset();
+  SER(pSurf0->EvaluatePoint(sStartUV0,sStartPnt0));
+  SER(pSurf1->EvaluatePoint(sStartUV1,sStartPnt1));
+  SER(pSurf0->EvaluatePoint(sEndUV0,sEndPnt0));
+  SER(pSurf1->EvaluatePoint(sEndUV1,sEndPnt1));
+  ReloadSurfaceOffsets();
+
+  // get extension vectors along each rail curve and the center curve
+  SmVector3d sExt0 = m_dSurfaceExtensionFactor*(sEndPnt0 - sStartPnt0);
+  SmVector3d sExt1 = m_dSurfaceExtensionFactor*(sEndPnt1 - sStartPnt1);
+  SmVector3d sCenterExt = m_dSurfaceExtensionFactor*(sCenter1 - sCenter0);
+
+  // when extending the start of the fillet
+  if (m_bExtendBefore)
+    {
+      sStartPnt0 = sStartPnt0 - sExt0;
+      sStartPnt1 = sStartPnt1 - sExt1;
+      sCenter0 = sCenter0 - sCenterExt;
+      dRadius0 = sCenter0.DistanceBetween(sStartPnt0);
+
+    }
+
+  // when extending the end of the fillet
+  if (m_bExtendAfter)
+    {
+      sEndPnt0 = sEndPnt0 + sExt0;
+      sEndPnt1 = sEndPnt1 + sExt1;
+      sCenter1 = sCenter1 + sCenterExt;
+      dRadius1 = sCenter1.DistanceBetween(sEndPnt0);
+    }
+
+  // get the cylinder parameters
+  SmVector3d sXVec       = sStartPnt0 - sCenter0;
+  SmVector3d sYVec       = sStartPnt1 - sCenter0;
+  SmVector3d sAxisOfRevolution = sCenter1 - sCenter0;
+  double dHeight         = sAxisOfRevolution.Length();
+
+  // check state - avoid zero height cylinders
+  SM_ASSERT(dHeight > SM_EFF_ZERO);
+
+  // Get angle of revolution
+  double dAngle;
+  SER(sAxisOfRevolution.CCWAngleBetween(sXVec,sYVec,dAngle));
+
+  // check state - avoid degenerate zero arc cylinders
+  if (smos_Fabs(dAngle) < SM_EFF_ZERO_SQRT)
+    { SER(SM_ERR);  // Degenerate case here
+    }
+
+  // check state - avoid fillet arcs equal or greater than Pi
+  if (smos_Fabs(dAngle) > SM_PI - SM_EFF_ZERO_SQRT)
+    { SER(SM_ERR); // Nearly 180 degree case here
+    }
+
+  // swap center to start vectors to force rotation angle to be positive
+  if (dAngle < 0.0)
+    {
+      SmVector3d sTempV = sXVec;
+      sXVec             = sYVec;
+      sYVec             = sTempV;
+      SER(sAxisOfRevolution.CCWAngleBetween(sXVec,sYVec,dAngle));
+    }
+
+  // check state - avoid degenerate zero arc cylinders
+  if (dAngle < SM_EFF_ZERO)
+    { SER(SM_ERR);
+    }
+
+  // convert radians to degrees
+  dAngle = SM_RAD2DEG(dAngle);
+
+  // orthogonalize and normalize sXVec and sYVec
+  SmAxis2Placement sPlacement;
+  sYVec = sAxisOfRevolution * sXVec;
+  SER(sXVec.Unitize());
+  SER(sYVec.Unitize());
+
+  // set up a coordinate system for cylinder center line
+  SER(sPlacement.SetCanonical(sCenter0,sXVec,sYVec));
+
+  // Create a temporary cylindrical cone patch
+  SmBSplineSurface * pConePatch = NULL;
+  SER(SmBSplineSurface::CreateConePatch(m_crContext,sPlacement,
+                                        dRadius0,   dRadius0,
+                                        0.0,dAngle,dHeight,
+                                        SM_CO_QUADRATIC,pConePatch));
+  SmObjDelete sDelCone(pConePatch);
+
+  // CreateConePatch() makes a STEP-parameterized cone,
+  // we go the other way: u along the edge, v around the fillet surface.
+  SER( pConePatch->SwapUV() );
+
+  // copy that into a Cylinder
+  SmSurface * pCylinder = NULL;
+
+  // Copy pConePatch, when possible as an analytic surface
+  SER(pConePatch->CopyAndAddAnalytics(m_crContext,pCylinder));
+
+  // default pFilletGeom to m_vFilletGeoms[0] when not given
+  if (pFilletGeom == NULL)
+    {
+      pFilletGeom = m_vFilletGeoms[0];
+    }
+
+  // store the cylinder
+  pFilletGeom->m_pFilletSurface = (SmBSplineSurface*)pCylinder;
+
+  // get cylinder u parameter range
+  SmExtent2d sUVDomain = pCylinder->GetNaturalUVDomain();
+  SmExtent1d sRailCrvIvl(sUVDomain.GetMin().x,sUVDomain.GetMax().x);
+
+  // Calc Rail0 - set its extent = cylinder u parameter range
+  SmFilletEdge * pRail0    = pFilletGeom->GetRail(0);
+  SmLine       * pRailCrv0 = NULL;
+  SER(SmLine::CreateLineSegment(m_crContext,3,sStartPnt0,sEndPnt0,pRailCrv0));
+  pRail0->SetCurve(pRailCrv0, TRUE ) ; // TRUE = delete preExisting Edge->Curve
+                                       // side effect: delete current pSurviveEdge->UVTrimCurve
+  pRailCrv0->SetOwner(pRail0);
+  SER(pRailCrv0->EditParameterization(sRailCrvIvl));
+
+  // Calc Rail1 - set its extent = cylinder u parameter range
+  SmFilletEdge * pRail1    = pFilletGeom->GetRail(1);
+  SmLine       * pRailCrv1 = NULL;
+  SER(SmLine::CreateLineSegment(m_crContext,3,sStartPnt1,sEndPnt1,pRailCrv1));
+  pRail1->SetCurve(pRailCrv1, TRUE ) ; // TRUE = delete preExisting Edge->Curve
+                                       // side effect: delete current pSurviveEdge->UVTrimCurve
+  pRailCrv1->SetOwner(pRail1);
+  SER(pRailCrv1->EditParameterization(sRailCrvIvl));
+
+  // Calc and store centerline
+  SmLine *pCenterLine = NULL;
+  SER(SmLine::CreateLineSegment(m_crContext,3,sCenter0,sCenter1,pCenterLine));
+  SER(pCenterLine->EditParameterization(sRailCrvIvl));
+  pFilletGeom->m_pCenterLineCurve = pCenterLine;
+
+#ifdef SM_DEBUG_CODE
+  if ( DebugLevel() > 0 ) 
+    {
+      if ( FALSE )
+        { smgfx_Erase(); }
+      smgfx_SetLook( 1,2, 1,1,0 ); pCylinder->DrawUV(5,5); sm_GraphicsLoop();
+      smgfx_SetLook( 2,2, 0,0,1 ); pRailCrv0->Draw(); sm_GraphicsLoop();
+      smgfx_SetLook( 2,2, 0,1,0 ); pRailCrv1->Draw(); sm_GraphicsLoop();
+      smgfx_SetLook( 1,4, 1,0,0 ); sStartPnt1.Draw(); sm_GraphicsLoop();
+    }
+#endif // SM_DEBUG_CODE
+
+  // all done
+  return SM_SUCCESS;
+
+} // end SmFilletSolver::CalcLineSpineFilletGeom
+
+/*******************************************************************//**
+PURPOSE: Create a sphere patch for fillet geometry where the fillet's
+    center curve collapses to a point: a circular cross-section round
+    an edge between two cylinders as wide as the round, whose axes meet.
+    Store it as the FilletGeom FilletSurface and its min and max v
+    isoparameter curves as the rail curves.
+
+NOTES:
+    Each cylinder's offset by the round's radius is its axis, so every
+    ball touching both is centered where the axes meet, P, and touches
+    each cylinder along the circle about P square to that cylinder's axis.
+    (Rounding the edge where two such rounds meet, as two rounds of a box's
+    bottom do under the round of the vertical edge between them, leaves the
+    corner ball.)  The patch is the arc of the first contact circle from the
+    edge's start to its end, turned about the line through P square to both
+    axes onto the second circle: u runs along the edge, v from rail 0 to
+    rail 1, as on the other analytic fillets.
+***********************************************************************/
+SmStatus SmFilletSolver::CalcPointSpineFilletGeom
+  (const SmExactBlend    & /*crBlend*/,      // in : the round's class, SM_BS_POINT
+   SmTArray<SmTsectPnt*> & rTsectPnts,       // in : ordered fillet points (centers and rail points)
+   SmFilletGeom * pFilletGeom)               // in : FilletGeom to store the patch in, NULL = m_vFilletGeoms[0]
+{
+  if (   m_pFSG->GetFilletSurfaceGeneratorType() != SM_FSG_CIRCULAR
+      || rTsectPnts.GetSize() < 1 )
+    { SER_MSG( SM_ERR, _T("CalcPointSpineFilletGeom(): the round's faces are not two cylinders as wide as the ball, their axes meeting") ); }
+
+  // both base surfaces cylinders
+  SmOffsetSurface * pSurf0 = GetSurface(0);
+  SmOffsetSurface * pSurf1 = GetSurface(1);
+  const SmCone * pCyl0 = SM_CAST_PTR( SmCone, pSurf0->GetBaseSurface() );
+  const SmCone * pCyl1 = SM_CAST_PTR( SmCone, pSurf1->GetBaseSurface() );
+  if ( pCyl0 == NULL || pCyl1 == NULL || !pCyl0->IsCylinder() || !pCyl1->IsCylinder() )
+    { SER_MSG( SM_ERR, _T("CalcPointSpineFilletGeom(): the round's faces are not two cylinders as wide as the ball, their axes meeting") ); }
+
+  // constant radius, as wide as both cylinders
+  double dTol = GetThisApproxTol3d();
+  ULONG  lMaxIndex = rTsectPnts.GetSize() - 1;
+  double dRadius = 0.0, dRadius1 = 0.0;
+  SER(SetupOffsetValues(*rTsectPnts[0],         &dRadius));
+  SER(SetupOffsetValues(*rTsectPnts[lMaxIndex], &dRadius1));
+  dRadius = smos_Fabs(dRadius);
+  if (   dRadius < SM_EFF_ZERO
+      || smos_Fabs(smos_Fabs(dRadius1) - dRadius) > SM_EFF_ZERO
+      || smos_Fabs(pCyl0->GetBotRadius() - dRadius) > dTol
+      || smos_Fabs(pCyl1->GetBotRadius() - dRadius) > dTol )
+    { SER_MSG( SM_ERR, _T("CalcPointSpineFilletGeom(): the round's faces are not two cylinders as wide as the ball, their axes meeting") ); }
+
+  // the ball's center: where the axes meet. Not the trace's points: at the edge's end where the
+  // contact circles meet (the corner of the bottom face) both offset cylinders collapse onto
+  // their axes, so a point of their intersection fixes neither base parameter round its axis,
+  // and its solve stops a step short of the axes' crossing (2.8e-4 off along the axis for
+  // SolidCraft rig fillets/1557's tray, its rounds' axes a rounding apart from SMLib's own).
+  SmVector3d sAxis0( pCyl0->GetZAxis() );
+  SmVector3d sAxis1( pCyl1->GetZAxis() );
+  SER( sAxis0.Unitize() );
+  SER( sAxis1.Unitize() );
+  SmPoint3d sCenter;
+  {
+    // the axes' nearest points, within the tolerance of each other
+    const SmPoint3d  sO0 = pCyl0->GetOrigin();
+    const SmPoint3d  sO1 = pCyl1->GetOrigin();
+    const SmVector3d sW( sO0 - sO1 );
+    const double     dB = sAxis0.Dot( sAxis1 );
+    const double     dDen = 1.0 - dB * dB;
+    if ( dDen < SM_EFF_ZERO_SQRT )
+      { SER_MSG( SM_ERR, _T("CalcPointSpineFilletGeom(): the round's faces are not two cylinders as wide as the ball, their axes meeting") ); }  // parallel cylinders: the centers fill a line, not this case
+    const double dD = sAxis0.Dot( sW );
+    const double dE = sAxis1.Dot( sW );
+    const SmPoint3d sP0 = sO0 + sAxis0 * (( dB * dE - dD ) / dDen );
+    const SmPoint3d sP1 = sO1 + sAxis1 * (( dE - dB * dD ) / dDen );
+    if ( sP0.DistanceBetween( sP1 ) > dTol )
+      { SER_MSG( SM_ERR, _T("CalcPointSpineFilletGeom(): the round's faces are not two cylinders as wide as the ball, their axes meeting") ); }  // the axes miss each other: no ball touches both all along
+    sCenter = sP0 + ( sP1 - sP0 ) * 0.5;
+  }
+  const SmVector3d * pAxes[2] = { &sAxis0, &sAxis1 };
+  SmVector3d sTurnAxis( sAxis0 * sAxis1 );
+  SER( sTurnAxis.Unitize() );
+
+  // the edge's ends, and where the ball touches each cylinder in their cross-sections
+  SmEdge     * pEdge  = GetEdgeuse(0)->GetEdge();
+  SmCurve    * pCurve = pEdge->GetCurve(); NER(pCurve);
+  SmExtent1d   sIvl   = pEdge->GetInterval();
+  SmPoint3d    sEnds[2];
+  SER(pCurve->EvaluatePoint(sIvl.GetMin(), sEnds[0]));
+  SER(pCurve->EvaluatePoint(sIvl.GetMax(), sEnds[1]));
+  SmPoint3d sContact[2][2]; // [cylinder][edge end]
+  for ( ULONG kk=0; kk<2; kk++ )
+    {
+      for ( ULONG ee=0; ee<2; ee++ )
+        {
+          SmVector3d sOff( sEnds[ee] - sCenter );
+          SmVector3d sRad( sOff - (*pAxes[kk])*sOff.Dot(*pAxes[kk]) );
+          if ( sRad.Length() < dTol )
+            { SER_MSG( SM_ERR, _T("CalcPointSpineFilletGeom(): the round's faces are not two cylinders as wide as the ball, their axes meeting") ); }
+          SER( sRad.Unitize() );
+          sContact[kk][ee] = sCenter + sRad*dRadius;
+        }
+    }
+
+  // the turn from the first circle to the second, less than half a turn, measured
+  // at the edge's end where the contacts lie farther apart (at the other they may
+  // meet on the turn's axis, where the edge runs into the corner ball's pole)
+  ULONG lAt = ( sContact[0][1].DistanceBetween(sContact[1][1])
+              > sContact[0][0].DistanceBetween(sContact[1][0]) ) ? 1 : 0;
+  SmVector3d sFrom( sContact[0][lAt] - sCenter );
+  SmVector3d sTo  ( sContact[1][lAt] - sCenter );
+  double dTurn = 0.0;
+  SER( sTurnAxis.CCWAngleBetween( sFrom, sTo, dTurn ));
+  if ( dTurn < 0.0 )
+    {
+      sTurnAxis = -sTurnAxis;
+      dTurn     = -dTurn;
+    }
+  if ( dTurn < SM_ANG_TOL_RAD || dTurn > SM_PI - SM_ANG_TOL_RAD )
+    { SER_MSG( SM_ERR, _T("CalcPointSpineFilletGeom(): the round's faces are not two cylinders as wide as the ball, their axes meeting") ); }
+
+  // the first circle's arc from the edge's start to its end, turned onto the second
+  SmBSplineCurve * pArc = NULL;
+  SER(SmBSplineCurve::CreateArcFromPoints(m_crContext, 3, sCenter,
+                                          sContact[0][0], sContact[0][1],
+                                          SM_CO_QUADRATIC, pArc));
+  SmSurfOfRevolution * pSphere = NULL;
+  SER(SmSurfOfRevolution::CreateCanonical(m_crContext, pArc, sCenter, sTurnAxis, pSphere, TRUE));
+  NER(pSphere);
+  SmExtent2d sSTEPDomain = pSphere->GetSTEPUVDomain();
+  SmPoint2d  sUVMax      = sSTEPDomain.GetMax();
+  sUVMax.x = SM_RAD2DEG( dTurn );
+  SER( sSTEPDomain.SetMinMax( sSTEPDomain.GetMin(), sUVMax ) );
+  SER(pSphere->AdjustSTEPUVDomain( sSTEPDomain ));
+
+  if (pFilletGeom == NULL)
+    { pFilletGeom = m_vFilletGeoms[0]; }
+  pFilletGeom->m_pFilletSurface = pSphere;
+
+  // rails: the patch's v = min and v = max isoparameter curves
+  SmExtent2d sUVDomain = pSphere->GetNaturalUVDomain();
+  SmFilletEdge * pRails[2] = { pFilletGeom->GetRail(0), pFilletGeom->GetRail(1) };
+  double         dV[2]     = { sUVDomain.GetMin().y, sUVDomain.GetMax().y };
+  for ( ULONG kk=0; kk<2; kk++ )
+    {
+      SmBSplineCurve * pRailCrv = NULL;
+      SER(pSphere->CreateIsoParametricCurve(m_crContext, SM_SP_V, dV[kk], 0.0, pRailCrv));
+      pRails[kk]->SetCurve(pRailCrv, TRUE);   // TRUE = delete preExisting Edge->Curve
+      pRailCrv->SetOwner(pRails[kk]);
+      pRails[kk]->SetInterval(pRailCrv->GetNaturalInterval());
+    }
+
+  // all done
+  return SM_SUCCESS;
+
+} // end SmFilletSolver::CalcPointSpineFilletGeom
+
+/*******************************************************************//**
+PURPOSE: Turn a point about an axis into the half-plane, bounded by the axis,
+   through another point.  A point on the axis, or a target on it, stays.
+
+NOTES: For a fillet about the axis of a circular arc, the rail points of one
+   cross-section turned so are those of another.
+***********************************************************************/
+static void sm_TurnIntoHalfPlane
+  (const SmPoint3d  & crOrigin,   // in : point on the axis
+   const SmVector3d & crAxis,     // in : unit axis direction
+   const SmPoint3d  & crTarget,   // in : point in the half-plane wanted
+   double             dTol,       // in : distance from the axis treated as on it
+   SmPoint3d        & rPoint)     // i/o: point to turn
+{
+  SmVector3d sP( rPoint - crOrigin );
+  SmVector3d sT( crTarget - crOrigin );
+  double     dAlong = sP.Dot( crAxis );
+  SmVector3d sPRad( sP - crAxis*dAlong );
+  SmVector3d sTRad( sT - crAxis*sT.Dot( crAxis ) );
+  double     dPRad = sPRad.Length();
+  double     dTRad = sTRad.Length();
+  if ( dPRad < dTol || dTRad < dTol )
+    { return; }
+  rPoint = crOrigin + crAxis*dAlong + sTRad*(dPRad/dTRad);
+} // end sm_TurnIntoHalfPlane
+
+/*******************************************************************//**
+PURPOSE: Create a torus surface for fillet geometry (a circular spine,
+    SM_BS_CIRCLE) and
+    store it as the FilletGeom FilletSurface and its min and max
+    SM_SP_V isoParameter curves as the FilletGeom->Rail curves.
+
+NOTES: This method will create a surface of revolution with
+    generator curve being an arc.
+
+  Set:
+    if(pFilletGeom == NULL) pFilletGeom = m_vFilletGeoms[0]
+    pFilletGeom->m_pFilletSurface = new Torus
+    pFilletGeom->GetRail(0)->m_pCurve = new Torus min IS_SP_V isoParameter curve
+    pFilletGeom->GetRail(1)->m_pCurve = new Torus max IS_SP_V isoParameter curve
+
+***********************************************************************/
+SmStatus SmFilletSolver::CalcCircleSpineFilletGeom
+  (const SmExactBlend    & crBlend,          // in : the round's class, SM_BS_CIRCLE: its common axis
+   SmTArray<SmTsectPnt*> & rTsectPnts,       // in : a ordered sequence of sample points specifying
+                                             //      fillet rail and center-curve point property values.
+   SmFilletGeom * pFilletGeom)               // in : pointer to m_vFilletGeom array component in which to
+                                             //      store new fillet Cylinder surface,
+                                             //      NULL to store in m_vFilletGeoms[0]
+{
+  // locals
+  SmEdge  *pEdge  = GetEdgeuse(0)->GetEdge();
+  SmCurve *pCurve = NULL;
+
+  // Check for Edge's curve domain being bigger than the Edge domain.
+  SmObjDelete sDelCurve; // In case we create a copy of pCurve.
+  sm_CheckEdgeCurveDomains( this->GetContext(), pEdge, pCurve, m_bExtendBefore, m_bExtendAfter, sDelCurve );
+  NER(pCurve);
+
+  // the circular or linear cross-section turned about the faces' common axis (the class's):
+  // a linear one revolved is a cone, as a circular one is a torus
+  double           dAnalyticTol = 1.0e-8;
+  double           dRadius;
+  SmAxis2Placement sRefFrame;
+  SmFilletSurfaceGeneratorType eSection = m_pFSG->GetFilletSurfaceGeneratorType();
+  {
+    // the frame's origin: the centre of the edge's circle, where the axis meets the edge's plane
+    SmVector3d sZ( crBlend.m_sDir );
+    SER( sZ.Unitize() );
+    SmPoint3d sEdgePnt;
+    SER( pCurve->EvaluatePoint( pEdge->GetInterval().GetMin(), sEdgePnt ) );
+    const SmPoint3d sCentre( crBlend.m_sPoint + sZ * ( sEdgePnt - crBlend.m_sPoint ).Dot( sZ ) );
+    SmVector3d sX( smos_Fabs( sZ.x ) < 0.9 ? SmVector3d( 1, 0, 0 ) : SmVector3d( 0, 1, 0 ) );
+    sX = sX - sZ * sX.Dot( sZ );
+    SER( sX.Unitize() );
+    SER( sRefFrame.SetCanonical( sCentre, sX, sZ * sX ) );
+  }
+
+  // select new fillet surface storage spot
+  if (pFilletGeom == NULL)
+    { pFilletGeom = m_vFilletGeoms[0]; }
+
+  // Get rotation point and axis for surf-of-revolution creation
+  SmVector3d sAxisOfRevolution = sRefFrame.GetZAxis();
+  SmPoint3d  sOrigin           = sRefFrame.GetOrigin();
+
+  // Locate the generating curve(arc)
+  ULONG             lMaxIndex   = rTsectPnts.GetSize() - 1 ;
+  SmOffsetSurface * pSurf0      = GetSurface(0);                // offsetSurf1
+  SmOffsetSurface * pSurf1      = GetSurface(1);                // offsetSurf2
+  SmPoint2d         sStartUV0   = rTsectPnts[0]->UVPos(0);
+  SmPoint2d         sStartUV1   = rTsectPnts[0]->UVPos(1);
+  SmPoint3d         sArcCenter;
+  double            dRadius1;
+
+  // get centerPoint = offsetSurface0(uvPnt0)
+  SER(pSurf0->EvaluatePoint(sStartUV0,sArcCenter));
+
+  // get cross-section radius size at begin and end fillet points
+  SER(SetupOffsetValues(*rTsectPnts[0],         &dRadius));
+  SER(SetupOffsetValues(*rTsectPnts[lMaxIndex], &dRadius1));
+  if (   dRadius < SM_EFF_ZERO
+      || smos_Fabs(dRadius1-dRadius) > SM_EFF_ZERO)
+    {
+      SER_MSG(SM_ERR, _T("CalcCircleSpineFilletGeom(): the radius changes along a circular spine"));
+    }
+
+  // Evaluate points on rail curves embedded within the base surfaces,
+  SmPoint3d sP0, sP1;
+  // Evaluate points on base surfaces.  Use a zero-offset offset surface
+  // instead of the base surface, in order to handle extended surfaces.
+  SetSurfacesToZeroOffset();
+  SER(pSurf0->EvaluatePoint(sStartUV0,sP0));   // sP0 = rail1 point
+  SER(pSurf1->EvaluatePoint(sStartUV1,sP1));   // sP1 = rail2 point
+  ReloadSurfaceOffsets();
+
+  // When the section's center lies on the arc's axis, the offset of a face
+  // collapses there (a round as wide as the cylinder or sphere it runs round
+  // is centered on the axis), and so does the intersection the TsectPnts come
+  // from: their uv on that face give a point of the circle the ball touches,
+  // but not the one in the edge's cross-section.  Then turn the rail points
+  // into the half-planes through the edge's ends.
+  SmVector3d sUnitAxis( sRefFrame.GetZAxis() );
+  SER( sUnitAxis.Unitize() );
+  SmPoint3d  sAxisPnt( sRefFrame.GetOrigin() );
+  SmVector3d sCenterOff( sArcCenter - sAxisPnt );
+  SmVector3d sCenterRad( sCenterOff - sUnitAxis*sCenterOff.Dot( sUnitAxis ) );
+  double     dCenterTol = GetThisApproxTol3d();
+  SmBoolean  bCenterOnAxis = ( sCenterRad.Length() < dCenterTol ) ? TRUE : FALSE;
+  SmPoint3d  sEdgeStart, sEdgeEnd;
+  if ( bCenterOnAxis )
+    {
+      SmExtent1d sEdgeIvl = pEdge->GetInterval();
+      SER( pCurve->EvaluatePoint( sEdgeIvl.GetMin(), sEdgeStart ));
+      SER( pCurve->EvaluatePoint( sEdgeIvl.GetMax(), sEdgeEnd ));
+      sm_TurnIntoHalfPlane( sAxisPnt, sUnitAxis, sEdgeStart, dCenterTol, sP0 );
+      sm_TurnIntoHalfPlane( sAxisPnt, sUnitAxis, sEdgeStart, dCenterTol, sP1 );
+    }
+
+  // SolidCraft change: a rail point within the tolerance of the axis turns round it in a circle
+  // smaller than the tolerance, a point: the rail collapses onto the axis (a round along an
+  // earlier round's end arc of the ball's own radius) and the surface is singular there. The
+  // input's residues (1e-11 after a sketch's 1e-10) leave the point off the axis, the surface
+  // then nearly singular, not exactly (SmSurface rule 5): the rail point is the axis's point.
+  for (SmPoint3d * pRailPnt : { &sP0, &sP1 })
+    {
+      SmVector3d sOff( *pRailPnt - sAxisPnt );
+      SmPoint3d  sOnAxis( sAxisPnt + sUnitAxis*sOff.Dot( sUnitAxis ) );
+      if ( sOnAxis.DistanceBetween( *pRailPnt ) < dCenterTol )
+        { *pRailPnt = sOnAxis; }
+    }
+
+  // allocate the cross-section from the points [centerPoint, sP0, sP1]:
+  // the arc about the center, or the line from rail to rail
+  SmBSplineCurve * pArc = NULL ;
+  if ( eSection == SM_FSG_LINEAR )
+    {
+      SER(SmBSplineCurve::CreateLineSegment(m_crContext, 3, sP0, sP1, pArc));
+    }
+  else
+    {
+      SER(SmBSplineCurve::CreateArcFromPoints(m_crContext, 3,
+                                              sArcCenter, sP0, sP1,
+                                              SM_CO_QUADRATIC, pArc));
+    }
+
+  // Determine if we need to reverse the axis of revolution
+  // let sVec = Point on Rail - circularFilletEdge Origin
+  // let sDir = initial sweep direction
+  SmVector3d sVec( sP0 - sOrigin );
+  if ( sVec.Length() < dAnalyticTol )
+    { sVec = sP1 - sOrigin; }
+
+  SmVector3d sDir = sAxisOfRevolution * sVec; // Start direction of rail curves
+
+  // get circular to-be-filleted edge->curve point (pos,tang) nearest to arcCenter Point
+  // (with the center on the axis every point is as near: take the edge's start,
+  // whose half-plane the section was turned into)
+  SmPoint3d sPV[2];
+  SmExtent1d sIvl = pEdge->GetInterval();
+  if ( bCenterOnAxis )
+    {
+      SER(pCurve->Evaluate(sIvl.GetMin(),1,TRUE,sPV));
+    }
+  else
+    {
+      SmSolutionArray sSolutions;
+      SER(pCurve->GlobalPointSolve(sIvl, SM_SO_MINIMIZE, sArcCenter,
+                                   dAnalyticTol,NULL,NULL,SM_SR_SINGLE,sSolutions));
+      if (sSolutions.GetSize() != 1) SER(SM_ERR);
+      SER(pCurve->Evaluate(sSolutions[0].m_vStart[0],1,TRUE,sPV));
+    }
+
+  // when to-be-filleted edge tangent nearest sweep curve opposes initial sweep direction
+  if (sPV[1].Dot(sDir) < 0.0)
+    {
+      // negate the sweep direction
+      sAxisOfRevolution = - sAxisOfRevolution;
+    }
+
+  // Recalculate the origin of torus: move it along its axis from the plane
+  // of pCurve to where the center of the torus will be.
+  // gwc??? it would seem the origin of the torus should be
+  //         sOrigin = sOrigin + sAxisOfRevolution*((sArcCenter-sOrigin).Dot(sAxisOfRevolution));
+  // not     sOrigin = sOrigin + sAxisOfRevolution*((NearMidPoint-sOrigin).Dot(sAxisOfRevolution));
+  //cbi: Yes, that would be correct.  It would be even easier just to offset by the fillet radius,
+  //  but the sign is not always correct, and there is no obvious way to detect that,
+  //  so let's just use (sArcCenter-Origin).
+  //  Then why has this worked fine over the years?  Turns out it doesn't even make a difference:
+  //  SmSurfOfRevolution doesn't even use the position of the origin along its axis.
+  //  But let's do it anyway, in case someone does look at the origin, for a torus.
+
+  SmVector3d sTmpVec( sArcCenter-sOrigin );
+  sOrigin = sOrigin + sAxisOfRevolution*(sTmpVec.Dot(sAxisOfRevolution));
+
+#ifdef SM_DEBUG_CODE
+  if ( DebugLevel() > 0 ) 
+    {
+      smgfx_SetLook(2,6, 1,0,0); sOrigin.Draw(); sm_GraphicsLoop();
+      sAxisOfRevolution.Draw(&sOrigin); sm_GraphicsLoop();
+      smgfx_SetLook(2,4, 0,0,1); pArc->Draw(); sm_GraphicsLoop();
+      sm_GraphicsLoop();
+    }
+#endif // SM_DEBUG_CODE
+
+  // Compute the angle of span
+  // We have sVec which is from the start TsectPnt.
+  // Get sEndVec from the end TsectPnt.
+
+  // Evaluate points at the ends of the rail curves embedded within the base surfaces.
+  // Get sEndP1 as well, in case of degeneracy.
+  SmPoint3d sEndP0, sEndP1;
+  // Evaluate points on base surfaces.  Use a zero-offset offset surface
+  // instead of the base surface, in order to handle extended surfaces.
+  SmPoint2d sEndUV0 = rTsectPnts[lMaxIndex]->UVPos(0);
+  SmPoint2d sEndUV1 = rTsectPnts[lMaxIndex]->UVPos(1);
+  SetSurfacesToZeroOffset();
+  SER(pSurf0->EvaluatePoint(sEndUV0,sEndP0));   // sEndP0 = rail1 point
+  SER(pSurf1->EvaluatePoint(sEndUV1,sEndP1));   // sEndP1 = rail2 point
+  ReloadSurfaceOffsets();
+  if ( bCenterOnAxis )
+    {
+      sm_TurnIntoHalfPlane( sAxisPnt, sUnitAxis, sEdgeEnd, dCenterTol, sEndP0 );
+      sm_TurnIntoHalfPlane( sAxisPnt, sUnitAxis, sEdgeEnd, dCenterTol, sEndP1 );
+    }
+
+  SmVector3d sEndVec( sEndP0 - sOrigin );
+
+  // If sEndVec is zero or parallel to sAxisOfRev, use sEndP1.
+  // That would be if its cross product with sAxis is zero.
+  SmVector3d sTempCross( sAxisOfRevolution * sEndVec );
+  if ( sTempCross.Length() < dAnalyticTol )
+    { sEndVec = sEndP1 - sOrigin; }
+
+  double dSpanAng=0;
+  SER( sAxisOfRevolution.CCWAngleBetween( sVec, sEndVec, dSpanAng ) );
+  if ( dSpanAng < SM_ANG_TOL_RAD )
+    { dSpanAng += 2*SM_PI; }
+
+  // SolidCraft change: the span is the turn from the start section (sVec) to the end one. The
+  // start angle IsArc gives is measured from the arc's own frame (an SmCircle's analytic
+  // domain, which need not start at 0), not from sVec, so it is no part of that turn.
+  double dAngleSpan = SM_RAD2DEG( dSpanAng );
+
+  // Determine if we need to extend the span even when 'm_bExtendBefore' is FALSE
+  // In some cases, fillet(torus) will go beyond the start or end of the edge
+  if (   !pCurve->IsClosed(sIvl)
+      && !m_bExtendAfter)
+    {
+      // for both filletSector->edgeuses
+      for (ULONG i=0; i<2; i++)
+        {
+          SmEdgeuse * pEU = GetEdgeuse(i);
+          SmVertex  * pV  = pEU->GetVertexuse()->GetVertex();
+
+          if (   pEU->GetOrientation() == SM_OT_SAME && !m_bExtendBefore)
+            {
+              // for both rail ends
+              for (ULONG jj=0; jj<2; jj++)
+                {
+                  SmFilletEdge   * pRail     = pFilletGeom->GetRail(jj);
+                  SmFilletVertex * pRailEndV = (SmFilletVertex*)pRail->GetVertex();
+
+                  // skip redundant ends
+                  if (   pRailEndV->GetFilletVertexType() != SM_FV_RAIL_X_EDGEUSE
+                      || !pRailEndV->IsProcessed())
+                    {
+                      continue;
+                    }
+
+                  // when rail endPoint is before start of edge - set m_bExtendAfter
+                  SmPoint3d  sPt = pRailEndV->GetPoint();
+                  SmVector3d sVector = sPt - pV->GetPoint();
+                  SmVector3d sPtVect[2];
+                  SER(pCurve->Evaluate(sIvl.GetMin(),1,TRUE, sPtVect ));
+                  SER( sPtVect[1].Unitize());
+                  SER( sVector.Unitize());
+                  if ( sVector.Dot( sPtVect[1]) < -SM_EFF_ZERO)
+                    {
+                      m_bExtendAfter = TRUE;
+                    }
+                } // end iter both rail ends
+            } // end orientation == same without extend before check
+
+          // when orientation is opposite
+          if (pEU->GetOrientation() == SM_OT_OPPOSITE)
+            {
+              // for both rail endPoints
+              for (ULONG jj=0; jj<2; jj++)
+                {
+                  SmFilletEdge   * pRail     = pFilletGeom->GetRail(jj);
+                  SmFilletVertex * pRailEndV = (SmFilletVertex*)pRail->GetVertex();
+                  pRailEndV = (SmFilletVertex*)pRail->GetOtherVertex(pRailEndV);
+
+                  // skip redundant endPoints
+                  if (   pRailEndV->GetFilletVertexType() != SM_FV_RAIL_X_EDGEUSE
+                      || !pRailEndV->IsProcessed())
+                    {
+                      continue;
+                    }
+
+                  // when rail EndPoint is beyond edge end - set m_bExtendAfter = TRUE
+                  SmPoint3d  sPt = pRailEndV->GetPoint();
+                  SmVector3d sVector = sPt - pV->GetPoint();
+                  SmVector3d sPtVect[2];
+                  SER(pCurve->Evaluate(sIvl.GetMax(),1,TRUE, sPtVect ));
+                  SER( sPtVect[1].Unitize());
+                  SER( sVector.Unitize());
+                  if ( sVector.Dot( sPtVect[1]) > SM_EFF_ZERO)
+                    {
+                      m_bExtendAfter = TRUE;
+                    }
+                } // end iter both rail endPoints
+            } // end orientation == opposite check
+        } // end iter
+    } // end not closed and not extended after check
+
+  // extend angle span when requested - limit extent to 360 degrees
+  SmBoolean bExtendFlag     = FALSE;
+  double    dExtensionAngle = (360.0 - dAngleSpan)/4.0;
+  if (dAngleSpan < 350.0)
+    {
+      if (m_bExtendAfter)
+        { dAngleSpan += dExtensionAngle;
+        }
+
+      if (m_bExtendBefore)
+        {
+          dAngleSpan += dExtensionAngle;
+          bExtendFlag = TRUE;
+        }
+    }
+  if ( dAngleSpan > 360.0 ) { dAngleSpan = 360.0; }
+
+
+  // If we are going to make a full-circle torus, and the fillet is
+  // going to be only a portion of that, then having the seam here can
+  // cause problems with subsequent intersections -- specifically, the
+  // intersection with the far face.  In that case, revolve the seam
+  // by 180 degrees to get it out of the way. [B466]
+  //
+  // However, if the fillet will be a full circle, and hence meet itself
+  // on both sides of the same FilletCorner, then subsequent code assumes
+  // that there is a seam here, and fails otherwise, so do not revolve it
+  // in that case. [prog_test] At this point, the only way we have to know
+  // whether the final fillet is going to be a full circle is by looking
+  // at the original Edge.  [prog_test]
+
+  SmBoolean bMoveSeam = FALSE;
+
+  SmEdgeuse *pEU = this->m_pEdgeuses[0];
+  SmEdge    *pE  = pEU->GetEdge();
+  if ( pE->GetCurve()->IsClosed( pE->GetInterval() ))
+    {
+      bMoveSeam = FALSE;
+    }
+  else if ( dAngleSpan > 360.0 - SM_EFF_ZERO )
+    {
+      bMoveSeam = TRUE;
+    }
+
+  if ( bMoveSeam )
+    {
+
+#ifdef SM_DEBUG_CODE
+      if ( DebugLevel() > 0 ) 
+        {
+          smgfx_SetLook( 4,6, 0,0,1 ); pArc->Draw(); sm_GraphicsLoop();
+          sm_GraphicsLoop();
+        }
+#endif // SM_DEBUG_CODE
+
+      // Revolve pArc around to the other side of the torus.  [B466]
+      SmAxis2Placement sCS;
+      sCS.Init();
+      sCS.Translate( - sRefFrame.GetOrigin() );
+      sCS.RotateAboutAxis( SM_PI, sRefFrame.GetZAxis() );
+      sCS.Translate(   sRefFrame.GetOrigin() );
+
+      SER( pArc->Transform( sCS ) );
+
+#ifdef SM_DEBUG_CODE
+      if ( DebugLevel() > 0 ) 
+        {
+          smgfx_SetLook( 4,6, 1,0,1 ); pArc->Draw(); sm_GraphicsLoop();
+          sm_GraphicsLoop();
+        }
+#endif // SM_DEBUG_CODE
+    }
+
+
+  // create surface of revolution
+  SmSurfOfRevolution * pTorus = NULL;
+  SER(SmSurfOfRevolution::CreateCanonical(m_crContext, pArc,
+                                          sOrigin,     sAxisOfRevolution,
+                                          pTorus));
+  NER(pTorus);
+
+  // extend the torus uvDomain as needed
+  SmExtent2d sSTEPDomain = pTorus->GetSTEPUVDomain();
+  SmPoint2d  sUVMax      = sSTEPDomain.GetMax();
+  sUVMax.x = dAngleSpan;
+  SER( sSTEPDomain.SetMinMax(sSTEPDomain.GetMin(),sUVMax) );
+  SER(pTorus->AdjustSTEPUVDomain(sSTEPDomain));
+
+  // Z-Rotate the torus by dAngleExtendBefore
+  if (bExtendFlag == TRUE)
+    {
+      SmAxis2Placement sTrans;
+      sTrans.Translate(-sOrigin);
+      sTrans.RotateAboutAxis(SM_DEG2RAD(-dExtensionAngle),sAxisOfRevolution);
+      sTrans.Translate(sOrigin);
+      SER(pTorus->Transform(sTrans,NULL));
+    }
+
+  // SolidCraft change: a linear section revolved is a cone, and is stored as one (SmCone), as a
+  // straight edge's round is stored as its cylinder: SMLib's own test finds the cone in the
+  // revolution's NURBS form (CopyAndAddAnalytics), with the same parameters, or the revolution
+  // stays. A chamfer round a hole's rim was a surface of revolution, which reads back as a
+  // rational B-spline, not the cone it is.
+  if ( eSection == SM_FSG_LINEAR )
+    {
+      SmSurface * pNurb = NULL;
+      SER_DELETE( pTorus->SmBSplineSurface::Copy( m_crContext, pNurb ), pTorus );
+      SmObjDelete sCleanNurb( pNurb );
+      SmBSplineSurface * pNurbBSS = SM_CAST_PTR( SmBSplineSurface, pNurb );
+      SmSurface * pCone = NULL;
+      if ( pNurbBSS != NULL )
+        { SER_DELETE( pNurbBSS->CopyAndAddAnalytics( m_crContext, pCone ), pTorus ); }
+      if ( pCone != NULL && pCone->IsKindOf( SmCone_TYPE ) )
+        {
+          pFilletGeom->m_pFilletSurface = pCone;
+          delete pTorus;
+          pTorus = NULL;
+        }
+      else
+        { delete pCone; }
+    }
+
+  // store the new fillet surface
+  if ( pTorus != NULL )
+    { pFilletGeom->m_pFilletSurface = pTorus; }
+
+  // Calc rails (on the surface stored: the cone, or the revolution)
+  SM_FILLETSURF_TYPE * pStored = pFilletGeom->m_pFilletSurface;
+  SmFilletEdge   * pRail0 = pFilletGeom->GetRail(0);
+  SmFilletEdge   * pRail1 = pFilletGeom->GetRail(1);
+  SmBSplineCurve * pRailCrv0 = NULL ;
+  SmBSplineCurve * pRailCrv1 = NULL ;
+  SmExtent2d       sUVDomain = pStored->GetNaturalUVDomain();
+
+  // create and store railCurve0 min SM_SP_V isoParameter curve
+  SER(pStored->CreateIsoParametricCurve(m_crContext, 
+                                       SM_SP_V,
+                                       sUVDomain.GetMin().y,
+                                       0.0,
+                                       pRailCrv0));
+  pRail0->SetCurve(pRailCrv0, TRUE ) ; // TRUE = delete preExisting Edge->Curve
+                                       // side effect: delete current pSurviveEdge->UVTrimCurve
+  pRailCrv0->SetOwner(pRail0);
+  SmExtent1d sCrvIvl = pRailCrv0->GetNaturalInterval();
+  pRail0->SetInterval(sCrvIvl);
+
+  // create and store railCurve1 max SM_SP_V isoParameter curve
+  SER(pStored->CreateIsoParametricCurve(m_crContext,
+                                       SM_SP_V,
+                                       sUVDomain.GetMax().y,
+                                       0.0,
+                                       pRailCrv1));
+  pRail1->SetCurve(pRailCrv1, TRUE ) ; // TRUE = delete preExisting Edge->Curve
+                                       // side effect: delete current pSurviveEdge->UVTrimCurve
+  pRailCrv1->SetOwner(pRail1);
+  sCrvIvl = pRailCrv1->GetNaturalInterval();
+  pRail1->SetInterval(sCrvIvl);
+
+#ifdef SM_DEBUG_CODE
+  if ( DebugLevel() > 0 ) 
+    {
+      smgfx_SetLook(1,3, 0,0,1); pEdge->GetBrep()->Draw(); sm_GraphicsLoop();
+      smgfx_SetLook(1,3, 0,1,0); pStored->DrawUV(5,5); sm_GraphicsLoop();
+      smgfx_SetLook(3,5, 1,0,0); pRailCrv0->Draw(); sm_GraphicsLoop();
+      smgfx_SetLook(3,5, 1,0,0); pRailCrv1->Draw(); sm_GraphicsLoop();
+      sm_GraphicsLoop();
+    }
+#endif // SM_DEBUG_CODE
+
+  // all done
+  return SM_SUCCESS;
+
+} // end SmFilletSolver::CalcCircleSpineFilletGeom
 
 /*******************************************************************//**
                           RATIONAL SPINES AND THEIR ROUNDS
@@ -1613,13 +2571,34 @@ SmStatus SmFilletSolver::CalcExactFilletGeom(const SmExactBlend & crBlend, SmTAr
   switch ( crBlend.m_eSpine )
     {
     case SM_BS_LINE:
-      rbBuilt = ( bRecalc ? CalcConeFilletGeom( rTsectPnts, pFG ) : CalcCylinderFilletGeom( rTsectPnts, pFG ) ) == SM_SUCCESS;
+      // a chamfer on a straight spine is traced (its line from rail to rail is the face's plane)
+      if ( m_pFSG->GetFilletSurfaceGeneratorType() != SM_FSG_CIRCULAR )
+        { return SM_SUCCESS; }
+      {
+        // the trace's ends at one centre (the corners at its ends take the whole edge): there is
+        // no cylinder along it, and the trace's handling of such a round stands
+        SmPoint3d aC[2];
+        const ULONG aI[2] = { 0, rTsectPnts.GetSize() - 1 };
+        for ( ULONG k=0; k<2; k++ )
+          {
+            SER( SetupOffsetValues( *rTsectPnts[aI[k]], NULL ) );
+            SER( GetSurface(0)->EvaluatePoint( rTsectPnts[aI[k]]->UVPos(0), aC[k] ) );
+          }
+        if ( aC[0].DistanceBetween( aC[1] ) <= SM_EFF_ZERO_SQRT * smos_Max( 1.0, crBlend.m_dRadius ) )
+          { return SM_SUCCESS; }
+      }
+      SER( CalcLineSpineFilletGeom( crBlend, rTsectPnts, pFG ) );
+      rbBuilt = TRUE;
       break;
     case SM_BS_CIRCLE:
-      rbBuilt = CalcTorusFilletGeom( rTsectPnts, pFG ) == SM_SUCCESS;
+      SER( CalcCircleSpineFilletGeom( crBlend, rTsectPnts, pFG ) );
+      rbBuilt = TRUE;
       break;
     case SM_BS_POINT:
-      rbBuilt = !bRecalc && CalcSphereFilletGeom( rTsectPnts, pFG ) == SM_SUCCESS;
+      if ( bRecalc )
+        { return SM_SUCCESS; }
+      SER( CalcPointSpineFilletGeom( crBlend, rTsectPnts, pFG ) );
+      rbBuilt = TRUE;
       break;
     case SM_BS_NODAL_QUARTIC:
       {
