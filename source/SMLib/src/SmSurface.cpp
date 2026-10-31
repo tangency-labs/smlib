@@ -8002,8 +8002,9 @@ SmStatus SmSurface::CoverCoincidentSurface
   SmBoolean        & rbSuccess,     // out: pOther will fit inside this; see notes above
   double           & rdMaxDist,     // out: max distance found; see notes above
   SmExtent2d       * pOtherDomain,          // in : optional: use this subset of pOther
-  SmExtent2d       * pOptCoveredSTEPDomain) // out: covered subset in this surface's STEP parameters
+  SmExtent2d       * pOptCoveredSTEPDomain, // out: covered subset in this surface's STEP parameters
                                           //      valid when rbSuccess is TRUE
+  SmBoolean          bAcrossWrappedSeams)   // in : SolidCraft: cover across a seam this surface wraps
 {
   // init outputs
   rbSuccess = FALSE;
@@ -8247,8 +8248,9 @@ SmBoolean bDebugMe = FALSE;
   // is no failure; the domain in it stays the period it already spans. In any other direction,
   // or across a pole, a crossing still means the other face does not fit inside this one.
   const SmExtent2d sThisDomain = this->GetNaturalUVDomain();
-  const SmBoolean  bWrapsU     = this->IsClosed( sThisDomain, SM_SP_U );
-  const SmBoolean  bWrapsV     = this->IsClosed( sThisDomain, SM_SP_V );
+  // bAcrossWrappedSeams FALSE asks for the cover only within one period, as without the fork.
+  const SmBoolean  bWrapsU     = bAcrossWrappedSeams && this->IsClosed( sThisDomain, SM_SP_U );
+  const SmBoolean  bWrapsV     = bAcrossWrappedSeams && this->IsClosed( sThisDomain, SM_SP_V );
   SmBoolean        bCrossedU   = FALSE;
   SmBoolean        bCrossedV   = FALSE;
 
@@ -8463,7 +8465,8 @@ SmStatus SmSurface::CoverOtherCoincidentSurface(
                 SmSurface  * & pCoveringSurf, // out: covering surface, NULL if not possible
                 const SmExtent2d * cpOptThisDomain,  // in : subset of this in NURBS parameters; NULL uses natural domain
                 const SmExtent2d * cpOptOtherDomain, // in : subset of pOther in NURBS parameters; NULL uses natural domain
-                SmExtent2d * pOptMergedDomain // out: union in covering surface's final NURBS parameters, if covering succeeds
+                SmExtent2d * pOptMergedDomain, // out: union in covering surface's final NURBS parameters, if covering succeeds
+                SmBoolean    bAcrossWrappedSeams // in : SolidCraft: cover across a seam the covering surface wraps
         )
 {
   // Init output
@@ -8498,7 +8501,7 @@ SmBoolean bDebugMe = FALSE;
     {
       bSuccess = FALSE;
       if (pOptMergedDomain == NULL)
-        { return pCover->CoverCoincidentSurface(pCovered, dTol, bSuccess, rdMaxDist, &rCoveredDomain); }
+        { return pCover->CoverCoincidentSurface(pCovered, dTol, bSuccess, rdMaxDist, &rCoveredDomain, NULL, bAcrossWrappedSeams); }
 
       // STEP coordinates survive rebuilding an analytic surface's NURBS form.
       // Save the retained subset before coverage changes the surface, union it
@@ -8508,7 +8511,7 @@ SmBoolean bDebugMe = FALSE;
       if (eCoverStat != SM_SUCCESS)
         { return eCoverStat; }
       eCoverStat = pCover->CoverCoincidentSurface(pCovered, dTol, bSuccess, rdMaxDist,
-                                                 &rCoveredDomain, &sOtherSTEPDomain);
+                                                 &rCoveredDomain, &sOtherSTEPDomain, bAcrossWrappedSeams);
       if (eCoverStat != SM_SUCCESS || !bSuccess)
         { return eCoverStat; }
       sThisSTEPDomain.Union(sOtherSTEPDomain, sMergedSTEPDomain);
