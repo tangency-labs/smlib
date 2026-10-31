@@ -2835,6 +2835,145 @@ void chamfer_of_a_rim_loop_past_its_rim()
     }
 }
 
+// Rounds of a sloped basin's rim (solidcraft#1080, the rig's fillets/1080-fillet-* cases, data:
+// sloped-basin-1-mm-rim, -0-5-mm-rim and equal-slope-basin-1-mm-rim) rounded R4: the front round
+// runs its rail on the top off the thin front rim, over the slab's front face (a cliff), and goes
+// first; the other rounds fit, and each meets the front one, or its other neighbours, in a mitre
+// at the pocket's concave corner. Mitred rounds are one corner, built together whichever
+// overflows. They were split (the front round alone, then the others on what it left, where the
+// right round's rail met the front round's cut, a concave edge, beyond its wall: SMLIB_ERR_NO_ROOM,
+// "a round's rail leaves the face it rolls on into the body's material"). The volumes are the
+// rig's analytic answers: each round's section at height z, from its wall to its arc and not
+// past y = 0, along its edge between its neighbours' walls (the sloped end walls extended),
+// Int width(z) length(z) dz, and at each mitred corner the quadrant beyond both walls,
+// Int width_1(z) width_2(z) dz. Within 1e-8 of the body: the mitre's curve is SMLib's fitted
+// fillet-fillet intersection.
+void rounds_mitred_to_one_past_a_rim()
+{
+    const struct
+    {
+        const char *name, *file;
+        double m;
+        int edges;
+        double volume;
+    } cases[4] = {
+        {"1 mm rim, front and right", SMLIB_TEST_DATA "/sloped-basin-1-mm-rim.txt", 1.0, 2, 144461.19634789118},
+        {"1 mm rim, all four", SMLIB_TEST_DATA "/sloped-basin-1-mm-rim.txt", 1.0, 4, 144347.32581768231},
+        {"0.5 mm rim, all four", SMLIB_TEST_DATA "/sloped-basin-0-5-mm-rim.txt", 0.5, 4, 144084.31810540144},
+        {"equal slope, all four", SMLIB_TEST_DATA "/equal-slope-basin-1-mm-rim.txt", 1.0, 4, 140114.73514508773},
+    };
+    for (const auto &c : cases)
+    {
+        smlib_brep *basin = read_flat(c.file), *r = nullptr;
+        const double mid = 0.5 * (c.m + 50.0);
+        const double rim[12] = {50, c.m, 30, 80, mid, 30, 50, 50, 30, 20, mid, 30};
+        const double sizes[4] = {4, 4, 4, 4};
+        int64_t dropped[4] = {-1, -1, -1, -1};
+        const int32_t s = basin != nullptr ? smlib_blend_dropping(basin, SMLIB_BLEND_ROUND, rim, sizes, c.edges, 0.5, &r, nullptr, dropped) : -1;
+        if (s != SMLIB_OK || r == nullptr || !near(volume_of(r), c.volume, 1e-8) || !sound(r))
+        {
+            std::fprintf(stderr, "  R4 round of the basin's rim, %s: status %d\n", c.name, static_cast<int>(s));
+            failures++;
+        }
+        for (int k = 0; k < c.edges; ++k)
+        {
+            CHECK(dropped[k] == 0);
+        }
+        smlib_brep_free(r);
+        smlib_brep_free(basin);
+    }
+}
+
+// Simpson's rule for f on [a, b] in n (even) spans.
+template <class F> double simpson(F f, double a, double b, int n)
+{
+    const double h = (b - a) / n;
+    double sum = f(a) + f(b);
+    for (int i = 1; i < n; ++i)
+    {
+        sum += (i % 2 ? 4.0 : 2.0) * f(a + i * h);
+    }
+    return sum * h / 3.0;
+}
+
+// A closed rim blended past the far end of its wall (the rig's fillets/190-fillet-disc-rim-past-
+// its-2mm-wall, every-hole-top-rim-r12-past-plate-bottom, 2893-chamfer-two-distances-past-the-
+// bottom; the owner's ruling: built as if the wall went on, then cut by the face beyond). The
+// wall's rail runs round the wall's cylinder continued past its end; the closed corner meets the
+// seam's line there, and the region the blend removes closes on the wall's cylinder continued
+// as itself, the band from the rim to the rail. Before: the closed corner found no point on the
+// seam (1001, "Unable to Compute Geometry"), and past it the region found no exact continuation
+// of the wall (SMLIB_ERR_NOT_EXACT) nor a face closing round a closed edge alone.
+// - A disc R13 x 2, its top rim rounded R2.5 (centre at rho 10.5, z -0.5): pi 338 less
+//   pi Int (169 - (10.5 + 2.5 cos t)^2) 2.5 cos t dt, t from asin(0.2) to pi/2. The wall is used
+//   up: top, round and bottom.
+// - A 40 x 40 x 10 plate with a through hole R5, its top rim rounded R12 (the circle's centre at
+//   rho 17, z -2): the spandrel clipped to the plate, at t = rho - 5 down min(12 - sqrt(144 -
+//   (12 - t)^2), 10), 2 pi Int (5 + t) depth dt, the bottom face trimmed round the hole to
+//   rho 12 - sqrt 140 + 5. Seven faces.
+// - A cylinder R10 x 20, its top rim chamfered 2 across the top and 25 down the wall, 5 past the
+//   bottom: the frustum from R8 at the top to R9.6 at the bottom. Three faces.
+void closed_rims_blended_past_their_walls()
+{
+    auto faces = [](const smlib_brep *b)
+    {
+        int64_t c[3] = {0, 0, 0};
+        CHECK(smlib_brep_counts(b, c) == SMLIB_OK);
+        return c[0];
+    };
+    {
+        const double o[3] = {0, 0, 0};
+        smlib_brep *disc = nullptr, *r = nullptr;
+        CHECK(smlib_make_cylinder(o, 13.0, 2.0, &disc) == SMLIB_OK);
+        const double taken = PI * simpson([](double t) { const double rho = 10.5 + 2.5 * std::cos(t); return (169.0 - rho * rho) * 2.5 * std::cos(t); },
+                                          std::asin(0.2), 0.5 * PI, 2000);
+        const double rim[3] = {13.0 * std::cos(1.0), 13.0 * std::sin(1.0), 2.0}, radius = 2.5;
+        CHECK(disc != nullptr && smlib_blend(disc, SMLIB_BLEND_ROUND, rim, &radius, 1, 0.5, &r, nullptr) == SMLIB_OK);
+        if (r != nullptr)
+        {
+            CHECK(near(volume_of(r), PI * 338.0 - taken, 1e-9));
+            CHECK(faces(r) == 3);
+            done(r);
+        }
+        smlib_brep_free(disc);
+    }
+    {
+        smlib_brep *plate = box(0, 0, 0, 40, 40, 10), *pin = nullptr, *holed = nullptr, *r = nullptr;
+        const double o[3] = {20, 20, -1};
+        CHECK(smlib_make_cylinder(o, 5.0, 12.0, &pin) == SMLIB_OK);
+        CHECK(smlib_boolean(plate, pin, SMLIB_BOOLEAN_SUBTRACT, &holed) == SMLIB_OK);
+        auto ring = [](double t) { return 2.0 * PI * (5.0 + t) * std::min(12.0 - std::sqrt(144.0 - (12.0 - t) * (12.0 - t)), 10.0); };
+        const double kink = 12.0 - std::sqrt(140.0);
+        const double taken = simpson(ring, 0.0, kink, 200) + simpson(ring, kink, 12.0, 20000);
+        const double rim[3] = {20.0 + 5.0 * std::cos(1.0), 20.0 + 5.0 * std::sin(1.0), 10.0}, radius = 12.0;
+        CHECK(holed != nullptr && smlib_blend(holed, SMLIB_BLEND_ROUND, rim, &radius, 1, 0.5, &r, nullptr) == SMLIB_OK);
+        if (r != nullptr)
+        {
+            CHECK(near(volume_of(r), 16000.0 - 250.0 * PI - taken, 1e-9));
+            CHECK(faces(r) == 7);
+            done(r);
+        }
+        for (smlib_brep *b : {plate, pin, holed})
+        {
+            smlib_brep_free(b);
+        }
+    }
+    {
+        const double o[3] = {0, 0, 0}, up[3] = {0, 0, 1};
+        smlib_brep *can = nullptr, *r = nullptr;
+        CHECK(smlib_make_cylinder(o, 10.0, 20.0, &can) == SMLIB_OK);
+        const double rim[3] = {10.0 * std::cos(1.0), 10.0 * std::sin(1.0), 20.0};
+        CHECK(can != nullptr && smlib_chamfer_sides(can, rim, 1, 0.5, 2.0, 25.0, 0, up, &r, nullptr) == SMLIB_OK);
+        if (r != nullptr)
+        {
+            CHECK(near(volume_of(r), PI * 20.0 * (64.0 + 76.8 + 92.16) / 3.0, 1e-9));
+            CHECK(faces(r) == 3);
+            done(r);
+        }
+        smlib_brep_free(can);
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 4 && std::strcmp(argv[1], "--solidcore-1173") == 0)
@@ -6355,6 +6494,8 @@ int main(int argc, char **argv)
     end_face_rounds_mitred_at_concave_corners();
     chamfer_past_a_sloped_basin_rim();
     chamfer_of_a_rim_loop_past_its_rim();
+    rounds_mitred_to_one_past_a_rim();
+    closed_rims_blended_past_their_walls();
     tabbed_plate_rounds_mitred_on_the_arcs_continuation();
     corner_patch_edge_lies_on_its_patch();
     corner_patch_drop_from_a_guess_is_its_foot();
