@@ -6747,10 +6747,14 @@ SmStatus SmFilletEdge::CalcRailRailInterpolation
       delete pPlane; pPlane = NULL ;
       bCreateCrvOn3D = TRUE;
     }
-  else if (   pStartFV->GetFilletVertexType() != SM_FV_MATE
-           || pEndFV->GetFilletVertexType()   != SM_FV_MATE)
+  else if (   (pStartFV->GetFilletVertexType() != SM_FV_MATE && pStartFV->GetFilletVertexType() != SM_FV_SETBACK)
+           || (pEndFV->GetFilletVertexType()   != SM_FV_MATE && pEndFV->GetFilletVertexType()   != SM_FV_SETBACK))
     {
       // Special 4x2 concave cases
+      // SolidCraft change: a setback corner's vertices are on the face with their (u, v)
+      // (SmFilletVertex::CalcSetBackVert sets both ends' original UV), so its face curve is made
+      // in the face's (u, v) and lifted onto the face as any other: made in 3D and dropped, it
+      // left a curved face (off by 0.04 mm on an r15 cylinder at a setback of 4.5).
       bCreateCrvOn3D = TRUE;
     }
 

@@ -2835,6 +2835,89 @@ void chamfer_of_a_rim_loop_past_its_rim()
     }
 }
 
+
+// The corner (60, 25, 20) of a 60 x 40 x 20 box less an r15 cylinder about the vertical line
+// through (60, 40): the top face, the face x = 60 and the cylinder meet there, the top edge
+// along y straight, the vertical edge straight, the top edge on the cylinder a circular arc.
+smlib_brep *curved_corner_part()
+{
+    smlib_brep *part = box(0, 0, 0, 60, 40, 20);
+    smlib_brep *tool = cylinder(60, 40, -5, 15, 30);
+    smlib_brep *cut = nullptr;
+    CHECK(smlib_boolean(part, tool, SMLIB_BOOLEAN_SUBTRACT, &cut) == SMLIB_OK);
+    smlib_brep_free(tool);
+    smlib_brep_free(part);
+    return cut;
+}
+
+// The farthest any of the hole's edges (len entries of `holes` after the count) lies from the
+// surface of the face beside it, sampled along each.
+double hole_edges_off_their_faces(smlib_brep *r, const int64_t *holes, int64_t n)
+{
+    SmTArray<SmEdge *> es;
+    SmTArray<SmFace *> fs;
+    r->p->GetEdges(es);
+    r->p->GetFaces(fs);
+    double worst = 0.0;
+    for (int64_t k = 0; k < n; ++k)
+    {
+        SmEdge *e = es[static_cast<ULONG>(holes[1 + 3 * k])];
+        SmSurface *sf = fs[static_cast<ULONG>(holes[2 + 3 * k])]->GetSurface();
+        SmExtent1d ivl = e->GetInterval();
+        for (int q = 0; q <= 16; ++q)
+        {
+            SmPoint3d c3, f3;
+            e->GetCurve()->EvaluatePoint(ivl.GetMin() + (ivl.GetMax() - ivl.GetMin()) * q / 16.0, c3);
+            SmSolutionArray sol;
+            if (sf->GlobalPointSolve(sf->GetNaturalUVDomain(), SM_SO_MINIMIZE, c3, 1e-9, NULL, SM_SR_SINGLE, sol) != SM_SUCCESS || sol.GetSize() < 1)
+            {
+                return HUGE_VAL;
+            }
+            sf->EvaluatePoint(SmPoint2d(sol[0].m_vStart[0], sol[0].m_vStart[1]), f3);
+            worst = std::max(worst, f3.DistanceBetween(c3));
+        }
+    }
+    return worst;
+}
+
+// The curved corner above, its three edges rounded r3 and set back 4.5 to 8
+// (smlib_blend_setback_open, and closed by SMLib's patch, smlib_blend_setback). The corner's face
+// curve between the arc's round and the vertical edge's lies on the cylinder, to the body's
+// tolerance: it is made in the cylinder's (u, v) and lifted, as on any curved face. It was made in 3D from the rails' ends and
+// dropped (as on a plane, where that is exact): 0.04 mm off the cylinder at a setback of 4.5 and
+// 0.65 at 8, its edge's tolerance so large that SMLib's own check refused the result.
+void corner_setback_face_curve_on_a_cylinder()
+{
+    smlib_brep *cut = curved_corner_part();
+    const double edges[9] = {60, 10, 20, 60, 25, 10, 52.5, 40 - 15 * 0.8660254037844386, 20};
+    const double radii[3] = {3, 3, 3};
+    const double corner[3] = {60, 25, 20};
+    for (double setback : {4.5, 6.0, 8.0})
+    {
+        int64_t holes[64];
+        int64_t len = -1;
+        smlib_brep *r = nullptr;
+        CHECK(smlib_blend_setback_open(cut, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, 1, 0.1, &r, holes, 64, &len, nullptr, nullptr) ==
+                  SMLIB_OK &&
+              r != nullptr && len == 1 + 3 * 12 && holes[0] == 12);
+        if (r != nullptr && len == 1 + 3 * 12)
+        {
+            // lifted onto the cylinder to the body's tolerance
+            const double off = hole_edges_off_their_faces(r, holes, 12);
+            const double tol = static_cast<double>(r->p->GetTolerance());
+            if (off > tol)
+            {
+                std::printf("set back %g: a hole edge lies %.3g off its face (tolerance %.3g)\n", setback, off, tol);
+            }
+            CHECK(off <= tol);
+        }
+        done(r);
+        CHECK(smlib_blend_setback(cut, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, 1, 0.1, &r, nullptr, nullptr) == SMLIB_OK);
+        done(r);
+    }
+    smlib_brep_free(cut);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 4 && std::strcmp(argv[1], "--solidcore-1173") == 0)
@@ -6284,6 +6367,7 @@ int main(int argc, char **argv)
     corner_setback_eased();
     corner_setback_eased_long_setbacks();
     corner_setback_eased_face_curves_are_quintics();
+    corner_setback_face_curve_on_a_cylinder();
     shelled_tapered_box_rounds();
     shelled_disc_round_thinner_than_the_wall();
     groove_arc_round_ends_in_the_top();
