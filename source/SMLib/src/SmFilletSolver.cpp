@@ -18,6 +18,7 @@
 
 #ifndef __SMFILLETINTERSECTOR_H__
 #include <SmFilletIntersector.h>
+#include <SmFilletCorner.h>
 #endif
 
 #ifndef __SMFILLETSTANDARDSOLVER_H__
@@ -6375,6 +6376,175 @@ SmBoolean SmFilletSolver::IsKnifeEdge
     { return FALSE; }
   return ( smos_Min( dAngle, SM_2PI - dAngle ) < dTangencyTolRad ) ? TRUE : FALSE;
 } // end SmFilletSolver::IsKnifeEdge
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. Whether the fillet's end section at each Nx1
+    end lies on the end face: rbFit is FALSE when it runs off it.
+
+NOTES: At a vertex of three edges where only this edge is filleted (an
+    Nx1 corner) the fillet ends on the third face E, the end face: its end
+    section is where the fillet's surface meets E's, from rail 0's crossing
+    of its side edge (the edge of its face and E at the vertex) to rail 1's
+    (SmFilletNx1Corner::CalcCornerEdgeGeom builds it as the end rib). The
+    end face must hold all of it. Where E is narrower than the fillet and
+    something stands on it next to the vertex (a lip on a shelled box's rim,
+    the section running under the lip's foot: off E across a concave edge of
+    it), part of the section lies beyond E's boundary under material: the
+    corner's end rib leaves its face and the fillet comes back unsewn. The
+    fillet then overflows its end face, and is built as an overflow is (the
+    executive's m_bCliffOverflow): cut off by E's surface continued, and the
+    material it removes subtracted. (A section off E across a convex edge,
+    a hole's rim or a cliff, is not judged here.) The section
+    is the surfaces' exact intersection between the two crossings
+    (sm_SrfSrfIntersection), classified against E (SmFace::CurveOnClassify).
+    Judged where the corner takes the end face as it is: both side edges
+    of the filleted edge's convexity, neither tangent. Where one is of the
+    other convexity the corner continues the end face past its boundary
+    (a chamfer ending on a boss's wall, a concave chamfer at a missing
+    quadrant), and an end that is no Nx1 corner, or where a rail misses its
+    side edge, has no end section of this kind.
+***********************************************************************/
+SmStatus SmFilletSolver::EndSectionsFitTheirFaces
+  (SmBoolean & rbFit)   // out: FALSE = an end section runs off its end face
+{
+  rbFit = TRUE;
+  SmEdgeuse * pFilEU   = GetEdgeuse(0);       NER(pFilEU);
+  SmEdge    * pFilEdge = pFilEU->GetEdge();   NER(pFilEdge);
+  SmBoolean   bConcave = FALSE;
+  SER( IsConcaveEdge( *pFilEdge, bConcave ));
+  for (ULONG k=0; k<m_vFilletGeoms.GetSize() && rbFit; k++)
+    {
+      SmFilletGeom * pFG = m_vFilletGeoms[k];
+      if (pFG == NULL || pFG->GetFilletGeomType() != SM_FG_DEFAULT)
+        { continue; }
+      SmSurface * pFilletSurface = pFG->GetFilletSurface();   NER(pFilletSurface);
+      for (SmVertex * pV : { pFilEdge->GetStartVertex(), pFilEdge->GetEndVertex() })
+        {
+          NER(pV);
+          SmFilletCorner * pCorner = GetFilletExecutive()->GetFilletCornerOfVertex( pV );
+          SmTArray<SmEdge*> sVertexEdges;
+          pV->GetEdges( sVertexEdges );
+          if ( pCorner == NULL || pCorner->GetCornerType() != SM_FCR_N_x_1 || sVertexEdges.GetSize() != 3 )
+            { continue; }
+          // each rail's side edge at pV, the end face they share, and where the rail crosses it
+          SmFace    * pEndFace = NULL;
+          SmPoint3d   asCross[2];
+          SmBoolean   bBoth = TRUE;
+          for (ULONG ii=0; ii<2 && bBoth; ii++)
+            {
+              SmFilletEdge * pRail  = pFG->GetRail(ii);              NER(pRail);
+              SmCurve      * pCurve = pRail->GetCurve();             NER(pCurve);
+              SmFace       * pFace  = pRail->GetOriginalFace();      NER(pFace);
+              SmEdgeuse    * pMate  = pRail->GetPrimaryEdgeuse()->GetMate();   NER(pMate);
+              SmEdge       * pSide  = NULL;
+              for (ULONG e=0; e<sVertexEdges.GetSize(); e++)
+                {
+                  SmEdge * pE = sVertexEdges[e];
+                  SmTArray<SmFace*> sFaces;
+                  pE->GetFaces( sFaces );
+                  if ( pE != pFilEdge && sFaces.GetSize() == 2 && ( sFaces[0] == pFace || sFaces[1] == pFace ))
+                    {
+                      pSide = pE;
+                      SmFace * pOther = ( sFaces[0] == pFace ) ? sFaces[1] : sFaces[0];
+                      if ( pEndFace != NULL && pEndFace != pOther )
+                        { pSide = NULL; }
+                      pEndFace = pOther;
+                    }
+                }
+              if ( pSide == NULL || pEndFace == NULL )
+                { bBoth = FALSE; continue; }
+              // An end face the corner takes as it is: a side edge of the filleted edge's
+              // convexity, and not tangent (where one is of the other convexity the corner
+              // continues the end face past its boundary, SmFilletNx1Corner::MakeCornerTopology)
+              SmBoolean bSideConcave = FALSE, bOpposite = FALSE;
+              SER( IsConcaveEdge( *pSide, bSideConcave ));
+              if ( bSideConcave != bConcave || sm_TestManifoldTangentRollover( pSide, bOpposite, m_dTangencyTolerance, 0 ))
+                { bBoth = FALSE; continue; }
+              // the rail's crossing of pSide nearest pV
+              SmCurveClassification sClass(pCurve, pCurve->GetNaturalInterval(), pMate->GetUVTrimCurvePointer(), GetThisApproxTol3d());
+              SER( pFace->CurveOnClassify( TRUE, sClass, TRUE ));
+              double dNearest = SM_BIG_DOUBLE;
+              for (ULONG j=0; j<sClass.GetSize(); j++)
+                {
+                  for (const SmPointClassification * pPC : { &sClass[j].m_vStart, &sClass[j].m_vEnd })
+                    {
+                      const double dT = ( pPC == &sClass[j].m_vStart ) ? sClass[j].GetMin() : sClass[j].GetMax();
+                      if ( pPC->GetPointClass() != SM_PC_EDGE || pPC->GetObject() != pSide )
+                        { continue; }
+                      SmPoint3d sAt;
+                      SER( pCurve->EvaluatePoint( dT, sAt ));
+                      const double dDist = sAt.DistanceBetween( pV->GetPoint() );
+                      if ( dDist < dNearest )
+                        {
+                          dNearest = dDist;
+                          asCross[ii] = sAt;
+                        }
+                    }
+                }
+              if ( dNearest == SM_BIG_DOUBLE )
+                { bBoth = FALSE; }
+            }
+          if ( !bBoth || pEndFace == NULL || pEndFace->GetSurface() == NULL )
+            { continue; }
+          // the end section, and whether the end face holds it
+          const SmContext & crContext = GetCreationContext();
+          SmFilletVertex sFrom, sTo;
+          sFrom.SetPoint( asCross[0] );
+          sTo.SetPoint( asCross[1] );
+          SmBSplineCurve * p3D = NULL, * pUVFillet = NULL, * pUVEnd = NULL;
+          SmStatus eStat = sm_SrfSrfIntersection( crContext, &sFrom, &sTo, NULL, NULL, pFilletSurface, pEndFace->GetSurface(),
+                                                  GetThisApproxTol3d(), GetThisAngTolRad(), p3D, pUVFillet, pUVEnd );
+          SmObjDelete sDelete3D(p3D), sDeleteUV1(pUVFillet), sDeleteUV2(pUVEnd);
+          SER( eStat );
+          NER(p3D);
+          // the section from one crossing to the other (the intersection may run on past them)
+          double adEnd[2] = { 0.0, 0.0 };
+          for (ULONG ii=0; ii<2; ii++)
+            {
+              SmBoolean bDropped = FALSE;
+              double    dDist = SM_BIG_DOUBLE;
+              SER( p3D->DropPoint( p3D->GetNaturalInterval(), asCross[ii], NULL, SM_BIG_DOUBLE, NULL, bDropped, adEnd[ii], dDist ));
+              if ( !bDropped || dDist > 10.0 * GetThisApproxTol3d() )
+                { SER( SM_ERR ); }
+            }
+          SmExtent1d sBetween;
+          SER( sBetween.SetMinMax( smos_Min( adEnd[0], adEnd[1] ), smos_Max( adEnd[0], adEnd[1] )));
+          SmCurveClassification sSection(p3D, sBetween, pUVEnd, GetThisApproxTol3d());
+          SER( pEndFace->CurveOnClassify( TRUE, sSection, TRUE ));
+          for (ULONG j=0; j<sSection.GetSize() && rbFit; j++)
+            {
+              if ( sSection[j].m_vMid.GetPointClass() != SM_PC_UNKNOWN )
+                { continue; }
+              // The section's ends lie on the side edges: a first or last run off the face no
+              // longer than the classification's tolerance is its end on that edge.
+              if ( j == 0 || j + 1 == sSection.GetSize() )
+                {
+                  SmPoint3d sA, sB;
+                  SER( p3D->EvaluatePoint( sSection[j].GetMin(), sA ));
+                  SER( p3D->EvaluatePoint( sSection[j].GetMax(), sB ));
+                  if ( sA.DistanceBetween( sB ) <= GetThisApproxTol3d() )
+                    { continue; }
+                }
+              // Off the face across a wall's foot (a concave edge of the end face: something
+              // standing on it), the section runs under material. Across a convex edge (a hole's
+              // rim, a cliff) it runs into the open, which this does not judge.
+              SmBoolean bUnder = FALSE;
+              for (const SmPointClassification * pPC : { &sSection[j].m_vStart, &sSection[j].m_vEnd })
+                {
+                  if ( pPC->GetPointClass() != SM_PC_EDGE || pPC->GetObject() == NULL )
+                    { continue; }
+                  SmBoolean bWallFoot = FALSE;
+                  SER( IsConcaveEdge( *(const SmEdge*)pPC->GetObject(), bWallFoot ));
+                  if ( bWallFoot )
+                    { bUnder = TRUE; }
+                }
+              if ( bUnder )
+                { rbFit = FALSE; }
+            }
+        }
+    }
+  return SM_SUCCESS;
+} // end SmFilletSolver::EndSectionsFitTheirFaces
 
 /*******************************************************************//**
 PURPOSE: SolidCraft change. Whether every rail of this solver's fillet stays on the face it
