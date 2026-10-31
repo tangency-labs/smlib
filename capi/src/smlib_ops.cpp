@@ -2056,7 +2056,7 @@ extern "C" int32_t smlib_blend(const smlib_brep *brep, int32_t kind, const doubl
 extern "C" int32_t smlib_blend_order(const smlib_brep *brep, int32_t order, double thumbweight, const double *points, const double *sizes,
                                      int64_t n_points, double tolerance, smlib_brep **out, int64_t *out_failed_point)
 {
-    if (order < 0 || order > SMLIB_BLEND_ORDER_MAX || !(std::isfinite(thumbweight) && thumbweight >= 0.0 && thumbweight < 1.0))
+    if (order < 0 || order > SMLIB_BLEND_ORDER_MAX || !(thumbweight == SMLIB_BLEND_THUMBWEIGHT || (std::isfinite(thumbweight) && thumbweight > -1.0 && thumbweight < 1.0)))
     {
         return SMLIB_ERR_ARG;
     }

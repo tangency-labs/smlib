@@ -1437,12 +1437,106 @@ SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
 
 /*******************************************************************//**
 PURPOSE: A blend's section of order lOrder (0 to SM_GN_MAX_ORDER) and
-    thumbweight dThumbweight (0 <= w < 1, used from order 2). Order 1's
+    thumbweight dThumbweight (-1 < w < 1, or SM_GN_THUMBWEIGHT_EQUAL_AREA, used from order 2). Order 1's
     circles are built as SmArcSection's defaults say.
 ***********************************************************************/
 SmGnSectionFSG::SmGnSectionFSG(ULONG lOrder, double dThumbweight)
   : m_lOrder(lOrder), m_dThumbweight(dThumbweight), m_dCertifiedBound(-1.0), m_lCertifiedSpans(0)
 {
+}
+
+namespace
+{
+// The integral of a b' - a' b over [0, 1] for the order-n section between two planes, where
+// S(t) = a(t) e1 + b(t) e2 with e1, e2 the rails' points from the edge: a = f (1 - p1),
+// b = (1 - f) p2 (SmFilletSection.cpp's header). Twice the area the section takes off, over
+// |e1 x e2|; it does not depend on the planes' angle. Composite Simpson on 2048 intervals: the
+// integrand is a rational function smooth on [0, 1].
+double sm_GnSectionAreaIntegral(ULONG n, double w)
+{
+  const double dN1 = static_cast<double>(n + 1);
+  auto ab = [&](double t, double & a, double & b, double & da, double & db)
+  {
+    const double dA = smos_Pow(1.0 - t, dN1), dB = smos_Pow(t, dN1);
+    const double f = dA / (dA + dB);
+    const double dfa = -dN1 * smos_Pow(1.0 - t, dN1 - 1.0), dfb = dN1 * smos_Pow(t, dN1 - 1.0);
+    const double df = (dfa * dB - dA * dfb) / ((dA + dB) * (dA + dB));
+    const double d1 = 1.0 - w + w * t, d2 = 1.0 - w * t;
+    const double p1 = t / d1, dp1 = (1.0 - w) / (d1 * d1);
+    const double p2 = t * (1.0 - w) / d2, dp2 = (1.0 - w) / (d2 * d2);
+    a = f * (1.0 - p1);           da = df * (1.0 - p1) - f * dp1;
+    b = (1.0 - f) * p2;           db = -df * p2 + (1.0 - f) * dp2;
+  };
+  const int N = 2048;
+  double dSum = 0.0;
+  for (int i=0; i<=N; i++)
+    {
+      const double t = static_cast<double>(i) / N;
+      double a, b, da, db;
+      ab(t, a, b, da, db);
+      const double g = a * db - da * b;
+      dSum += (i == 0 || i == N ? 1.0 : (i % 2 ? 4.0 : 2.0)) * g;
+    }
+  return dSum / (3.0 * N);
+}
+}
+
+/*******************************************************************//**
+PURPOSE: The equal area thumbweight: the w at which the order-n section
+    between two planes at the angle alpha takes off what the ball's circle
+    does on the same rails.
+NOTES: With e1, e2 the rails' points from the edge (|e_i| = d = r cot(alpha/2)),
+    the section takes off (1/2) d^2 sin(alpha) I(w), I the integral of
+    a b' - a' b (sm_GnSectionAreaIntegral), and the circle r^2 (cot(alpha/2)
+    - (pi - alpha)/2). So I(w) = (cot(alpha/2) - (pi - alpha)/2) /
+    (cot(alpha/2) cos^2(alpha/2)), a target that depends on alpha only. I
+    falls as w rises, so the root is bisected on (-1, 1). A target past
+    what the range reaches (a wedge so open or so shut the circle takes off
+    next to nothing, or nearly the chord's area) is an error naming it.
+***********************************************************************/
+SmStatus SmGnSectionFSG::EqualAreaThumbweight(ULONG lOrder, double dAlpha, double & rdW)
+{
+  rdW = 0.0;
+  if (lOrder < 2 || lOrder > SM_GN_MAX_ORDER || !(dAlpha > 0.0 && dAlpha < SM_PI))
+    { SER(SM_ERR_INVALID_INPUT); }
+  const double dHalf = 0.5 * dAlpha;
+  const double dCot = smos_Cosine(dHalf) / smos_Sine(dHalf);
+  const double dTarget = (dCot - 0.5 * (SM_PI - dAlpha)) / (dCot * smos_Cosine(dHalf) * smos_Cosine(dHalf));
+  double dLo = -1.0 + 1.0e-9, dHi = 1.0 - 1.0e-9;
+  const double dILo = sm_GnSectionAreaIntegral(lOrder, dLo), dIHi = sm_GnSectionAreaIntegral(lOrder, dHi);
+  if (!(dTarget <= dILo && dTarget >= dIHi))
+    { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmGnSectionFSG: no thumbweight gives this wedge's section the ball's circle's area")); }
+  for (int it=0; it<200 && dHi - dLo > 1.0e-15; it++)
+    {
+      const double dMid = 0.5 * (dLo + dHi);
+      if (sm_GnSectionAreaIntegral(lOrder, dMid) > dTarget) { dLo = dMid; } else { dHi = dMid; }
+    }
+  rdW = 0.5 * (dLo + dHi);
+  return SM_SUCCESS;
+}
+
+/*******************************************************************//**
+PURPOSE: The thumbweight used, the equal area one resolved once from the
+    wedge at one station: the ball's centre crCentre and its contacts
+    crRail1, crRail2 give the wedge's angle alpha = pi - (the angle between
+    the radii). Exact for two planes; elsewhere the default of the station
+    it is resolved at.
+***********************************************************************/
+SmStatus SmGnSectionFSG::ResolveThumbweight(const SmPoint3d & crCentre, const SmPoint3d & crRail1, const SmPoint3d & crRail2) const
+{
+  if (m_dThumbweight != SM_GN_THUMBWEIGHT_EQUAL_AREA)
+    { return SM_SUCCESS; }
+  SmVector3d sA = crRail1 - crCentre, sB = crRail2 - crCentre;
+  const double dLa = sA.Length(), dLb = sB.Length();
+  if (!(dLa > 0.0 && dLb > 0.0))
+    { SER(SM_ERR_INVALID_INPUT); }
+  double dCos = sA.Dot(sB) / (dLa * dLb);
+  dCos = smos_Max(-1.0, smos_Min(1.0, dCos));
+  const double dAlpha = SM_PI - smos_ArcCosine(dCos);
+  double dW = 0.0;
+  SER(EqualAreaThumbweight(m_lOrder, dAlpha, dW));
+  m_dThumbweight = dW;
+  return SM_SUCCESS;
 }
 
 /*******************************************************************//**
@@ -2517,7 +2611,7 @@ SmStatus SmGnSectionFSG::Build
   NER(pFace1); NER(pFace2); NER(pUV1); NER(pUV2);
   const ULONG n = m_lOrder;
   if (!IsValid(n, m_dThumbweight))
-    { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmGnSectionFSG: the order must be 2 to 4 and the thumbweight in [0, 1)")); }
+    { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmGnSectionFSG: the order must be 2 to 4 and the thumbweight in (-1, 1)")); }
   const SmSurface * apFace[2] = { pFace1, pFace2 };
   SmBSplineCurve * apRail[2] = { &rRail1Curve, &rRail2Curve };
   SmBSplineCurve * apUV[2] = { pUV1, pUV2 };
@@ -2528,6 +2622,15 @@ SmStatus SmGnSectionFSG::Build
   std::vector<double> sS;
   const SmBSplineCurve * apCurves[3] = { &rCenterLine, &rRail1Curve, &rRail2Curve };
   const SmExtent1d sIvl = rCenterLine.GetNaturalInterval();
+  {
+    // the default thumbweight resolved from the wedge at the middle station
+    const double dMidS = 0.5 * (sIvl.GetMin() + sIvl.GetMax());
+    SmPoint3d sC, sR1, sR2;
+    SER(rCenterLine.EvaluatePoint(dMidS, sC));
+    SER(rRail1Curve.EvaluatePoint(dMidS, sR1));
+    SER(rRail2Curve.EvaluatePoint(dMidS, sR2));
+    SER(ResolveThumbweight(sC, sR1, sR2));
+  }
   for (int c=0; c<3; c++)
     {
       const SmExtent1d sCIvl = apCurves[c]->GetNaturalInterval();
@@ -2831,6 +2934,7 @@ SmStatus SmGnSectionFSG::ContactOrderAt
   const int n = static_cast<int>(m_lOrder);
   SmPoint3d sM;
   SER(crCenter.EvaluatePoint(dS, sM));
+  SER(ResolveThumbweight(sM, crRail[0], crRail[1]));
   double adR[2], adSide[2];
   for (int f=0; f<2; f++)
     {
