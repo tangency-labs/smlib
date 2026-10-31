@@ -2835,6 +2835,35 @@ void chamfer_of_a_rim_loop_past_its_rim()
     }
 }
 
+// The three edges of an s x s x s box at the origin rounded r through SmApiVariableRadiusFillet
+// (constant law, circular sections, G1), its corner a Coons patch; the volume removed, or -1
+// when the round fails, the body is unsound or it has not the 10 faces (6, 3 rounds, the corner).
+static double variable_corner_removed(double s, double r)
+{
+    SmApiGetOrCreateContext();
+    SmBrep *p = nullptr;
+    CHECK(SmApiCreateBox(SmVector3d(0, 0, 0), s, s, s, p) == SM_SUCCESS && p != nullptr);
+    smlib_brep *b = new smlib_brep{p};
+    SmTArray<SmVertex *> vertices;
+    p->GetVertices(vertices);
+    SmTArray<SmEdge *> edges;
+    for (ULONG i = 0; i < vertices.GetSize(); ++i)
+    {
+        if (vertices[i]->GetPoint().Length() < 1e-9 * s)
+        {
+            vertices[i]->GetEdges(edges);
+        }
+    }
+    CHECK(edges.GetSize() == 3);
+    double v = -1.0;
+    if (edges.GetSize() == 3 && SmApiVariableRadiusFillet(p, edges, r, r, 1, 1) == SM_SUCCESS && sound(b) && p->GetNumFaces() == 10)
+    {
+        v = s * s * s - volume_of(b);
+    }
+    smlib_brep_free(b);
+    return v;
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 4 && std::strcmp(argv[1], "--solidcore-1173") == 0)
@@ -6389,6 +6418,22 @@ int main(int argc, char **argv)
         {
             smlib_brep_free(x);
         }
+    }
+
+    // A three-edge corner of variable rounds (constant law) builds at any size: the box 10 with
+    // r 1 and the box 0.01 with r 0.001, the same corner 1000 times smaller. sm_CoonsSideAngle
+    // measured the corner patch's normal along its sides with Unitize, whose absolute floor (a
+    // length of 1e-12) refused a normal near a collapsing side of the small patch that its own
+    // test, relative to the derivatives, had found: the small corner failed
+    // (SM_ERR_INVALID_INPUT) and the round with it. SMLib's fitting tolerances are lengths, not
+    // shares of the part, so the small corner's removed volume, scaled by 1e9, is the big one's
+    // only to them (0.5% at r 0.001, 6.3224 against 6.2914).
+    {
+        const double big = variable_corner_removed(10.0, 1.0);
+        const double small = variable_corner_removed(0.01, 0.001);
+        std::printf("variable-round corner: removed %.9g at size 10, %.9g x 1e9 at size 0.01\n", big, small * 1e9);
+        CHECK(big > 0.0 && small > 0.0);
+        CHECK(near(small * 1e9, big, 1e-2));
     }
 
     if (failures != 0)
