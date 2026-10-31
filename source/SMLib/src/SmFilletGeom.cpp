@@ -6263,6 +6263,17 @@ NOTES: The rib is solved section by section from the tangent end outward,
   surface) interpolate the same exact points in t, with the stations
   doubled until each span's midpoint is within dApproxTol of the exact
   point there. bReverse: the rib runs from crOtherEnd to crTangentEnd.
+
+  For odd k past 1 the curves are B-splines in t with the zero-speed end
+  at the tangent end: in s the rib has curvature ~ s^(-1/2) there, which
+  no regular B-spline has, and in t it is analytic. There da/dt = 0 as
+  well as ds/dt, so the curves' first derivative is zero (their first two
+  control points coincide) and their second is the exact 2 (s1 - s0) dX/ds
+  at the tangent end, X the fillet surface along its section, whose
+  along derivative da/ds vanishes there; both are interpolated as end
+  conditions. Their stations are not doubled everywhere but halved where
+  a span's midpoint is off: in t the rib is smoothest at the tangent end
+  and least smooth at the other rail, where s ~ t^2 raises its degree.
 ***********************************************************************/
 static SmStatus sm_TangentEndRib
  (const SmContext & crContext,     // in : context for new object construction
@@ -6319,11 +6330,64 @@ static SmStatus sm_TangentEndRib
     { SER_MSG( SM_ERR, _T("sm_TangentEndRib(): the rib's ends lie on one section") ); }
   const SmBoolean bOdd = ( lOrder % 2 == 1 ) ? TRUE : FALSE;
   auto dSigmaAt = [&]( double dT ) { return dSigma0 + ( dSigma1 - dSigma0 ) * ( bOdd ? dT * dT : dT ); };
-  // The curves' parameter: t, but for an odd order past 1, in which the rib leaves the tangent
-  // end with zero speed in t (a ~ t^k with s ~ t^2), s = t^2: regular there, the stations
-  // closing in on the tangent end as t^2.
-  const SmBoolean bInS = ( bOdd && lOrder > 1 ) ? TRUE : FALSE;
-  auto dParamAt = [&]( double dT ) { return bInS ? dT * dT : dT; };
+  // The curves' parameter is t. For an odd order past 1 the rib leaves the tangent end with zero
+  // speed in t (a ~ t^k with s ~ t^2): the curves' end conditions there, the first derivative
+  // zero and the second 2 (s1 - s0) times the fillet surface's derivative along its section
+  // (on the fillet surface's UV: that section direction; on the end surface's: the uv
+  // derivative that maps to it, in its tangent plane).
+  const SmBoolean bZeroSpeed = ( bOdd && lOrder > 1 ) ? TRUE : FALSE;
+  SmVector3d sD2X, sD2Fil, sD2End;
+  if ( bZeroSpeed )
+    {
+      SmVector3d sF[2][2], sEndD[2][2];
+      SER( pFillet->Evaluate( sFilUV[0], 1, 1, TRUE, TRUE, TRUE, sF[0], FALSE ));
+      SER( pEnd->Evaluate( sEndUV[0], 1, 1, TRUE, TRUE, TRUE, sEndD[0], FALSE ));
+      const double dTwoDSigma = 2.0 * ( dSigma1 - dSigma0 );
+      sD2X   = ( ( lSection == 0 ) ? sF[1][0] : sF[0][1] ) * dTwoDSigma;
+      sD2Fil = ( lSection == 0 ) ? SmVector3d( dTwoDSigma, 0.0, 0.0 ) : SmVector3d( 0.0, dTwoDSigma, 0.0 );
+      // E_u u'' + E_v v'' = X'': the normal equations of the end surface's tangent plane
+      const SmVector3d & crEu = sEndD[1][0];
+      const SmVector3d & crEv = sEndD[0][1];
+      double dA = crEu.Dot( crEu ), dB = crEu.Dot( crEv ), dC = crEv.Dot( crEv );
+      double dDet = dA * dC - dB * dB;
+      if ( dDet <= SM_EFF_ZERO * dA * dC )
+        { SER_MSG( SM_ERR, _T("sm_TangentEndRib(): the end surface is singular at the tangent end") ); }
+      double dRu = crEu.Dot( sD2X ), dRv = crEv.Dot( sD2X );
+      sD2End = SmVector3d( ( dC * dRu - dB * dRv ) / dDet, ( dA * dRv - dB * dRu ) / dDet, 0.0 );
+      // X'' lies in the end surface's tangent plane: the fillet surface touches it there
+      SmVector3d sOffPlane = sD2X - crEu * sD2End.x - crEv * sD2End.y;
+      if ( sOffPlane.Length() > SM_EFF_ZERO_SQRT * smos_Max( 1.0, sD2X.Length() ))
+        { SER_MSG( SM_ERR, _T("sm_TangentEndRib(): the fillet surface's section leaves the end surface's tangent plane at the tangent end") ); }
+    }
+  // One curve through the points at their stations crT: in the zero-speed case with those end
+  // conditions.
+  auto Interpolate = [&]( const SmTArray<SmPoint3d> & crPts, const SmTArray<double> & crT, const SmVector3d & crD2, SmBSplineCurve *& rpCurve ) -> SmStatus
+    {
+      rpCurve = NULL;
+      if ( bZeroSpeed )
+        {
+          SmTArray<SmVector3d> sD1, sD2;
+          sD1.Add( SmVector3d( 0.0, 0.0, 0.0 ));
+          sD2.Add( crD2 );
+          SER( SmBSplineCurve::CreateInterpolatingCurve( crContext, SM_CP_UNIFORM, 3, 3, crPts, sD1, &sD2, FALSE, rpCurve, &crT ));
+          NER(rpCurve);
+          // The zero first derivative is the first two control points' coincidence: the
+          // interpolation's solve gives the second to rounding, and it is the first.
+          SmPoint3d sCPt0, sCPt1;
+          double    dW0 = 1.0, dW1 = 1.0;
+          if ( rpCurve->GetNumberControlPoints() < 2 )
+            { SER(SM_ERR); }
+          SER( rpCurve->GetControlPoint( SM_CP_NON_RATIONAL, 0, sCPt0, dW0 ));
+          SER( rpCurve->GetControlPoint( SM_CP_NON_RATIONAL, 1, sCPt1, dW1 ));
+          if ( sCPt1.DistanceBetween( sCPt0 ) > SM_EFF_ZERO_SQRT * smos_Max( 1.0, sCPt0.GetMaxDimension() ))
+            { SER_MSG( SM_ERR, _T("sm_TangentEndRib(): the zero-speed end's interpolation leaves its end") ); }
+          SER( rpCurve->SetControlPoint( SM_CP_NON_RATIONAL, 1, sCPt0, 1.0 ));
+          return SM_SUCCESS;
+        }
+      SER( SmBSplineCurve::InterpolatePoints( crContext, crPts, &crT, 3, NULL, NULL, FALSE, SM_IT_UNIFORM, rpCurve ));
+      NER(rpCurve);
+      return SM_SUCCESS;
+    };
 
   // the exact rib point at t, from a guess; on the other end's side of the tangent end
   auto Solve = [&]( double dT, double & rdAlpha, SmPoint2d & rEndUV, SmPoint3d & rPnt, SmBoolean & rbOK ) -> SmStatus
@@ -6334,60 +6398,73 @@ static SmStatus sm_TangentEndRib
       return SM_SUCCESS;
     };
 
-  for ( ULONG lSpans=8; lSpans<=1024; lSpans*=2 )
+  // The stations, and the exact points there. A regular rib's stations are t = j / lSpans, the
+  // spans doubled until the curves are within the tolerance. A zero-speed rib's are refined where
+  // they are not: only the spans whose midpoint is off are halved, at that exact midpoint, so the
+  // stations follow the rib's own smoothness in t, the tangent end costing none.
+  SmTArray<double>    sT;
+  SmTArray<double>    sAlpha;
+  SmTArray<SmPoint2d> sE;
+  SmTArray<SmPoint3d> sX;
+  const ULONG lMaxSpans = 1024;
+  ULONG       lSpans    = 8;
+  SmBoolean   bStations = FALSE;
+  while ( lSpans <= lMaxSpans )
     {
-      // stations t = j / lSpans, and the exact points there
-      SmTArray<double>    sT;
-      SmTArray<double>    sAlpha;
-      SmTArray<SmPoint2d> sE;
-      SmTArray<SmPoint3d> sX;
-      sT.Add( 0.0 ); sAlpha.Add( dAlpha0 ); sE.Add( sEndUV[0] ); sX.Add( crTangentEnd );
-      SmBoolean bAll = TRUE;
-      for ( ULONG jj=1; jj<=lSpans && bAll; jj++ )
+      if ( !bStations )
         {
-          double dT = (double)jj / (double)lSpans;
-          // guess: the chord to the other end first, then the last two points carried on
-          double    dAlpha = ( jj == 1 ) ? dAlpha0 + ( dAlpha1 - dAlpha0 ) * dT
-                                       : 2.0 * sAlpha[jj-1] - sAlpha[jj-2];
-          SmPoint2d sUV    = ( jj == 1 ) ? sEndUV[0] + ( sEndUV[1] - sEndUV[0] ) * dT
-                                       : SmPoint2d( 2.0 * sE[jj-1].x - sE[jj-2].x, 2.0 * sE[jj-1].y - sE[jj-2].y );
-          SmPoint3d sPnt;
-          SmBoolean bOK = FALSE;
-          if ( jj == lSpans )
-            { dAlpha = dAlpha1; sUV = sEndUV[1]; }
-          SER( Solve( dT, dAlpha, sUV, sPnt, bOK ));
-          if ( !bOK )
-            { bAll = FALSE; break; }
-          sT.Add( dT ); sAlpha.Add( dAlpha ); sE.Add( sUV ); sX.Add( sPnt );
+          // stations t = j / lSpans, solved from the tangent end outward
+          sT.RemoveAll(); sAlpha.RemoveAll(); sE.RemoveAll(); sX.RemoveAll();
+          sT.Add( 0.0 ); sAlpha.Add( dAlpha0 ); sE.Add( sEndUV[0] ); sX.Add( crTangentEnd );
+          SmBoolean bAll = TRUE;
+          for ( ULONG jj=1; jj<=lSpans && bAll; jj++ )
+            {
+              double dT = (double)jj / (double)lSpans;
+              // guess: the chord to the other end first, then the last two points carried on
+              double    dAlpha = ( jj == 1 ) ? dAlpha0 + ( dAlpha1 - dAlpha0 ) * dT
+                                           : 2.0 * sAlpha[jj-1] - sAlpha[jj-2];
+              SmPoint2d sUV    = ( jj == 1 ) ? sEndUV[0] + ( sEndUV[1] - sEndUV[0] ) * dT
+                                           : SmPoint2d( 2.0 * sE[jj-1].x - sE[jj-2].x, 2.0 * sE[jj-1].y - sE[jj-2].y );
+              SmPoint3d sPnt;
+              SmBoolean bOK = FALSE;
+              if ( jj == lSpans )
+                { dAlpha = dAlpha1; sUV = sEndUV[1]; }
+              SER( Solve( dT, dAlpha, sUV, sPnt, bOK ));
+              if ( !bOK )
+                { bAll = FALSE; break; }
+              sT.Add( dT ); sAlpha.Add( dAlpha ); sE.Add( sUV ); sX.Add( sPnt );
+            }
+          if ( !bAll )
+            { lSpans *= 2; continue; }
+          if ( sX[lSpans].DistanceBetween( crOtherEnd ) > dApproxTol )
+            { SER_MSG( SM_ERR, _T("sm_TangentEndRib(): the rib does not reach its other end") ); }
+          sX[lSpans] = crOtherEnd;
+          bStations = TRUE;
         }
-      if ( !bAll )
-        { continue; }
-      if ( sX[lSpans].DistanceBetween( crOtherEnd ) > dApproxTol )
-        { SER_MSG( SM_ERR, _T("sm_TangentEndRib(): the rib does not reach its other end") ); }
-      sX[lSpans] = crOtherEnd;
 
       // the three curves through the exact points
       SmTArray<SmPoint3d> sFilPts, sEndPts;
-      SmTArray<double>    sParams;
       for ( ULONG jj=0; jj<=lSpans; jj++ )
         {
-          sParams.Add( dParamAt( sT[jj] ));
           double dSig = dSigmaAt( sT[jj] );
           sFilPts.Add( ( lSection == 0 ) ? SmPoint3d( dSig, sAlpha[jj], 0.0 ) : SmPoint3d( sAlpha[jj], dSig, 0.0 ));
           sEndPts.Add( SmPoint3d( sE[jj].x, sE[jj].y, 0.0 ));
         }
       SmBSplineCurve * p3D = NULL, * pFilUV = NULL, * pEndUV = NULL;
-      SER( SmBSplineCurve::InterpolatePoints( crContext, sX,      &sParams, 3, NULL, NULL, FALSE, SM_IT_UNIFORM, p3D ));
+      SER( Interpolate( sX, sT, sD2X, p3D ));
       SmObjDelete sDel3D( p3D );
-      SER( SmBSplineCurve::InterpolatePoints( crContext, sFilPts, &sParams, 3, NULL, NULL, FALSE, SM_IT_UNIFORM, pFilUV ));
+      SER( Interpolate( sFilPts, sT, sD2Fil, pFilUV ));
       SmObjDelete sDelFil( pFilUV );
-      SER( SmBSplineCurve::InterpolatePoints( crContext, sEndPts, &sParams, 3, NULL, NULL, FALSE, SM_IT_UNIFORM, pEndUV ));
+      SER( Interpolate( sEndPts, sT, sD2End, pEndUV ));
       SmObjDelete sDelEnd( pEndUV );
-      NER(p3D); NER(pFilUV); NER(pEndUV);
 
-      // each span's midpoint against the exact rib point there
-      SmBoolean bWithin = TRUE;
-      for ( ULONG jj=0; jj<lSpans && bWithin; jj++ )
+      // each span's midpoint against the exact rib point there; the spans off it, with that point
+      SmBoolean           bSolved = TRUE;
+      SmTArray<ULONG>     sOff;
+      SmTArray<double>    sOffAlpha;
+      SmTArray<SmPoint2d> sOffE;
+      SmTArray<SmPoint3d> sOffX;
+      for ( ULONG jj=0; jj<lSpans && bSolved && ( bZeroSpeed || sOff.GetSize() == 0 ); jj++ )
         {
           double    dT     = 0.5 * ( sT[jj] + sT[jj+1] );
           double    dAlpha = 0.5 * ( sAlpha[jj] + sAlpha[jj+1] );
@@ -6396,33 +6473,54 @@ static SmStatus sm_TangentEndRib
           SmBoolean bOK = FALSE;
           SER( Solve( dT, dAlpha, sUV, sExact, bOK ));
           if ( !bOK )
-            { bWithin = FALSE; break; }
-          SER( p3D->EvaluatePoint( dParamAt( dT ), sOn3D ));
-          SER( pFilUV->EvaluatePoint( dParamAt( dT ), sOnFilUV ));
-          SER( pEndUV->EvaluatePoint( dParamAt( dT ), sOnEndUV ));
+            { bSolved = FALSE; break; }
+          SER( p3D->EvaluatePoint( dT, sOn3D ));
+          SER( pFilUV->EvaluatePoint( dT, sOnFilUV ));
+          SER( pEndUV->EvaluatePoint( dT, sOnEndUV ));
           SER( pFillet->EvaluatePoint( SmPoint2d( sOnFilUV.x, sOnFilUV.y ), sOnFil ));
           SER( pEnd->EvaluatePoint( SmPoint2d( sOnEndUV.x, sOnEndUV.y ), sOnEnd ));
           if (   sOn3D.DistanceBetween( sExact )  > dApproxTol
               || sOnFil.DistanceBetween( sExact ) > dApproxTol
               || sOnEnd.DistanceBetween( sExact ) > dApproxTol )
-            { bWithin = FALSE; }
+            { sOff.Add( jj ); sOffAlpha.Add( dAlpha ); sOffE.Add( sUV ); sOffX.Add( sExact ); }
         }
-      if ( !bWithin )
-        { continue; }
 
-      SER( pFilUV->ConvertTo2D() );
-      SER( pEndUV->ConvertTo2D() );
-      if ( bReverse )
+      if ( bSolved && sOff.GetSize() == 0 )
         {
-          SmExtent1d sIvl = p3D->GetNaturalInterval();
-          SER( p3D->ReverseParameterization( sIvl, sIvl ));
-          SER( pFilUV->ReverseParameterization( sIvl, sIvl ));
-          SER( pEndUV->ReverseParameterization( sIvl, sIvl ));
+          SER( pFilUV->ConvertTo2D() );
+          SER( pEndUV->ConvertTo2D() );
+          if ( bReverse )
+            {
+              SmExtent1d sIvl = p3D->GetNaturalInterval();
+              SER( p3D->ReverseParameterization( sIvl, sIvl ));
+              SER( pFilUV->ReverseParameterization( sIvl, sIvl ));
+              SER( pEndUV->ReverseParameterization( sIvl, sIvl ));
+            }
+          rp3DCurve  = p3D;    sDel3D.Clear();
+          rpFilletUV = pFilUV; sDelFil.Clear();
+          rpEndUV    = pEndUV; sDelEnd.Clear();
+          return SM_SUCCESS;
         }
-      rp3DCurve  = p3D;    sDel3D.Clear();
-      rpFilletUV = pFilUV; sDelFil.Clear();
-      rpEndUV    = pEndUV; sDelEnd.Clear();
-      return SM_SUCCESS;
+
+      if ( !bZeroSpeed )
+        {
+          lSpans    *= 2;
+          bStations  = FALSE;
+          continue;
+        }
+
+      // the zero-speed rib: each span off the rib halved at its exact midpoint
+      if ( !bSolved )
+        { break; }
+      for ( ULONG kk=sOff.GetSize(); kk>0; kk-- )
+        {
+          ULONG lAt = sOff[kk-1] + 1;
+          (void)sT.InsertAt( lAt, 0.5 * ( sT[lAt-1] + sT[lAt] )); // InsertAt returns the new size
+          (void)sAlpha.InsertAt( lAt, sOffAlpha[kk-1] );
+          (void)sE.InsertAt( lAt, sOffE[kk-1] );
+          (void)sX.InsertAt( lAt, sOffX[kk-1] );
+        }
+      lSpans += sOff.GetSize();
     }
 
   SE_MSG( SM_ERR, _T("sm_TangentEndRib(): no stations give the rib within tolerance") );

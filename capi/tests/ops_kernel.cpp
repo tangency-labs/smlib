@@ -11,6 +11,7 @@
 #include <SmApiFillets.h>
 #include <SmApiPrimitives.h>
 #include <SmApiQueries.h>
+#include <SmAssertArray.h>
 #include <SmBSplineCurve.h>
 #include <SmBSplineSurface.h>
 #include <SmCone.h>
@@ -3645,9 +3646,216 @@ void tangent_end_front_round_r2()
     smlib_brep *b = peg_blend(tangent_peg(0), SMLIB_BLEND_ROUND, {20, 0, 10}, {2});
     peg_result(b, PEG_V0 - PEG_FRONT_ROUND_R2, true);
 }
+
+// The front curvature round's quintic section (SMLIB_BLEND_CURVATURE's, its inner control points
+// at a third and two thirds of the way from each contact to the corner (0, 10)): (y, z) at w in
+// [0, 1] from the contact on the front face, (0, 8), to the one on the top, (2, 10).
+void peg_curvature_section(double w, double &y, double &z)
+{
+    const double Y[6] = {0, 0, 0, 2.0 / 3, 4.0 / 3, 2}, Z[6] = {8, 8 + 2.0 / 3, 8 + 4.0 / 3, 10, 10, 10};
+    const double binom[6] = {1, 5, 10, 10, 5, 1};
+    y = z = 0;
+    for (int i = 0; i < 6; i++)
+    {
+        const double b = binom[i] * std::pow(1 - w, 5 - i) * std::pow(w, i);
+        y += b * Y[i];
+        z += b * Z[i];
+    }
+}
+
+// The exact end rib of the front curvature round at section parameter w: where the section's
+// sweep along x meets the cylinder (x - 40)^2 + (y - 8)^2 = 64, x = 40 - sqrt(16 y - y^2).
+SmPoint3d peg_curvature_rib(double w)
+{
+    double y = 0, z = 0;
+    peg_curvature_section(w, y, z);
+    return SmPoint3d(40 - std::sqrt(std::max(0.0, 16 * y - y * y)), y, z);
+}
+
+// The distance of `x` from the exact end rib: the nearest of the rib's points at w = u^2, u on a
+// grid of 2000, then by golden section between that point's neighbours.
+double peg_curvature_rib_distance(const SmPoint3d &x)
+{
+    const int n = 2000;
+    int best = 0;
+    for (int i = 1; i <= n; i++)
+    {
+        const double u = static_cast<double>(i) / n, b = static_cast<double>(best) / n;
+        if (x.DistanceBetween(peg_curvature_rib(u * u)) < x.DistanceBetween(peg_curvature_rib(b * b)))
+        {
+            best = i;
+        }
+    }
+    double lo = std::max(0, best - 1) / static_cast<double>(n), hi = std::min(n, best + 1) / static_cast<double>(n);
+    const double g = (std::sqrt(5.0) - 1) / 2;
+    for (int i = 0; i < 200; i++)
+    {
+        const double a = hi - g * (hi - lo), c = lo + g * (hi - lo);
+        if (x.DistanceBetween(peg_curvature_rib(a * a)) < x.DistanceBetween(peg_curvature_rib(c * c)))
+        {
+            hi = c;
+        }
+        else
+        {
+            lo = a;
+        }
+    }
+    const double u = 0.5 * (lo + hi);
+    return x.DistanceBetween(peg_curvature_rib(u * u));
+}
+
+// The front curvature round's end rib on the cylinder, from the tangent end P = (40, 0, 8), where
+// its rail on the front face crosses the seam T: x = 40 on y = 0, to its rail on the top. The
+// quintic section stands off the front face as y = c s^3 at s = z - 8 along T, c = 9/50: y =
+// 20/3 w^3 + O(w^4) and s = 10/3 w + O(w^4). On the cylinder the rib is then x = 40 - 4 sqrt(c)
+// s^(3/2) (1 + O(s)), whose curvature grows as 3 sqrt(c) s^(-1/2): kappa sqrt(s) -> 9 / sqrt(50).
+// No regular B-spline has that: the rib is one in t ~ sqrt(s), with zero speed at P, its second
+// derivative along T. Its knots: a cubic interpolant is within the tolerance 4e-5 where h^4 5/384
+// |C''''| is, and the exact rib's |C''''| in t (from 0 at P to 4813 at the top, where s ~ t^2
+// raises its degree) gives 18.9 spans equidistributed, so at most 2 x 18.9 for spans halved where
+// they are off: 38 knots.
+void peg_curvature_end_rib(const smlib_brep *b)
+{
+    const SmPoint3d p(40, 0, 8), q(40 - std::sqrt(28.0), 2, 10);
+    const double tol = 4e-5, limit = 9 / std::sqrt(50.0);
+    SmTArray<SmEdge *> es;
+    b->p->GetEdges(es);
+    SmEdge *rib = nullptr;
+    bool at_start = true;
+    for (ULONG i = 0; i < es.GetSize(); i++)
+    {
+        const SmPoint3d s = es[i]->GetStartVertex()->GetPoint(), e = es[i]->GetEndVertex()->GetPoint();
+        if ((s.DistanceBetween(p) < 1e-6 && e.DistanceBetween(q) < 1e-4) || (e.DistanceBetween(p) < 1e-6 && s.DistanceBetween(q) < 1e-4))
+        {
+            rib = es[i];
+            at_start = s.DistanceBetween(p) < 1e-6;
+        }
+    }
+    const SmBSplineCurve *c = rib != nullptr ? SM_CAST_PTR(SmBSplineCurve, rib->GetCurve()) : nullptr;
+    CHECK(c != nullptr);
+    if (c == nullptr)
+    {
+        return;
+    }
+    const SmExtent1d ivl = rib->GetInterval();
+    const double tp = at_start ? ivl.GetMin() : ivl.GetMax(), sign = at_start ? 1.0 : -1.0;
+    const SmVector3d along(0, 0, 1);
+
+    // zero speed at P, leaving along T
+    SmVector3d d[3];
+    CHECK(c->Evaluate(tp, 2, at_start ? TRUE : FALSE, d) == SM_SUCCESS);
+    std::printf("  end rib at P: |C'| %.3g, |C''| %.6g, angle of C'' from T %.3g\n", d[1].Length(), d[2].Length(), (d[2] * along).Length() / d[2].Length());
+    CHECK(d[1].Length() == 0.0 && d[2].Length() > 0 && (d[2] * along).Length() <= 1e-6 * d[2].Length());
+
+    // kappa sqrt(s) towards P
+    for (double f : {1e-2, 1e-3, 1e-4})
+    {
+        SmVector3d e[3];
+        CHECK(c->Evaluate(tp + sign * f * ivl.GetLength(), 2, TRUE, e) == SM_SUCCESS);
+        const double speed = e[1].Length(), kappa = (e[1] * e[2]).Length() / (speed * speed * speed), s = e[0].z - 8;
+        std::printf("  s %.3e: kappa sqrt(s) %.7f, limit %.7f\n", s, kappa * std::sqrt(s), limit);
+        CHECK(s > 0 && std::fabs(kappa * std::sqrt(s) / limit - 1) <= 0.03);
+    }
+
+    // its knots, and its distance from the exact rib
+    SmTArray<double> knots;
+    (void)c->GetKnots(knots);
+    double err = 0;
+    for (int i = 0; i <= 400; i++)
+    {
+        SmPoint3d x;
+        CHECK(c->EvaluatePoint(ivl.Evaluate(i / 400.0), x) == SM_SUCCESS);
+        err = std::max(err, peg_curvature_rib_distance(x));
+    }
+    std::printf("  end rib: %lu knots, %lu control points, off the exact rib by %.3g\n", static_cast<unsigned long>(knots.GetSize()),
+                static_cast<unsigned long>(c->GetNumberControlPoints()), err);
+    CHECK(knots.GetSize() <= 38 && err <= tol);
+
+    // SMLib's own uses of the tangent at P, where the rib's first derivative vanishes: each face's
+    // binormal there (SmEdgeuse::EvaluateBinormal, what OrientTrimmedSurfaces turns faces by)
+    // runs across T, and the rib dropped onto each face anew (SmSurface::DropCurve's Hermite
+    // spans, from its end on) lies on the rib, leaving P along T with zero speed in t
+    SmTArray<SmEdgeuse *> eus;
+    CHECK(rib->GetEdgeuses(eus) == SM_SUCCESS);
+    std::vector<const SmFace *> faces;
+    for (ULONG i = 0; i < eus.GetSize(); i++)
+    {
+        SmEdgeuse *eu = eus[i];
+        if (eu->GetFace() == nullptr || eu->GetUVTrimCurve() == nullptr ||
+            std::find(faces.begin(), faces.end(), eu->GetFace()) != faces.end())
+        {
+            continue;
+        }
+        faces.push_back(eu->GetFace());
+        SmPoint3d at;
+        SmVector3d binormal, tangent;
+        CHECK(eu->EvaluateBinormal(tp, TRUE, at, binormal, &tangent) == SM_SUCCESS);
+        CHECK(tangent.Length() > 0 && (tangent * along).Length() <= 1e-6 * tangent.Length() && std::fabs(binormal.Dot(along)) <= 1e-6);
+        double dist = -1;
+        SmBSplineCurve *dropped = nullptr;
+        CHECK(eu->CreateUVTrimCurve(dist, dropped) == SM_SUCCESS && dropped != nullptr);
+        if (dropped == nullptr)
+        {
+            continue;
+        }
+        const SmSurface *srf = eu->GetFace()->GetSurface();
+        SmVector3d uv[3];
+        CHECK(dropped->Evaluate(tp, 2, at_start ? TRUE : FALSE, uv) == SM_SUCCESS);
+        double off = 0;
+        for (double f : {1e-1, 1e-2, 1e-3})
+        {
+            const double t = tp + sign * f * ivl.GetLength();
+            SmPoint3d on_rib, on_face, w;
+            CHECK(c->EvaluatePoint(t, on_rib) == SM_SUCCESS && dropped->EvaluatePoint(t, w) == SM_SUCCESS);
+            CHECK(srf->EvaluatePoint(SmPoint2d(w.x, w.y), on_face) == SM_SUCCESS);
+            off = std::max(off, on_face.DistanceBetween(on_rib));
+        }
+        std::printf("  rib dropped onto a face: %.3g off it, %.3g off it near P, |uv'| %.3g against |uv''| %.3g at P\n", dist, off, uv[1].Length(), uv[2].Length());
+        CHECK(dist <= tol && off <= tol && uv[1].Length() <= 1e-9 * uv[2].Length());
+        delete dropped;
+    }
+    CHECK(faces.size() == 2);
+
+    // SMLib's check takes the coincident end control points and the radius vanishing as sqrt(s)
+    // at P, where the rib's faces touch, and nowhere else: the same curve on no edge fails both.
+    // The rib's own curve has its knots refined first, the curve unchanged, so that the check's
+    // search for the smallest radius finds the one at P.
+    auto failed = [](const SmBSplineCurve *curve) {
+        std::vector<ULONG> tests;
+        SmAssertArray reports;
+        (void)curve->AssertValid(&reports);
+        for (ULONG i = 0; i < reports.GetSize(); i++)
+        {
+            if (reports[i] != nullptr && !reports[i]->m_bOK)
+            {
+                tests.push_back(reports[i]->GetTestIndex());
+            }
+        }
+        return tests;
+    };
+    SmBSplineCurve *own = SM_CAST_PTR(SmBSplineCurve, rib->GetCurve()), *loose = nullptr;
+    CHECK(own->InsertKnots(64) == SM_SUCCESS && own->Copy(*b->p->GetContext(), loose) == SM_SUCCESS && loose != nullptr);
+    if (loose != nullptr)
+    {
+        const std::vector<ULONG> on_edge = failed(own), off_edge = failed(loose);
+        std::printf("  the rib's curve refined fails %zu of SMLib's curve tests, on no edge %zu\n", on_edge.size(), off_edge.size());
+        CHECK(on_edge.empty() && off_edge == std::vector<ULONG>({3, 14}));
+    }
+    delete loose;
+}
+
 void tangent_end_front_curvature_round_r2()
 {
     smlib_brep *b = peg_blend(tangent_peg(0), SMLIB_BLEND_CURVATURE, {20, 0, 10}, {2});
+    if (b != nullptr)
+    {
+        peg_curvature_end_rib(b);
+        // the faces' orientation found anew by rays (the end face's loop turns at P along T)
+        const double volume = volume_of(b);
+        SmBoolean maybe_open = TRUE;
+        CHECK(b->p->OrientTrimmedSurfaces(TRUE, maybe_open, FALSE) == SM_SUCCESS && !maybe_open);
+        CHECK(near(volume_of(b), volume, 1e-12));
+    }
     peg_result(b, PEG_V0 - PEG_FRONT_CURVATURE_R2, true);
 }
 void tangent_end_front_chamfer_d2()
