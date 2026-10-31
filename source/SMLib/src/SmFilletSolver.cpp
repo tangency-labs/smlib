@@ -3688,9 +3688,15 @@ static SmBoolean sbDumpFVUs=FALSE;
   // trace's reach, SetTraceReach). A rail that leaves its face across a cliff meets the side
   // edge's line past the edge's end; bounded to the edge's own interval, the solve found that
   // point only from a first guess already on it (a round on a 5 x 5 bar's edge found it at
-  // r9, a guess r along the edge, and not at r10, where that guess is not made).
+  // r9, a guess r along the edge, and not at r10, where that guess is not made). So does a
+  // straight side edge on a cylinder or cone, a ruling of it (its UV curve a line): the surface
+  // continues as itself past its domain (SmOffsetSurface's sm_ExtendAsItself), along that line.
+  // A closed rim's seam is one: a disc's rim rounded past its 2 mm wall meets the seam's line
+  // below the wall, and bounded to the seam the closed corner found no point there.
   SmCurve * pSide3D = pSideEdge->GetCurve();
-  if ( pSide3D != NULL && pSide3D->IsLinear( SM_EFF_ZERO ) && pUVCurve->IsLinear( SM_EFF_ZERO ) && pBSP->IsPlanar( SM_EFF_ZERO ))
+  SmBoolean bAlongLine = FALSE;
+  if (   pSide3D != NULL && pSide3D->IsLinear( SM_EFF_ZERO ) && pUVCurve->IsLinear( SM_EFF_ZERO )
+      && ( pBSP->IsPlanar( SM_EFF_ZERO ) || pBSP->IsKindOf( SmCone_TYPE )))
     {
       SmExtent1d sEdgeIvl = sIntervals[0];
       SmPoint3d  sFrom, sTo;
@@ -3714,8 +3720,14 @@ static SmBoolean sbDumpFVUs=FALSE;
           double dBefore = ( bCornerAtStart && !bCornerAtEnd ) ? 0.0 : dPast;
           double dAfter  = ( bCornerAtEnd && !bCornerAtStart ) ? 0.0 : dPast;
           sIntervals[0] = SmExtent1d( sEdgeIvl.GetMin() - dBefore, sEdgeIvl.GetMax() + dAfter );
+          bAlongLine = TRUE;
         }
     }
+  // The UV curve, a line, is evaluated on past its ends along the line: clamped to its own
+  // interval (SmBSplineCurve evaluates out of bounds only where that is enabled), the solve
+  // could not leave the edge's end, and found the point past it only from a guess already
+  // there (a curve read back from a file, its flag unset, evaluated on).
+  SmTemporaryChangeValue<SmBoolean> sAlongLine( pUVCurve->GetOutOfBoundsEnabled(), bAlongLine ? TRUE : pUVCurve->GetOutOfBoundsEnabled() );
   sIntervals[1] = SmExtent1d(sDomain.GetMin().x,sDomain.GetMax().x);
   sIntervals[2] = SmExtent1d(sDomain.GetMin().y,sDomain.GetMax().y);
 
