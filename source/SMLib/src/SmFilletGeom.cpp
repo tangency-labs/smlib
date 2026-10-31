@@ -40,6 +40,7 @@
 #include <SmAssertArray.h>
 #include <SmAttribute.h>
 #include <SmGeomUtility.h>
+#include <SmFilletExact.h>
 #include <nurbs.h>
 
 #ifdef SM_GFX_CODE
@@ -12243,12 +12244,12 @@ SmStatus SmFilletGeom::ReCalcFilletGeom
     // - for each Vertexuse, its rTsectPnt.m_dCurveParameter = -SM_BIG_DOUBLE;
 
     SmBoolean bFilletCreated = FALSE;
-    if ( bIsAnalyticFillet && m_eType != SM_FG_TANGENT_ROLLOVER )
+    if ( bIsAnalyticFillet && m_eType != SM_FG_TANGENT_ROLLOVER && sTsectPnts.GetSize() > 0 )
     {
-        // Create analytics
-        if (   pFS->CalcConeFilletGeom( sTsectPnts, this ) == SM_SUCCESS
-            || pFS->CalcTorusFilletGeom( sTsectPnts, this ) == SM_SUCCESS )
-            bFilletCreated = TRUE;
+        // SolidCraft change: rebuilt exactly by the round's class (SmFilletExact.cpp)
+        SmExactBlend sBlend;
+        SER( pFS->ClassifyExactBlend( *sTsectPnts[0], sBlend ) );
+        SER( pFS->CalcExactFilletGeom( sBlend, sTsectPnts, this, TRUE, bFilletCreated ) );
     }
     if ( !bFilletCreated )
     {

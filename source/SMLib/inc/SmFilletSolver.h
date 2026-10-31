@@ -42,6 +42,7 @@ class SmLinearCrossSectionFSG;
 class SmBlendCurveCrossSectionFSG;
 class SmFilletExecutive;
 class SmSelfIntersectionHandler;
+struct SmExactBlend; // SolidCraft change: SmFilletExact.h
 
 // Type of different solvers
 enum SmFilletSolverType 
@@ -229,6 +230,13 @@ public:
   virtual SmStatus  CalcConeFilletGeom       (SmTArray<SmTsectPnt*> & rTsectPnts, SmFilletGeom * pFG = NULL);
   virtual SmStatus  CalcTorusFilletGeom      (SmTArray<SmTsectPnt*> & rTsectPnts, SmFilletGeom * pFG = NULL);
   virtual SmStatus  CalcSphereFilletGeom     (SmTArray<SmTsectPnt*> & rTsectPnts, SmFilletGeom * pFG = NULL);
+
+  // SolidCraft change: the exact class of this constant round, from its faces' kinds and placement
+  // at rTsectPnt (SmFilletExact.cpp), and its exact surface by that class. rbBuilt is FALSE for
+  // a round of no exact class (SM_BS_TRACED), which is traced.
+  SmStatus          ClassifyExactBlend       (SmTsectPnt & rTsectPnt, SmExactBlend & rBlend);
+  SmStatus          CalcExactFilletGeom      (const SmExactBlend & crBlend, SmTArray<SmTsectPnt*> & rTsectPnts,
+                                              SmFilletGeom * pFG, SmBoolean bRecalc, SmBoolean & rbBuilt);
 
   SmStatus          ComputeSurfaceValues     (SmPoint2d               aUVValues[2], SmTsectPnt  & rTsectPnt);
   SmStatus          ComputePointValues       (SmPoint2d          aUVValues[2],

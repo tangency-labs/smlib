@@ -33,6 +33,7 @@
 #include <SmCylinder.h>
 #include <SmSurfOfRevolution.h>
 #include <SmPlane.h>
+#include <SmFilletExact.h>
 
 // Forward decl of local routine:
 static SmBoolean sm_TestManifoldTangentRollover
@@ -2260,75 +2261,27 @@ static int sbDumpFVUs=0;
 #endif // SM_DEBUG_CODE
 
 
-  // when building a fillet that can be analytic
-  //   currently: ConstantDistance Fillet = TRUE
-  //              ConstantRadius   Fillet = TRUE
-  //              VariableRadius   Fillet = FALSE
-
-  if ( CanMakeAnalytic() )
+  // SolidCraft change: the round's exact class, from its faces' kinds and placement
+  // (SmFilletExact.cpp): a round whose spine is rational is built exactly, every other traced.
+  if ( lTotalTsects > 0 )
     {
-      // Determine if the fillet surface can be created as
-      // an analytic surface (i.e. cylinder/cone/torus.)
-
-      // get filletEdge->Surface1
-      SmBSplineSurface * pBaseBSpSurf1 = SM_CAST_PTR(SmBSplineSurface,pBaseSrf1);
-      if (pBaseBSpSurf1 == NULL)
+      SmExactBlend sBlend;
+      SER( ClassifyExactBlend( *sTsectPnts[0], sBlend ) );
+      SmBoolean bBuilt = FALSE;
+      SER( CalcExactFilletGeom( sBlend, sTsectPnts, NULL, FALSE, bBuilt ) );
+      if ( bBuilt )
         {
-          // If the base surface is not an SmBSplineSurface, maybe it's
-          // another level of offset surface; check one more level.
-          SmOffsetSurface * pOffsetSurf = SM_CAST_PTR(SmOffsetSurface,pBaseSrf1);NER(pOffsetSurf);
-          pBaseBSpSurf1 = SM_CAST_PTR(SmBSplineSurface,pOffsetSurf->GetBaseSurface());NER(pBaseBSpSurf1);
-        }
-
-      // get filletEdge->Surface2
-      SmBSplineSurface * pBaseBSpSurf2 = SM_CAST_PTR(SmBSplineSurface,pBaseSrf2);
-      if (pBaseBSpSurf2 == NULL)
-        {
-          // Again, check 2nd level offset surface.
-          SmOffsetSurface * pOffsetSurf = SM_CAST_PTR(SmOffsetSurface,pBaseSrf2);NER(pOffsetSurf);
-          pBaseBSpSurf2 = SM_CAST_PTR(SmBSplineSurface,pOffsetSurf->GetBaseSurface());NER(pBaseBSpSurf2);
-        }
-
-      // when both surfaces are analytic (planes or cones)
-      if (   pBaseBSpSurf1 != NULL && pBaseBSpSurf2 != NULL
-          && sm_TestAnalyticSurface(pBaseBSpSurf1)
-          && sm_TestAnalyticSurface(pBaseBSpSurf2))
-        {
-          // try making a cylindrical fillet to store in m_vFilletGeoms[0]
-          // quit when this succeeds
-          if (CalcCylinderFilletGeom(sTsectPnts) == SM_SUCCESS)
-            {
 #ifdef SM_DEBUG_CODE
-              if ( iDebugLevel > 0 ) 
-                {
-                  smos_sprintf( sBuff,_T("%s"),
-                      _T("\n     SmFilletSolver::CalcFilletGeom(): Created Analytic Fillet Geometry: Cylinder.\n") );
-                  smos_WriteBuffer(sBuff);
-                }
-#endif // SM_DEBUG_CODE
-              return SM_SUCCESS;
-            }
-          // try making a torus fillet to store in m_vFilletGeoms[0]
-          // quit when this succeeds
-          if (CalcTorusFilletGeom(sTsectPnts) == SM_SUCCESS)
+          if ( iDebugLevel > 0 )
             {
-#ifdef SM_DEBUG_CODE
-              if ( iDebugLevel > 0 ) 
-                {
-                  smos_sprintf( sBuff,_T("%s"),
-                      _T("\n     SmFilletSolver::CalcFilletGeom(): Created Analytic Fillet Geometry: Torus.\n") );
-                  smos_WriteBuffer(sBuff);
-                }
+              smos_sprintf( sBuff, _T("\n     SmFilletSolver::CalcFilletGeom(): Created exact fillet geometry, spine class %d.\n"),
+                            static_cast<int>( sBlend.m_eSpine ) );
+              smos_WriteBuffer( sBuff );
+            }
 #endif // SM_DEBUG_CODE
-              return SM_SUCCESS;
-            }
-          // try making a sphere patch, for a center curve collapsed to a point
-          if (CalcSphereFilletGeom(sTsectPnts) == SM_SUCCESS)
-            {
-              return SM_SUCCESS;
-            }
-        } // end both surfaces are analytic (planes or cones) check
-    } // end Can Make Analytic check
+          return SM_SUCCESS;
+        }
+    }
 
 #ifdef SM_DEBUG_CODE
   if ( iDebugLevel > 0 ) 
