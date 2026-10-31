@@ -11,6 +11,7 @@
 #ifndef __SMFILLETEXECUTIVE_H__
 #include <SmFilletExecutive.h>
 #endif
+#include <set>
 
 #ifndef __SMFILLETSTANDARDSOLVER_H__
 #include <SmFilletStandardSolver.h>
@@ -791,6 +792,7 @@ SmStatus SmFilletExecutive::SetFilletParameters
   m_bDoClassification    = TRUE;
   m_bCliffOverflow       = FALSE; // SolidCraft change
   m_vOpenEnds.clear();
+  m_vFanSplitPoints.clear(); // SolidCraft change
   m_vOverflowEdges.RemoveAll(); // SolidCraft change
   m_vMitredEdges.RemoveAll();   // SolidCraft change
 
@@ -799,6 +801,7 @@ SmStatus SmFilletExecutive::SetFilletParameters
 
   SmStatus eStatus = CheckEdgesAreInBrep( pBrep, rEdgePtrs );
   if ( eStatus != SM_SUCCESS ) { return eStatus; }
+  SER( SplitBlendedVertexFans( pBrep, rEdgePtrs )); // SolidCraft change
 
   if ( eRadiusType == SM_FS_VARIABLE_RADIUS && pOptVarRadLaw == NULL )
     {
@@ -963,6 +966,7 @@ SmStatus SmFilletExecutive::SetFilletParameters
   m_bDoClassification    = TRUE;
   m_bCliffOverflow       = FALSE; // SolidCraft change
   m_vOpenEnds.clear();
+  m_vFanSplitPoints.clear(); // SolidCraft change
   m_vOverflowEdges.RemoveAll(); // SolidCraft change
   m_vMitredEdges.RemoveAll();   // SolidCraft change
 
@@ -971,6 +975,7 @@ SmStatus SmFilletExecutive::SetFilletParameters
 
   SmStatus eStatus = CheckEdgesAreInBrep( pBrep, rEdgePtrs );
   if ( eStatus != SM_SUCCESS ) { return eStatus; }
+  SER( SplitBlendedVertexFans( pBrep, rEdgePtrs )); // SolidCraft change
 
   SmBoolean bSingleXSectType   =    (rXSectTypes.GetSize() == 1)                   ? TRUE
                                  :  (rXSectTypes.GetSize() == lNumFilletedEdges)   ? FALSE
@@ -4496,6 +4501,91 @@ NOTES: Stitching operations will be performed after fillet surfaces are created.
 SmStatus SmFilletExecutive::DoFilleting
   ( SmFilletErrorInfo * pOptFilletErrorInfo )
 {
+  // SolidCraft change: the vertices SetFilletParameters split by fans are joined again where the
+  // blends left more than one at a split point, whether the blends built or not
+  SmStatus eStatus = DoFilletingSteps( pOptFilletErrorInfo );
+  SmStatus eJoined = JoinBlendedVertexFans();
+  return ( eStatus != SM_SUCCESS ) ? eStatus : eJoined;
+} // end SmFilletExecutive::DoFilleting
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. Where the body touches itself at a vertex of a
+    filleted edge (its faces round it make several fans, sharing no edge:
+    two cubes sharing a corner), the vertex split into one vertex per fan
+    (SmBrep::SplitVertexByFans), so that each fan is a corner of its own.
+
+NOTES: Every corner is keyed by its vertex and works on the faces of one fan
+    round it (SmFilletCorner::Create walks them): at a vertex of two fans it
+    found the blended edges of both but the faces of one, and built an Nx2
+    corner of edges that share no face (1001, unable to make topology). One
+    vertex per fan, all at its point, is the manifold form of the same body.
+    The points are kept for JoinBlendedVertexFans.
+***********************************************************************/
+SmStatus SmFilletExecutive::SplitBlendedVertexFans
+  (SmBrep                    * pBrep,      // in : the target
+   const SmTArray< SmEdge* > & rEdgePtrs)  // in : the filleted edges
+{
+  NER(pBrep);
+  std::set<SmVertex*> sDone;
+  for (ULONG i=0; i<rEdgePtrs.GetSize(); i++)
+    {
+      NER(rEdgePtrs[i]);
+      for (SmVertex * pV : { rEdgePtrs[i]->GetStartVertex(), rEdgePtrs[i]->GetEndVertex() })
+        {
+          NER(pV);
+          if ( !sDone.insert( pV ).second )
+            { continue; }
+          SmTArray<SmVertex*> sMade;
+          SER( pBrep->SplitVertexByFans( pV, sMade ));
+          if ( sMade.GetSize() > 0 )
+            { m_vFanSplitPoints.push_back( pV->GetPoint() ); }
+          for (ULONG j=0; j<sMade.GetSize(); j++)
+            { sDone.insert( sMade[j] ); }
+        }
+    }
+  return SM_SUCCESS;
+} // end SmFilletExecutive::SplitBlendedVertexFans
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. The inverse of SplitBlendedVertexFans after the
+    blends: the target's vertices still at a split point, sharing no edge,
+    joined into one (SmBrep::JoinVertexFans). Where the blends took the
+    point away (the corners of every fan there blended) none is left.
+***********************************************************************/
+SmStatus SmFilletExecutive::JoinBlendedVertexFans
+  ()
+{
+  if ( m_vFanSplitPoints.empty() || m_pTargetBrep == NULL )
+    { return SM_SUCCESS; }
+  SmTArray<SmVertex*> sVertices;
+  m_pTargetBrep->GetVertices( sVertices );
+  for (const SmPoint3d & rAt : m_vFanSplitPoints)
+    {
+      SmVertex * pFirst = NULL;
+      for (ULONG i=0; i<sVertices.GetSize(); i++)
+        {
+          SmVertex * pV = sVertices[i];
+          if ( pV == NULL || pV->GetPoint().DistanceBetween( rAt ) > pV->GetTolerance() )
+            { continue; }
+          if ( pFirst == NULL )
+            {
+              pFirst = pV;
+              continue;
+            }
+          SER( m_pTargetBrep->JoinVertexFans( pFirst, pV ));
+          sVertices[i] = NULL;
+        }
+    }
+  m_vFanSplitPoints.clear();
+  return SM_SUCCESS;
+} // end SmFilletExecutive::JoinBlendedVertexFans
+
+/*******************************************************************//**
+PURPOSE: The filleting steps of DoFilleting.
+***********************************************************************/
+SmStatus SmFilletExecutive::DoFilletingSteps
+  ( SmFilletErrorInfo * pOptFilletErrorInfo )
+{
   SmTemporaryChangeValue< SmBoolean > sDoingBool( SM_CONST_CAST(SmContext*, &m_crContext)->GetDoingBooleanRef(), TRUE );
 
   // remember that we're using the SmTopologyIntersector and the SmCurveClassification code for fillets
@@ -5355,7 +5445,7 @@ SmBoolean bDebugMe = FALSE ;
   // all done
   return SM_SUCCESS;
 
-} // end SmFilletExecutive::DoFilleting
+} // end SmFilletExecutive::DoFilletingSteps
 
 /*******************************************************************//**
 PURPOSE: DoSurfaceFilleting helper function to match a context 
