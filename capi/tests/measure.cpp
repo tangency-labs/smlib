@@ -13,7 +13,10 @@
 #include <SmAxis2Placement.h>
 #include <SmBSplineSurface.h>
 #include <SmCircle.h>
+#include <SmEdge.h>
+#include <SmFace.h>
 #include <SmLine.h>
+#include <SmVertex.h>
 
 #include <chrono>
 #include <cmath>
@@ -307,6 +310,52 @@ int main()
             }
             pb.p = nullptr;
             delete patch;
+        }
+    }
+
+    // The tight box of a face is the face's, not its boundary's tolerance band: the corner of a
+    // box of 10 where three edges are rounded r 1 is a sphere octant about (1, 1, 1), in [0, 1]^3.
+    // Its sphere runs on past the octant's arcs, and points up to the face's zone tolerance past
+    // an arc classify on the face's boundary (4e-5 past the arc in y = 1): counted as the face's,
+    // they boxed it to y 1.0000243. Only points inside count; the boundary's extremes are its
+    // edges' (NVIDIA SmPyLib test test_surface_closest_point_uses_natural_domain finds the corner
+    // face by its box).
+    {
+        SmApiGetOrCreateContext();
+        SmBrep *b = nullptr;
+        CHECK(SmApiCreateBox(SmVector3d(0, 0, 0), 10, 10, 10, b) == SM_SUCCESS && b != nullptr);
+        if (b != nullptr)
+        {
+            SmTArray<SmVertex *> vertices;
+            b->GetVertices(vertices);
+            SmTArray<SmEdge *> edges;
+            for (ULONG i = 0; i < vertices.GetSize(); ++i)
+            {
+                if (vertices[i]->GetPoint().Length() < 1e-9)
+                {
+                    vertices[i]->GetEdges(edges);
+                }
+            }
+            CHECK(edges.GetSize() == 3 && SmApiFilletEdges(b, edges, 1.0, 1, 1, 1.0) == SM_SUCCESS);
+            SmTArray<SmFace *> faces;
+            b->GetFaces(faces);
+            ULONG corners = 0;
+            for (ULONG i = 0; i < faces.GetSize(); ++i)
+            {
+                SmExtent3d box;
+                CHECK(faces[i]->CalculateTightBoundingBox(box) == SM_SUCCESS);
+                if (box.GetUMax() > 2.0 || box.GetVMax() > 2.0 || box.GetWMax() > 2.0)
+                {
+                    continue;
+                }
+                corners++;
+                std::printf("rounded box corner: face box (%.12f %.12f %.12f) to (%.12f %.12f %.12f)\n", box.GetUMin(), box.GetVMin(),
+                            box.GetWMin(), box.GetUMax(), box.GetVMax(), box.GetWMax());
+                CHECK(std::fabs(box.GetUMin()) < 1e-9 && std::fabs(box.GetVMin()) < 1e-9 && std::fabs(box.GetWMin()) < 1e-9);
+                CHECK(std::fabs(box.GetUMax() - 1.0) < 1e-9 && std::fabs(box.GetVMax() - 1.0) < 1e-9 && std::fabs(box.GetWMax() - 1.0) < 1e-9);
+            }
+            CHECK(corners == 1);
+            delete b;
         }
     }
 
