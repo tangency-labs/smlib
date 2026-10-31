@@ -6237,6 +6237,68 @@ int main(int argc, char **argv)
         }
     }
 
+    // A cube 0..10 cut by a sheet of two faces meeting at a right angle (the top z = 5 and the
+    // side x = 5 of the box -20..5 x -20..20 x -20..5, copied off it): the corner x < 5, z < 5
+    // (250) behind the sheet, the rest (750) in front, whichever face the sides are read from;
+    // a body that is not a sheet is refused.
+    {
+        smlib_brep *cube = box(0, 0, 0, 10, 10, 10);
+        smlib_brep *slab = box(-20, -20, -20, 25, 40, 25);
+        SmTArray<SmFace *> faces, two;
+        slab->p->GetFaces(faces);
+        for (ULONG i = 0; i < faces.GetSize(); ++i)
+        {
+            SmPoint3d p;
+            if (SmApiFaceInternalPoint(faces[i], p) == SM_SUCCESS && (std::fabs(p.z - 5.0) < 1e-9 || std::fabs(p.x - 5.0) < 1e-9))
+            {
+                two.Add(faces[i]);
+            }
+        }
+        CHECK(two.GetSize() == 2);
+        SmBrep *l = new (*SmApiGetOrCreateContext()) SmBrep();
+        l->SetTolerance(slab->p->GetTolerance());
+        SmTArray<SmFace *> copied;
+        CHECK(slab->p->CopyFaces(two, l, &copied, TRUE) == SM_SUCCESS && copied.GetSize() == 2 && l->IsSheet());
+        smlib_brep sheet{l};
+        for (int64_t face = 0; face < 2; ++face)
+        {
+            smlib_brep *back = nullptr, *front = nullptr;
+            CHECK(smlib_split_body_by_sheet(cube, &sheet, face, &back, &front) == SMLIB_OK && back != nullptr && front != nullptr);
+            if (back != nullptr && front != nullptr)
+            {
+                const double vb = volume_of(back), vf = volume_of(front);
+                std::printf("cube split by an L sheet (face %lld): %.9f + %.9f\n", static_cast<long long>(face), vb, vf);
+                CHECK(near(std::fmin(vb, vf), 250.0, 1e-9) && near(std::fmax(vb, vf), 750.0, 1e-9));
+                CHECK(sound(back) && sound(front));
+            }
+            smlib_brep_free(back);
+            smlib_brep_free(front);
+        }
+        smlib_brep *back = nullptr, *front = nullptr;
+        CHECK(smlib_split_body_by_sheet(cube, slab, 0, &back, &front) == SMLIB_ERR_ARG && back == nullptr);
+        CHECK(smlib_split_body_by_sheet(cube, &sheet, 2, &back, &front) == SMLIB_ERR_ARG && back == nullptr);
+        // The top face alone ends at x = 5, inside the cube: it nicks it and cuts nothing.
+        SmTArray<SmFace *> top;
+        for (ULONG i = 0; i < two.GetSize(); ++i)
+        {
+            SmPoint3d p;
+            if (SmApiFaceInternalPoint(two[i], p) == SM_SUCCESS && std::fabs(p.z - 5.0) < 1e-9)
+            {
+                top.Add(two[i]);
+            }
+        }
+        SmBrep *lid = new (*SmApiGetOrCreateContext()) SmBrep();
+        lid->SetTolerance(slab->p->GetTolerance());
+        SmTArray<SmFace *> one;
+        CHECK(top.GetSize() == 1 && slab->p->CopyFaces(top, lid, &one, TRUE) == SM_SUCCESS && one.GetSize() == 1);
+        smlib_brep nick{lid};
+        CHECK(smlib_split_body_by_sheet(cube, &nick, 0, &back, &front) == SMLIB_ERR_NO_CUT && back == nullptr);
+        delete lid;
+        delete l;
+        smlib_brep_free(cube);
+        smlib_brep_free(slab);
+    }
+
     // Two holes 6 apart cut one after the other through a disc: the second hole's wall meets the
     // first's (trimmed to the disc) in two lines. Parallel cylinders are intersected by
     // SmCone::IntersectWithCone, which once took the lines' span from the whole cylinders, so
