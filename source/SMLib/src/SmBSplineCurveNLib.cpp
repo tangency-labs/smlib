@@ -918,6 +918,11 @@ NOTES: There may be no vectors,
     two vectors corresponding to start and end derivatives, or one 
     vector for each point.  If there is one vector for each point you
     may specify that the magnitude of the vectors is ignored.  
+
+    SolidCraft change: cpOptParams, when given, are the points' parameters
+    (strictly increasing), in place of eParameterization, and the end
+    derivatives are taken with respect to them. Not with one vector for
+    each point.
     
       This method is only available for users with NLib
     
@@ -939,7 +944,8 @@ SmStatus SmBSplineCurve::CreateInterpolatingCurve
    const SmTArray<SmVector3d>  * cpMoreVectorsToInterpolate, // in : If this exists then it contains higher order derivatives (2nd and 3rd)
    SmBoolean                     bIgnoreVectorMagnitude,     // in : This only applies to case where more than two vectors are used.
                                                              //      TRUE = use vector directions - not their magnitudes
-   SmBSplineCurve             *& rpNewBSplineCurve)          // out: the newly constructed curve
+   SmBSplineCurve             *& rpNewBSplineCurve,          // out: the newly constructed curve
+   const SmTArray<double>      * cpOptParams)                // in : opt increasing parameters of the points, NULL to ignore
 {
   NL_CURVE              cur;
   NL_STACKS             SG;
@@ -951,7 +957,8 @@ SmStatus SmBSplineCurve::CreateInterpolatingCurve
                           : NL_UNIFORM;
 
   if (   lDegree == 1 
-      && crPointsToInterpolate.GetSize() == 2) 
+      && crPointsToInterpolate.GetSize() == 2
+      && cpOptParams == NULL) 
     {
       SER(SmBSplineCurve::CreateLineSegment(crContext,lDimensionOfResult,crPointsToInterpolate[0],
           crPointsToInterpolate[1],rpNewBSplineCurve));
@@ -966,6 +973,28 @@ SmStatus SmBSplineCurve::CreateInterpolatingCurve
 
   NL_POINT *P = SM_REINTERPRET_CAST(NL_POINT*,crPointsToInterpolate.GetDataArray());
   NL_INDEX kk = crPointsToInterpolate.GetSize() - 1;
+
+  // SolidCraft change: the given parameters, one per point, strictly increasing
+  NL_PARAMETER *u = NULL;
+  if (cpOptParams)
+    {
+      if (   cpOptParams->GetSize() != crPointsToInterpolate.GetSize()
+          || (   crVectorsToInterpolate.GetSize() == crPointsToInterpolate.GetSize()
+              && crPointsToInterpolate.GetSize() > 2))
+        { SER(SM_ERR_INVALID_INPUT); }
+      for (ULONG ii=1; ii<cpOptParams->GetSize(); ii++)
+        {
+          if ( !((*cpOptParams)[ii] > (*cpOptParams)[ii-1]) )
+            { SER(SM_ERR_INVALID_INPUT); }
+        }
+      u = SM_CONST_CAST(NL_PARAMETER*, cpOptParams->GetDataArray());
+    }
+  // the end-derivative interpolation, at the given parameters or by the parametrization
+  auto FitHighDerivs = [&](NL_VECTOR *Ds, NL_INDEX k, NL_VECTOR *De, NL_INDEX l, NL_DEGREE p) -> NL_FLAG
+    {
+      return u ? N_FitCrvHighDerivsParams(P,kk,p,Ds,k,De,l,u,&cur,&SG)
+               : N_FitCrvHighDerivs(P,kk,p,Ds,k,De,l,parameterization,&cur,&SG);
+    };
 
   // branch to construct new gw_CURVE
   if (   crVectorsToInterpolate.GetSize() == crPointsToInterpolate.GetSize() 
@@ -998,7 +1027,7 @@ SmStatus SmBSplineCurve::CreateInterpolatingCurve
               if (lDegree <= 3) lDegree = 4;
           }
       }
-      NL_SER(N_FitCrvHighDerivs(P,kk,(NL_DEGREE)lDegree,Ds,lCount,De,lCount,parameterization,&cur,&SG));
+      NL_SER(FitHighDerivs(Ds,lCount,De,lCount,(NL_DEGREE)lDegree));
       //        NL_SER(N_FitCrvDerivs(P,kk,(NL_DEGREE)lDegree,Ds,De,parameterization,&cur,&SG));
     }
   else if (crVectorsToInterpolate.GetSize() == 1) 
@@ -1010,12 +1039,12 @@ SmStatus SmBSplineCurve::CreateInterpolatingCurve
           COPY_XYZ((*cpMoreVectorsToInterpolate)[0],Ds[2]);        
           lCount = 2;
       }        
-      NL_SER(N_FitCrvHighDerivs(P,kk,(NL_DEGREE)lDegree,Ds,lCount,Ds,0,parameterization,&cur,&SG));
+      NL_SER(FitHighDerivs(Ds,lCount,Ds,0,(NL_DEGREE)lDegree));
     }
   else if (crVectorsToInterpolate.GetSize() == 0) 
     {
       NL_VECTOR Ds[5], De[5];
-      NL_SER(N_FitCrvHighDerivs(P,kk,(NL_DEGREE)lDegree,Ds,0,De,0,parameterization,&cur,&SG));
+      NL_SER(FitHighDerivs(Ds,0,De,0,(NL_DEGREE)lDegree));
     }
   else 
     {
