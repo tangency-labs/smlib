@@ -75,6 +75,7 @@ set(SMLIB_STATUS_CLEAN
   ${SRC}/SMLib/src/SmFilletCliffOverflow.cpp
   ${SRC}/SMLib/src/SmFilletGeom.cpp
   ${SRC}/SMLib/src/SmFilletSolver.cpp
+  ${SRC}/SMLib/src/SmFilletExact.cpp
   ${SRC}/SMLib/src/SmFilletCorner.cpp
   ${SRC}/SMLib/src/SmFilletStandardSolver.cpp
   ${SRC}/SMLib/src/SmFilletCustomSolver.cpp

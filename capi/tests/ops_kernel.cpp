@@ -4269,10 +4269,9 @@ const TangentEndCase EXACT_CLASS_CASES[] = {
      "the round is traced: a B-spline of degrees (3, 3), not rational, 9.4e-4 off the ball's surface"},
     {"oblique_plane_cylinder", exact_class_oblique_plane_cylinder,
      "the round is traced: a B-spline of degrees (3, 3), not rational, 2.26e-3 off the ball's surface"},
-    {"sphere_coaxial_cone", exact_class_sphere_coaxial_cone,
-     "the round is traced (the analytic chain takes no sphere): a B-spline of degrees (3, 3), 1.47e-3 off the ball's surface"},
+    {"sphere_coaxial_cone", exact_class_sphere_coaxial_cone, nullptr},
     {"sphere_plane", exact_class_sphere_plane,
-     "status 1001: the round is traced (the analytic chain takes no sphere), and the trace extends the offset sphere too far (SmOffsetSurface)"},
+     "status 1001: SmFilletNx1Corner, Corner Edge Computation Failure, at the rim's one vertex, on the sphere's seam (the torus is built)"},
     {"tee_is_fitted", exact_class_tee_is_fitted,
      "the traced round is 1.47e-3 off the ball's surface, over the fillet's tolerance 1e-3: its fit is not checked against the true round"},
 };
