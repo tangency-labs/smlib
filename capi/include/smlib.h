@@ -1240,7 +1240,8 @@ int32_t smlib_face_points(const smlib_brep *body, double *out, int64_t n_faces);
  * `mode` says: SMLib's extension of the surface (CreateExtendedSurface; analytic surfaces are
  * B-splines in SMLib, extended the same way and given back their analytic kind where the result
  * is one). The face keeps its orientation; it and its sides keep the attributes of those they
- * continue. A face that is not its surface's whole box is SMLIB_ERR_UNSUPPORTED. */
+ * continue. A face that is not its surface's whole box is SMLIB_ERR_UNSUPPORTED; an extension
+ * that cannot be made `distance` long across the side (within 1e-9 of it) is SMLIB_ERR_NOT_EXACT. */
 int32_t smlib_extend_sheet(const smlib_brep *sheet, const double point[3], double tol, double distance, int32_t mode, smlib_brep **out);
 
 /* ---- Untrim (src/smlib_untrim.cpp) -------------------------------------------------------- */

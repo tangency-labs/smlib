@@ -257,6 +257,116 @@ SmSurface *cone_continued(const SmContext &ctx, const SmSurface *surf, const SmE
     return owned.release();
 }
 
+// The surface `surf` (whose face is its whole box `dom`) extended past side `s` as `ct` says, so
+// that it runs `distance` past that side measured across it (`across`), within 1e-9 of it, into
+// `out`. CreateExtendedSurface takes its distance as an estimate, and how far it then runs is
+// increasing in what it is asked: a bracketed solve on that (each ask scaled by the distance over
+// what it gave until two asks fall either side, then Illinois false position). An extension
+// that moves the face's side off its parameters, or a target not met, is SMLIB_ERR_NOT_EXACT,
+// never the surface as it came out.
+int32_t extended_by(const SmContext &ctx, SmSurface *surf, const SmExtent2d &dom, const Side &s, SmContinuityType ct, double distance,
+                    double model_tol, SmSurface *&out)
+{
+    out = nullptr;
+    const double tol = 1e-9 * distance;
+    // How far asking `ask` runs (`got`), the surface it makes in `made`.
+    auto run = [&](double ask, std::unique_ptr<SmSurface> &made, double &got) -> int32_t
+    {
+        SmSurface *tried = nullptr;
+        int32_t st = status(static_cast<SmBSplineSurface *>(surf)->CreateExtendedSurface(ctx, s.which, ask, ct, tried));
+        made.reset(tried);
+        if (st != SMLIB_OK)
+        {
+            return st;
+        }
+        if (tried == nullptr)
+        {
+            return SMLIB_ERR_EMPTY;
+        }
+        // The face's side stays where it was on the extended surface's parameters.
+        SmVector3d was, now;
+        const SmPoint2d mid = on_side(dom, s, 0.5);
+        if (!eval(surf, mid, was, nullptr, nullptr) || !eval(tried, mid, now, nullptr, nullptr) || (was - now).Length() > model_tol)
+        {
+            return SMLIB_ERR_NOT_EXACT;
+        }
+        got = across(tried, dom, s);
+        return std::isfinite(got) && got > 0.0 ? SMLIB_OK : SMLIB_ERR_NOT_EXACT;
+    };
+    constexpr int BRACKET_TRIES = 40;
+    constexpr int SOLVE_TRIES = 100;
+    // Brackets [lo, hi]: asks that run short of and past `distance`, by f = got - distance.
+    double lo = 0.0, flo = 0.0, hi = 0.0, fhi = 0.0;
+    bool have_lo = false, have_hi = false;
+    double ask = distance;
+    for (int i = 0; i < BRACKET_TRIES && !(have_lo && have_hi); ++i)
+    {
+        std::unique_ptr<SmSurface> made;
+        double got = 0.0;
+        int32_t st = run(ask, made, got);
+        if (st != SMLIB_OK)
+        {
+            return st;
+        }
+        const double f = got - distance;
+        if (std::fabs(f) <= tol)
+        {
+            out = made.release();
+            return SMLIB_OK;
+        }
+        if (f < 0.0)
+        {
+            lo = ask, flo = f, have_lo = true;
+        }
+        else
+        {
+            hi = ask, fhi = f, have_hi = true;
+        }
+        ask *= distance / got;
+    }
+    if (!(have_lo && have_hi))
+    {
+        return SMLIB_ERR_NOT_EXACT;
+    }
+    // Illinois: false position, halving the value at the end that stays when the same end moves
+    // twice running.
+    int moved = 0; // the end the last step moved: 1 lo, -1 hi
+    for (int i = 0; i < SOLVE_TRIES; ++i)
+    {
+        const double x = hi - fhi * (hi - lo) / (fhi - flo);
+        if (!(x > std::fmin(lo, hi) && x < std::fmax(lo, hi)))
+        {
+            break;
+        }
+        std::unique_ptr<SmSurface> made;
+        double got = 0.0;
+        int32_t st = run(x, made, got);
+        if (st != SMLIB_OK)
+        {
+            return st;
+        }
+        const double f = got - distance;
+        if (std::fabs(f) <= tol)
+        {
+            out = made.release();
+            return SMLIB_OK;
+        }
+        if ((f < 0.0) == (flo < 0.0))
+        {
+            lo = x, flo = f;
+            fhi *= moved == 1 ? 0.5 : 1.0;
+            moved = 1;
+        }
+        else
+        {
+            hi = x, fhi = f;
+            flo *= moved == -1 ? 0.5 : 1.0;
+            moved = -1;
+        }
+    }
+    return SMLIB_ERR_NOT_EXACT;
+}
+
 // Whether surfaces `p` and `q` span the same patch: their boxes' corners the same points, in
 // any order, within `tol`.
 bool same_patch(const SmSurface *p, const SmSurface *q, double tol)
@@ -380,40 +490,14 @@ extern "C" int32_t smlib_extend_sheet(const smlib_brep *sheet, const double *poi
             }
             SmContinuityType ct = mode == SMLIB_EXTEND_TANGENT ? SM_CT_G1 : mode == SMLIB_EXTEND_CURVATURE ? SM_CT_G1_G2 : SM_CT_CINFINITY;
             // CreateExtendedSurface takes its distance as an estimate (a natural parabola falls 2.5%
-            // short): the distance asked of it is corrected until the extension measures
-            // `distance` across the side's middle, keeping the surface's parameters on the face.
+            // short, a G2 run-off of a circle runs more than twice as far): the distance asked of it
+            // is solved for until the extension measures `distance` across the side's middle.
             SmSurface *extended = nullptr;
-            double ask = distance;
-            int32_t s = SMLIB_OK;
-            for (int round = 0; round < 12; ++round)
-            {
-                SmSurface *tried = nullptr;
-                s = status(static_cast<SmBSplineSurface *>(surf)->CreateExtendedSurface(ctx, grow->which, ask, ct, tried));
-                if (s != SMLIB_OK || tried == nullptr)
-                {
-                    delete tried;
-                    break;
-                }
-                delete extended;
-                extended = tried;
-                // The face's side stays where it was on the extended surface's parameters.
-                SmVector3d was, now;
-                const SmPoint2d mid = on_side(dom, *grow, 0.5);
-                if (!eval(surf, mid, was, nullptr, nullptr) || !eval(extended, mid, now, nullptr, nullptr) || (was - now).Length() > model_tol)
-                {
-                    break;
-                }
-                const double got = across(extended, dom, *grow);
-                if (!(got > 0.0) || std::fabs(got - distance) <= 1e-9 * distance)
-                {
-                    break;
-                }
-                ask *= distance / got;
-            }
+            int32_t s = extended_by(ctx, surf, dom, *grow, ct, distance, model_tol, extended);
             std::unique_ptr<SmSurface> clean(extended);
-            if (extended == nullptr)
+            if (s != SMLIB_OK)
             {
-                return s != SMLIB_OK ? s : SMLIB_ERR_EMPTY;
+                return s;
             }
             // A cone or cylinder continued naturally stays one, as the analytic widened (its
             // patch the extended B-spline's), else SMLib gives it back its analytic kind where it
