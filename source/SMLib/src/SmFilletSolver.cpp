@@ -1490,6 +1490,47 @@ SmStatus SmFilletSolver::CalcTorusFilletGeom
   sCrvIvl = pRailCrv1->GetNaturalInterval();
   pRail1->SetInterval(sCrvIvl);
 
+  // SolidCraft change: the round's centre line, the path of the ball's centre: the circle about
+  // the axis through the section's centre, on the rails' parameter (rail 0's control net moved
+  // onto that circle: each control point keeps its weight and its direction from the axis, at
+  // the centre's height and distance from it). A round about a circular edge kept none, and what
+  // reads the round by its centre line and rails (the ease into the curvature-continuous section
+  // before a setback, SmFilletExecutive::EaseSetBackSections) refused it.
+  {
+    SmVector3d sAxis = sAxisOfRevolution;
+    SER(sAxis.Unitize());
+    SmPoint3d sRailStart;
+    SER(pRailCrv0->EvaluatePoint(pRailCrv0->GetNaturalInterval().GetMin(), sRailStart));
+    SmVector3d sToRail(sRailStart - sOrigin);
+    double dRailHeight = sToRail.Dot(sAxis);
+    double dRailDist = (sToRail - sAxis * dRailHeight).Length();
+    SmVector3d sToCenter(sArcCenter - sOrigin);
+    double dCenterHeight = sToCenter.Dot(sAxis);
+    double dCenterDist = (sToCenter - sAxis * dCenterHeight).Length();
+    if (dRailDist > dAnalyticTol && dCenterDist > dAnalyticTol)
+      {
+        SmCurve * pCopy = NULL;
+        SER(pRailCrv0->Copy(m_crContext, pCopy));
+        SmBSplineCurve * pCenterLine = SM_CAST_PTR(SmBSplineCurve, pCopy);
+        if (pCenterLine == NULL)
+          { delete pCopy; SER(SM_ERR); }
+        SmObjDelete sDelCenter(pCenterLine);
+        for (ULONG i = 0; i < pCenterLine->GetNumberControlPoints(); i++)
+          {
+            SmPoint3d sP;
+            double dW = 1.0;
+            SER(pCenterLine->GetControlPoint(SM_CP_EUCLIDIAN_RATIONAL, i, sP, dW));
+            SmVector3d sOff(sP - sOrigin);
+            SmVector3d sOut = (sOff - sAxis * sOff.Dot(sAxis)) / dRailDist;
+            SmPoint3d sQ = sOrigin + sAxis * dCenterHeight + sOut * dCenterDist;
+            SER(pCenterLine->SetControlPoint(SM_CP_EUCLIDIAN_RATIONAL, i, sQ, dW));
+          }
+        sDelCenter.Clear();
+        delete pFilletGeom->m_pCenterLineCurve;
+        pFilletGeom->m_pCenterLineCurve = pCenterLine;
+      }
+  }
+
 #ifdef SM_DEBUG_CODE
   if ( DebugLevel() > 0 ) 
     {
