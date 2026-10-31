@@ -1241,7 +1241,6 @@ SmStatus SmFace::CalculateTightBoundingBox( SmExtent3d & rFaceBBox ) const
   SmExtent3d sFaceBBox;
 
   SmSurface * pSurface       = GetSurface();
-  SmZoneTol3d sFaceZoneTol3d = SmTol::GetZoneTol3d(this) ;
 
   // Method: get the bounding box of the Vertices.
   // Then get the tight box of each Edge and union it in.
