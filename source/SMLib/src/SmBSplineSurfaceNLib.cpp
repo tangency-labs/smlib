@@ -3033,9 +3033,14 @@ static SmStatus sm_CoonsSideAngle
           SER(crPatch.Evaluate1stDerivatives(sUV, sUV.x < sU.GetMax(), sUV.y < sV.GetMax(), sPnt, sDu, sDv));
           SmVector3d sNormal = sDu * sDv;
           double     dScale  = sDu.Length() * sDv.Length();
-          if (dScale < SM_EFF_ZERO_SQ || sNormal.Length() <= SM_EFF_ZERO_SQRT * dScale)
+          // no normal where the derivatives are (near) parallel, measured against their own
+          // size; where there is one it is made unit by its own length (Unitize's absolute
+          // floor, 1e-12, refused the normal of a station near a collapsing side of a patch
+          // 0.01 across, whose normal the test above had found)
+          const double dNormalLength = sNormal.Length();
+          if (dScale < SM_EFF_ZERO_SQ || dNormalLength <= SM_EFF_ZERO_SQRT * dScale)
             { continue; }
-          SER(sNormal.Unitize());
+          sNormal /= dNormalLength;
           SmVector3d sSideNormal;
           SER(sm_CoonsSideNormal(*crUVCurves[ii], *crSurfaces[ii], sAlong, dS, sSideNormal));
           double dCos = smos_Fabs(sNormal.Dot(sSideNormal));
