@@ -6358,6 +6358,25 @@ static SmStatus sm_InsideMaterial
 } // end sm_InsideMaterial
 
 /*******************************************************************//**
+PURPOSE: SolidCraft change. Whether pEdge is a knife edge: its two faces
+    tangent along it and folded back on each other, the body's material
+    between them of zero angle (a hole whose wall touches the bottom face
+    along a line).
+***********************************************************************/
+SmBoolean SmFilletSolver::IsKnifeEdge
+  (SmEdge * pEdge,             // in : the edge, of two faces
+   double   dTangencyTolRad)   // in : faces this close to tangent are tangent
+{
+  if ( pEdge == NULL || pEdge->GetPrimaryEdgeuse() == NULL || pEdge->GetPrimaryEdgeuse()->GetRadial() == NULL )
+    { return FALSE; }
+  // the sector between the faces, a whole turn or none (a smooth edge's is a half turn)
+  double dAngle = SM_PI;
+  if ( pEdge->GetPrimaryEdgeuse()->CalcSectorAngle( pEdge->GetInterval().Evaluate( 0.5 ), dAngle ) != SM_SUCCESS )
+    { return FALSE; }
+  return ( smos_Min( dAngle, SM_2PI - dAngle ) < dTangencyTolRad ) ? TRUE : FALSE;
+} // end SmFilletSolver::IsKnifeEdge
+
+/*******************************************************************//**
 PURPOSE: SolidCraft change. Whether every rail of this solver's fillet stays on the face it
     rolls on, so that the blend fits.
 
