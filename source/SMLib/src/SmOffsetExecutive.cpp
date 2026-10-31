@@ -2941,7 +2941,13 @@ SmStatus SmOffsetExecutive::PiecewiseMerge
               // face had the offsets of its two faces mated along it (EdgeuseOffset), so those
               // faces already share their intersection edge too.
               double dTanTolDeg = GetTangencyTolDegrees();
-              if (pE->IsManifold() && (m_bExtendConvexEdges || pE->GetPrimaryEdgeuse()->IsTangentSector(dTanTolDeg))) 
+              // Only where the mate was made: an edge whose two offsets meet on no one curve along
+              // it (a hole's offset poking out through a round side's offset, the curve between
+              // them open; MateEdges fails, tangency-labs/solidcore#1795) leaves their faces for the
+              // merge to intersect, as any other pair.
+              if (   pE->IsManifold()
+                  && !m_sUnmatedEdges.IsIn(pE)
+                  && (m_bExtendConvexEdges || pE->GetPrimaryEdgeuse()->IsTangentSector(dTanTolDeg))) 
                 {
                   SER( pE->GetEdgeuses(sEdgeEUS) );
                   ULONG ieu, ifac;
