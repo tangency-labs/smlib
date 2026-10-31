@@ -4300,8 +4300,653 @@ int exact_class_cases(bool known_failing, const char *only)
     return wrong;
 }
 
+// ---- Section orders ----------------------------------------------------------------------------
+// The chord (order 0), the ball's circle (1) and the G^n section (2 and up) between the rolling
+// ball's contact lines (smlib_blend_order), each graded against the section worked out here: the
+// body's volume, every point of the blend's surface on the exact blend, and the order of contact
+// with each face across its contact line, measured from the surfaces.
+
+using P2 = std::array<double, 2>;
+
+// The G^n section in a section's plane (smlib.h, smlib_blend_order): c1[k], c2[k] (k = 0..n) the
+// faces' jets at the contacts, T_i(u) = sum_k c_ik (u - 1)^k with c_ik = r^k / k! F_i^(k)(r).
+P2 gn_section(int n, double w, const std::vector<P2> &c1, const std::vector<P2> &c2, double t)
+{
+    const double a = std::pow(1 - t, n + 1), b = std::pow(t, n + 1), f = a / (a + b);
+    const double u1 = -t / (1 - w + w * t);  // 1 - p1(t), less 1
+    const double u2 = (t - 1) / (1 - w * t); // p2(t), less 1
+    P2 s1 = {0, 0}, s2 = {0, 0};
+    double k1 = 1, k2 = 1;
+    for (int k = 0; k <= n; k++)
+    {
+        for (int i = 0; i < 2; i++)
+        {
+            s1[i] += c1[k][i] * k1;
+            s2[i] += c2[k][i] * k2;
+        }
+        k1 *= u1;
+        k2 *= u2;
+    }
+    return {f * s1[0] + (1 - f) * s2[0], f * s1[1] + (1 - f) * s2[1]};
+}
+
+// The distance from q to the curve c(t), t in [0, 1]: the nearest of 512 samples, then a golden
+// section search between its neighbours.
+double distance_to_curve(const std::function<P2(double)> &c, P2 q)
+{
+    auto d2 = [&](double t)
+    {
+        const P2 p = c(t);
+        return (p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]);
+    };
+    const int m = 512;
+    int best = 0;
+    double bd = d2(0);
+    for (int k = 1; k <= m; k++)
+    {
+        const double d = d2(static_cast<double>(k) / m);
+        if (d < bd)
+        {
+            bd = d;
+            best = k;
+        }
+    }
+    double lo = std::max(0.0, (best - 1.0) / m), hi = std::min(1.0, (best + 1.0) / m);
+    const double g = (std::sqrt(5.0) - 1) / 2;
+    for (int it = 0; it < 100; it++)
+    {
+        const double x1 = hi - g * (hi - lo), x2 = lo + g * (hi - lo);
+        if (d2(x1) < d2(x2))
+        {
+            hi = x2;
+        }
+        else
+        {
+            lo = x1;
+        }
+    }
+    return std::sqrt(std::min(bd, d2(0.5 * (lo + hi))));
+}
+
+// Surface `s` crossed by the plane through p square to b: the curve's height h(sigma) along n
+// over the line p + sigma w, at sigma = j step (j = 1..7, step's sign the side), walked from uv
+// (where s is p) by Newton. Its first four derivatives at 0 go to d, from the polynomial of
+// degree 7 through h(0) = 0 and those seven.
+bool seam_graph(const SmSurface *s, SmPoint2d uv, const SmPoint3d &p, const SmVector3d &b, const SmVector3d &w, const SmVector3d &n,
+                double step, double d[4])
+{
+    double A[7][8];
+    for (int j = 1; j <= 7; j++)
+    {
+        const double sigma = j * step;
+        bool converged = false;
+        for (int it = 0; it < 40 && !converged; it++)
+        {
+            SmVector3d e[4]; // D, Dv, Du, Duv
+            if (s->Evaluate(uv, 1, 1, TRUE, TRUE, FALSE, e, FALSE) != SM_SUCCESS)
+            {
+                return false;
+            }
+            const SmVector3d q = e[0] - SmVector3d(p);
+            const double f0 = q.Dot(b), f1 = q.Dot(w) - sigma;
+            const double a00 = e[2].Dot(b), a01 = e[1].Dot(b), a10 = e[2].Dot(w), a11 = e[1].Dot(w);
+            const double det = a00 * a11 - a01 * a10;
+            if (det == 0.0)
+            {
+                return false;
+            }
+            const double du = (f0 * a11 - a01 * f1) / det, dv = (a00 * f1 - a10 * f0) / det;
+            uv = SmPoint2d(uv.x - du, uv.y - dv);
+            converged = std::fabs(du) + std::fabs(dv) <= 1e-15 * (1.0 + std::fabs(uv.x) + std::fabs(uv.y));
+        }
+        SmPoint3d q;
+        if (s->EvaluatePoint(uv, q) != SM_SUCCESS)
+        {
+            return false;
+        }
+        double x = 1.0;
+        for (int k = 0; k < 7; k++)
+        {
+            x *= sigma;
+            A[j - 1][k] = x;
+        }
+        A[j - 1][7] = (q - p).Dot(n);
+    }
+    // Gaussian elimination with partial pivoting
+    for (int c = 0; c < 7; c++)
+    {
+        int piv = c;
+        for (int r = c + 1; r < 7; r++)
+        {
+            if (std::fabs(A[r][c]) > std::fabs(A[piv][c]))
+            {
+                piv = r;
+            }
+        }
+        for (int k = 0; k < 8; k++)
+        {
+            std::swap(A[c][k], A[piv][k]);
+        }
+        for (int r = c + 1; r < 7; r++)
+        {
+            const double m = A[r][c] / A[c][c];
+            for (int k = c; k < 8; k++)
+            {
+                A[r][k] -= m * A[c][k];
+            }
+        }
+    }
+    double a[7];
+    for (int c = 6; c >= 0; c--)
+    {
+        double v = A[c][7];
+        for (int k = c + 1; k < 7; k++)
+        {
+            v -= A[c][k] * a[k];
+        }
+        a[c] = v / A[c][c];
+    }
+    d[0] = a[0];
+    d[1] = 2.0 * a[1];
+    d[2] = 6.0 * a[2];
+    d[3] = 24.0 * a[3];
+    return true;
+}
+
+// The order a seam reaches: 1 where the two faces' graphs (seam_graph) have slopes within tol[0],
+// 2 and their second derivatives within tol[1], 3 their third within tol[2], 4 their fourth.
+int seam_order(const double diff[4], const double tol[4])
+{
+    int k = 0;
+    while (k < 4 && diff[k] <= tol[k])
+    {
+        k++;
+    }
+    return k;
+}
+
+// What a blend must be.
+struct SectionGrade
+{
+    double volume;                                // the body's, worked out
+    double volume_rel;                            // its tolerance
+    std::function<double(const SmPoint3d &)> off; // a point's distance from the exact blend
+    double off_tol;                               // the most any point of the blend's surfaces may be off it
+    std::vector<ExactFace> faces;                 // the body's faces before the blend, as their surfaces
+    std::array<int, 2> rails;                     // the two of them the blend meets along its contact lines
+    int order;                                    // the order of contact with each, exactly
+    int order_max = -1;                           // a fitted blend: the most it may read, -1: order
+    bool fitted;                                  // a fitted blend: within 1 degree, 0.01 / mm, 0.001 / mm^2, 0.0001 / mm^3
+    double size;                                  // the blend's size, for the seam's steps
+};
+
+// Builds a blend by `build` and grades it by `g`: status, SMLib's check, volume, every point of
+// each blend face's surface (a face whose surface lies on none of g.faces) on the exact blend, and
+// at nine stations along each seam with one of the two rail faces, the order of contact: the
+// exact one at tolerances 1e-9 (slope), 1e-7 / mm, 1e-5 / mm^2 and 1e-3 / mm^3, and not the next
+// at Continuity Analysis's (1 degree, 0.01 / mm, 0.001 / mm^2, 0.0001 / mm^3).
+void section_blend(const std::function<int32_t(smlib_brep **)> &build, const SectionGrade &g)
+{
+    smlib_brep *b = nullptr;
+    const int32_t s = build(&b);
+    std::printf("  status %d\n", static_cast<int>(s));
+    CHECK(s == SMLIB_OK && b != nullptr);
+    if (b == nullptr)
+    {
+        return;
+    }
+    const double v = volume_of(b);
+    std::printf("  volume %.9f, want %.9f\n", v, g.volume);
+    CHECK(near(v, g.volume, g.volume_rel));
+    CHECK(sound(b));
+    auto on_face = [&](const SmSurface *srf, int k)
+    {
+        const SmExtent2d dom = srf->GetNaturalUVDomain();
+        SmPoint3d mid;
+        return srf->EvaluatePoint(SmPoint2d(0.5 * (dom.GetMin().x + dom.GetMax().x), 0.5 * (dom.GetMin().y + dom.GetMax().y)), mid) == SM_SUCCESS &&
+               g.faces[static_cast<size_t>(k)].distance(mid) <= 1e-9;
+    };
+    const double tight[4] = {1e-9, 1e-7, 1e-5, 1e-3};
+    const double loose[4] = {std::tan(PI / 180.0), 0.01, 0.001, 0.0001};
+    SmTArray<SmFace *> all;
+    b->p->GetFaces(all);
+    int blends = 0, seams = 0;
+    for (ULONG i = 0; i < all.GetSize(); i++)
+    {
+        const SmSurface *srf = all[i]->GetSurface();
+        bool input = false;
+        for (size_t k = 0; k < g.faces.size() && !input; k++)
+        {
+            input = on_face(srf, static_cast<int>(k));
+        }
+        if (input)
+        {
+            continue;
+        }
+        blends++;
+        const SmExtent2d dom = srf->GetNaturalUVDomain();
+        double worst = 0.0;
+        for (int a = 0; a <= 16; a++)
+        {
+            for (int c = 0; c <= 16; c++)
+            {
+                SmPoint3d x;
+                const SmPoint2d uv(dom.GetMin().x + (dom.GetMax().x - dom.GetMin().x) * a / 16.0,
+                                   dom.GetMin().y + (dom.GetMax().y - dom.GetMin().y) * c / 16.0);
+                worst = std::max(worst, srf->EvaluatePoint(uv, x) == SM_SUCCESS ? g.off(x) : HUGE_VAL);
+            }
+        }
+        std::printf("  blend face %lu: off the exact blend by %.3g (allowed %.3g)\n", static_cast<unsigned long>(i), worst, g.off_tol);
+        CHECK(worst <= g.off_tol);
+
+        SmTArray<SmEdge *> es;
+        all[i]->GetEdges(es);
+        for (ULONG j = 0; j < es.GetSize(); j++)
+        {
+            SmTArray<SmEdgeuse *> eus;
+            if (es[j]->GetEdgeuses(eus) != SM_SUCCESS)
+            {
+                continue;
+            }
+            SmEdgeuse *mine = nullptr, *other = nullptr;
+            for (ULONG k = 0; k < eus.GetSize(); k++)
+            {
+                if (eus[k]->GetFace() == all[i])
+                {
+                    mine = eus[k];
+                }
+                else if (eus[k]->GetFace() != nullptr)
+                {
+                    other = eus[k];
+                }
+            }
+            if (mine == nullptr || other == nullptr || mine->GetUVTrimCurve() == nullptr || other->GetUVTrimCurve() == nullptr)
+            {
+                continue;
+            }
+            const SmSurface *osrf = other->GetFace()->GetSurface();
+            if (!on_face(osrf, g.rails[0]) && !on_face(osrf, g.rails[1]))
+            {
+                continue; // an end of the blend, not one of its contact lines
+            }
+            seams++;
+            const SmExtent1d ivl = es[j]->GetInterval();
+            double most[4] = {0, 0, 0, 0}, least[4] = {HUGE_VAL, HUGE_VAL, HUGE_VAL, HUGE_VAL};
+            for (int k = 1; k <= 9; k++)
+            {
+                const double t = ivl.GetMin() + ivl.GetLength() * k / 10.0;
+                SmVector3d pt[2];
+                SmPoint3d w1, w2;
+                CHECK(es[j]->GetCurve()->Evaluate(t, 1, TRUE, pt, FALSE) == SM_SUCCESS);
+                CHECK(mine->GetUVTrimCurve()->EvaluatePoint(t, w1) == SM_SUCCESS && other->GetUVTrimCurve()->EvaluatePoint(t, w2) == SM_SUCCESS);
+                const SmPoint3d p(pt[0]);
+                SmVector3d along = pt[1], n;
+                CHECK(along.Unitize() == SM_SUCCESS && osrf->EvaluateNormal(SmPoint2d(w2.x, w2.y), TRUE, TRUE, n) == SM_SUCCESS);
+                SmVector3d w = n * along;
+                CHECK(w.Unitize() == SM_SUCCESS);
+                // w points into the blend: towards a point of its surface a step inside its domain
+                const SmPoint2d uv(w1.x, w1.y);
+                const SmPoint2d in(uv.x + 1e-3 * (0.5 * (dom.GetMin().x + dom.GetMax().x) - uv.x),
+                                   uv.y + 1e-3 * (0.5 * (dom.GetMin().y + dom.GetMax().y) - uv.y));
+                SmPoint3d q;
+                CHECK(srf->EvaluatePoint(in, q) == SM_SUCCESS);
+                if ((q - p).Dot(w) < 0)
+                {
+                    w = -w;
+                }
+                double hb[4], ho[4];
+                // a fitted blend's seam is graded over steps wide enough that its gap (the fit's) does
+                // not read as a difference of the derivatives
+                const double step = (g.fitted ? 0.02 : 0.004) * g.size;
+                const bool ok = seam_graph(srf, uv, p, along, w, n, step, hb) && seam_graph(osrf, SmPoint2d(w2.x, w2.y), p, along, w, n, -step, ho);
+                CHECK(ok);
+                for (int m = 0; m < 4; m++)
+                {
+                    const double dlt = ok ? std::fabs(hb[m] - ho[m]) : HUGE_VAL;
+                    most[m] = std::max(most[m], dlt);
+                    least[m] = std::min(least[m], dlt);
+                }
+            }
+            // the order every station reaches, at the tight tolerances; and the most any reaches at the loose ones
+            const int reached = seam_order(most, g.fitted ? loose : tight), at_most = seam_order(least, loose);
+            std::printf("  seam %lu: derivatives 1 to 4 differ by up to %.3g, %.3g, %.3g, %.3g (at least %.3g, %.3g, %.3g, %.3g): G%d, at most G%d\n",
+                        static_cast<unsigned long>(j), most[0], most[1], most[2], most[3], least[0], least[1], least[2], least[3], reached, at_most);
+            CHECK(reached >= g.order && at_most <= (g.order_max >= 0 ? g.order_max : g.order));
+        }
+    }
+    CHECK(blends > 0 && seams >= 2);
+    done(b);
+}
+
+// smlib_blend_order on one edge of `body` (consumed).
+std::function<int32_t(smlib_brep **)> by_order(smlib_brep *body, std::array<double, 3> pick, int order, double w, double size)
+{
+    return [=](smlib_brep **out)
+    {
+        std::printf("  order %d, thumbweight %g, size %g\n", order, w, size);
+        const int32_t s = body == nullptr ? SMLIB_ERR_ARG : smlib_blend_order(body, order, w, pick.data(), &size, 1, 0.1, out, nullptr);
+        smlib_brep_free(body);
+        return s;
+    };
+}
+
+// The box 40 x 30 x 20 and its top back edge (y = 30, z = 20), the ball r = 3. In a plane x =
+// const, coordinates (y, z): the point at distance d from both faces is (30 - d, 20 - d), its feet
+// (30 - d, 20) on the top and (30, 20 - d) on the back, so the jets are c_0 the contacts (27, 20)
+// and (30, 17), c_1 = 3 (-1, 0) and 3 (0, -1), none higher. The body's volume is 24000 less 40
+// times the area the section cuts off the corner (by Green's theorem on the section, in units of
+// s^2 = 9): 1/2 (chord), 1 - pi/4 (circle), and for order 2 0.154192655384275 at thumbweight 0
+// (the default), 113/756 at W_STAR (by its definition) and 0.0744372522086925 at 1/2.
+//
+// The order of contact of the order-n section with each face across its rail is n + 1 where the
+// standoff's t^(n+1) coefficient [(T_o(0) - rho_i) - c_i,n+1 (-1 / (1 - w))^(n+1)] . N_i is not
+// zero. On two planes the feet are linear in d, so c_i,n+1 = 0, and T_o(0) is the edge's point,
+// on face i: the coefficient vanishes, and the next, (1 - w) (rho_o - e) . N_i, does not. The
+// section is G(n + 1) with planes: order 2 is G3 here, exactly.
+const std::vector<ExactFace> BOX_40_30_20 = {{ExactFace::PLANE, {0, 0, 0}, {1, 0, 0}, 0},  {ExactFace::PLANE, {40, 0, 0}, {1, 0, 0}, 0},
+                                             {ExactFace::PLANE, {0, 0, 0}, {0, 1, 0}, 0},  {ExactFace::PLANE, {0, 30, 0}, {0, 1, 0}, 0},
+                                             {ExactFace::PLANE, {0, 0, 0}, {0, 0, 1}, 0},  {ExactFace::PLANE, {0, 0, 20}, {0, 0, 1}, 0}};
+const std::vector<P2> BOX_TOP_JETS = {{27, 20}, {-3, 0}, {0, 0}}, BOX_BACK_JETS = {{30, 17}, {0, -3}, {0, 0}};
+
+SectionGrade box_edge_grade(int order, double w, double cut)
+{
+    SectionGrade g;
+    g.volume = 24000.0 - 40.0 * 9.0 * cut;
+    g.volume_rel = 1e-7;
+    if (order == 1)
+    {
+        g.off = [](const SmPoint3d &x) { return std::fabs(std::hypot(x.y - 27.0, x.z - 17.0) - 3.0); };
+    }
+    else
+    {
+        g.off = [order, w](const SmPoint3d &x)
+        { return distance_to_curve([&](double t) { return gn_section(order, w, BOX_TOP_JETS, BOX_BACK_JETS, t); }, {x.y, x.z}); };
+    }
+    g.off_tol = 1e-9;
+    g.faces = BOX_40_30_20;
+    g.rails = {5, 3};
+    g.order = order >= 2 ? order + 1 : order;
+    g.fitted = false;
+    g.size = 3.0;
+    return g;
+}
+
+void section_box_edge_chamfer()
+{
+    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 0, SMLIB_BLEND_THUMBWEIGHT, 3.0), box_edge_grade(0, 0.0, 0.5));
+}
+
+void section_box_edge_round()
+{
+    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 1, SMLIB_BLEND_THUMBWEIGHT, 3.0), box_edge_grade(1, 0.0, 1.0 - PI / 4));
+}
+
+void section_box_edge_g2()
+{
+    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, SMLIB_BLEND_THUMBWEIGHT, 3.0),
+                  box_edge_grade(2, SMLIB_BLEND_THUMBWEIGHT, 0.154192655384275));
+}
+
+// The thumbweight at which the order-2 section between square planes, set back s, cuts 113/756 s^2
+// off the corner (the root of that area's equation in w, by quadrature).
+const double W_STAR = 0.034293402266607321;
+
+void section_box_edge_g2_thumbweight_w_star()
+{
+    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, W_STAR, 3.0), box_edge_grade(2, W_STAR, 113.0 / 756.0));
+}
+
+// The thumbweight pulls the section towards the edge: its middle (1 - w) / (2 (2 - w)) s off each
+// face, s / 4 at 0, s / 6 at 1/2, and the area it cuts off from 0.1541927 s^2 to 0.0744373 s^2.
+void section_box_edge_g2_thumbweight_half()
+{
+    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, 0.5, 3.0), box_edge_grade(2, 0.5, 0.0744372522086925));
+}
+
+// A plate 60 x 40 x 10 and a boss R 8, 10 tall, at (30, 20) on it; the boss's root rounded at size
+// 2. In each meridian plane, coordinates (rho, z) with rho the distance from the boss's axis, the
+// plate's top and the boss's wall are the lines z = 10 and rho = 8: the feet of the point at
+// distance d from both, (8 + d, 10 + d), are (8 + d, 10) and (8, 10 + d), the jets c_0 the
+// contacts (10, 10) and (8, 12), c_1 = 2 (1, 0) and 2 (0, 1), none higher. V0 = 24000 + 640 pi;
+// each section adds, revolved (Pappus), 2 pi (8 A + M), A its area and M its first moment about
+// the wall: the chord's triangle 2, centroid 2/3 off the wall (V = 26119.5278436219); the circle's
+// spandrel (1 - pi/4) 4, centroid 2 (5/6 - pi/4) / (1 - pi/4) off the wall (26056.1770421533); the
+// order-2 section at the default thumbweight 0, the square corner's, A = 0.616770621537099, M =
+// 0.233402636580288 (Green's theorem on the section; 26043.0880831714), G3 with the faces (box_edge_grade's
+// note): their lines in the meridian are its faces' jets. The round turns about the axis, its
+// jets with it: it is the certified fit, within the certificate's target, a tenth of the fillet's
+// tolerance 4e-5.
+smlib_brep *boss_on_plate()
+{
+    return combined(box(0, 0, 0, 60, 40, 10), cylinder(30, 20, 10, 8, 10), SMLIB_BOOLEAN_UNION);
+}
+
+SectionGrade boss_root_grade(int order, double volume)
+{
+    SectionGrade g;
+    g.volume = volume;
+    g.volume_rel = 1e-7;
+    auto rho_z = [](const SmPoint3d &x) { return P2{std::hypot(x.x - 30.0, x.y - 20.0), x.z}; };
+    const std::vector<P2> plate = {{10, 10}, {2, 0}, {0, 0}}, wall = {{8, 12}, {0, 2}, {0, 0}};
+    if (order == 1)
+    {
+        g.off = [rho_z](const SmPoint3d &x)
+        {
+            const P2 q = rho_z(x);
+            return std::fabs(std::hypot(q[0] - 10.0, q[1] - 12.0) - 2.0);
+        };
+    }
+    else
+    {
+        g.off = [=](const SmPoint3d &x)
+        { return distance_to_curve([&](double t) { return gn_section(order, SMLIB_BLEND_THUMBWEIGHT, plate, wall, t); }, rho_z(x)); };
+    }
+    g.off_tol = order >= 2 ? 4e-6 : 1e-9;
+    g.faces = {{ExactFace::PLANE, {0, 0, 0}, {1, 0, 0}, 0},   {ExactFace::PLANE, {60, 0, 0}, {1, 0, 0}, 0},
+               {ExactFace::PLANE, {0, 0, 0}, {0, 1, 0}, 0},   {ExactFace::PLANE, {0, 40, 0}, {0, 1, 0}, 0},
+               {ExactFace::PLANE, {0, 0, 0}, {0, 0, 1}, 0},   {ExactFace::PLANE, {0, 0, 10}, {0, 0, 1}, 0},
+               {ExactFace::CYLINDER, {30, 20, 0}, Z_AXIS, 8}, {ExactFace::PLANE, {0, 0, 20}, {0, 0, 1}, 0}};
+    g.rails = {5, 6};
+    // the fit is G3 to the plate (its jets are the line's, along s too) and G2 to the wall within
+    // Continuity Analysis's tolerances: its third derivative across the wall's rail is the fit's
+    g.order = order >= 2 ? 2 : order;
+    g.order_max = order >= 2 ? 3 : -1;
+    g.fitted = order >= 2;
+    g.size = 2.0;
+    return g;
+}
+
+void section_boss_root_chamfer()
+{
+    section_blend(by_order(boss_on_plate(), {30 + 4 * std::sqrt(2.0), 20 + 4 * std::sqrt(2.0), 10}, 0, SMLIB_BLEND_THUMBWEIGHT, 2.0), boss_root_grade(0, 26119.5278436219));
+}
+
+void section_boss_root_round()
+{
+    section_blend(by_order(boss_on_plate(), {30 + 4 * std::sqrt(2.0), 20 + 4 * std::sqrt(2.0), 10}, 1, SMLIB_BLEND_THUMBWEIGHT, 2.0), boss_root_grade(1, 26056.1770421533));
+}
+
+void section_boss_root_g2()
+{
+    section_blend(by_order(boss_on_plate(), {30 + 4 * std::sqrt(2.0), 20 + 4 * std::sqrt(2.0), 10}, 2, SMLIB_BLEND_THUMBWEIGHT, 2.0), boss_root_grade(2, 26043.0880831714));
+}
+
+// A plate 60 x 40 x 10 and a pipe R 10 along x (0 to 60), its axis at (y, z) = (20, 16), joined:
+// the pipe dips 4 into the plate and leaves it along the lines y = 20 +- 8, z = 10. The edge
+// y = 28 blended at size 2. In a plane x = const, coordinates (y, z): the point at distance d from
+// both faces is V(d) = (20 + g(d), 10 + d), g(d) = sqrt((10 + d)^2 - (d - 6)^2) = sqrt(64 + 32 d);
+// its feet are F1(d) = (20 + g, 10) on the plate and F2(d) = (20, 16) + 10 (V - (20, 16)) / (10 +
+// d) = (20 + 10 g / (10 + d), 26 - 160 / (10 + d)) on the pipe. The jets c_ik = r^k / k! F_i^(k)(r)
+// (r the ball's radius) from g' = 16 / g, g'' = -256 / g^3. V0 = 24000 + 60 (100 pi - (100 acos 0.6 - 48)) =
+// 40165.7846135291; each section adds 60 times the area between it, the plate and the pipe
+// (Green's theorem along the plate, the section and the pipe's arc). The chamfer 2 back from the
+// edge rolls the ball of radius 2 sqrt((1 - c) / (1 + c)) = 1, c = 0.6 the cosine between the
+// faces' directions (1, 0) and (0.6, 0.8) away from the edge: the chord between that ball's
+// contacts adds 1.26553105186724 (V = 40241.7164766411). The ball r = 2: the circle 2.25035755648288
+// (40300.8060669181), the order-2 section 1.54598304589003 at the default thumbweight 0
+// (40258.5435962825) and 0.845294194544005 at 1/2 (40216.5022652017), G2 with the faces exactly: on
+// the pipe the feet are not linear in d, and the t^3 coefficient of its standoff is not zero.
+smlib_brep *pipe_on_plate()
+{
+    const double o[3] = {0, 0, 0};
+    smlib_brep *pipe = nullptr;
+    CHECK(smlib_make_cylinder(o, 10.0, 60.0, &pipe) == SMLIB_OK);
+    return combined(box(0, 0, 0, 60, 40, 10), placed(pipe, {0, 0, -1}, Y_AXIS, X_AXIS, {0, 20, 16}), SMLIB_BOOLEAN_UNION);
+}
+
+SectionGrade pipe_on_plate_grade(int order, double w, double d, double volume)
+{
+    const double g = std::sqrt(64.0 + 32.0 * d), g1 = 16.0 / g, g2 = -256.0 / (g * g * g), e = 10.0 + d;
+    const std::vector<P2> plate = {{20 + g, 10}, {d * g1, 0}, {d * d / 2 * g2, 0}};
+    const std::vector<P2> pipe = {{20 + 10 * g / e, 26 - 160 / e},
+                                  {d * 10 * (g1 * e - g) / (e * e), d * 160 / (e * e)},
+                                  {d * d / 2 * 10 * (g2 / e - 2 * g1 / (e * e) + 2 * g / (e * e * e)), d * d / 2 * (-320 / (e * e * e))}};
+    SectionGrade s;
+    s.volume = volume;
+    s.volume_rel = 1e-7;
+    if (order == 1)
+    {
+        s.off = [g, d](const SmPoint3d &x) { return std::fabs(std::hypot(x.y - 20.0 - g, x.z - 10.0 - d) - d); };
+    }
+    else
+    {
+        s.off = [=](const SmPoint3d &x)
+        { return distance_to_curve([&](double t) { return gn_section(order, w, plate, pipe, t); }, {x.y, x.z}); };
+    }
+    s.off_tol = 1e-9;
+    s.faces = {{ExactFace::PLANE, {0, 0, 0}, {1, 0, 0}, 0},    {ExactFace::PLANE, {60, 0, 0}, {1, 0, 0}, 0},
+               {ExactFace::PLANE, {0, 0, 0}, {0, 1, 0}, 0},    {ExactFace::PLANE, {0, 40, 0}, {0, 1, 0}, 0},
+               {ExactFace::PLANE, {0, 0, 0}, {0, 0, 1}, 0},    {ExactFace::PLANE, {0, 0, 10}, {0, 0, 1}, 0},
+               {ExactFace::CYLINDER, {0, 20, 16}, X_AXIS, 10}};
+    s.rails = {5, 6};
+    s.order = order;
+    s.fitted = false;
+    s.size = d;
+    return s;
+}
+
+void section_pipe_on_plate_chamfer()
+{
+    section_blend(by_order(pipe_on_plate(), {30, 28, 10}, 0, SMLIB_BLEND_THUMBWEIGHT, 2.0), pipe_on_plate_grade(0, 0.0, 1.0, 40241.7164766411));
+}
+
+void section_pipe_on_plate_round()
+{
+    section_blend(by_order(pipe_on_plate(), {30, 28, 10}, 1, SMLIB_BLEND_THUMBWEIGHT, 2.0), pipe_on_plate_grade(1, 0.0, 2.0, 40300.8060669181));
+}
+
+void section_pipe_on_plate_g2()
+{
+    section_blend(by_order(pipe_on_plate(), {30, 28, 10}, 2, SMLIB_BLEND_THUMBWEIGHT, 2.0),
+                  pipe_on_plate_grade(2, SMLIB_BLEND_THUMBWEIGHT, 2.0, 40258.5435962825));
+}
+
+void section_pipe_on_plate_g2_thumbweight_half()
+{
+    section_blend(by_order(pipe_on_plate(), {30, 28, 10}, 2, 0.5, 2.0), pipe_on_plate_grade(2, 0.5, 2.0, 40216.5022652017));
+}
+
+// A variable round: the top back edge (y = 30, z = 20) of a box 20 x 30 x 20, its radius r = 1 + x/5
+// from x = 0 to 20 (a linear law, smlib_fillet_variable). The balls' centres (x, 30 - r, 20 - r)
+// run on a line, r proportional to their distance from the apex (-5, 30, 20) where r would be 0:
+// the balls' envelope is the circular cone about that line, sin(phi) = r / |c - apex| = 1/sqrt(27).
+// The round lies on that cone, within the fillet's tolerance (a fitted surface), and meets the
+// faces tangentially. Each ball touches the cone along the circle in the plane square to the line
+// of centres offset by -r r' / |c'| from its centre (r' = dr/dx = 1/5, |c'| = sqrt(27)/5), not along
+// the great circle about the centre, whose middle is 0.0101 off the cone at x = 10. The volume
+// removed, 43.7775732641296, is the area the cone's section in each plane x = const cuts off the
+// corner (between the rails, by rays from the corner), integrated over x: V = 11956.2224267359.
+void section_variable_round_on_its_cone()
+{
+    SectionGrade g;
+    g.volume = 11956.2224267359;
+    g.volume_rel = 1e-5;
+    const double apex[3] = {-5, 30, 20}, l = std::sqrt(1.08), ax[3] = {1 / l, -0.2 / l, -0.2 / l};
+    const double sphi = 1 / std::sqrt(27.0), cphi = std::sqrt(26.0 / 27.0);
+    g.off = [=](const SmPoint3d &x)
+    {
+        const double w[3] = {x.x - apex[0], x.y - apex[1], x.z - apex[2]};
+        const double along = w[0] * ax[0] + w[1] * ax[1] + w[2] * ax[2];
+        const double across = std::sqrt(std::max(0.0, w[0] * w[0] + w[1] * w[1] + w[2] * w[2] - along * along));
+        return std::fabs(across * cphi - along * sphi);
+    };
+    smlib_brep *body = box(0, 0, 0, 20, 30, 20);
+    g.off_tol = 100.0 * static_cast<double>(body->p->GetTolerance());
+    g.faces = {{ExactFace::PLANE, {0, 0, 0}, {1, 0, 0}, 0}, {ExactFace::PLANE, {20, 0, 0}, {1, 0, 0}, 0},
+               {ExactFace::PLANE, {0, 0, 0}, {0, 1, 0}, 0}, {ExactFace::PLANE, {0, 30, 0}, {0, 1, 0}, 0},
+               {ExactFace::PLANE, {0, 0, 0}, {0, 0, 1}, 0}, {ExactFace::PLANE, {0, 0, 20}, {0, 0, 1}, 0}};
+    g.rails = {5, 3};
+    g.order = 1;
+    g.fitted = true;
+    g.size = 1.0;
+    section_blend(
+        [body](smlib_brep **out)
+        {
+            const double at[3] = {10, 30, 20}, from[3] = {0, 30, 20}, knots[4] = {0, 0, 1, 1}, radii[2] = {1, 5};
+            const int32_t s = smlib_fillet_variable(body, at, 0.1, from, 1, knots, 4, radii, 2, out);
+            smlib_brep_free(body);
+            return s;
+        },
+        g);
+}
+
+// The section-order cases, and why each that fails today fails (null: it passes). As
+// TANGENT_END_CASES: `--section-orders-known-failing` runs the failing ones and fails if one passes.
+const TangentEndCase SECTION_CASES[] = {
+    {"box_edge_chamfer", section_box_edge_chamfer, nullptr},
+    {"box_edge_round", section_box_edge_round, nullptr},
+    {"box_edge_g2", section_box_edge_g2, "status -1105: the order-2 section is not built"},
+    {"box_edge_g2_thumbweight_w_star", section_box_edge_g2_thumbweight_w_star, "status -1105: the order-2 section is not built"},
+    {"box_edge_g2_thumbweight_half", section_box_edge_g2_thumbweight_half, "status -1105: the order-2 section is not built"},
+    {"boss_root_chamfer", section_boss_root_chamfer, nullptr},
+    {"boss_root_round", section_boss_root_round, nullptr},
+    {"boss_root_g2", section_boss_root_g2, "status -1105: the order-2 section is not built"},
+    {"pipe_on_plate_chamfer", section_pipe_on_plate_chamfer, nullptr},
+    {"pipe_on_plate_round", section_pipe_on_plate_round, nullptr},
+    {"pipe_on_plate_g2", section_pipe_on_plate_g2, "status -1105: the order-2 section is not built"},
+    {"pipe_on_plate_g2_thumbweight_half", section_pipe_on_plate_g2_thumbweight_half, "status -1105: the order-2 section is not built"},
+    {"variable_round_on_its_cone", section_variable_round_on_its_cone,
+     "the round's sections are the balls' great circles, not the circles the balls' envelope touches them along: 0.0166 off the cone, volume 11955.6466 against 11956.2224"},
+};
+
+int section_cases(bool known_failing, const char *only)
+{
+    int wrong = 0;
+    for (const TangentEndCase &c : SECTION_CASES)
+    {
+        if ((only != nullptr && std::strcmp(only, c.name) != 0) || (only == nullptr && known_failing != (c.fails_today != nullptr)))
+        {
+            continue;
+        }
+        const int before = failures;
+        std::printf("section %s:\n", c.name);
+        c.run();
+        const bool failed = failures != before;
+        failures = before;
+        if (failed != (c.fails_today != nullptr))
+        {
+            std::fprintf(stderr, "section %s: %s\n", c.name, failed ? "FAILS" : "PASSES, though listed as failing today: drop its reason");
+            wrong++;
+        }
+        else if (failed)
+        {
+            std::printf("  fails, as known: %s\n", c.fails_today);
+        }
+    }
+    return wrong;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc == 2 && std::strcmp(argv[1], "--section-orders-known-failing") == 0)
+    {
+        return section_cases(true, nullptr) == 0 ? 0 : 1;
+    }
+    if (argc == 3 && std::strcmp(argv[1], "--section-order") == 0)
+    {
+        smlib_set_log([](void *, int32_t level, const char *line) { std::fprintf(stderr, "log %d %s\n", static_cast<int>(level), line); }, nullptr);
+        return section_cases(false, argv[2]) == 0 ? 0 : 1;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--exact-classes-known-failing") == 0)
     {
         return exact_class_cases(true, nullptr) == 0 ? 0 : 1;
@@ -7857,6 +8502,7 @@ int main(int argc, char **argv)
     chamfer_of_a_shelled_box_corner_ending_under_its_lip();
     failures += tangent_end_cases(false, nullptr);
     failures += exact_class_cases(false, nullptr);
+    failures += section_cases(false, nullptr);
 
     // SolidCraft surface.offset of a ball's one face: the face taken off as a sheet is a closed
     // shell whose regions are all voids, which smlib_offset_sheet refused as a solid
