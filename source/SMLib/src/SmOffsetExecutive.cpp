@@ -3877,6 +3877,7 @@ namespace
     long             lStart;  // the node it starts at: a crossing (>= 0), or the vertex ending
     long             lEnd;    //   edgeuse k of the face (-1 - k); and the node it ends at
     SmBoolean        bKeep;   // TRUE = it bounds the face
+    SmBoolean        bFloor;  // TRUE = it bounds a region the loops wind round the other way
     SmPoint3d        sMid;    // its middle point
   };
 
@@ -4014,6 +4015,128 @@ NOTES: SolidCraft fork. SMLib has nothing that resolves crossing loops: the
    outside a loop, a crossing where the kept stretches do not continue one
    to one, and a face whose edges bound other faces too.
 ***********************************************************************/
+/*******************************************************************//**
+PURPOSE: Whether a region where an offset face's loops wind round the other
+   way is the cavity's face, reversed (ResolveCrossingLoopsOfFace).
+NOTES: SolidCraft fork. The cavity would lie on the side of the region the
+   face's own cavity side is not, so the point just beyond the region on
+   that side must be cavity by the offset's own rule: inside the body, and
+   on the cavity side of every other offset face whose wall it lies within
+   (its foot on that face is inside the face, less than the wall's thickness
+   from it). A face's cavity side is opposite the body's outward normal at
+   the face it was offset or copied from (the normal of that face's faceuse
+   the offset was built from, which points into the region it bounds). Faces with no face of the body
+   behind them (caps, walls built along edges) are not looked at.
+***********************************************************************/
+static SmStatus sm_OutwardOfBody
+ (SmRelation<SmFaceuse,SmFace> & rFUToF, SmFace * pOffsetFace,
+  const SmPoint3d & crAt, const SmVector3d & crSurfNormal, double dWall, SmBoolean & rbKnown, double & rdSign)
+{
+  rbKnown = FALSE;
+  rdSign  = 1.0;
+  SmTArray<SmFaceuse*> sFUs;
+  rFUToF.GetFirsts(pOffsetFace, sFUs);
+  if (sFUs.GetSize() < 1) { return SM_SUCCESS; }
+  SmFaceuse *pFU = sFUs[0];
+  SmFace *pOrig = pFU->GetFace(); NER(pOrig);
+  if (pFU->GetShell() == NULL || pFU->GetShell()->GetRegion() == NULL) { return SM_SUCCESS; }
+  SmSolution      sData[16];
+  SmSolutionArray sSolutions(16, sData);
+  SER(pOrig->GetSurface()->GlobalPointSolve(pOrig->GetSurface()->GetNaturalUVDomain(), SM_SO_MINIMIZE, crAt, 2.0 * dWall, NULL, SM_SR_SINGLE, sSolutions));
+  if (sSolutions.GetSize() < 1) { return SM_SUCCESS; }
+  SmPoint2d sUV(sSolutions[0].m_vStart[0], sSolutions[0].m_vStart[1]);
+  SmVector3d sN;
+  SER(pOrig->GetSurface()->EvaluateNormal(sUV, TRUE, TRUE, sN));
+  if (sN.Unitize(FALSE) != SM_SUCCESS) { return SM_SUCCESS; }
+  // the faceuse's normal points into the region it bounds: out of the body where that is void
+  if (pFU->GetOrientation() != SM_OT_SAME) { sN = sN * (-1.0); }
+  if (!pFU->GetShell()->GetRegion()->IsVoid()) { sN = sN * (-1.0); }
+  rdSign  = (sN.Dot(crSurfNormal) >= 0.0) ? 1.0 : -1.0;
+  rbKnown = TRUE;
+  return SM_SUCCESS;
+}
+
+static SmStatus sm_FloorIsCavity
+ (const SmBrep                       & crBody,      // in : the body offset
+  SmBrep                             & rOffset,     // in : the offset faces, each a sheet
+  SmRelation<SmFaceuse,SmFace>       & rFUToF,      // in : the body's faceuses to the offset faces
+  SmFace                             * pFace,       // in : the offset face whose loops cross
+  const std::vector<sm_LoopStretch>  & crStretches, // in : its loops' stretches
+  const std::vector<size_t>          & crLoop,      // in : the stretches round the region
+  double                               dWall,       // in : the wall's thickness
+  SmBoolean                          & rbCavity)    // out: TRUE = the region is the cavity's face
+{
+  rbCavity = FALSE;
+  SmSurface *pSurface = pFace->GetSurface(); NER(pSurface);
+  // a point of the region: the middle of its stretches' middles, on the surface
+  SmPoint3d sMid(0.0, 0.0, 0.0);
+  for (size_t kk=0; kk<crLoop.size(); kk++) { sMid = sMid + (crStretches[crLoop[kk]].sMid - SmPoint3d(0.0, 0.0, 0.0)); }
+  sMid = SmPoint3d(0.0, 0.0, 0.0) + (sMid - SmPoint3d(0.0, 0.0, 0.0)) * (1.0 / (double)crLoop.size());
+  SmSolution      sData[16];
+  SmSolutionArray sSolutions(16, sData);
+  SER(pSurface->GlobalPointSolve(pSurface->GetNaturalUVDomain(), SM_SO_MINIMIZE, sMid, dWall, NULL, SM_SR_SINGLE, sSolutions));
+  if (sSolutions.GetSize() < 1) { return SM_SUCCESS; }
+  SmPoint2d sUV(sSolutions[0].m_vStart[0], sSolutions[0].m_vStart[1]);
+  SmPoint3d sP;
+  SmVector3d sN;
+  SER(pSurface->EvaluatePoint(sUV, sP));
+  SER(pSurface->EvaluateNormal(sUV, TRUE, TRUE, sN));
+  if (sN.Unitize(FALSE) != SM_SUCCESS) { return SM_SUCCESS; }
+  SmBoolean bKnown = FALSE;
+  double dSign = 1.0;
+  SER(sm_OutwardOfBody(rFUToF, pFace, sP, sN, dWall, bKnown, dSign));
+  if (!bKnown) { return SM_SUCCESS; }
+  // the face's cavity side is against the body's outward normal; the region's the other one
+  const double dStep = 1.0e-3 * dWall;
+  SmPoint3d sQ = sP + sN * (dSign * dStep);
+  SmPointClassification sPC;
+  SER(crBody.Point3DClassify(sQ, SmTol::GetZoneTol3d(&crBody), TRUE, sPC));
+  if (   sPC.GetPointClass() != SM_PC_REGION || sPC.GetObject() == NULL
+      || static_cast<const SmRegion *>(sPC.GetObject())->IsVoid())
+    { return SM_SUCCESS; }
+  SmTArray<SmFace*> sFaces;
+  rOffset.GetFaces(sFaces);
+  for (ULONG ff=0; ff<sFaces.GetSize(); ff++)
+    {
+      SmFace *pOther = sFaces[ff];
+      if (pOther == pFace) { continue; }
+      SmSurface *pOS = pOther->GetSurface();
+      if (pOS == NULL) { continue; }
+      SmSolution      sOData[16];
+      SmSolutionArray sOSolutions(16, sOData);
+      SER(pOS->GlobalPointSolve(pOther->GetUVDomain(), SM_SO_MINIMIZE, sQ, dWall, NULL, SM_SR_SINGLE, sOSolutions));
+      if (sOSolutions.GetSize() < 1 || !(sOSolutions[0].m_vStart.m_dSolutionValue < dWall)) { continue; }
+      SmPoint2d sOUV(sOSolutions[0].m_vStart[0], sOSolutions[0].m_vStart[1]);
+      // its foot inside the face
+      SmTArray<SmLoop*> sLoops;
+      pOther->GetLoops(sLoops);
+      SmBoolean bInside = (sLoops.GetSize() > 0);
+      SmZoneTol3d sZone = SmTol::GetZoneTol3d(pOS);
+      for (ULONG ll=0; ll<sLoops.GetSize() && bInside; ll++)
+        {
+          SmEdge      *pOnEdge  = NULL;
+          double       dOnParam = 0.0;
+          SmOrientType eOrient  = SM_OT_UNKNOWN;
+          SmPointObjectContainmentType eIn = sLoops[ll]->ContainsUVPoint(sOUV, sZone, pOnEdge, dOnParam, eOrient);
+          if (eIn != ((ll == 0) ? SM_POC_INSIDE : SM_POC_OUTSIDE)) { bInside = FALSE; }
+        }
+      if (!bInside) { continue; }
+      SmPoint3d sOn;
+      SmVector3d sON;
+      SER(pOS->EvaluatePoint(sOUV, sOn));
+      SER(pOS->EvaluateNormal(sOUV, TRUE, TRUE, sON));
+      if (sON.Unitize(FALSE) != SM_SUCCESS) { continue; }
+      SmBoolean bOKnown = FALSE;
+      double dOSign = 1.0;
+      SER(sm_OutwardOfBody(rFUToF, pOther, sOn, sON, dWall, bOKnown, dOSign));
+      if (!bOKnown) { continue; }
+      // the cavity side is against the outward normal
+      if ((sQ - sOn).Dot(sON * dOSign) >= 0.0) { return SM_SUCCESS; }
+    }
+  rbCavity = TRUE;
+  return SM_SUCCESS;
+} // end sm_FloorIsCavity
+
 SmStatus SmOffsetExecutive::ResolveCrossingLoopsOfFace(SmFace *pFace)
 {
   NER(pFace);
@@ -4169,6 +4292,7 @@ SmStatus SmOffsetExecutive::ResolveCrossingLoopsOfFace(SmFace *pFace)
           sS.lStart = lFrom;
           sS.lEnd   = lTo;
           sS.bKeep  = FALSE;
+          sS.bFloor = FALSE;
           SmPoint3d sFromPt, sToPt;
           SER(pCrv->EvaluatePoint(sS.dLo, sFromPt));
           SER(pCrv->EvaluatePoint(sS.dHi, sToPt));
@@ -4190,6 +4314,8 @@ SmStatus SmOffsetExecutive::ResolveCrossingLoopsOfFace(SmFace *pFace)
       SER(rS.pUV->EvaluatePoint(0.5*(rS.dLo + rS.dHi), sUV3));
       SmPoint2d sUV(sUV3.x, sUV3.y);
       rS.bKeep = TRUE;
+      SmBoolean bInOuter = (rS.lLoop == 0);
+      ULONG     lInInner = 0;
       for (ULONG ll=0; ll<vLoops.size(); ll++)
         {
           if (ll == rS.lLoop) { continue; }
@@ -4200,8 +4326,55 @@ SmStatus SmOffsetExecutive::ResolveCrossingLoopsOfFace(SmFace *pFace)
           if (eIn != SM_POC_INSIDE && eIn != SM_POC_OUTSIDE)
             { return sm_UnresolvedCrossing(_T("Offset face loop stretch is neither inside nor outside another loop")); }
           if (eIn != ((ll == 0) ? SM_POC_INSIDE : SM_POC_OUTSIDE)) { rS.bKeep = FALSE; }
+          if (ll == 0) { bInOuter = (eIn == SM_POC_INSIDE); }
+          else if (eIn == SM_POC_INSIDE) { lInInner++; }
         }
+      // The stretches round a region the loops wind round once the other way: a hole's stretch
+      // outside the outer loop and every other hole, and the outer loop's stretch inside one hole
+      // (the region of a hole that ran out past the moved outer loop).
+      rS.bFloor = (rS.lLoop != 0) ? (!bInOuter && lInInner == 0) : (lInInner == 1);
     }
+
+  // SolidCraft change: a region the loops wind round the other way is the offset face turned
+  // inside out there, cavity on its other side. #616's lid shelled 0.5 open at a rib's outer side,
+  // which stands 0.15 in from the skirt's outer wall: the skirt top's offset (4.9) has the rib's
+  // foot as a hole, whose side along the open face stays at x = 102.8 while the outer loop's side
+  // along the skirt's wall moves to 103.15. Between them, under the opening, lies the cavity's
+  // floor, the cavity above it (its stretch of the hole bounds it; past the moved wall the rib's
+  // cavity has nothing else under it); dropped, the cavity was left open there (1001). Such a
+  // region is the cavity's face, reversed, exactly when the cavity lies on its other side: the
+  // point just beyond it there is in the body and on the cavity side of every other offset face
+  // whose wall it lies within (sm_OnCavitySide); otherwise (the hole's walls run on through the
+  // face's neighbour, a window's offset rising past a wall's top edge into the round above it,
+  // ladder 09/011) the region bounds nothing and is dropped as before.
+  std::vector<long> vNextFloor(vStretches.size(), -1);
+  for (size_t ss=0; ss<vStretches.size(); ss++)
+    {
+      if (!vStretches[ss].bFloor) { continue; }
+      for (size_t tt=0; tt<vStretches.size(); tt++)
+        {
+          if (vStretches[tt].bFloor && vStretches[tt].lStart == vStretches[ss].lEnd) { vNextFloor[ss] = (long)tt; }
+        }
+      if (vNextFloor[ss] < 0) { vStretches[ss].bFloor = FALSE; }
+    }
+  std::vector< std::vector<size_t> > vFloorLoops;
+  {
+    std::vector<SmBoolean> vSeen(vStretches.size(), FALSE);
+    for (size_t ss=0; ss<vStretches.size(); ss++)
+      {
+        if (!vStretches[ss].bFloor || vSeen[ss]) { continue; }
+        std::vector<size_t> vLoop;
+        SmBoolean bClosed = FALSE;
+        for (long tt=(long)ss; tt >= 0 && vStretches[tt].bFloor; tt=vNextFloor[tt])
+          {
+            if (vSeen[tt]) { bClosed = (tt == (long)ss); break; }
+            vSeen[tt] = TRUE;
+            vLoop.push_back((size_t)tt);
+          }
+        if (bClosed) { vFloorLoops.push_back(vLoop); }
+        else         { for (size_t kk=0; kk<vLoop.size(); kk++) { vStretches[vLoop[kk]].bFloor = FALSE; } }
+      }
+  }
 
   // Close the kept stretches into loops: each goes on to the one kept stretch that starts where
   // it ends (at a crossing, the stretch of the other loop that bounds the face).
@@ -4322,6 +4495,55 @@ SmStatus SmOffsetExecutive::ResolveCrossingLoopsOfFace(SmFace *pFace)
           // connect: each offset face is a sheet of its own until the merge.
           SER(m_pOffsetBrep->SplitDisconnectedShells());
         }
+    }
+
+  for (size_t ll=0; ll<vFloorLoops.size(); ll++)
+    {
+      const std::vector<size_t> &rLoop = vFloorLoops[ll];
+      SmTArray<ULONG>           sLoopCounts;
+      SmTArray<SmCurve*>        s3DCurves;
+      SmTArray<SmBSplineCurve*> sUVCurves;
+      SmTArray<SmOrientType>    sOrients;
+      SmObjsDelete<SmCurve*>        sClean3D(&s3DCurves);
+      SmObjsDelete<SmBSplineCurve*> sCleanUV(&sUVCurves);
+      SmTArray<SmPoint3d>           sNoPoints;
+      sLoopCounts.Add((ULONG)rLoop.size());
+      // the loop runs round the region the other way: the face is on the surface turned over
+      for (size_t kk=0; kk<rLoop.size(); kk++)
+        {
+          const sm_LoopStretch &rS = vStretches[rLoop[kk]];
+          SmCurve *p3D = NULL;
+          SER(rS.pEU->GetEdge()->GetCurve()->Copy(m_crContext, p3D)); NER(p3D);
+          s3DCurves.Add(p3D);
+          SmExtent1d sIvl3D(rS.dLo, rS.dHi);
+          SER(p3D->Trim(sIvl3D));
+          SmCurve *pUVCopy = NULL;
+          SER(rS.pUV->Copy(m_crContext, pUVCopy)); NER(pUVCopy);
+          SmBSplineCurve *pUV = SM_CAST_PTR(SmBSplineCurve, pUVCopy);
+          if (pUV == NULL) { delete pUVCopy; SER(SM_ERR_ASSERT_FAILURE); }
+          sUVCurves.Add(pUV);
+          SmExtent1d sIvlUV(rS.dLo, rS.dHi);
+          SER(pUV->Trim(sIvlUV));
+          sOrients.Add(rS.pEU->GetOrientation());
+        }
+      // a point inside the region, just off it on the side the cavity would lie on
+      SmBoolean bCavity = FALSE;
+      SER(sm_FloorIsCavity(*m_pOriginalBrep, *m_pOffsetBrep, m_vFUToF, pFace, vStretches, rLoop,
+                           m_rGeometryCreation.GetOffsetDistance(), bCavity));
+      if (!bCavity) { continue; }
+      SmSurface *pNewSurface = NULL;
+      SER(pSurface->Copy(m_crContext, pNewSurface)); NER(pNewSurface);
+      SmRegion *pNewRegion = NULL;
+      SmShell  *pNewShell  = NULL;
+      SmFace   *pNewFace   = NULL;
+      sClean3D.Clear();
+      sCleanUV.Clear();
+      SER(m_pOffsetBrep->MakeFaceWithCurves(m_pOffsetBrep->GetInfiniteRegion(), sLoopCounts, &s3DCurves, &sUVCurves, sOrients,
+                                            sNoPoints, pNewSurface, pFace->GetUVDomain(), SM_OT_OPPOSITE,
+                                            pNewRegion, pNewShell, pNewFace));
+      NER(pNewFace);
+      vNewFaces.push_back(pNewFace);
+      for (size_t kk=0; kk<rLoop.size(); kk++) { vStretches[rLoop[kk]].bKeep = TRUE; } // its edges come from them
     }
 
   // The new faces, edges and vertices take the attributes of the face, edges and vertices they
