@@ -587,11 +587,89 @@ SmStatus sm_GetRotTurn( const SmBSplineSurface * pSurface, sm_RotTurn & rTurn )
   rTurn.dHi    = sIvl.GetMax() +  1.0 * ( rTurn.lClose * rTurn.dSpan );
   return SM_SUCCESS;
 }
+
+// SolidCraft change: whether a surface of revolution's generator is an arc of one circle, and
+// if so that circle's centre (in the first column's meridian plane) and the arc's angle. A
+// circle's NURB spans are rational quadratic arcs: per span (a Bezier span: interior knots of
+// multiplicity 2), end points P0, P2 and middle P1 where the end tangents meet, |P0 P1| =
+// |P1 P2|, and the middle weight over the ends' geometric mean the cosine of half the span's
+// angle, which is also half the turn at P1 (pi - the angle P0 P1 P2). Every span on one circle:
+// one centre and radius. (A round's cross section revolved round a boss's axis, the surface
+// SMLib's concave round of an arc is.)
+SmBoolean sm_GeneratorIsCircle( const SmBSplineSurface * pSurface, SmPoint3d & rCentre, double & rAngle )
+{
+  rAngle = 0.0;
+  sm_RotTurn sTurn;
+  if ( sm_GetRotTurn( pSurface, sTurn ) != SM_SUCCESS )
+    { return FALSE; }
+  const ULONG lGen = 1 - sTurn.lRot;
+  const SmSurfParamType eGen = ( lGen == 0 ) ? SM_SP_U : SM_SP_V;
+  if ( pSurface->GetDegree( eGen ) != 2 )
+    { return FALSE; }
+  ULONG lNumU = 0, lNumV = 0;
+  SmTArray<SmPoint3d> sPts;
+  SmTArray<double>    sWts;
+  if ( pSurface->GetControlPointNet( lNumU, lNumV, sPts, sWts ) != SM_SUCCESS || sPts.GetSize() != lNumU * lNumV
+       || ( sWts.GetSize() != 0 && sWts.GetSize() != sPts.GetSize() ))
+    { return FALSE; }
+  SmTArray<double> sKnots;
+  SmTArray<ULONG>  sMults;
+  if ( pSurface->GetKnots( eGen, sKnots, &sMults ) != SM_SUCCESS || sKnots.GetSize() < 2 )
+    { return FALSE; }
+  for ( ULONG k = 1; k + 1 < sMults.GetSize(); k++ )
+    {
+      if ( sMults[k] != 2 )
+        { return FALSE; }
+    }
+  const ULONG lSpans = sKnots.GetSize() - 1;
+  const ULONG lNum = ( lGen == 0 ) ? lNumU : lNumV;
+  if ( lNum != 2 * lSpans + 1 )
+    { return FALSE; }
+  // the first column along the generator
+  auto At = [&]( ULONG g ) -> sm_CPt {
+    const ULONG i = ( lGen == 0 ) ? g : 0, j = ( lGen == 0 ) ? 0 : g;
+    return sm_CPt{ sPts[i * lNumV + j], sWts.GetSize() ? sWts[i * lNumV + j] : 1.0 };
+  };
+  double dRadius = 0.0;
+  for ( ULONG sp = 0; sp < lSpans; sp++ )
+    {
+      const sm_CPt a = At( 2 * sp ), m = At( 2 * sp + 1 ), b = At( 2 * sp + 2 );
+      const double dLa = ( m.P - a.P ).Length(), dLb = ( b.P - m.P ).Length();
+      const double dTol = 1.0e-9 * ( 1.0 + dLa + dLb );
+      if ( !( a.W > 0.0 ) || !( b.W > 0.0 ) || !( m.W > 0.0 ) || !( dLa > dTol ) || fabs( dLa - dLb ) > dTol )
+        { return FALSE; }
+      const double dCos = m.W / sqrt( a.W * b.W );
+      if ( !( dCos > 0.0 ) || !( dCos < 1.0 ))
+        { return FALSE; }
+      SmVector3d sTa = m.P - a.P, sTb = b.P - m.P;
+      if ( sTa.Unitize() != SM_SUCCESS || sTb.Unitize() != SM_SUCCESS )
+        { return FALSE; }
+      // half the turn of the tangent at P1 is half the span's angle
+      const double dHalf = 0.5 * acos( smos_Max( -1.0, smos_Min( 1.0, sTa.Dot( sTb ))));
+      if ( fabs( cos( dHalf ) - dCos ) > 1.0e-9 )
+        { return FALSE; }
+      // the centre: from P0 square to its tangent, toward P2, a radius |P0 P1| / tan(half) away
+      SmVector3d sIn = ( b.P - a.P ) - sTa * sTa.Dot( b.P - a.P );
+      if ( sIn.Unitize() != SM_SUCCESS )
+        { return FALSE; }
+      const double dR = dLa / tan( dHalf );
+      const SmPoint3d sC = a.P + sIn * dR;
+      if ( sp == 0 )
+        {
+          rCentre = sC;
+          dRadius = dR;
+        }
+      else if ( sC.DistanceBetween( rCentre ) > 1.0e-9 * ( 1.0 + dRadius ) || fabs( dR - dRadius ) > 1.0e-9 * ( 1.0 + dRadius ))
+        { return FALSE; }
+      rAngle += 2.0 * dHalf;
+    }
+  return rAngle > 0.0 ? TRUE : FALSE;
+}
 } // namespace
 
 static SmStatus sm_ExtendAsItself
   (const SmContext        & crContext,       // in : context for new object
-   SmBSplineSurface       * pSurface,        // in : surface to extend: an SmCone, SmSphere or SmTorus (an SmCylinder is an SmCone)
+   SmBSplineSurface       * pSurface,        // in : surface to extend: an SmCone, SmSphere or SmTorus (an SmCylinder is an SmCone), or a surface of revolution whose generator is a circle
    const SmPoint2d        & crLo,            // in : the domain's least corner to reach
    const SmPoint2d        & crHi,            // in : the domain's greatest corner to reach
    SmBoolean                bCloseTurn,      // in : TRUE = round the axis reach the turn's closure (sm_RotTurn), crLo and crHi aside
@@ -602,7 +680,13 @@ static SmStatus sm_ExtendAsItself
   sm_RotTurn sTurn;
   SER( sm_GetRotTurn( pSurface, sTurn ));
   const ULONG lRot = sTurn.lRot, lGen = 1 - lRot;
-  const SmBoolean bGenCircle = pSurface->IsKindOf( SmTorus_TYPE ) || pSurface->IsKindOf( SmSphere_TYPE );
+  // SolidCraft change: a surface of revolution whose generator is a circle (sm_GeneratorIsCircle)
+  // carries it on as a torus does
+  SmPoint3d sGenCentre;
+  double    dGenCircleAngle = 0.0;
+  const SmBoolean bRevCircle = !pSurface->IsKindOf( SmCone_TYPE ) && !pSurface->IsKindOf( SmTorus_TYPE ) && !pSurface->IsKindOf( SmSphere_TYPE )
+                               && sm_GeneratorIsCircle( pSurface, sGenCentre, dGenCircleAngle );
+  const SmBoolean bGenCircle = pSurface->IsKindOf( SmTorus_TYPE ) || pSurface->IsKindOf( SmSphere_TYPE ) || bRevCircle;
 
   // The net as G[r][g]: r along the rotation, g along the generator.
   ULONG lNumU = 0, lNumV = 0;
@@ -647,7 +731,7 @@ static SmStatus sm_ExtendAsItself
   if ( sZ.Unitize() != SM_SUCCESS )
     { return SM_ERR; }
   const double dDeg = SM_PI / 180.0;
-  const double dGenAngle = pRev->GetSTEPUVDomain().GetSize().y * dDeg;
+  const double dGenAngle = bRevCircle ? dGenCircleAngle : pRev->GetSTEPUVDomain().GetSize().y * dDeg;
   const double aGoalLo[2] = { crLo.x, crLo.y }, aGoalHi[2] = { crHi.x, crHi.y };
   const double aLength[2] = { K[0].back() - K[0].front(), K[1].back() - K[1].front() };   // the base domain's
 
@@ -719,6 +803,8 @@ static SmStatus sm_ExtendAsItself
                 { return SM_ERR; }
               sCentre = sO + sOut * ( (const SmTorus *)pSurface )->GetMajorRadius();
             }
+          else if ( bRevCircle )
+            { sCentre = sGenCentre; }
           // turning outward: from the inner control point through the end
           SmVector3d sAxis = ( crEnd.P - sCentre ) * ( crEnd.P - G[0][gIn].P );
           if ( sAxis.Unitize() != SM_SUCCESS )
@@ -909,9 +995,15 @@ static SmStatus sm_ExtendSurface
   // surface. A tangent extension (G1R) leaves it at once: a cylinder R25 continued 0.44 past its
   // face's end was 0.0036 off the circle, and a round traced there (where a mitre's rails meet
   // past a concave corner) was built that far off all along.
+  // So does a surface of revolution whose generator is a circle (a round's cross section revolved,
+  // as SMLib's concave round of an arc is): its generator carried on as its own circle.
+  SmPoint3d sGenCentre;
+  double    dGenAngle = 0.0;
   const SmBoolean bAsItself =    pSurface->IsKindOf(SmCone_TYPE)
                               || pSurface->IsKindOf(SmSphere_TYPE)
-                              || pSurface->IsKindOf(SmTorus_TYPE);
+                              || pSurface->IsKindOf(SmTorus_TYPE)
+                              || (pSurface->IsKindOf(SmSurfOfRevolution_TYPE) && sm_GeneratorIsCircle(pSurface, sGenCentre, dGenAngle));
+  SM_REF2(sGenCentre, dGenAngle);
 
   // SolidCraft change: round the axis such a surface is a circle, and its extension reaches no
   // further than closing the turn (half the gap past either end, sm_RotTurn); from there on that
