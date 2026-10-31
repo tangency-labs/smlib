@@ -2835,6 +2835,75 @@ void chamfer_of_a_rim_loop_past_its_rim()
     }
 }
 
+// A surface of revolution whose generator is a circle carries the circle on past its domain
+// (sm_ExtendSurface, as a torus does): SMLib's own concave r2 round of the boss's base arc in
+// bar-boss-over-sides (the bar 100 x 30 x 10 and the boss of diameter 40 at the origin) is the
+// round's quarter circle revolved about the boss's axis, a tube of radius 2 about the circle of
+// radius 22 at z = 12. Its extension along the generator was its tangent continuation, and a
+// round of the bar's edge chained onto the round's end (SolidCraft rig fillets/1207 r0.5) traced
+// its rail past the round's rim on it: the rail stood still there, and started its span on the
+// round with a tangent 1.2 degrees off. Offset 0.5, every point of the extension past either end
+// of the generator lies on the tube of radius 2 +- 0.5 (the side the surface's normal says; past
+// the rim the tube runs on inside the boss), and moves with the parameter.
+void revolved_circle_extends_as_its_circle()
+{
+    smlib_flat *flat = nullptr;
+    smlib_brep *joined = nullptr, *r = nullptr;
+    CHECK(smlib_flat_read(SMLIB_TEST_DATA "/bar-boss-over-sides.txt", &flat) == SMLIB_OK && smlib_brep_import(flat, &joined) == SMLIB_OK);
+    smlib_flat_free(flat);
+    const double arc[6] = {20 * std::cos(0.73), 20 * std::sin(0.73), 10, 20 * std::cos(-0.12), 20 * std::sin(-0.12), 10};
+    const double sizes[2] = {2, 2};
+    CHECK(joined != nullptr && smlib_blend(joined, SMLIB_BLEND_ROUND, arc, sizes, 2, 0.1, &r, nullptr) == SMLIB_OK && r != nullptr);
+    if (r == nullptr)
+    {
+        smlib_brep_free(joined);
+        return;
+    }
+    SmTArray<SmFace *> faces;
+    r->p->GetFaces(faces);
+    int tested = 0;
+    double worst = 0.0, least_step = 1e300;
+    for (ULONG i = 0; i < faces.GetSize(); ++i)
+    {
+        SmSurface *s = faces[i]->GetSurface();
+        if (s == nullptr || s->GetType() != SmSurfOfRevolution_TYPE)
+        {
+            continue;
+        }
+        ++tested;
+        SmOffsetSurface *off = new (*s->GetContext()) SmOffsetSurface(0.5, *s);
+        off->SetAllowExtension(TRUE);
+        const SmExtent2d d = s->GetNaturalUVDomain();
+        // the generator: the direction other than the rotation round the axis
+        SmSurfParamType rot = SM_SP_U;
+        (void)static_cast<SmSurfOfRevolution *>(s)->GetRotateParamExtent(&rot);
+        const int g = rot == SM_SP_U ? 1 : 0;
+        const double lo[2] = {d.GetMin().x, d.GetMin().y}, size[2] = {d.GetSize().x, d.GetSize().y};
+        for (double past : {0.1, 0.3, 0.6})
+        {
+            for (int side : {-1, 1})
+            {
+                SmPoint3d p, q;
+                double at[2] = {lo[0] + 0.5 * size[0], lo[1] + 0.5 * size[1]};
+                at[g] = side < 0 ? lo[g] - past * size[g] : lo[g] + (1.0 + past) * size[g];
+                double at2[2] = {at[0], at[1]};
+                at2[g] += side * 0.1 * size[g];
+                CHECK(off->EvaluatePoint(SmPoint2d(at[0], at[1]), p) == SM_SUCCESS && off->EvaluatePoint(SmPoint2d(at2[0], at2[1]), q) == SM_SUCCESS);
+                const double rho = std::hypot(p.x, p.y);
+                const double tube = std::hypot(rho - 22.0, p.z - 12.0);
+                worst = std::max(worst, std::min(std::fabs(tube - 2.5), std::fabs(tube - 1.5)));
+                least_step = std::min(least_step, p.DistanceBetween(q));
+            }
+        }
+        delete off;
+    }
+    std::printf("r2 round of the boss's arc offset 0.5, past its generator's ends: off the tube by at most %.3g, steps at least %.3g\n",
+                worst, least_step);
+    CHECK(tested == 2 && worst < 1e-9 && least_step > 1e-3);
+    smlib_brep_free(r);
+    smlib_brep_free(joined);
+}
+
 // SolidCraft rig case fillets/926: the top edge x = 40, z = 20 of a 40 x 40 x 20 box joined with
 // an R12 boss 40 high centred on its side (40, 20), chamfered 0.8. The edge runs from the front
 // face to the boss's wall, which rises above the box. The chamfer's rail on the top face crosses
@@ -6548,6 +6617,7 @@ int main(int argc, char **argv)
     tabbed_plate_rounds_mitred_on_the_arcs_continuation();
     corner_patch_edge_lies_on_its_patch();
     corner_patch_drop_from_a_guess_is_its_foot();
+    revolved_circle_extends_as_its_circle();
     chamfer_ending_on_a_boss_wall_above_it();
     vertex_fans_split_and_joined();
     rails_trimmed_next_to_a_knot();
