@@ -1595,6 +1595,7 @@ SmStatus SmFilletSolver::CalcExactFilletGeom(const SmExactBlend & crBlend, SmTAr
       rbBuilt = !bRecalc && CalcSphereFilletGeom( rTsectPnts, pFG ) == SM_SUCCESS;
       break;
     case SM_BS_CONIC:
+    case SM_BS_CONIC_PAIR:
       SER( CalcRationalSpineFilletGeom( crBlend, rTsectPnts, pFG ) );
       rbBuilt = TRUE;
       break;

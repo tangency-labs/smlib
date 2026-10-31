@@ -4261,8 +4261,7 @@ void exact_class_tee_is_fitted()
 // TANGENT_END_CASES: `--exact-classes-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase EXACT_CLASS_CASES[] = {
     {"coaxial_cones", exact_class_coaxial_cones, nullptr},
-    {"cone_cylinder_sharing_a_ball", exact_class_cone_cylinder_sharing_a_ball,
-     "the round is traced: a B-spline of degrees (3, 3), not rational, 3.96e-4 off the ball's surface"},
+    {"cone_cylinder_sharing_a_ball", exact_class_cone_cylinder_sharing_a_ball, nullptr},
     {"cylinders_touching_at_a_point", exact_class_cylinders_touching_at_a_point,
      "status 1001: the round is traced, the analytic chain taking no pair of cylinders but along a line or an arc, and the trace fails"},
     {"oblique_plane_cone", exact_class_oblique_plane_cone, nullptr},
