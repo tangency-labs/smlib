@@ -2661,9 +2661,8 @@ static void shells_the_rig_must_build()
     {
         const char *data;
         double pick[3], tolerance, wall;
-    } cases[2] = {
+    } cases[1] = {
         {SMLIB_TEST_DATA "/lid-rib-open-at-its-side.txt", {102.8, 17, 6.85}, 0.11862452211935036, 0.5},
-        {SMLIB_TEST_DATA "/up-down-joined-squares.txt", {8.3333333333333321, 0, 6.6666666666666661}, 0.034642016151377554, 0.346},
     };
     for (const auto &c : cases)
     {
@@ -2788,6 +2787,33 @@ static void floor_thinner_than_two_walls_shell()
         done(r);
     }
     smlib_brep_free(frame);
+}
+
+// SolidCraft rig shell/cov-shell-up-down-joined-squares-open-at-a-side-wall
+// (tests/data/up-down-joined-squares.txt): four 10 x 10 squares about the origin, three extruded
+// 10 up and three 10 down and joined, so near the origin the body is space less two opposite
+// octants, shelled 0.346 open at a side wall (y = 0, x 0..10, z 0..10). The offsets round the two
+// empty octants overlap in a box (-t, t) x (0, t) x (-t, t) that the merge closes, touching the
+// cavity along six edges; it is no cavity (1001 while it was kept). With every face axis-aligned
+// the sharp offset is the body less every point whose cube of half-side t leaves the body other
+// than through the open face; integrated exactly over the cells the planes 0, +-t, 2t, +-10 and
+// +-(10 - t) cut, the cavity is 5232.766153056.
+static void up_down_joined_squares_shell()
+{
+    smlib_flat *f = nullptr;
+    smlib_brep *part = nullptr, *r = nullptr;
+    CHECK(smlib_flat_read(SMLIB_TEST_DATA "/up-down-joined-squares.txt", &f) == SMLIB_OK && smlib_brep_import(f, &part) == SMLIB_OK);
+    smlib_flat_free(f);
+    const double side[3] = {8.3333333333333321, 0, 6.6666666666666661};
+    CHECK(part != nullptr && smlib_shell(part, side, 1, 0.034642016151377554, -0.346, &r, nullptr) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        double v = volume_of(r);
+        std::printf("up-down joined squares shelled 0.346: %.9f, the closed form %.9f\n", v, 6000.0 - 5232.766153056);
+        CHECK(near(v, 6000.0 - 5232.766153056, 1e-9));
+        done(r);
+    }
+    smlib_brep_free(part);
 }
 
 static void loops_touching_at_a_vertex_in_any_order()
@@ -3001,6 +3027,7 @@ int main(int argc, char **argv)
     shells_the_rig_must_build();
     hole_whose_offset_leaves_the_round_side_shell();
     floor_thinner_than_two_walls_shell();
+    up_down_joined_squares_shell();
     loops_touching_from_outside_close_apart();
 
     smlib_brep *cube = box(0, 0, 0, 20, 20, 20);
