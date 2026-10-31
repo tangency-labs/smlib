@@ -2661,9 +2661,8 @@ static void shells_the_rig_must_build()
     {
         const char *data;
         double pick[3], tolerance, wall;
-    } cases[3] = {
+    } cases[2] = {
         {SMLIB_TEST_DATA "/lid-rib-open-at-its-side.txt", {102.8, 17, 6.85}, 0.11862452211935036, 0.5},
-        {SMLIB_TEST_DATA "/ring-cut-frame-thin-floor.txt", {97.5, 89.583333333333329, 11.666666666666666}, 0.14456932294800962, 0.5},
         {SMLIB_TEST_DATA "/up-down-joined-squares.txt", {8.3333333333333321, 0, 6.6666666666666661}, 0.034642016151377554, 0.346},
     };
     for (const auto &c : cases)
@@ -2760,6 +2759,35 @@ static void hole_whose_offset_leaves_the_round_side_shell()
         done(r);
     }
     smlib_brep_free(plate);
+}
+
+// SolidCraft rig shell/545-shell-ring-cut-frame-open-at-an-outer-wall
+// (tests/data/ring-cut-frame-thin-floor.txt, as smlib_shell was handed it): a 100 x 100 x 30
+// frame with a recess x, y 6..94 down to z 18 from the top and a ring cut between the squares
+// 2.5..97.5 and 16..84 up to z 17.5 from the bottom, a 0.5 floor between them, shelled 0.5 open
+// at the ring cut's outer wall x = 97.5. The floor's two offsets cross; the region between them
+// is excess, not cavity, and the cavity is two pieces: the core's [16.5, 83.5]^2 x [0.5, 17.5]
+// and the frame's (the ring between the squares 0.5..99.5 and 2..98 for z 0.5..18, the ring
+// between 0.5..99.5 and 5.5..94.5 for z 18..29.5, and x 97.5..98, y 2..98, z 0.5..18 behind the
+// open wall). It was 1001 (the region between the floor's offsets kept, touching both pieces
+// along edges).
+static void floor_thinner_than_two_walls_shell()
+{
+    smlib_flat *f = nullptr;
+    smlib_brep *frame = nullptr, *r = nullptr;
+    CHECK(smlib_flat_read(SMLIB_TEST_DATA "/ring-cut-frame-thin-floor.txt", &f) == SMLIB_OK && smlib_brep_import(f, &frame) == SMLIB_OK);
+    smlib_flat_free(f);
+    const double open[3] = {97.5, 89.583333333333329, 11.666666666666666};
+    CHECK(frame != nullptr && smlib_shell(frame, open, 1, 0.14456932294800962, -0.5, &r, nullptr) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        const double cavity = 67.0 * 67.0 * 17.0 + (99.0 * 99.0 - 96.0 * 96.0) * 17.5 + (99.0 * 99.0 - 89.0 * 89.0) * 11.5 + 0.5 * 96.0 * 17.5;
+        double v = volume_of(r);
+        std::printf("ring-cut frame shelled 0.5: %.9f, the closed form %.9f\n", v, 130054.5 - cavity);
+        CHECK(near(v, 130054.5 - cavity, 1e-8));
+        done(r);
+    }
+    smlib_brep_free(frame);
 }
 
 static void loops_touching_at_a_vertex_in_any_order()
@@ -3470,6 +3498,7 @@ int main(int argc, char **argv)
     four_faces_meeting_at_a_vertex_shell();
     shells_the_rig_must_build();
     hole_whose_offset_leaves_the_round_side_shell();
+    floor_thinner_than_two_walls_shell();
     loops_touching_from_outside_close_apart();
 
     smlib_brep *cube = box(0, 0, 0, 20, 20, 20);
