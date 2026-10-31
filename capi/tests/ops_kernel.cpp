@@ -2636,6 +2636,84 @@ static std::vector<std::pair<SmPoint3d, SmPoint3d>> rotated(const std::vector<st
 // one loop through the corner twice round the material (area 59), never the hole run the wrong
 // way round inside the outline (61). Each line's own direction is kept, so reversing an outline
 // or hole reverses its lines.
+// SolidCraft rig shell/cov-shell-trough-whose-floor-falls-to-a-drain and
+// cov-shell-pocket-whose-floor-falls-to-a-drain (tests/data/trough-falling-to-a-drain.txt,
+// pocket-falling-to-a-drain.txt, as smlib_shell was handed them): a 100 x 60 x 40 trough whose
+// floor is four facets falling 1 degree to a drain at its centre, a tab joined on one end,
+// shelled 2 open at the top; and a 140 x 90 x 50 slab less a pocket whose floor falls so, shelled
+// 3 open at the top. Four faces meet at each corner of the floor (two walls, two facets) and at
+// the drain (four facets), and their offsets do not meet in one point: each offset vertex is two,
+// joined by a new edge. The volumes are the solutions' own closed forms (the offset faces
+// extended to meet: the cavity integrated exactly over the cells where each moved facet is
+// highest); both were 1001.
+// SolidCraft rig shells that must build, one closed valid solid each (the owner's rulings of
+// 2026-10-31), as smlib_shell was handed them (tests/data): #616's lid shelled 0.5 open at a
+// rib's outer side, beside a 0.15 step down to the skirt; #545's frame (a recess from the top, a
+// ring cut from the bottom, a 0.5 floor between) shelled 0.5 open at the ring cut's outer wall;
+// a plate closed by a half-round side, a blind r5 hole drilled in through it, shelled 2 open at
+// the far end (tangency-labs/solidcore#1795: the hole's offset passes out through the side's);
+// squares joined up and down along an edge, shelled 0.346 open at a side wall. Every one was
+// 1001: the offset left its cavity open or touching itself along edges. No closed form: the
+// result is sound, a closed solid, and hollower than the part.
+static void shells_the_rig_must_build()
+{
+    struct
+    {
+        const char *data;
+        double pick[3], tolerance, wall;
+    } cases[4] = {
+        {SMLIB_TEST_DATA "/lid-rib-open-at-its-side.txt", {102.8, 17, 6.85}, 0.11862452211935036, 0.5},
+        {SMLIB_TEST_DATA "/ring-cut-frame-thin-floor.txt", {97.5, 89.583333333333329, 11.666666666666666}, 0.14456932294800962, 0.5},
+        {SMLIB_TEST_DATA "/plate-hole-through-arc-side.txt", {42.5, 3.333333333333333, 21.388888888888886}, 0.062550980015984026, 2.0},
+        {SMLIB_TEST_DATA "/up-down-joined-squares.txt", {8.3333333333333321, 0, 6.6666666666666661}, 0.034642016151377554, 0.346},
+    };
+    for (const auto &c : cases)
+    {
+        smlib_flat *f = nullptr;
+        smlib_brep *part = nullptr, *r = nullptr;
+        CHECK(smlib_flat_read(c.data, &f) == SMLIB_OK && smlib_brep_import(f, &part) == SMLIB_OK);
+        smlib_flat_free(f);
+        int32_t got = part != nullptr ? smlib_shell(part, c.pick, 1, c.tolerance, -c.wall, &r, nullptr) : SMLIB_ERR_ARG;
+        std::printf("%s shelled %g: status %d\n", c.data, c.wall, got);
+        CHECK(got == SMLIB_OK);
+        if (r != nullptr)
+        {
+            double v = volume_of(r), v0 = volume_of(part);
+            std::printf("  volume %.9f of the part's %.9f\n", v, v0);
+            CHECK(v > 0.0 && v < v0);
+            done(r);
+        }
+        smlib_brep_free(part);
+    }
+}
+
+static void four_faces_meeting_at_a_vertex_shell()
+{
+    struct
+    {
+        const char *data;
+        double pick[3], tolerance, wall, volume;
+    } cases[2] = {{SMLIB_TEST_DATA "/trough-falling-to-a-drain.txt", {75.458529763090851, 18.269689917857015, 40}, 0.14015151326053074, 2.0,
+                   37962.27221527102},
+                  {SMLIB_TEST_DATA "/pocket-falling-to-a-drain.txt", {13.333333333333332, 60, 50}, 0.17378247196982766, 3.0, 151815.7900294403}};
+    for (const auto &c : cases)
+    {
+        smlib_flat *f = nullptr;
+        smlib_brep *part = nullptr, *r = nullptr;
+        CHECK(smlib_flat_read(c.data, &f) == SMLIB_OK && smlib_brep_import(f, &part) == SMLIB_OK);
+        smlib_flat_free(f);
+        CHECK(part != nullptr && smlib_shell(part, c.pick, 1, c.tolerance, -c.wall, &r, nullptr) == SMLIB_OK);
+        if (r != nullptr)
+        {
+            double v = volume_of(r);
+            std::printf("%s shelled %g: %.9f, the closed form %.9f\n", c.data, c.wall, v, c.volume);
+            CHECK(near(v, c.volume, 1e-8));
+            done(r);
+        }
+        smlib_brep_free(part);
+    }
+}
+
 static void loops_touching_at_a_vertex_in_any_order()
 {
     const double outline[5][2] = {{0, 0}, {10, 0}, {10, 6}, {0, 6}, {0, 3}}, hole[3][2] = {{0, 3}, {2, 3.5}, {2, 2.5}};
@@ -2843,6 +2921,8 @@ int main(int argc, char **argv)
     }
 
     loops_touching_at_a_vertex_in_any_order();
+    four_faces_meeting_at_a_vertex_shell();
+    shells_the_rig_must_build();
     loops_touching_from_outside_close_apart();
 
     smlib_brep *cube = box(0, 0, 0, 20, 20, 20);
