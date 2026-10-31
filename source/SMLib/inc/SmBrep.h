@@ -326,6 +326,15 @@ public:
                                        SmBoolean                 bFindAll = FALSE)        // in : TRUE=find all Coincident geometry, FALSE=find first coincident pair and quit 
                                       const ;
 
+  // SolidCraft change: a vertex where the body touches itself (its edgeuses form several fans,
+  // each a cone of faces round the vertex that shares no edge with the others) split into one
+  // vertex per fan, all at its point; rNewVertices gets the new ones (none when it has one fan)
+  SmStatus SplitVertexByFans(SmVertex * pVertex, SmTArray<SmVertex*> & rNewVertices) ;
+
+  // SolidCraft change: the inverse: pOther's vertexuses moved onto pSurvivingVertex (two
+  // vertices at one point that share no edge), pOther deleted
+  SmStatus JoinVertexFans(SmVertex * pSurvivingVertex, SmVertex * pOther) ;
+
   // combine two coincident vertices updating topology graph as needed
   SmStatus CombineCoincidentVertices(SmVertex * pSurvivingVertex,  // in : Pointer to a vertex to combine 
                                      SmVertex * pVertexToDelete,   // in : Pointer to a vertex to combine 

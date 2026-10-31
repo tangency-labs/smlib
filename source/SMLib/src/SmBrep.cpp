@@ -42,6 +42,9 @@
 #include <SmTools.h>
 #include <SmHealData.h>
 #include <SmOffsetSurface.h>
+#include <map>
+#include <set>
+#include <vector>
 #include <SmCopyBrepMap.h>
 #include <SmTopologySolver.h>
 #include <SmShape.h>
@@ -1611,6 +1614,132 @@ SmBoolean bDebugMe = FALSE ;
   return SM_SUCCESS;
 
 } // end SmBrep::CombineCoincidentVertices
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. Split a vertex where the body touches itself
+    into one vertex per fan of faces round it.
+
+NOTES: The edgeuses at a vertex of a solid form one fan (the faces round
+    it in order, each edgeuse's previous one in its loop, then that one's
+    radial, back to the first) at a manifold vertex. Where the body touches
+    itself at a point (two cubes sharing a corner, or the up and down
+    halves of squares drawn edge to edge, each missing a quadrant on
+    opposite sides) they form several, sharing no edge. Each fan is a
+    corner of its own; one vertex per fan, all at the same point, is the
+    manifold form of the same body. The vertex keeps the fan of its first
+    vertexuse; each other fan's vertexuses move to a new vertex. A vertex
+    with a vertexuse not on a loop's edgeuse (a wire, a vertex loop or
+    shell), or whose fans share an edge, is left as it is.
+***********************************************************************/
+SmStatus SmBrep::SplitVertexByFans
+  (SmVertex             * pVertex,       // in : the vertex
+   SmTArray<SmVertex*>  & rNewVertices)  // out: the vertices made for its other fans
+{
+  NER(pVertex);
+  SmTArray<SmVertexuse*> sUses;
+  pVertex->GetVertexuses( sUses );
+  for (ULONG i=0; i<sUses.GetSize(); i++)
+    {
+      SmVertexuse * pVU = sUses[i];
+      if ( pVU == NULL || pVU->GetVertexuseType() != SmEdgeuse_TYPE || pVU->GetEdgeuse() == NULL || !pVU->GetEdgeuse()->IsLoopEdgeuse() )
+        { return SM_SUCCESS; }
+    }
+
+  // the fans, as the edges each one's faces meet at the vertex
+  std::vector< std::set<SmEdge*> > vFans;
+  std::map<SmEdge*, size_t>        sFanOf;
+  for (ULONG i=0; i<sUses.GetSize(); i++)
+    {
+      SmEdgeuse * pStart = sUses[i]->GetEdgeuse();
+      if ( sFanOf.count( pStart->GetEdge() ))
+        { continue; }
+      std::set<SmEdge*> sFan;
+      SmEdgeuse * pEU = pStart;
+      for (ULONG lSteps=0; ; lSteps++)
+        {
+          // every step takes two vertexuses' edges: a fan is no longer than the vertex's uses
+          if ( lSteps > sUses.GetSize() )
+            { SER( SM_ERR ); }
+          SmEdgeuse * pIn = pEU->GetCWEdgeuse();   NER(pIn);   // the edgeuse before, ending at the vertex
+          sFan.insert( pEU->GetEdge() );
+          sFan.insert( pIn->GetEdge() );
+          pEU = pIn->GetRadial();                   NER(pEU);   // the next face's edgeuse from the vertex
+          if ( pEU == pStart )
+            { break; }
+        }
+      for (SmEdge * pEdge : sFan)
+        {
+          if ( sFanOf.count( pEdge ))
+            { return SM_SUCCESS; }  // fans sharing an edge: not a vertex the body touches itself at
+        }
+      for (SmEdge * pEdge : sFan)
+        { sFanOf[pEdge] = vFans.size(); }
+      vFans.push_back( sFan );
+    }
+
+  // every fan but the first on a vertex of its own
+  for (size_t f=1; f<vFans.size(); f++)
+    {
+      SmVertex * pNew = new (this) SmVertex();   NER(pNew);
+      pNew->SetPoint( pVertex->GetPoint() );
+      pNew->SetTolerance( pVertex->GetTolerance(), FALSE, FALSE );
+      SER( m_pVertexListHead->PostInsert( pNew ));
+      for (ULONG i=0; i<sUses.GetSize(); i++)
+        {
+          SmVertexuse * pVU = sUses[i];
+          if ( sFanOf[pVU->GetEdgeuse()->GetEdge()] != f )
+            { continue; }
+          SER( pVertex->Remove( pVU ));
+          SER( pNew->PostInsert( pVU ));
+        }
+      rNewVertices.Add( pNew );
+    }
+  return SM_SUCCESS;
+
+} // end SmBrep::SplitVertexByFans
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. Join two vertices at one point whose faces
+    share no edge into one (the inverse of SplitVertexByFans).
+
+NOTES: pOther's vertexuses move onto pSurvivingVertex and pOther is
+    deleted. The two must be at one point (within the larger of their
+    tolerances) and share no edge.
+***********************************************************************/
+SmStatus SmBrep::JoinVertexFans
+  (SmVertex * pSurvivingVertex,   // in : the vertex that stays
+   SmVertex * pOther)             // in : the vertex joined to it, deleted
+{
+  NER(pSurvivingVertex);
+  NER(pOther);
+  if ( pSurvivingVertex == pOther || pSurvivingVertex->GetBrep() != this || pOther->GetBrep() != this )
+    { SER( SM_ERR_INVALID_INPUT ); }
+  double dTol = smos_Max( (double)pSurvivingVertex->GetTolerance(), (double)pOther->GetTolerance() );
+  if ( pSurvivingVertex->GetPoint().DistanceBetween( pOther->GetPoint() ) > dTol )
+    { SER( SM_ERR_INVALID_INPUT ); }
+  SmTArray<SmEdge*> sEdges, sOtherEdges;
+  pSurvivingVertex->GetEdges( sEdges );
+  pOther->GetEdges( sOtherEdges );
+  for (ULONG i=0; i<sOtherEdges.GetSize(); i++)
+    {
+      for (ULONG j=0; j<sEdges.GetSize(); j++)
+        {
+          if ( sOtherEdges[i] == sEdges[j] )
+            { SER( SM_ERR_INVALID_INPUT ); }
+        }
+    }
+  SmTArray<SmVertexuse*> sUses;
+  pOther->GetVertexuses( sUses );
+  for (ULONG i=0; i<sUses.GetSize(); i++)
+    {
+      SER( pOther->Remove( sUses[i] ));
+      SER( pSurvivingVertex->PostInsert( sUses[i] ));
+    }
+  SER( m_pVertexListHead->Remove( pOther ));
+  delete pOther;
+  return SM_SUCCESS;
+
+} // end SmBrep::JoinVertexFans
 
 /*******************************************************************//**
 PURPOSE: Compute the area, volume, center of gravity and moments
