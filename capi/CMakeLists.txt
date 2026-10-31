@@ -215,6 +215,9 @@ if(SMLIB_CAPI_TESTS)
     target_compile_definitions(smlib_test_${name} PRIVATE ${SMLIB_DEFINES} SMLIB_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
     add_test(NAME smlib_test_${name} COMMAND smlib_test_${name})
   endforeach()
+  # The tangent-end blends that fail today (tests/ops_kernel.cpp, TANGENT_END_CASES): fails if
+  # one of them passes, so a fix drops its reason there.
+  add_test(NAME smlib_test_ops_kernel_tangent_ends_known_failing COMMAND smlib_test_ops_kernel --tangent-ends-known-failing)
 
   # Flat arrays: SmBrep -> arrays -> SmBrep round trips, and hostile arrays. The test builds its
   # solids with SM_API directly and hands them to the C API as native files.
