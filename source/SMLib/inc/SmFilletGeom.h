@@ -223,6 +223,7 @@ protected:
   SmFilletVertex       * m_pMate[2];     // When specified, pointing to MATE(s) - matching vertices on other railCurves
   SmFilStatus            m_eStatus;      // Status of vertex computation
   SmFilletCorner       * m_cpCorner;     // If not NULL, will point to its belonging corner
+  SmBoolean              m_bTangentEnd;  // SolidCraft change: a rail's tangent end, where it crosses a tangent seam into the end face
 
 public:
   // constructor
@@ -276,6 +277,7 @@ public:
 
   // predicates                                                      
   SmBoolean IsProcessed() const { return m_eStatus == SM_FIL_PROCESSED; }
+  SmBoolean IsTangentEnd() const { return m_bTangentEnd; }
 
   // simple assignment
   void SetMate            (ULONG lIndex, 
@@ -283,6 +285,7 @@ public:
   void SetStatus          (SmFilStatus eStatus)                  { m_eStatus = eStatus; }
   void SetFilletCorner    (SmFilletCorner * pCorner)             { m_cpCorner = pCorner; }
   void SetFilletVertexType(SmFilletVertexType eType)             { m_eType = eType; }
+  void SetTangentEnd      (SmBoolean bTangentEnd)                { m_bTangentEnd = bTangentEnd; }
   void SetOriginalTParam  (double dT)                            { m_vPointClass.SetTParam(dT); }
   void SetOriginalUV      (const SmPoint2d & crUVParam)          { m_vPointClass.SetUVParam(crUVParam); }
   void SetPointClass      (SmPointClassificationType eType, 
@@ -433,6 +436,7 @@ public:
   SmStatus         CalcCrossSection         (const SmContext & crContext, SmFilletCorner * pOptCorner = NULL);
   SmStatus         CalcEdgeOnEdge           (const SmContext & crContext, SmFilletCorner * pOptCorner = NULL);
   SmStatus         CalcEdgeOnExtendedEdge   (const SmContext & crContext, SmFilletCorner * pOptCorner = NULL);
+  SmStatus         CalcEdgeOnTangentSeam    (const SmContext & crContext, SmFilletCorner * pCorner); // SolidCraft change: a cap edge on a tangent seam
   SmStatus         CalcFilletEnd            (const SmContext & crContext, SmFilletCorner * pOptCorner = NULL);
   SmStatus         CalcFilletIntFillet      (const SmContext & crContext, SmFilletCorner * pOptCorner = NULL);   // NotUsed: in :
   SmStatus         CalcFilletIntSideFace    (const SmContext & crContext, SmFilletCorner * pOptCorner = NULL);
@@ -768,6 +772,13 @@ SmStatus sm_SrfSrfIntersection
                                                            //             resorting to expensive general surf/surf xSect solver
    SmPoint3d       * pOptRefPoint = NULL,                  // in : reference point
    int               iDebugLevel = 0);                     // in : iDebugLevel, 0 = No Debug output
+
+// SolidCraft change: whether an edgeuse's two faces meet tangentially at one of its vertices (a
+// tangent seam: a flat face running smoothly onto a round across the edge), SmFilletCorner.cpp
+SmBoolean sm_CheckTangentialEdgeuseAtVertex
+  (SmEdgeuse      * pEU,                                   // in : edgeuse of the edge
+   const SmVertex * cpVertex,                              // in : vertex of the edge where its faces are compared
+   double           dAngTolDeg);                           // in : angle tolerance between the faces' normals, degrees
 
 #endif // !__SMFILLETGEOM_H__
 
