@@ -3074,6 +3074,134 @@ void closed_rims_blended_past_their_walls()
     }
 }
 
+// SolidCraft rig case fillets/926: the top edge x = 40, z = 20 of a 40 x 40 x 20 box joined with
+// an R12 boss 40 high centred on its side (40, 20), chamfered 0.8. The edge runs from the front
+// face to the boss's wall, which rises above the box. The chamfer's rail on the top face crosses
+// the boss's base arc just past the edge's end (y = 8.0267 against 8) and comes back onto the
+// top face beyond the boss: a run off the face between two on it, which was taken for a rail
+// leaving its face beside the edge, so the chamfer was built as a cliff overflow and refused
+// (SMLIB_ERR_NO_ROOM, "a cliff overflow's fillet boundary lies on the surfaces of two faces").
+// V0 = 32000 + 144 pi 40 - 144 pi 20 / 2; the chamfer takes the section h = x - 39.2 swept
+// along y to the wall at y = 20 - sqrt(144 - (x - 40)^2).
+void chamfer_ending_on_a_boss_wall_above_it()
+{
+    smlib_brep *b = box(0, 0, 0, 40, 40, 20), *boss = cylinder(40, 20, 0, 12, 40), *joined = nullptr, *r = nullptr;
+    CHECK(smlib_boolean(b, boss, SMLIB_BOOLEAN_UNION, &joined) == SMLIB_OK && joined != nullptr);
+    const int n = 20000;
+    double removed = 0.0;
+    for (int i = 0; i < n; ++i)
+    {
+        const double x = 39.2 + (i + 0.5) * 0.8 / n;
+        removed += (x - 39.2) * (20.0 - std::sqrt(144.0 - (x - 40.0) * (x - 40.0))) * 0.8 / n;
+    }
+    const double want = 32000.0 + PI * 144.0 * 40.0 - PI * 72.0 * 20.0 - removed;
+    const double edge[3] = {40, 4, 20};
+    const double d = 0.8;
+    const int32_t s = joined != nullptr ? smlib_blend(joined, SMLIB_BLEND_CHAMFER, edge, &d, 1, 0.1, &r, nullptr) : -1;
+    if (s != SMLIB_OK || r == nullptr || !near(volume_of(r), want, 1e-9) || !sound(r))
+    {
+        std::fprintf(stderr, "  chamfer 0.8 of the box's top edge ending on the boss's wall: status %d\n", static_cast<int>(s));
+        failures++;
+    }
+    for (smlib_brep *x : {b, boss, joined, r})
+    {
+        smlib_brep_free(x);
+    }
+}
+
+// Rails trimmed at an end vertex within the zone tolerance of one of their own knots (marching
+// points): the trim left an end span shorter than the tolerance, its control points coincident,
+// which SMLib's check refuses as an internal point singularity (Test #15) of the rail and of the
+// face curves trimmed with it. As SolidCraft hands them over:
+// - rig case fillets/1207 r0.5 (bar-boss-arc-rounded.smb: the bar and boss of bar-boss-over-sides
+//   with the boss's base arc over the bar rounded r2): the bar's front top edge and the r2
+//   round's end curve on the front face, its tangent chain, rounded r0.5. The rail on the r2
+//   round stands still at the round's boundary past its end (where it meets the boss), and its
+//   vertex dropped onto it 1e-8 before the knot where it starts to move.
+// - rig case fillets/cov-fillet-arc-edge-on-an-oblique-cut-of-a-bar (oblique-cut-bar: a bar with
+//   a concave R3 arc in its profile cut by a plane tilted 21 degrees): the elliptical edge where
+//   the arc's cylinder meets the cut rounded r0.1. One rail crosses its side edge 6e-7 mm before
+//   the other, where the march put its point.
+// Each is one closed valid solid.
+void rails_trimmed_next_to_a_knot()
+{
+    const struct
+    {
+        const char *file;
+        std::vector<double> points;
+        double r, pick;
+    } cases[2] = {{SMLIB_TEST_DATA "/bar-boss-arc-rounded.smb", {58.046738469715542, -15, 10, 14.289893382452973, -14.999999999999996, 10.475338853397696}, 0.5, 0.1},
+                  {SMLIB_TEST_DATA "/oblique-cut-bar.txt", {149.60309403593678, -458.87269130746967, 848.84285884468318}, 0.1, 1.0}};
+    for (const auto &c : cases)
+    {
+        // The 1207 body is SMLib's own (a native file, as SolidCraft's dump wrote it): through flat
+        // arrays its rail drops onto the stationary stretch elsewhere, clear of the knot.
+        smlib_brep *b = nullptr;
+        if (std::strstr(c.file, ".smb") != nullptr)
+        {
+            CHECK(smlib_brep_read(c.file, 1, &b) == SMLIB_OK);
+        }
+        else
+        {
+            b = read_flat(c.file);
+        }
+        smlib_brep *r = nullptr;
+        const int64_t k = static_cast<int64_t>(c.points.size() / 3);
+        const std::vector<double> sizes(static_cast<size_t>(k), c.r);
+        const int32_t s = b != nullptr ? smlib_blend(b, SMLIB_BLEND_ROUND, c.points.data(), sizes.data(), k, c.pick, &r, nullptr) : -1;
+        if (s != SMLIB_OK || r == nullptr || !sound(r))
+        {
+            std::fprintf(stderr, "  round %g of %s: status %d\n", c.r, c.file, static_cast<int>(s));
+            failures++;
+        }
+        smlib_brep_free(r);
+        smlib_brep_free(b);
+    }
+}
+
+// SolidCraft rig case fillets/cov-chamfer-concave-edge-through-up-down-joined-squares
+// (up-down-squares): four 10 x 10 squares drawn edge to edge, three extruded 10 up and three 10
+// down and joined. The down part lacks the square x, y < 0 and the up part x, y > 0, so the line
+// x = y = 0 is a concave edge of each, and the origin a vertex where the body touches itself:
+// two cones of faces, one round each missing octant. The two concave edges chamfered 1 fill
+// their corners with the triangle 1 x 1 / 2 along 10, on opposite sides of the line:
+// V = 6000 + 10. Each chamfer ends on its own cone of faces at the origin; one corner of both
+// was 1001 (SmFilletNx2Corner: unable to make topology).
+void concave_chamfers_at_a_vertex_the_body_touches_itself_at()
+{
+    smlib_brep *b = read_flat(SMLIB_TEST_DATA "/up-down-squares.txt"), *r = nullptr;
+    const double edges[6] = {0, 0, -5, 0, 0, 5};
+    const double d[2] = {1, 1};
+    const int32_t s = b != nullptr ? smlib_blend(b, SMLIB_BLEND_CHAMFER, edges, d, 2, 0.1, &r, nullptr) : -1;
+    if (s != SMLIB_OK || r == nullptr || !near(volume_of(r), 6010.0, 1e-9) || !sound(r))
+    {
+        std::fprintf(stderr, "  the up and down parts' concave edges chamfered 1: status %d\n", static_cast<int>(s));
+        failures++;
+    }
+    smlib_brep_free(r);
+    smlib_brep_free(b);
+}
+
+// SolidCraft rig case fillets/cov-chamfer-outer-corner-edge-of-a-shelled-box-with-a-lip
+// (shelled-box-lip): an 80 x 50 x 30 box shelled 2 open at the top, a 1 x 2 lip on the inner half
+// of its rim. Its outer corner edge x = 0, y = 50 chamfered 3: the chamfer's plane
+// x + (50 - y) = 3 clears the inside corner (2, 48), and its end section at the top crosses the
+// lip's foot. The chamfer face came back unsewn: not a closed solid (SMLIB_ERR_NOT_SOLID).
+void chamfer_of_a_shelled_box_corner_ending_under_its_lip()
+{
+    smlib_brep *b = read_flat(SMLIB_TEST_DATA "/shelled-box-lip.txt"), *r = nullptr;
+    const double edge[3] = {0, 50, 15};
+    const double d = 3;
+    const int32_t s = b != nullptr ? smlib_blend(b, SMLIB_BLEND_CHAMFER, edge, &d, 1, 0.1, &r, nullptr) : -1;
+    if (s != SMLIB_OK || r == nullptr || !sound(r))
+    {
+        std::fprintf(stderr, "  the shelled box's corner edge chamfered 3 up to its lip: status %d\n", static_cast<int>(s));
+        failures++;
+    }
+    smlib_brep_free(r);
+    smlib_brep_free(b);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 4 && std::strcmp(argv[1], "--solidcore-1173") == 0)
@@ -6600,6 +6728,10 @@ int main(int argc, char **argv)
     tabbed_plate_rounds_mitred_on_the_arcs_continuation();
     corner_patch_edge_lies_on_its_patch();
     corner_patch_drop_from_a_guess_is_its_foot();
+    chamfer_ending_on_a_boss_wall_above_it();
+    rails_trimmed_next_to_a_knot();
+    concave_chamfers_at_a_vertex_the_body_touches_itself_at();
+    chamfer_of_a_shelled_box_corner_ending_under_its_lip();
 
     // SolidCraft surface.offset of a ball's one face: the face taken off as a sheet is a closed
     // shell whose regions are all voids, which smlib_offset_sheet refused as a solid
