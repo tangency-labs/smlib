@@ -25,7 +25,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a declaration in this header changes. */
-#define SMLIB_ABI_VERSION 5
+#define SMLIB_ABI_VERSION 6
 
 #define SMLIB_OK 0
 /* A C++ exception escaped SMLib (out of memory, most likely). */
@@ -1215,6 +1215,15 @@ int32_t smlib_split_faces(const smlib_brep *body, const int64_t *faces, int64_t 
  * body, with no face of the tool (tag the body, smlib_history_tag, to tell); one that leaves a side
  * empty is SMLIB_ERR_NO_CUT; a body that is no manifold solid SMLIB_ERR_NOT_SOLID. */
 int32_t smlib_split_body(const smlib_brep *body, const smlib_surface *tool, smlib_brep **back, smlib_brep **front);
+
+/* `body` cut in two as smlib_split_body cuts it, by the sheet `sheet` as it is (a surface body of
+ * one or more faces joined edge to edge, which must cross the body to cut it): its faces' surfaces
+ * turned to agree with face `face`'s (in its face order; SmBrep::OrientSheetSurfaces), `back` the
+ * part on the side that normal points away from, `front` the part it points into, each closed by
+ * the sheet's piece inside the body. A sheet that does not divide the body (one that ends inside
+ * it, only nicking it, leaves a part that is no manifold solid) is SMLIB_ERR_NO_CUT. A `sheet`
+ * that is no sheet, or a `face` out of range, is SMLIB_ERR_ARG; the inputs are left unchanged. */
+int32_t smlib_split_body_by_sheet(const smlib_brep *body, const smlib_brep *sheet, int64_t face, smlib_brep **back, smlib_brep **front);
 
 /* A point inside each face of `body`, in its face order, into `out` (3 * `n_faces` numbers):
  * on the face's surface and inside its trims (SmFace::CalculateAnInternalPoint). `n_faces` must
