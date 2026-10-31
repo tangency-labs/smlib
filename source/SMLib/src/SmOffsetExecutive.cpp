@@ -1912,16 +1912,16 @@ SmBoolean bDebugMe8 = FALSE;
   {
     SmTArray<SmVertex*> sVertices;
     m_pOriginalBrep->GetVertices(sVertices);
-    for (ULONG ii=0; ii<sVertices.GetSize(); ii++)
+    for (ULONG lApex=0; lApex<sVertices.GetSize(); lApex++)
       {
         SmTArray<SmEdge*> sVEdges;
-        sVertices[ii]->GetEdges(sVEdges);
+        sVertices[lApex]->GetEdges(sVEdges);
         if (sVEdges.GetSize() != 1)
           { continue; }
-        SmTArray<SmCurve*>     s3DCurves;
-        SmTArray<SmOrientType> sOrients;
+        SmTArray<SmCurve*>     sApexCurves;
+        SmTArray<SmOrientType> sApexOrients;
         SmSurface *pNewSurface = NULL;
-        SER(BuildOffsetOfVertex(sVertices[ii], s3DCurves, sOrients, pNewSurface));
+        SER(BuildOffsetOfVertex(sVertices[lApex], sApexCurves, sApexOrients, pNewSurface));
         if (pNewSurface == NULL)
           { continue; }
         // The cap is the sphere's zone bounded by the circle (VertexOffset: the arc from the
@@ -1929,7 +1929,7 @@ SmBoolean bDebugMe8 = FALSE;
         // surface, joined to the offset face along the circle by the merge.
         SmFace *pNewFace = NULL;
         SER(m_pOffsetBrep->CreateFaceFromSurface(pNewSurface, pNewSurface->GetNaturalUVDomain(), pNewFace));
-        SER( m_vVToF.RelatePair( sVertices[ii], pNewFace ) );
+        SER( m_vVToF.RelatePair( sVertices[lApex], pNewFace ) );
       }
   }
   if (m_eOffsetOperation == SM_OO_LOCAL_OPERATION)
