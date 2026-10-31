@@ -283,6 +283,13 @@ the tool surface (`SM_BO_SLICE`), once as it is and once turned over (`SwapUV`; 
 the side from the surface's normal, not from the face's use), giving the part behind the surface
 and the part in front of it. A tool that misses leaves both parts the whole body.
 
+`smlib_split_body_by_sheet(body, sheet, face, &back, &front)` slices the same way with a sheet of
+one or more faces as it is (a smooth sheet of several faces, bounded where its faces end): its
+surfaces are first turned to agree with face `face`'s (`SmBrep::OrientSheetSurfaces`), and for
+the back all turned over, so the sides are those of that face's normal. A sheet that only nicks
+the body (`SM_BO_SLICE` then behaves as a difference, a slit in the body and a lamina beside it)
+leaves a part that is no manifold solid, and is `SMLIB_ERR_NO_CUT`.
+
 `smlib_face_points(body, out, n_faces)` gives a point inside each face
 (`SmFace::CalculateAnInternalPoint`), so a trim can tell which side of its tool each piece lies on.
 
