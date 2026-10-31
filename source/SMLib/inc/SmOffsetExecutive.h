@@ -152,6 +152,8 @@ protected:
                                                         //  mated across instead of offset (DoExtendedOffset())
   SmTArray<SmFace*>               m_sClosedEdgeFaces;   // the offset face of each edge that closed to a point (CloseLoopGap()),
   SmTArray<SmFace*>               m_sClosedEdgeAcross;  //  and the original face across that edge (NULL where unknown)
+  SmTArray<SmEdge*>               m_sUnmatedEdges;      // original edges whose faces' offsets could not be mated along them
+                                                        //  (MateEdges), so the merge intersects those offsets (PiecewiseMerge())
 
 public:
 
@@ -270,6 +272,7 @@ public:
 
   SmEdgeuse * GetOffsetEdgeuse(SmEdgeuse *cpOrigEu);
   SmBoolean   IsCollapsedFace(const SmFace *pFace) const { return m_sCollapsedFaces.IsIn(SM_CONST_CAST(SmFace*, pFace)); }
+  void        NoteUnmatedEdge(const SmEdge *pEdge) { m_sUnmatedEdges.AddUnique(SM_CONST_CAST(SmEdge*, pEdge)); }
   SmEdgeuse * GetEdgeuseAcrossCollapsedFace(const SmEdgeuse *pEU, const SmVertex *pFrom) const;
 
   SmStatus MapEdgeuses(SmFaceuse * pOriginalFU,

@@ -2973,6 +2973,7 @@ static ULONG lDebugCount = 0 ;
                                  eMarkType))   // in: uses without incrementing eMarkType value
         {
           MSG(_T("Problem Extending Convex Edge - Will be Fixed Later"));
+          cpOffsetExecutive->NoteUnmatedEdge(cpOriginalEdgeuse->GetEdge());
         }
       return SM_SUCCESS;
     } // end when extending convex edges
