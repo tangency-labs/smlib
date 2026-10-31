@@ -2918,6 +2918,48 @@ void corner_setback_face_curve_on_a_cylinder()
     smlib_brep_free(cut);
 }
 
+// The curved corner above, eased before its setback (smlib_blend_setback_open_eased, and closed,
+// smlib_blend_setback_eased): set back 4.5 to 8, eased 0.75 or 2.4. The arc's round is a torus and
+// the vertical edge's round a cylinder, analytic rounds that run past their edges' ends; the ease
+// reads each round by its centre line and its rails on the faces they roll on. The torus now
+// keeps its centre line (it kept none: the ease was refused, SM_ERR), and each analytic rail is
+// dropped onto its face's whole plane, or onto its cylinder made long enough for it, not onto the
+// face's patch, which the rail runs past (it dropped nowhere, and the ease was refused). The sheet
+// passes SMLib's check with one hole of twelve edges, each on its face to the body's tolerance;
+// closed, a valid solid.
+void corner_setback_eased_at_a_curved_edge()
+{
+    smlib_brep *cut = curved_corner_part();
+    const double edges[9] = {60, 10, 20, 60, 25, 10, 52.5, 40 - 15 * 0.8660254037844386, 20};
+    const double radii[3] = {3, 3, 3};
+    const double corner[3] = {60, 25, 20};
+    for (double setback : {4.5, 6.0, 8.0})
+    {
+        for (double ease : {0.75, 2.4})
+        {
+            int64_t holes[64];
+            int64_t len = -1;
+            smlib_brep *r = nullptr;
+            const int32_t s = smlib_blend_setback_open_eased(cut, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, &ease, 1, 0.1, &r, holes,
+                                                             64, &len, nullptr, nullptr);
+            if (s != SMLIB_OK)
+            {
+                std::printf("set back %g, eased %g: status %d\n", setback, ease, static_cast<int>(s));
+            }
+            CHECK(s == SMLIB_OK && r != nullptr && len == 1 + 3 * 12 && holes[0] == 12);
+            if (r != nullptr && len == 1 + 3 * 12)
+            {
+                CHECK(hole_edges_off_their_faces(r, holes, 12) <= static_cast<double>(r->p->GetTolerance()));
+            }
+            done(r);
+            CHECK(smlib_blend_setback_eased(cut, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, &ease, 1, 0.1, &r, nullptr, nullptr) ==
+                  SMLIB_OK);
+            done(r);
+        }
+    }
+    smlib_brep_free(cut);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 4 && std::strcmp(argv[1], "--solidcore-1173") == 0)
@@ -6368,6 +6410,7 @@ int main(int argc, char **argv)
     corner_setback_eased_long_setbacks();
     corner_setback_eased_face_curves_are_quintics();
     corner_setback_face_curve_on_a_cylinder();
+    corner_setback_eased_at_a_curved_edge();
     shelled_tapered_box_rounds();
     shelled_disc_round_thinner_than_the_wall();
     groove_arc_round_ends_in_the_top();

@@ -26,6 +26,8 @@
 #include <SmAssertArray.h>
 #include <SmAttribute.h>
 #include <SmCrvOnSurf.h>
+#include <SmCone.h>
+#include <SmPlane.h>
 #include <SmTol.h>
 
 #include <memory>
@@ -2604,6 +2606,7 @@ SmStatus SmFilletExecutive::EaseSetBackSections()
       SmSurface * apFaceSurfs[2] = { NULL, NULL };
       SmTArray<SmBSplineCurve*> sDropped;
       SmObjsDelete<SmBSplineCurve*> sDeleteDropped(&sDropped);
+      SmObjDelete sLonger[2];
       for (ULONG r = 0; r < 2; r++)
         {
           SmFilletEdge * pRailEdge = pFG->GetRail(r); NER(pRailEdge);
@@ -2619,7 +2622,58 @@ SmStatus SmFilletExecutive::EaseSetBackSections()
             {
               SmTArray<SmBSplineCurve*> sUVCurves;
               double dMaxDist = 0.0, dDeviation = 0.0;
-              SER(apFaceSurfs[r]->DropCurve(m_crContext, apFaceSurfs[r]->GetNaturalUVDomain(), *apRails[r],
+              // SolidCraft change: over the plane the face lies on, not only its patch: the rails
+              // of an analytic round run past its edge's ends (the round is extended, as a torus
+              // about a circular edge is by a quarter of what its span leaves of a turn), past the
+              // face's own patch, and dropped onto that patch alone the rail dropped nowhere. The
+              // domain holds the rail's control points' projections, so the whole rail (in their
+              // hull, its weights positive).
+              SmExtent2d sDropDomain = apFaceSurfs[r]->GetNaturalUVDomain();
+              SmPlane * pRailPlane = SM_CAST_PTR(SmPlane, apFaceSurfs[r]);
+              if (pRailPlane != NULL)
+                {
+                  for (ULONG k = 0; k < apRails[r]->GetNumberControlPoints(); k++)
+                    {
+                      SmPoint3d sP;
+                      double dW = 1.0;
+                      SmPoint2d sUV;
+                      SER(apRails[r]->GetControlPoint(SM_CP_EUCLIDIAN_RATIONAL, k, sP, dW));
+                      SER(pRailPlane->ProjectPointToUVDomain(sP, sUV));
+                      SmPoint2d sLo(smos_Min(sDropDomain.GetMin().x, sUV.x), smos_Min(sDropDomain.GetMin().y, sUV.y));
+                      SmPoint2d sHi(smos_Max(sDropDomain.GetMax().x, sUV.x), smos_Max(sDropDomain.GetMax().y, sUV.y));
+                      SER(sDropDomain.SetMinMax(sLo, sHi));
+                    }
+                }
+              SmCone * pRailCone = SM_CAST_PTR(SmCone, apFaceSurfs[r]);
+              if (pRailCone != NULL)
+                {
+                  // a cylinder or cone: a copy of it long enough along its axis for the rail (its
+                  // angle the face's whole domain spans), the rail's UV and the G2 sections on it
+                  SmAxis2Placement sAxes;
+                  double dRadius = 0.0, dSemiAngle = 0.0;
+                  SER(pRailCone->GetCanonical(sAxes, dRadius, dSemiAngle));
+                  SmExtent2d sStep = pRailCone->GetSTEPUVDomain();
+                  double dLo = sStep.GetMin().y, dHi = sStep.GetMax().y;
+                  for (ULONG k = 0; k < apRails[r]->GetNumberControlPoints(); k++)
+                    {
+                      SmPoint3d sP;
+                      double dW = 1.0;
+                      SER(apRails[r]->GetControlPoint(SM_CP_EUCLIDIAN_RATIONAL, k, sP, dW));
+                      double dH = (sP - sAxes.GetOrigin()).Dot(sAxes.GetZAxis());
+                      dLo = smos_Min(dLo, dH);
+                      dHi = smos_Max(dHi, dH);
+                    }
+                  if (dLo < sStep.GetMin().y || dHi > sStep.GetMax().y)
+                    {
+                      SmSurface * pLonger = NULL;
+                      SER(pRailCone->Copy(m_crContext, pLonger));
+                      sLonger[r].SetObj(pLonger);
+                      SER(pLonger->AdjustSTEPUVDomain(SmExtent2d(SmPoint2d(sStep.GetMin().x, dLo), SmPoint2d(sStep.GetMax().x, dHi))));
+                      apFaceSurfs[r] = pLonger;
+                      sDropDomain = pLonger->GetNaturalUVDomain();
+                    }
+                }
+              SER(apFaceSurfs[r]->DropCurve(m_crContext, sDropDomain, *apRails[r],
                                             apRails[r]->GetNaturalInterval(), pFS->GetThisApproxTol3d(), dMaxDist, dDeviation,
                                             sUVCurves));
               for (ULONG k = 0; k < sUVCurves.GetSize(); k++)
