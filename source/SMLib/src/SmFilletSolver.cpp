@@ -6344,7 +6344,8 @@ PURPOSE: SolidCraft change. Whether every rail of this solver's fillet stays on 
 NOTES: Each rail, untrimmed (CalcFilletGeom made it), is classified against its face with
     SmFace::CurveOnClassify. It may run off the face past the filleted edge's ends
     (LeavesPastAnEnd; the corner trims it there, also where the face goes on beyond what the
-    rail passes there and the rail comes back onto it past the same end), and off across a
+    rail passes there and the rail comes back onto it across the same end's side edge), and
+    off across a
     tangent side edge (a
     rollover onto the next face, which TestRollOver processes; rbRollsOver is TRUE then). A
     rail that is nowhere on its face, or that leaves it between its ends across an edge that
@@ -6411,13 +6412,16 @@ SmStatus SmFilletSolver::RailsFitTheirFaces
                 {
                   // A run between two on the face: the face goes on beyond something the rail
                   // passes (a boss the filleted edge ends on, rising from the face) and the rail
-                  // comes back onto it. Past an end when the rail leaves the face and comes
-                  // back past the same end, wholly beyond it, where the corner trims it.
-                  SmBoolean bLeavesPast = FALSE, bReturnsPast = FALSE;
+                  // comes back onto it. Past an end when the rail leaves the face across that
+                  // end's side edge and comes back across it, wholly beyond the end, where the
+                  // corner trims it. (Past an end by its foot alone it is not: any point of a run
+                  // beyond the edge's extent has its foot at an end, wherever it crosses the
+                  // face's boundary.)
+                  SmBoolean bLeavesPast = FALSE, bReturnsPast = FALSE, bLeavesBySide = FALSE, bReturnsBySide = FALSE;
                   const SmVertex * pLeaveEnd = NULL, * pReturnEnd = NULL;
-                  SER( LeavesPastAnEnd( *pFace, *pCurve, dLeave, rLeave, bLeavesPast, &pLeaveEnd ));
-                  SER( LeavesPastAnEnd( *pFace, *pCurve, sClass[jLast].GetMax(), sClass[jLast].m_vEnd, bReturnsPast, &pReturnEnd ));
-                  if (bLeavesPast && bReturnsPast && pLeaveEnd == pReturnEnd)
+                  SER( LeavesPastAnEnd( *pFace, *pCurve, dLeave, rLeave, bLeavesPast, &pLeaveEnd, &bLeavesBySide ));
+                  SER( LeavesPastAnEnd( *pFace, *pCurve, sClass[jLast].GetMax(), sClass[jLast].m_vEnd, bReturnsPast, &pReturnEnd, &bReturnsBySide ));
+                  if (bLeavesPast && bReturnsPast && bLeavesBySide && bReturnsBySide && pLeaveEnd == pReturnEnd)
                     { continue; }
                 }
               SmEdge * pSide = (rLeave.GetPointClass() == SM_PC_EDGE) ? (SmEdge*)rLeave.GetObject() : NULL;
@@ -6595,7 +6599,8 @@ NOTES: At an end the fillet stops in one of two ways, and its rail leaves the fa
       does not matter: the edge point nearest to where it leaves is the end.
     A rail that leaves across any other edge, at a point beside the edge (whose nearest edge
     point is not an end), leaves the face before the fillet's end: rbPastAnEnd is FALSE.
-    ppEnd (if not NULL) gets the filleted edge's vertex at the end it leaves past.
+    ppEnd (if not NULL) gets the filleted edge's vertex at the end it leaves past, pbBySide
+    whether it leaves across that end's side edge (the first way).
 ***********************************************************************/
 SmStatus SmFilletSolver::LeavesPastAnEnd
   (const SmFace                & crFace,      // in : the face the rail rolls on
@@ -6603,12 +6608,15 @@ SmStatus SmFilletSolver::LeavesPastAnEnd
    double                        dRailParam,  // in : rail parameter where it leaves the face
    const SmPointClassification & crLeave,     // in : where it leaves the face (an edge or a vertex of its boundary)
    SmBoolean                   & rbPastAnEnd, // out: TRUE = past an end of the filleted edge
-   const SmVertex             ** ppEnd)       // out: (optional) that end's vertex
+   const SmVertex             ** ppEnd,       // out: (optional) that end's vertex
+   SmBoolean                   * pbBySide)    // out: (optional) TRUE = across or through that end's side edge
   const
 {
   rbPastAnEnd = FALSE;
   if (ppEnd != NULL)
     { *ppEnd = NULL; }
+  if (pbBySide != NULL)
+    { *pbBySide = FALSE; }
   SmEdgeuse * pFilEU     = GetEdgeuse(0);        NER(pFilEU);
   SmEdge    * pFilEdge   = pFilEU->GetEdge();    NER(pFilEdge);
   SmCurve   * pEdgeCurve = pFilEdge->GetCurve(); NER(pEdgeCurve);
@@ -6640,7 +6648,11 @@ SmStatus SmFilletSolver::LeavesPastAnEnd
         }
     }
   if (rbPastAnEnd)
-    { return SM_SUCCESS; }
+    {
+      if (pbBySide != NULL)
+        { *pbBySide = TRUE; }
+      return SM_SUCCESS;
+    }
 
   // On or beyond the cross section at an end.
   SmExtent1d sEdgeIvl = pFilEdge->GetInterval();
