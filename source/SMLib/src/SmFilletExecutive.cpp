@@ -6000,7 +6000,19 @@ SmBoolean bDebugMe = FALSE;
         SER( pStartV[lRailToSqeeze]->PostInsert(pVU) );
     }
 
-    SM_ASSERT(pEndV[lRailToSqeeze] != NULL) ; delete pEndV[lRailToSqeeze] ; pEndV[lRailToSqeeze] = NULL ;
+    // SolidCraft change: the vertex leaves its corner's list before it is deleted. The corner
+    // owns its vertices (~SmFilletCorner deletes them), and the list was only emptied once the
+    // conversion had succeeded (pEndCorner->m_vVertices.ReSet() below): where it failed after
+    // this point (CalcRailIntRail finding no rail-rail intersection) the corner deleted the
+    // vertex a second time, freed memory, when the executive was destroyed.
+    SM_ASSERT(pEndV[lRailToSqeeze] != NULL) ;
+    {
+      SmFilletCorner * pOwner = pEndV[lRailToSqeeze]->GetFilletCorner();
+      ULONG lAt = 0;
+      if ( pOwner != NULL && pOwner->m_vVertices.FindElement( pEndV[lRailToSqeeze], lAt ))
+        { pOwner->m_vVertices.RemoveAt( lAt ); }
+    }
+    delete pEndV[lRailToSqeeze] ; pEndV[lRailToSqeeze] = NULL ;
     pStartV[lRailToSqeeze]->SetFilletVertexType(SM_FV_RAIL_X_RAIL);
     for (ii=0; ii<2; ii++) {
         SmFilletVertex * pMate = pStartV[lRailToSqeeze]->GetMate(ii);
