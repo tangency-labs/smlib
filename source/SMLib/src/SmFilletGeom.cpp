@@ -10493,6 +10493,56 @@ SmStatus SmFilletGeom::Trim( SmExtent1d &rTrimInterval )
 } //end SmFilletGeom::Trim
 
 /*******************************************************************//**
+PURPOSE: SolidCraft change. Where a rail is trimmed at an end vertex: the
+    parameter found for the vertex, or the rail's knot next to it inside the
+    trim when the rail between the two is shorter than the zone tolerance.
+
+NOTES: The vertex's parameter comes from dropping its point on the rail, and
+    the rail's own knots (its marching points) can lie within the zone
+    tolerance of it: where the rail stands still at a face's boundary beyond
+    its end (anywhere along the stationary stretch drops the point equally
+    well), or where its section's other rail crosses a side edge there too.
+    A trim there would leave an end span shorter than the zone tolerance, its
+    control points coincident: an internal point singularity of the rail and
+    of the face curves trimmed with it. Its two ends are one point, so the
+    trim takes the knot.
+***********************************************************************/
+static SmStatus sm_SnapRailEndToKnot
+  (const SmBSplineCurve & crRail,    // in : the untrimmed 3D rail
+   const SmExtent1d     & crTrimIvl, // in : the trim so far (the other end not yet known: the rail's interval)
+   double                 dZoneTol,  // in : points closer than this are one point
+   SmBoolean              bStart,    // in : TRUE = the trim's start, FALSE = its end
+   double               & rdParam)   // i/o: the end's parameter
+{
+  SmTArray<double> sKnots;
+  SER( crRail.GetKnots( sKnots ));
+  // the rail's knot next to rdParam inside the trim
+  double dKnot = rdParam;
+  SmBoolean bFound = FALSE;
+  for (ULONG i=0; i<sKnots.GetSize(); i++)
+    {
+      double dK = sKnots[i];
+      if ( bStart ? ( dK > rdParam && dK < crTrimIvl.GetMax() && ( !bFound || dK < dKnot ))
+                  : ( dK < rdParam && dK > crTrimIvl.GetMin() && ( !bFound || dK > dKnot )))
+        {
+          dKnot = dK;
+          bFound = TRUE;
+        }
+    }
+  if ( !bFound )
+    { return SM_SUCCESS; }
+  // the rail between them, as long as the zone tolerance at most
+  SmExtent1d sBetween;
+  SER( sBetween.SetMinMax( smos_Min( rdParam, dKnot ), smos_Max( rdParam, dKnot )));
+  double dLength = SM_BIG_DOUBLE;
+  SER( crRail.Length( sBetween, 0.01 * dZoneTol, dLength ));
+  if ( dLength > dZoneTol )
+    { return SM_SUCCESS; }
+  rdParam = dKnot;
+  return SM_SUCCESS;
+} // end sm_SnapRailEndToKnot
+
+/*******************************************************************//**
 PURPOSE: Trim rail curves by the rail ends
 
 NOTES: This function is called after
@@ -10530,6 +10580,8 @@ SmStatus SmFilletGeom::TrimRailCurves
   // locals: FilletSurface Natural domain and current tolerance
   SmExtent2d sUVDomain = m_pFilletSurface->GetNaturalUVDomain();
   double     dAppTol   = m_pFilletSolver->GetThisApproxTol3d();
+  NER(m_pFilletSolver->GetEdgeuse(0));
+  double     dZoneTol  = SmTol::GetZoneTol3d( m_pFilletSolver->GetEdgeuse(0)->GetBrep() ); // SolidCraft change
 
   // Trim rail curves by their end FilletVerts
 
@@ -10703,6 +10755,9 @@ SmStatus SmFilletGeom::TrimRailCurves
               // clean up dT value from 3.000000001 to 3.0
               dT = smos_CleanUpNoise(dT);
 
+              // SolidCraft change: no end span shorter than the zone tolerance
+              SER( sm_SnapRailEndToKnot( *p3DRailCurve, sTrimIvl, dZoneTol, TRUE, dT ));
+
               // set Vertexuse0->UVPoint on filletSurface
               SM_ASSERT(pUVCurve != NULL) ; // gwc:test
               if ( pUVCurve != NULL )
@@ -10765,6 +10820,11 @@ SmStatus SmFilletGeom::TrimRailCurves
 
 
 
+
+              // SolidCraft change: no end span shorter than the zone tolerance
+              SmExtent1d sFromStart;
+              SER( sFromStart.SetMinMax( dParam1, sTrimIvl.GetMax() ));
+              SER( sm_SnapRailEndToKnot( *p3DRailCurve, sFromStart, dZoneTol, FALSE, dParam2 ));
 
               // set Vertexuse1->UVPoint on filletSurface
               SM_ASSERT(pUVCurve != NULL) ; // gwc:test
