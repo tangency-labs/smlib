@@ -4951,43 +4951,17 @@ static SmStatus sm_CoverOtherCoincidentFace
         { sDomain1 = sTrimDomain; }
     }
 
+  // SolidCraft: across a seam the covering surface wraps only on the trim-derived bounds. The
+  // stored domains are conservative and may be the faces' whole surfaces: across the seam they
+  // cover too (CoverCoincidentSurface keeps the period there), and the merged face took them as
+  // its domain, 360 x 208 for three half-turn faces 1 high whose trims span 180 x 3. Within one
+  // period they cover as before; a cover that must cross the seam takes the faces' trims, which
+  // run across it only where a face really goes all the way round.
   SmStatus eStat = pSurf0->CoverOtherCoincidentSurface(pSurf1, dTol, rdMaxDist,
                                                        rpCoveringSurf, &sDomain0,
-                                                       &sDomain1, &rMergedDomain);
-  if (eStat != SM_SUCCESS)
-    { return eStat; }
-
-  // SolidCraft: a cover that spans the covering surface's whole period in a direction it wraps
-  // took the period there (CoverCoincidentSurface keeps it across a seam it wraps), and so may
-  // stored domains broader than the faces: two half-cylinder faces whose stored domains are
-  // their cylinders' whole surfaces, 360 x 208, merged to that for trims 180 x 3. That cover is
-  // taken again on the trim-derived bounds, which keep the period only where the faces' trims
-  // run all the way round; it stands as it is when that attempt finds no cover, or picks the
-  // other surface to keep.
-  if (rpCoveringSurf != NULL && !bRefineDomains)
-    {
-      const SmExtent2d sNatural = rpCoveringSurf->GetNaturalUVDomain();
-      const double     dPTol    = 1e-9 * smos_Max(1.0, smos_Max(sNatural.XLength(), sNatural.YLength()));
-      const SmBoolean  bWholeU  = rpCoveringSurf->IsClosed(sNatural, SM_SP_U)
-                                  && rMergedDomain.XLength() >= sNatural.XLength() - dPTol;
-      const SmBoolean  bWholeV  = rpCoveringSurf->IsClosed(sNatural, SM_SP_V)
-                                  && rMergedDomain.YLength() >= sNatural.YLength() - dPTol;
-      if (bWholeU || bWholeV)
-        {
-          double       dTrimDist = SM_BIG_DOUBLE;
-          SmSurface  * pTrimCover = NULL;
-          SmExtent2d   sTrimMerged;
-          SER(sm_CoverOtherCoincidentFace(pFace0, pFace1, dTol, dTrimDist, pTrimCover, sTrimMerged, TRUE));
-          if (pTrimCover == rpCoveringSurf)
-            {
-              rdMaxDist      = dTrimDist;
-              rpCoveringSurf = pTrimCover;
-              rMergedDomain  = sTrimMerged;
-            }
-        }
-      return SM_SUCCESS;
-    }
-  if (rpCoveringSurf != NULL)
+                                                       &sDomain1, &rMergedDomain,
+                                                       bRefineDomains);
+  if (eStat != SM_SUCCESS || rpCoveringSurf != NULL)
     { return eStat; }
 
   // A valid face domain may still include unused portions of the surface.

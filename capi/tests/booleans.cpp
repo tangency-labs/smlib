@@ -1121,6 +1121,45 @@ void menger_sponges_row_join()
         smlib_brep_free(x);
 }
 
+// Rig case booleans/5197 (ladder 02-booleans/025): flush layers joined, both bodies as SolidCraft
+// hands them over (tests/data/flush-chord-layers-*.txt). The top: a disc r 37 (z -1.2..0)
+// carrying 15 of the 19 regions of a disc cut by 18 chords (z -3.6..-1.2; the bands y -29..-24,
+// -13..-8, 8..11 and 24..27 left out). The base: an annulus r 35..37 (z -5.6..-3.6) on a disc
+// r 37 (z -8..-5.6). Their r 37 walls are coincident faces of full-turn cylinders, merged across
+// the cylinders' seams. A cover retaken on the faces' trims after the stored-domain cover had
+// already widened the covering cylinder left the joined body unsound (26 failed tests, UV gaps of
+// 1.3 along the axis); the cover now crosses a wrapped seam only on the trim-derived bounds. The
+// layers meet face to face, so the volume is their sum: pi 37^2 (1.2 + 2.4) + (pi 37^2 - B) 2.4
+// + pi (37^2 - 35^2) 2, B the four bands' area, each int 2 sqrt(37^2 - y^2) dy.
+void flush_chord_layers_join()
+{
+    smlib_brep *top = from_flat_file(SMLIB_TEST_DATA "/flush-chord-layers-top.txt");
+    smlib_brep *base = from_flat_file(SMLIB_TEST_DATA "/flush-chord-layers-base.txt");
+    smlib_brep *r = nullptr;
+    CHECK(top != nullptr && base != nullptr);
+    if (top != nullptr && base != nullptr)
+    {
+        const double R = 37.0;
+        auto band = [R](double a, double b) {
+            auto f = [R](double y) { return y * std::sqrt(R * R - y * y) + R * R * std::asin(y / R); };
+            return f(b) - f(a);
+        };
+        const double bands = band(-29, -24) + band(-13, -8) + band(8, 11) + band(24, 27);
+        const double disc = PI * R * R;
+        const double want = disc * (1.2 + 2.4) + (disc - bands) * 2.4 + PI * (R * R - 35.0 * 35.0) * 2.0;
+        CHECK(smlib_boolean(top, base, SMLIB_BOOLEAN_UNION, &r) == SMLIB_OK && sound(r));
+        if (r != nullptr)
+        {
+            std::printf("flush chord layers joined: volume %.9f, want %.9f\n", volume(r), want);
+            CHECK(near(volume(r), want, 1e-7));
+        }
+    }
+    for (smlib_brep *b : {top, base, r})
+    {
+        smlib_brep_free(b);
+    }
+}
+
 int main(int argc, char **argv)
 {
     struct Case
@@ -1145,6 +1184,7 @@ int main(int argc, char **argv)
         {"crescent_on_rim_join", crescent_on_rim_join},
         {"near_coincident_tube_ends_join", near_coincident_tube_ends_join},
         {"menger_sponges_row_join", menger_sponges_row_join},
+        {"flush_chord_layers_join", flush_chord_layers_join},
     };
     for (const Case &c : cases)
     {
