@@ -120,6 +120,106 @@ static SmBSplineCurve *sm_MappedTrim(const SmBSplineCurve & crTrim, const double
   return pCopy ;
 }
 
+// SolidCraft: whether end lEnd (0: the start, 1: the end) of crCurve, an edge's 3D curve or a
+// UV trim of one, is a zero-speed tangent end: the curve's first derivative vanishes there (its
+// two end control points coincide, to dScaledZero) and its second does not, and the end is a
+// vertex of its edge at which the edge's faces are tangent (their normals parallel to within
+// SM_CONTINUITY_ANGLE). There two surfaces touch, and the curve where they meet leaves the
+// vertex with curvature growing as s^(-1/2) in its length s, which no regular parametrization
+// has: the curve is a B-spline in t ~ sqrt(s), with zero speed at the vertex.
+static SmBoolean sm_IsZeroSpeedTangentEnd(const SmBSplineCurve & crCurve, ULONG lEnd, double dScaledZero)
+{
+  const gw_CURVE *pNurb = crCurve.GetGwNurbPointer() ;
+  if ( pNurb == NULL || pNurb->pol->n < 2 )
+    { return FALSE ; }
+  const NL_INDEX iEnd  = ( lEnd == 0 ) ? 0 : pNurb->pol->n ;
+  const NL_INDEX iNext = ( lEnd == 0 ) ? 1 : pNurb->pol->n - 1 ;
+  double dCPtDist = SM_BIG_DOUBLE ;
+  N_DistCptCpt( pNurb->pol->Pw[iEnd], pNurb->pol->Pw[iNext], &dCPtDist ) ;
+  if ( !SM_IS_ZERO_TO_TOL(dCPtDist, dScaledZero) )
+    { return FALSE ; }
+
+  // the second derivative there
+  const SmExtent1d sIvl   = crCurve.GetNaturalInterval() ;
+  const double     dParam = ( lEnd == 0 ) ? sIvl.GetMin() : sIvl.GetMax() ;
+  SmVector3d sPV[3] ;
+  if (   crCurve.Evaluate( dParam, 2, lEnd == 0 ? TRUE : FALSE, sPV ) != SM_SUCCESS
+      || sPV[2].Length() <= dScaledZero )
+    { return FALSE ; }
+
+  // the end is a vertex of the curve's edge
+  const SmEdgeuse *pTrimOf = crCurve.GetDim() == 2 ? crCurve.GetEdgeuse() : NULL ;
+  const SmEdge    *pEdge   = pTrimOf ? pTrimOf->GetEdge() : crCurve.GetEdge() ;
+  if ( pEdge == NULL )
+    { return FALSE ; }
+  const SmExtent1d sEdgeIvl = pEdge->GetInterval() ;
+  const double     dEdgeEnd = ( lEnd == 0 ) ? sEdgeIvl.GetMin() : sEdgeIvl.GetMax() ;
+  if ( smos_Fabs( dEdgeEnd - dParam ) > SM_EFF_ZERO * ( 1.0 + sIvl.GetLength() ) )
+    { return FALSE ; }
+
+  // the edge's faces tangent there: each face's normal at its trim's end
+  SmTArray<SmEdgeuse*> sEdgeuses ;
+  if ( pEdge->GetEdgeuses( sEdgeuses ) != SM_SUCCESS )
+    { return FALSE ; }
+  const double dSinTol = smos_Sine( SM_DEG2RAD( SM_CONTINUITY_ANGLE ) ) ;
+  ULONG      lFaces = 0 ;
+  SmVector3d sFirstNormal ;
+  for ( ULONG ii = 0 ; ii < sEdgeuses.GetSize() ; ii++ )
+    {
+      const SmEdgeuse *pEU   = sEdgeuses[ii] ;
+      const SmFace    *pFace = pEU ? pEU->GetFace() : NULL ;
+      const SmBSplineCurve *pTrim = pFace ? pEU->GetUVTrimCurve() : NULL ;
+      if ( pFace == NULL || pFace->GetSurface() == NULL || pTrim == NULL )
+        { continue ; }
+      SmPoint3d  sUV ;
+      SmVector3d sNormal ;
+      const SmExtent1d sTrimIvl = pTrim->GetNaturalInterval() ;
+      if (   pTrim->EvaluatePoint( sTrimIvl.ClampValue( dEdgeEnd ), sUV ) != SM_SUCCESS
+          || pFace->GetSurface()->EvaluateNormal( SmPoint2d( sUV.x, sUV.y ), TRUE, TRUE, sNormal ) != SM_SUCCESS )
+        { return FALSE ; }
+      if ( lFaces == 0 )
+        { sFirstNormal = sNormal ; }
+      else if ( ( sFirstNormal * sNormal ).Length() > dSinTol )
+        { return FALSE ; }
+      lFaces++ ;
+    }
+  return lFaces >= 2 ? TRUE : FALSE ;
+}
+
+// SolidCraft: the stretch from a zero-speed end (sm_IsZeroSpeedTangentEnd), lEnd 0 the start
+// and 1 the end, of crCurve within which its radius of curvature r = |C'|^3 / |C' x C''| is
+// below dRadiusTol, by its growth there: r = rate |t - t_end| + O(t - t_end)^2, since
+// C' ~ C'' (t - t_end) and so C' x C'' ~ C'' x C''' (t - t_end)^2 / 2, rate = 2 |C''|^3 /
+// |C'' x C'''|. The stretch is dRadiusTol / rate. FALSE when the radius does not grow so:
+// C'' x C''' vanishes at the end, or at the stretch's far end the radius is off dRadiusTol by
+// more than half of it (measured there, clear of the rounding that swamps C' x C'' at the end).
+static SmBoolean sm_ZeroSpeedRadiusStretch(const SmBSplineCurve & crCurve, ULONG lEnd, double dRadiusTol, double & rdStretch)
+{
+  rdStretch = 0.0 ;
+  const SmExtent1d sIvl   = crCurve.GetNaturalInterval() ;
+  const double     dParam = ( lEnd == 0 ) ? sIvl.GetMin() : sIvl.GetMax() ;
+  SmVector3d sPV[4] ;
+  if ( crCurve.Evaluate( dParam, 3, lEnd == 0 ? TRUE : FALSE, sPV ) != SM_SUCCESS )
+    { return FALSE ; }
+  const double dCross = ( sPV[2] * sPV[3] ).Length() ;
+  const double dD2    = sPV[2].Length() ;
+  if ( dCross <= SM_EFF_ZERO * dD2 * dD2 )
+    { return FALSE ; }
+  const double dStretch = dRadiusTol * dCross / ( 2.0 * dD2 * dD2 * dD2 ) ;
+  if ( !( dStretch < sIvl.GetLength() ) )
+    { return FALSE ; }
+  SmVector3d sAt[3] ;
+  if ( crCurve.Evaluate( lEnd == 0 ? dParam + dStretch : dParam - dStretch, 2, TRUE, sAt ) != SM_SUCCESS )
+    { return FALSE ; }
+  const double dSpeed = sAt[1].Length(), dAtCross = ( sAt[1] * sAt[2] ).Length() ;
+  if ( !( dAtCross > 0.0 ) )
+    { return FALSE ; }
+  if ( smos_Fabs( dSpeed * dSpeed * dSpeed / dAtCross - dRadiusTol ) > 0.5 * dRadiusTol )
+    { return FALSE ; }
+  rdStretch = dStretch ;
+  return TRUE ;
+}
+
 /*******************************************************************//**
 PURPOSE: Private constructor to create a spline without any nurb.
 
@@ -7904,7 +8004,10 @@ SmBoolean bDebugMe = FALSE ;
       double dStartScaledZero = SM_EFF_ZERO * (1.0 + sEuclid.GetMaxDimension()) ; 
       N_DistCptCpt( m_pNurb->pol->Pw[0], m_pNurb->pol->Pw[1], &dStartCPtDist) ;
 
-      if(SM_IS_ZERO_TO_TOL(dStartCPtDist, dStartScaledZero))
+      // SolidCraft: not at a zero-speed tangent end, whose first two control points coincide by
+      // construction (sm_IsZeroSpeedTangentEnd)
+      if(   SM_IS_ZERO_TO_TOL(dStartCPtDist, dStartScaledZero)
+         && !sm_IsZeroSpeedTangentEnd(*this, 0, dStartScaledZero))
         {
           /*  3 */
           bRtn &= SM_ASSERT_VALUE_REPORT(3, SM_LEVEL_0, !SM_IS_ZERO_TO_TOL(dStartCPtDist, dStartScaledZero), dStartScaledZero, dStartCPtDist, _T("")) ;
@@ -8216,6 +8319,27 @@ static       ULONG lFoundItem ;
           bRtn &= SM_ASSERT_VALUE_REPORT(GetDim() == 2 ? 13 : 14, SM_LEVEL_0, bRadii, dRadiusTol, SM_UNDEF_DOUBLE, _T("")) ;
         }
 
+      // SolidCraft: at a zero-speed tangent end (sm_IsZeroSpeedTangentEnd) the radius vanishes
+      // as |t - t_end|, the curvature growing as s^(-1/2) in the length s from the vertex. A
+      // radius below the tolerance within the stretch where that growth puts it below
+      // (sm_ZeroSpeedRadiusStretch) is that growth; anywhere else it is tested as any radius.
+      double adEndParam[2] = { sDomain.GetMin(), sDomain.GetMax() } ;
+      double adStretch[2]  = { -1.0, -1.0 } ;
+      for ( ULONG lEnd = 0 ; bRadii && lEnd < 2 ; lEnd++ )
+        {
+          SmVector3d sEndCPt ;
+          N_CPtToPtEuclid(m_pNurb->pol->Pw[lEnd == 0 ? 0 : m_pNurb->pol->n], (NL_POINT *)&sEndCPt) ;
+          double dStretch = 0.0 ;
+          if (   sm_IsZeroSpeedTangentEnd(*this, lEnd, SM_EFF_ZERO * (1.0 + sEndCPt.GetMaxDimension()))
+              && sm_ZeroSpeedRadiusStretch(*pCopyCurve, lEnd, dRadiusTol, dStretch) )
+            { adStretch[lEnd] = dStretch ; }
+        }
+      auto bTangentEndGrowth = [&](double dParam) -> SmBoolean
+        {
+          return (   smos_Fabs(dParam - adEndParam[0]) <= adStretch[0]
+                  || smos_Fabs(dParam - adEndParam[1]) <= adStretch[1] ) ? TRUE : FALSE ;
+        } ;
+
       // The minimum radius is the smallest solution value. Unlike
       // MINIMIZE_FIRST_DERIVATIVE, the function minimized here is the radius
       // of curvature itself, F = |C'|^3 / |C' x C"| (SmCurvePropertyEFO::Evaluate),
@@ -8224,6 +8348,9 @@ static       ULONG lFoundItem ;
       ULONG lSol ;
       for(lSol=0;bRadii && lSol<rSolutionArray.GetSize();lSol++)
         {
+          if(   rSolutionArray[lSol].m_vStart.m_dSolutionValue < dRadiusTol
+             && bTangentEndGrowth(rSolutionArray[lSol].m_vStart[0]))
+            { continue ; }
           if(rSolutionArray[lSol].m_vStart.m_dSolutionValue < dMinRadius)
             {
               dMinRadius      = rSolutionArray[lSol].m_vStart.m_dSolutionValue ;
