@@ -610,8 +610,8 @@ NOTES: Each station is the surface's point nearest the predicted one on
     (g_v, -g_u) cut to keep the turn of its 3D tangent under dAngTol; the
     three curves are cubic Hermite interpolants of the stations' points and
     tangents (the 3D curve, its uv on pSurf, and its uv on the plane, a
-    linear map of the 3D one), a span halved where its midpoint is off the
-    exact curve by more than dTol.
+    linear map of the 3D one), a span halved where a quarter point is off
+    the exact curve by more than a tenth of dTol.
 ***********************************************************************/
 static SmStatus sm_SurfacePlaneCurve
  (const SmContext & crContext,   // in : context for new objects
@@ -619,6 +619,7 @@ static SmStatus sm_SurfacePlaneCurve
   const SmSurface & crPlane,     // in : the plane (an SmPlane)
   const SmPoint3d & crStart,     // in : a point on both
   const SmPoint3d & crEnd,       // in : another, the curve's end
+  const SmVector3d * pStartDir,  // in : the way the curve leaves crStart, or NULL: towards crEnd
   double            dTol,        // in : the curves' tolerance
   double            dAngTol,     // in : the most a step's tangent may turn (radians)
   SmBSplineCurve *& rp3D,        // out: the 3D curve
@@ -717,7 +718,7 @@ static SmStatus sm_SurfacePlaneCurve
   const SmPoint3d sX0 = crStart;
   SmVector3d sT0;
   SmVector2d sR0;
-  SER( Tangent( asUV[0], crEnd - crStart, sT0, sR0 ));
+  SER( Tangent( asUV[0], pStartDir != NULL ? *pStartDir : crEnd - crStart, sT0, sR0 ));
   sUV.push_back( asUV[0] ); sX.push_back( sX0 ); sT.push_back( sT0 ); sR.push_back( sR0 );
   double h = 0.0625 * crStart.DistanceBetween( crEnd );
   for ( int it=0; it<100000; it++ )
@@ -807,24 +808,35 @@ static SmStatus sm_SurfacePlaneCurve
       SmObjDelete sDelUV( pUV );
       SER( SmBSplineCurve::CreateCanonical( crContext, 2, 3, sCPPl, SM_CF_UNSPECIFIED, sMult, sKnots, SM_KT_PIECEWISE_BEZIER_KNOTS, NULL, NULL, pPl ));
       SmObjDelete sDelPl( pPl );
-      // each span's middle against the exact curve there
+      // each span at its quarters against the exact curve there, to a tenth of the tolerance (the
+      // curves are the edge's, and its faces' check holds them to the tolerance); a span off is
+      // split at its middle
       std::vector<size_t> sOff;
       std::vector<SmPoint2d> sOffUV;
       for ( size_t j=0; j+1<sX.size(); j++ )
         {
-          const double dMid = 0.5 * ( sS[j] + sS[j+1] );
-          SmPoint3d sM, sW;
-          SER( p3D->EvaluatePoint( dMid, sM ));
-          SER( pUV->EvaluatePoint( dMid, sW ));
-          SmPoint2d sMUV( sW.x, sW.y );
-          SmBoolean bOK = FALSE;
-          SER( OntoPlane( sMUV, bOK ));
-          SmPoint3d sExact;
-          SER( crSurf.EvaluatePoint( sMUV, sExact ));
-          SmPoint3d sOnUV;
-          SER( crSurf.EvaluatePoint( SmPoint2d( sW.x, sW.y ), sOnUV ));
-          if ( !bOK || sM.DistanceBetween( sExact ) > dTol || sOnUV.DistanceBetween( sExact ) > dTol )
-            { sOff.push_back( j ); sOffUV.push_back( sMUV ); }
+          SmBoolean bSpanOK = TRUE;
+          SmPoint2d sMidUV;
+          for ( int q=1; q<=3; q++ )
+            {
+              const double dAt = sS[j] + 0.25 * q * ( sS[j+1] - sS[j] );
+              SmPoint3d sM, sW;
+              SER( p3D->EvaluatePoint( dAt, sM ));
+              SER( pUV->EvaluatePoint( dAt, sW ));
+              SmPoint2d sMUV( sW.x, sW.y );
+              SmBoolean bOK = FALSE;
+              SER( OntoPlane( sMUV, bOK ));
+              SmPoint3d sExact;
+              SER( crSurf.EvaluatePoint( sMUV, sExact ));
+              SmPoint3d sOnUV;
+              SER( crSurf.EvaluatePoint( SmPoint2d( sW.x, sW.y ), sOnUV ));
+              if ( q == 2 )
+                { sMidUV = sMUV; }
+              if ( !bOK || sM.DistanceBetween( sExact ) > 0.1 * dTol || sOnUV.DistanceBetween( sExact ) > 0.1 * dTol )
+                { bSpanOK = FALSE; }
+            }
+          if ( !bSpanOK )
+            { sOff.push_back( j ); sOffUV.push_back( sMidUV ); }
         }
       if ( sOff.empty() )
         {
@@ -1016,7 +1028,7 @@ static ULONG lDebugCount = 0 ;
       const SmBoolean bPlaneFirst = ( pSurf1->GetType() == SmPlane_TYPE ) ? TRUE : FALSE;
       SmBSplineCurve * pUVSurf = NULL, * pUVPlane = NULL;
       SER( sm_SurfacePlaneCurve( crContext, bPlaneFirst ? *pSurf2 : *pSurf1, bPlaneFirst ? *pSurf1 : *pSurf2,
-                                 pStartV->GetPoint(), pEndV->GetPoint(), dApproxTol, dAngleTol,
+                                 pStartV->GetPoint(), pEndV->GetPoint(), pOptDir, dApproxTol, dAngleTol,
                                  rp3DCurve, pUVSurf, pUVPlane ));
       rpUVCurve1 = bPlaneFirst ? pUVPlane : pUVSurf;
       rpUVCurve2 = bPlaneFirst ? pUVSurf : pUVPlane;
