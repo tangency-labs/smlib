@@ -6931,8 +6931,29 @@ SmFilletNx2Corner::SmFilletNx2Corner
                   dApproxTol3d,
                   dTangencyTolRadians)
 {
+    m_bMitre = FALSE; // SolidCraft change
 
 } // end SmFilletNx2Corner::SmFilletNx2Corner constructor
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. The corner's two filleted edgeuses, outward from
+    its vertex.
+***********************************************************************/
+SmStatus SmFilletNx2Corner::GetFilletedEdgeuses
+  (SmEdgeuse *& rpFirst,    // out: the first filleted edgeuse
+   SmEdgeuse *& rpSecond)   // out: the second
+  const
+{
+  rpFirst = rpSecond = NULL;
+  NER(m_pSolverEUs);
+  if ( m_pSolverEUs->GetSize() != 2 )
+    { SER( SM_ERR ); }
+  rpFirst  = (*m_pSolverEUs)[0];
+  rpSecond = (*m_pSolverEUs)[1];
+  NER(rpFirst);
+  NER(rpSecond);
+  return SM_SUCCESS;
+} // end SmFilletNx2Corner::GetFilletedEdgeuses
 
 /*******************************************************************//**
 PURPOSE: Make corner topology which consists of an array of
@@ -7156,6 +7177,7 @@ iDebugLevel = DebugLevel();
           // The new face vertex will be the intersection of the rails.
           pNewFaceFV->SetFilletVertexType( SM_FV_RAIL_X_RAIL );
           m_bBevel = TRUE;
+          m_bMitre = bMixedConvexity; // SolidCraft change: the mitre at the face's concave corner
         } // end regular BEVEL corner branch
 
       // Setup rails of fillet

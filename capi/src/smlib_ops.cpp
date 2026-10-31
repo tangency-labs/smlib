@@ -521,7 +521,8 @@ bool closed_nonmanifold(const SmBrep &r)
 int32_t round_edges(SmBrep *b, const std::vector<SmEdge *> &edges, const std::vector<double> &sizes, int32_t kind,
                     const std::vector<SmFilletLaw *> &laws, const std::vector<SetBack> &setbacks = {},
                     std::vector<std::vector<SmFace *>> *patches = nullptr, int64_t *refused = nullptr,
-                    std::vector<SmEdge *> *overflow_first = nullptr, bool classify_only = false)
+                    std::vector<SmEdge *> *overflow_first = nullptr, bool classify_only = false,
+                    std::vector<SmEdge *> *mitred = nullptr)
 {
     SmTArray<SmEdge *> es;
     SmTArray<double> values;
@@ -622,6 +623,15 @@ int32_t round_edges(SmBrep *b, const std::vector<SmEdge *> &edges, const std::ve
         for (ULONG i = 0; i < over.GetSize(); ++i)
         {
             overflow_first->push_back(over[i]);
+        }
+        if (mitred != nullptr)
+        {
+            const SmTArray<SmEdge *> &pairs = exec.GetMitredEdges();
+            mitred->clear();
+            for (ULONG i = 0; i < pairs.GetSize(); ++i)
+            {
+                mitred->push_back(pairs[i]);
+            }
         }
         return OVERFLOW_FIRST;
     }
@@ -1554,10 +1564,14 @@ struct HoleOut
 // go first: on a fresh copy of `brep`, the picked edges tagged with their places (Picked), those
 // are rounded, and each other picked edge is then what is left of it, the edges carrying its tag,
 // rounded at its size. A picked edge with nothing left is gone: its points are flagged in
-// `out_dropped` (one flag per point, when not NULL). Where none overflows on its own, or all do,
-// the edges are rounded together as before. The result replaces `w`.
+// `out_dropped` (one flag per point, when not NULL). Two rounds mitred at a face's concave corner
+// (`mitred`, the edges of each such pair two by two, as the stopped call found them in `w`) meet
+// in their mitre, each run on past the corner: one goes first with the other, so a round mitred
+// to one that overflows goes first too. Where none overflows on its own, or all go first, the
+// edges are rounded together as before. The result replaces `w`.
 int32_t overflow_first(const smlib_brep *brep, const double *points, int64_t n_points, double tolerance, int32_t kind,
-                       const double *sizes, bool one_size, const std::vector<SmEdge *> &picked, Owned &w, int64_t *out_dropped)
+                       const double *sizes, bool one_size, const std::vector<SmEdge *> &picked, const std::vector<SmEdge *> &mitred,
+                       Owned &w, int64_t *out_dropped)
 {
     int32_t s = SMLIB_OK;
     Owned fresh = copy_of(brep, s);
@@ -1572,9 +1586,7 @@ int32_t overflow_first(const smlib_brep *brep, const double *points, int64_t n_p
     {
         return s != SMLIB_OK ? s : SMLIB_ERR_PICK_NONE;
     }
-    std::vector<SmEdge *> lead;
-    std::vector<double> lead_sizes;
-    std::vector<size_t> rest;
+    std::vector<bool> goes_first(picked.size(), false);
     for (size_t k = 0; k < picked.size(); ++k)
     {
         const double size = sizes[one_size ? 0 : first[k]];
@@ -1585,10 +1597,32 @@ int32_t overflow_first(const smlib_brep *brep, const double *points, int64_t n_p
             return s == SMLIB_OK ? static_cast<int32_t>(SM_ERR) : s;
         }
         again[k]->AddAttribute(new (*again[k]->GetContext()) Picked(static_cast<int64_t>(k)));
-        if (!over.empty())
+        goes_first[k] = !over.empty();
+    }
+    // A round mitred to one that goes first goes with it, through every mitre.
+    auto place = [&picked](const SmEdge *e) { return static_cast<size_t>(std::find(picked.begin(), picked.end(), e) - picked.begin()); };
+    for (bool grew = true; grew;)
+    {
+        grew = false;
+        for (size_t i = 0; i + 1 < mitred.size(); i += 2)
+        {
+            const size_t a = place(mitred[i]), b = place(mitred[i + 1]);
+            if (a < picked.size() && b < picked.size() && goes_first[a] != goes_first[b])
+            {
+                goes_first[a] = goes_first[b] = true;
+                grew = true;
+            }
+        }
+    }
+    std::vector<SmEdge *> lead;
+    std::vector<double> lead_sizes;
+    std::vector<size_t> rest;
+    for (size_t k = 0; k < picked.size(); ++k)
+    {
+        if (goes_first[k])
         {
             lead.push_back(again[k]);
-            lead_sizes.push_back(size);
+            lead_sizes.push_back(sizes[one_size ? 0 : first[k]]);
         }
         else
         {
@@ -1765,14 +1799,14 @@ int32_t blend_call(const char *fn, const smlib_brep *brep, int32_t kind, const d
             // first, on a fresh copy, and the others then round what is left of their edges. An
             // edge the overflow removes whole is gone (out_dropped); one it cuts keeps the rest.
             const bool may_go_first = kind != SMLIB_BLEND_CHAMFER && back.empty() && holes == nullptr && picked.size() > 1;
-            std::vector<SmEdge *> over;
+            std::vector<SmEdge *> over, mitred;
             s = kind == SMLIB_BLEND_CHAMFER
                     ? chamfer_edges(w.get(), picked, each)
                     : round_edges(w.get(), picked, each, kind, {}, back, holes == nullptr ? nullptr : &patches, &refused,
-                                  may_go_first ? &over : nullptr);
+                                  may_go_first ? &over : nullptr, false, may_go_first ? &mitred : nullptr);
             if (s == OVERFLOW_FIRST)
             {
-                s = overflow_first(brep, points, n_points, tolerance, kind, sizes, one_size, picked, w, out_dropped);
+                s = overflow_first(brep, points, n_points, tolerance, kind, sizes, one_size, picked, mitred, w, out_dropped);
             }
             // A corner SMLib does not set back: the first of the caller's points that picked it.
             if (s == SMLIB_ERR_UNSUPPORTED && refused >= 0 && static_cast<size_t>(refused) < first_corner.size() &&

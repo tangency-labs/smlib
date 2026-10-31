@@ -467,6 +467,7 @@ class SM_EXPORT SmFilletNx2Corner : public SmFilletCorner
 {
 public:
     SmBoolean  m_bG1Case;  // Do the two filleted edges meet G1?
+    SmBoolean  m_bMitre;   // SolidCraft change: are the two blends mitred at the common face's concave corner?
 
     SmFilletNx2Corner(const SmContext      & crContext,
                       const SmVertex       * cpVertex,
@@ -487,6 +488,11 @@ public:
     virtual SmFilletSolver * GetTangentFilletSolver( const SmFilletSolver *pFS );
 
     virtual SmBoolean IsTangentCorner() const { return m_bG1Case; }
+
+    // SolidCraft change: whether the two blends are mitred at the common face's concave corner
+    // (MakeCornerTopology), and the two filleted edgeuses, outward from the corner's vertex.
+    SmBoolean IsMitre() const { return m_bMitre; }
+    SmStatus  GetFilletedEdgeuses(SmEdgeuse *& rpFirst, SmEdgeuse *& rpSecond) const;
 
     virtual SmFilletCornerType GetCornerType() const { return SM_FCR_N_x_2; }
 
