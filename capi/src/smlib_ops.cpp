@@ -519,6 +519,8 @@ struct Section
     ULONG order;
     double thumbweight;
     int32_t turn = SMLIB_TURN_MITRE;
+    // Whether a feature (a boss, a cut) standing inside a round's band stays (smlib_blend_features).
+    bool keep_features = true;
 };
 
 // The section smlib_blend's `kind` names: SMLIB_BLEND_CURVATURE is the G^2 section at the
@@ -2080,6 +2082,18 @@ extern "C" int32_t smlib_blend_turn(const smlib_brep *brep, int32_t kind, int32_
     Section section = section_of(kind);
     section.turn = turn;
     return blend_call("smlib_blend_turn", brep, section, points, sizes, false, n_points, tolerance, out, out_failed_point);
+}
+
+extern "C" int32_t smlib_blend_features(const smlib_brep *brep, int32_t kind, int32_t keep_features, const double *points, const double *sizes,
+                                        int64_t n_points, double tolerance, smlib_brep **out, int64_t *out_failed_point)
+{
+    if (keep_features != 0 && keep_features != 1)
+    {
+        return SMLIB_ERR_ARG;
+    }
+    Section section = section_of(kind);
+    section.keep_features = keep_features == 1;
+    return blend_call("smlib_blend_features", brep, section, points, sizes, false, n_points, tolerance, out, out_failed_point);
 }
 
 extern "C" int32_t smlib_blend_order(const smlib_brep *brep, int32_t order, double thumbweight, const double *points, const double *sizes,

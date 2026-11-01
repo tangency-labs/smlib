@@ -725,6 +725,17 @@ int32_t smlib_blend_reason(char *out, int64_t size, int64_t *out_length);
 int32_t smlib_blend_turn(const smlib_brep *brep, int32_t kind, int32_t turn, const double *points, const double *sizes, int64_t n_points,
                          double tolerance, smlib_brep **out, int64_t *out_failed_point);
 
+/* As smlib_blend, with keep features on (`keep_features` 1, smlib_blend's default) or off (0).
+ * A feature here is a boss or a cut whose footprint is an inner loop of a face a round rolls
+ * on. With keep features on, where the round's band (the strip of face it takes, from the edge
+ * to its contact line) reaches the feature's footprint, the feature stays: the round is built
+ * along its whole edge, and the feature's walls are carried down (a boss) or up (a cut) to the
+ * round's surface and trimmed by it. Off, the round takes such a feature as if it were not
+ * there. A feature the band does not reach stands as it was either way. Any other value of
+ * `keep_features` is SMLIB_ERR_ARG. */
+int32_t smlib_blend_features(const smlib_brep *brep, int32_t kind, int32_t keep_features, const double *points, const double *sizes,
+                             int64_t n_points, double tolerance, smlib_brep **out, int64_t *out_failed_point);
+
 /* smlib_blend, and where some rounds overflow their faces across cliffs and others fit, the
  * overflowing ones go first: they are built, and the others then round what is left of their
  * edges. An edge such an overflow removes whole is gone and not rounded: `out_dropped` (one
