@@ -184,6 +184,12 @@ static ULONG lDebugCount  = 0;
   if ( rNewSurface == NULL )
     { SER(SM_ERR); }
 
+  // TODO(SolidCraft): an exact offset made from a surface's definition (SmBallPatch, the Ball
+  // corner's patch on its sphere) does not keep that definition through the shell: the face's
+  // surface is later replaced by a tangent-extended B-spline (SmOffsetExecutive::
+  // GetCreateExtendedSurface), exact on the sphere over the face but no longer an SmBallPatch,
+  // so a second offset of the shell would not be exact.
+
   // when working with analytics - 
   // replace all current appropriate BSplineSurface
   //  with analytic copies when the surface is properly represented
