@@ -6436,7 +6436,8 @@ void definition_round_trip()
 // the definition, and the definition continuous across the knot lines of the faces it rolls on
 // Returns how many faces were graded, and their nets' spans along s in all (the certified net as the
 // face keeps it, trimmed: a count the certificate's halving changes).
-int circle_definitions(const smlib_brep *b, double r, double &worst_circle, double &worst_net, int &spans)
+// depth: grade only the definitions nested that deep (SmProceduralBlend::GetDepth), 0 every one.
+int circle_definitions(const smlib_brep *b, double r, double &worst_circle, double &worst_net, int &spans, ULONG depth = 0)
 {
     worst_circle = 0.0;
     worst_net = 0.0;
@@ -6447,7 +6448,7 @@ int circle_definitions(const smlib_brep *b, double r, double &worst_circle, doub
     for (ULONG i = 0; i < faces.GetSize(); i++)
     {
         const SmProceduralBlend *pb = dynamic_cast<const SmProceduralBlend *>(faces[i]->GetSurface());
-        if (pb == nullptr || pb->GetOrder() != 1)
+        if (pb == nullptr || pb->GetOrder() != 1 || (depth != 0 && pb->GetDepth() != depth))
         {
             continue;
         }
@@ -6623,6 +6624,125 @@ void round_chain_on_a_c2_face_is_its_definition()
     smlib_surface_free(top);
 }
 
+// A round on a round by its definition: the twisted wedge's front edge rounded r 3 (a definition:
+// the top is a cubic spline), then the block cut by the plane x + 0.6 y + 0.6 z = 55, which crosses
+// that round at x 37 to 41, in the twist, and the cut's edges with the front, the round and the
+// top (a tangent chain) rounded r 1. The round on the round rolls on a definition: it is its own
+// definition two deep, its sections the ball's circles to rounding, its net within the certified
+// bound, the inner round's derivatives enclosed over the boxes its certificate takes. Its rail on
+// the inner round runs across that round's stations, where the round is only as smooth as the
+// faces under it (C1 across: its curvature jumps), and a station of the outer round stands at
+// each crossing, as at a face's knot line.
+void round_on_a_definition_is_its_definition()
+{
+    smlib_surface *top = twisted_top();
+    smlib_brep *below = nullptr, *above = nullptr, *r = nullptr;
+    smlib_brep *block = box(0, 0, 0, 60, 30, 50);
+    CHECK(top != nullptr && block != nullptr && smlib_split_body(block, top, &below, &above) == SMLIB_OK);
+    smlib_brep_free(block);
+    smlib_brep_free(above);
+    const double pick[3] = {30, 0, 25}, size = 3.0;
+    CHECK(below != nullptr && smlib_blend_order(below, 1, SMLIB_BLEND_THUMBWEIGHT, pick, &size, 1, 0.1, &r, nullptr) == SMLIB_OK);
+    // the cut: the plane's normal (2, 1.2, 1.2) (its axes' cross product), the part behind it kept
+    const double o[3] = {40, 0, 25}, xa[3] = {0, 1, -1}, ya[3] = {-1.2, 1, 1}, ext[2] = {-100, 100};
+    const SmVector3d nrm(1, 0.6, 0.6);
+    smlib_surface *plane = nullptr;
+    smlib_brep *kept = nullptr, *cut_off = nullptr, *r2 = nullptr;
+    CHECK(r != nullptr && smlib_surface_plane(o, xa, ya, ext, ext, &plane) == SMLIB_OK &&
+          smlib_split_body(r, plane, &kept, &cut_off) == SMLIB_OK && kept != nullptr);
+    // the cut face's edges with the front, the round and the top: on the plane, off the bottom and the back
+    std::vector<double> picks;
+    if (kept != nullptr)
+    {
+        SmTArray<SmEdge *> es;
+        kept->p->GetEdges(es);
+        for (ULONG k = 0; k < es.GetSize(); k++)
+        {
+            SmPoint3d mid;
+            CHECK(es[k]->GetCurve()->EvaluatePoint(es[k]->GetInterval().Evaluate(0.5), mid) == SM_SUCCESS);
+            if (std::fabs(SmVector3d(mid).Dot(nrm) - 55.0) < 1e-6 && mid.z > 1e-6 && mid.y < 30.0 - 1e-6)
+            {
+                picks.insert(picks.end(), {mid.x, mid.y, mid.z});
+            }
+        }
+    }
+    CHECK(picks.size() == 9);
+    const double sizes[3] = {1.0, 1.0, 1.0};
+    SmProceduralBlend::ResetCounts();
+    CHECK(picks.size() == 9 && smlib_blend_order(kept, 1, SMLIB_BLEND_THUMBWEIGHT, picks.data(), sizes, 3, 0.1, &r2, nullptr) == SMLIB_OK);
+    const SmBlendCounts counts = SmProceduralBlend::GetCounts();
+    if (r2 != nullptr)
+    {
+        CHECK(sound(r2));
+        double circle = 0.0, net = 0.0;
+        int spans = 0;
+        const int graded = circle_definitions(r2, 1.0, circle, net, spans, 2);
+        std::printf("  %d round(s) on a round by definition, %d spans: sections off the ball's circle by %.3g, the net at %.3g of its bound;"
+                    " %llu definition evaluations, %llu station solves\n",
+                    graded, spans, circle, net, counts.lEvaluations, counts.lSolves);
+        CHECK(graded == 1 && circle <= 1e-11 && net <= 1.0);
+        // a station wherever the rail on the inner round crosses one of its stations (its knots along s)
+        SmTArray<SmFace *> faces;
+        r2->p->GetFaces(faces);
+        int crossings = 0, missed = 0;
+        for (ULONG i = 0; i < faces.GetSize(); i++)
+        {
+            const SmProceduralBlend *pb = dynamic_cast<const SmProceduralBlend *>(faces[i]->GetSurface());
+            if (pb == nullptr || pb->GetDepth() != 2)
+            {
+                continue;
+            }
+            for (ULONG f = 0; f < 2; f++)
+            {
+                const SmProceduralBlend *inner = dynamic_cast<const SmProceduralBlend *>(pb->GetSupport(f));
+                if (inner == nullptr)
+                {
+                    continue;
+                }
+                // the inner round's s: its u unless its surface was turned over
+                const bool u_is_s = inner->DefinitionParameters(SmPoint2d(1, 0)).x != inner->DefinitionParameters(SmPoint2d(0, 0)).x;
+                const bool outer_u_is_s = pb->DefinitionParameters(SmPoint2d(1, 0)).x != pb->DefinitionParameters(SmPoint2d(0, 0)).x;
+                SmTArray<double> ik, ok;
+                CHECK(inner->GetKnots(u_is_s ? SM_SP_U : SM_SP_V, ik) == SM_SUCCESS);
+                CHECK(pb->GetKnots(outer_u_is_s ? SM_SP_U : SM_SP_V, ok) == SM_SUCCESS);
+                // the rail's s on the inner round at each of the outer round's stations
+                const SmBSplineCurve *seed = pb->GetSeed(f);
+                std::vector<double> at;
+                for (ULONG j = 0; j < ok.GetSize(); j++)
+                {
+                    const double s = pb->DefinitionParameters(outer_u_is_s ? SmPoint2d(ok[j], 0) : SmPoint2d(0, ok[j])).x;
+                    SmPoint3d w;
+                    CHECK(seed->EvaluatePoint(s, w) == SM_SUCCESS);
+                    at.push_back(u_is_s ? w.x : w.y);
+                }
+                const double lo = *std::min_element(at.begin(), at.end()), hi = *std::max_element(at.begin(), at.end());
+                for (ULONG j = 0; j < ik.GetSize(); j++)
+                {
+                    if (!(ik[j] > lo + 1e-9 && ik[j] < hi - 1e-9) || (j > 0 && ik[j] == ik[j - 1]))
+                    {
+                        continue;
+                    }
+                    crossings++;
+                    bool found = false;
+                    for (double a : at)
+                    {
+                        found = found || std::fabs(a - ik[j]) <= 1e-9 * (1.0 + std::fabs(ik[j]));
+                    }
+                    missed += found ? 0 : 1;
+                }
+            }
+        }
+        std::printf("  the rail crosses the inner round's stations %d times, %d without a station of its own\n", crossings, missed);
+        CHECK(crossings >= 4 && missed == 0);
+    }
+    for (smlib_brep *x : {r2, kept, cut_off, r, below})
+    {
+        smlib_brep_free(x);
+    }
+    smlib_surface_free(plane);
+    smlib_surface_free(top);
+}
+
 // The section-order cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--section-orders-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SECTION_CASES[] = {
@@ -6650,6 +6770,8 @@ const TangentEndCase SECTION_CASES[] = {
     {"round_chain_on_a_c2_face_is_its_definition", round_chain_on_a_c2_face_is_its_definition, nullptr},
     {"tessellating_a_definition_meshes_its_net", tessellating_a_definition_meshes_its_net, nullptr},
     {"boolean_across_a_definition", boolean_across_a_definition, nullptr},
+    {"round_on_a_definition_is_its_definition", round_on_a_definition_is_its_definition,
+     "a round on a face that is a blend by its definition is not built as its definition: the certificate does not enclose the inner definition yet"},
     {"variable_round_law_dip", section_variable_round_law_dip, nullptr},
     {"variable_round_law_dips", section_variable_round_law_dips, nullptr},
     {"variable_round_law_peak", section_variable_round_law_peak, nullptr},
