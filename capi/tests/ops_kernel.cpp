@@ -5288,6 +5288,48 @@ void turn_boss_base(int32_t turn)
     }
 }
 
+// The swept boss base's horn tori turned round and back: each torus face turned round
+// (SmFace::SwapUV, as SmBrep::OrientTrimmedSurfaces turns a face, which swaps its surface's
+// parameters and rebuilds the torus from its NURB), then the body's faces oriented outward again
+// (OrientTrimmedSurfaces turns those four back the same way). Each must stay the same horn torus,
+// radii 1, 1 about its edge, bounded on it, tangent to both rounds and the plate, and the body
+// sound with the volume it had.
+void turn_swept_tori_turned_round()
+{
+    smlib_brep *plate = box(0, 0, 0, 40, 30, 10), *boss = box(15, 10, 10, 10, 10, 5), *part = nullptr;
+    CHECK(smlib_boolean(plate, boss, SMLIB_BOOLEAN_UNION, &part) == SMLIB_OK && part != nullptr);
+    const double edges[12] = {20, 10, 10, 25, 15, 10, 20, 20, 10, 15, 15, 10}, sizes[4] = {1, 1, 1, 1};
+    const double a = 1.0 - PI / 4.0, m = 5.0 / 6.0 - PI / 4.0, want = 12500.0 + 40.0 * a + 2.0 * PI * m;
+    smlib_brep *r = nullptr;
+    CHECK(part != nullptr && smlib_blend_turn(part, SMLIB_BLEND_ROUND, SMLIB_TURN_SWEPT, edges, sizes, 4, 0.1, &r, nullptr) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        SmTArray<SmFace *> faces;
+        r->p->GetFaces(faces);
+        int turned = 0;
+        for (ULONG f = 0; f < faces.GetSize(); ++f)
+        {
+            if (faces[f]->GetSurface() != nullptr && faces[f]->GetSurface()->GetType() == SmTorus_TYPE)
+            {
+                CHECK(faces[f]->SwapUV() == SM_SUCCESS);
+                turned++;
+            }
+        }
+        CHECK(turned == 4);
+        SmBoolean open = FALSE;
+        CHECK(r->p->OrientTrimmedSurfaces(TRUE, open, FALSE) == SM_SUCCESS && !open);
+        std::printf("  turned round and back: volume %.9f, want %.9f\n", volume_of(r), want);
+        CHECK(near(volume_of(r), want, 1e-7));
+        CHECK(sound(r));
+        turn_swept_corners(r);
+        smlib_brep_free(r);
+    }
+    for (smlib_brep *x : {plate, boss, part})
+    {
+        smlib_brep_free(x);
+    }
+}
+
 void turn_mitre_boss_base()
 {
     turn_boss_base(SMLIB_TURN_MITRE);
@@ -5476,6 +5518,8 @@ const TangentEndCase TURN_CASES[] = {
     {"mitre_boss_base", turn_mitre_boss_base, nullptr},
     {"swept_boss_base", turn_swept_boss_base, nullptr},
     {"swept_sharp_pocket_refused", turn_swept_sharp_pocket_refused, nullptr},
+    {"swept_tori_turned_round", turn_swept_tori_turned_round,
+     "SmTorus::RebuildSTEPFromNURBParameters after SwapUV makes the horn torus a spindle torus whose v domain runs through its apex (SmTorus tests 2, 5), its edges off it by up to 1.41"},
 };
 
 int turn_cases(bool known_failing, const char *only)
