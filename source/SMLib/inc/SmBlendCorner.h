@@ -159,7 +159,6 @@ protected:
   SmStatus Make4x2ConcaveCornerTopology();
   SmStatus AdjustConcaveCornerTopology();
   SmStatus AdjustTwoBlendTopology();
-  SmStatus AdjustTwoBlendTangentCorner();
   SmStatus CreateTwoBlendPatch();
 
 public:
@@ -216,7 +215,6 @@ public:
 
   virtual SmStatus MakeCornerTopology();
   virtual SmStatus AdjustTopology();
-  virtual SmStatus AdjustTangentCorner();
   virtual SmStatus CalcCornerVertGeom();
   virtual SmStatus CalcCornerEdgeGeom();
   virtual SmStatus CreateCornerPatch();
