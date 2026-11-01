@@ -3539,7 +3539,7 @@ SmStatus SmFilletExecutive::CreateFilletCorners
  (SmFilletErrorInfo * pOptFilletErrorInfo)
 {
   // for every vertex listed in m_vFilletedVertices array
-  SmBoolean bMissingCorner = FALSE;
+  SmBoolean bMissingCorner = FALSE, bRefused = FALSE;
   ULONG ii, lNumFVs = m_vFilletedVertices.GetSize();
   for (ii=0; ii<lNumFVs; ii++)
     {
@@ -3553,6 +3553,7 @@ SmStatus SmFilletExecutive::CreateFilletCorners
       //  Selects a derived type SmFilletCorner based on the
       //    number of to-be-filleted edgeuses and total-number of edgeuses connected to vertex
       //    and edge properties to create the new topology needed for the filleted vertex
+      const SmFilletErrorType eNotedBefore = m_sErrorInfo.GetErrorCode();
       SmFilletCorner * pCorner = SmFilletCorner::Create(m_crContext,pVert,pSolverEUs,this);
 
       // inform the public when no SmFilletCorner derived type handles this corner case
@@ -3572,8 +3573,15 @@ SmBoolean bDebugMe = FALSE;
           // corner; drop it, finish the other corners (they own their arrays) and fail.
           m_vVertexCornerMap.Remove(pVert);
           delete pSolverEUs;
-          m_sErrorInfo.NoteError(pVert, SM_FIL_FAILURE, SM_FILERR_CORNER_UNSUPPORTED,
-                                 _T("Corner case not implemented"));
+          // SolidCraft change: a corner refused with its reason (SmBlendCorner::Classify: a
+          // Swept turn the ball cannot pass, or one not built yet) keeps it.
+          if ( m_sErrorInfo.GetErrorCode() != eNotedBefore )
+            { bRefused = TRUE; }
+          if ( !bRefused )
+            {
+              m_sErrorInfo.NoteError(pVert, SM_FIL_FAILURE, SM_FILERR_CORNER_UNSUPPORTED,
+                                     _T("Corner case not implemented"));
+            }
           bMissingCorner = TRUE;
           continue;
         } // end no corner check

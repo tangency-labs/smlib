@@ -598,7 +598,9 @@ int32_t round_edges(SmBrep *b, const std::vector<SmEdge *> &edges, const std::ve
     }
     // SetFilletParameters chose the executive's options as SmApiFilletEdges runs it (its
     // SetDoGlobalMerge comes before, so SetFilletParameters resets it). DoFillet's steps, with
-    // each setback set on its corner between making the corners and filleting.
+    // each setback set on its corner between making the corners and filleting. The corners are
+    // classified as they are made: a turn is Swept or Mitred from the start.
+    exec.SetSweptTurns(section.turn == SMLIB_TURN_SWEPT ? TRUE : FALSE);
     s = status(exec.CreateFilletCorners());
     if (s != SMLIB_OK)
     {
@@ -608,7 +610,6 @@ int32_t round_edges(SmBrep *b, const std::vector<SmEdge *> &edges, const std::ve
     // faces across cliffs (blend_call's overflow first), or with `classify_only` always, the
     // edges whose blends overflow written there.
     exec.SetOverflowFirst(overflow_first != nullptr ? TRUE : FALSE);
-    exec.SetSweptTurns(section.turn == SMLIB_TURN_SWEPT ? TRUE : FALSE);
     exec.SetClassifyOnly(overflow_first != nullptr && classify_only ? TRUE : FALSE);
     std::vector<SmFilletCorner *> set_back;
     for (size_t j = 0; j < setbacks.size(); ++j)

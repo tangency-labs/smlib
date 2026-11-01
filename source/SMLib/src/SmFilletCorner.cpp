@@ -1378,6 +1378,27 @@ static int iDebugLevel = 0; // Note: Can't call DebugLevel() from a static metho
                                                                                     dTangencyTolRadians);
                         break;
                       }
+                    // SolidCraft change: a Turn (SmBlendCorner::Classify) that is Swept is the
+                    // blend corner's; a Mitre turn is still SmFilletNx2Corner's. A Swept turn the
+                    // blend corner refuses has no corner (the reason noted).
+                    {
+                      SmBlendCornerEvent eEvent = SM_BCE_NONE;
+                      SmBlendTurn        eTurn  = SM_BT_MITRE;
+                      if ( SmBlendCorner::Classify( cpVertex, *pSolverEUs, *pAllEUs, pExec, dTanTolDeg, eEvent, eTurn ) != SM_SUCCESS )
+                        { break; }
+                      if ( eEvent == SM_BCE_TURN && eTurn == SM_BT_SWEPT )
+                        {
+                          pNewCorner = new(crContext) SmBlendCorner(crContext,
+                                                                    cpVertex,
+                                                                    pSolverEUs,
+                                                                    pAllEUs,
+                                                                    pExec,
+                                                                    dApproxTol3d,
+                                                                    dTangencyTolRadians,
+                                                                    eTurn);
+                          break;
+                        }
+                    }
                     // else continue with case 4
                 case 4:
                     pNewCorner = new(crContext) SmFilletNx2Corner(crContext,
@@ -4213,6 +4234,7 @@ void SmFilletCorner::DumpLevel
               : GetCornerType() == SM_FCR_N_x_N         ? _T("SM_FCR_N_x_N")
               : GetCornerType() == SM_FCR_N_x_N_CONVEX  ? _T("SM_FCR_N_x_N_CONVEX")
               : GetCornerType() == SM_FCR_N_x_N_CONCAVE ? _T("SM_FCR_N_x_N_CONCAVE")
+              : GetCornerType() == SM_FCR_BLEND         ? _T("SM_FCR_BLEND")
               :                                           _T("SM_FCR_UNKNOWN"));
   smos_WriteBuffer(sBuff);
 
@@ -7085,34 +7107,11 @@ iDebugLevel = DebugLevel();
       // swept a 3-sided face round the side edge here, between ribs straight across from where
       // the rails meet the side edge. Where the rails meet the side edge at two places (blends
       // of different heights there), AdjustTopology joins them along the side face, as for any
-      // bevel. Edges meeting at less than 5 degrees still blend (below).
-
-      // SolidCraft change: a Swept turn (SmFilletExecutive::SetSweptTurns, the owner's ruling,
-      // 2026-10-31): the section goes round the side edge, revolved about it through the
-      // corner's turn, so each round ends on its section straight across from where its rails
-      // meet the side edge and the 3-sided face between them is that revolution (at a straight
-      // side edge between planes, a torus segment, G1 to both rounds). The ball cannot pass a
-      // sharp concave side edge: refused, naming the radius that edge must be rounded at first.
-      SmBoolean bSwept = FALSE;
-      if ( GetFilletExecutive()->GetSweptTurns() && !bIsTangentCase )
-        {
-          SmBoolean bSideConcave = FALSE;
-          SER( SmFilletSolver::IsConcaveEdge( *pSideEU->GetEdge(), bSideConcave ));
-          if ( bSideConcave )
-            {
-              const SmOffsetSurface * pOffset = pFilSolver1->GetSurface(0);   NER(pOffset);
-              TCHAR cWhy[SM_TBLOCK_SIZE];
-              smos_sprintf( cWhy, _T("Fillet Error: a swept turn cannot pass the sharp concave corner edge between the rounds; round that edge at a radius of at least %g first"),
-                            smos_Fabs( pOffset->GetOffsetDistance() ));
-              GetFilletExecutive()->GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, cWhy );
-              return SM_ERR;
-            }
-          bSwept = TRUE;
-        }
+      // bevel. Edges meeting at less than 5 degrees still blend (below). A Swept turn is the
+      // blend corner's (SmBlendCorner), never made here.
 
       //
       if (   bIsTangentCase
-          || bSwept
           // || dAngleDeg <= 2.0
           || (bMixedConvexity && dAngleDeg <= 5.0) )
         {

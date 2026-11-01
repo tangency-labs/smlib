@@ -6044,6 +6044,7 @@ iDebugLevel = DebugLevel();
             case SM_FCR_N_x_N:
             case SM_FCR_N_x_N_CONVEX:
             case SM_FCR_N_x_N_CONCAVE:
+            case SM_FCR_BLEND:
                break;
             }  // end case
 

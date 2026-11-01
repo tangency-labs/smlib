@@ -95,7 +95,8 @@ enum SmFilletCornerType
   SM_FCR_N_x_2,
   SM_FCR_N_x_N,
   SM_FCR_N_x_N_CONVEX,
-  SM_FCR_N_x_N_CONCAVE
+  SM_FCR_N_x_N_CONCAVE,
+  SM_FCR_BLEND          // SolidCraft change: SmBlendCorner, the corner event's own construction
 };
 
 /*******************************************************************//**

@@ -5176,8 +5176,9 @@ double worst_seam_angle(SmFace *face, int &seams)
             {
                 return HUGE_VAL;
             }
-            // tangent faces' binormals (into each face, square to the edge) are opposed
-            worst = std::max(worst, std::acos(std::min(1.0, -ba.Dot(bb))));
+            // tangent faces' binormals (into each face, square to the edge) are opposed; the
+            // angle from the cross product, which resolves it below acos's 1e-8
+            worst = std::max(worst, std::atan2((ba * bb).Length(), -ba.Dot(bb)));
         }
     }
     return worst;
@@ -5473,8 +5474,7 @@ int section_cases(bool known_failing, const char *only)
 // fails today fails (null: it passes). As TANGENT_END_CASES.
 const TangentEndCase TURN_CASES[] = {
     {"mitre_boss_base", turn_mitre_boss_base, nullptr},
-    {"swept_boss_base", turn_swept_boss_base,
-     "status 1001, Fillet Face Creation Error: the two rounds' sections end at two points on the plate, joined by the torus's quarter arc, but the corner gives both rails one face vertex"},
+    {"swept_boss_base", turn_swept_boss_base, nullptr},
     {"swept_sharp_pocket_refused", turn_swept_sharp_pocket_refused, nullptr},
 };
 
