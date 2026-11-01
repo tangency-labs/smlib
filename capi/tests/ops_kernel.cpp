@@ -6412,6 +6412,34 @@ void tessellating_a_definition_meshes_its_net()
     smlib_surface_free(top);
 }
 
+// A boolean across a round by its definition: the C2 face's round cut by a box through it (x from
+// 25 to 35, the round's whole width). The intersector's surface cache is built on the round's net
+// (its boxes grown by the net's bound), the intersection curves refined on the definition: the
+// definition evaluations it takes are a count, gated (1389 and 316 station solves, about 5% under).
+void boolean_across_a_definition()
+{
+    smlib_surface *top = twisted_top();
+    smlib_brep *below = nullptr, *above = nullptr, *r = nullptr, *cut = nullptr;
+    smlib_brep *block = box(0, 0, 0, 60, 30, 50);
+    CHECK(top != nullptr && block != nullptr && smlib_split_body(block, top, &below, &above) == SMLIB_OK);
+    smlib_brep_free(block);
+    smlib_brep_free(above);
+    const double pick[3] = {30, 0, 25}, size = 3.0;
+    CHECK(below != nullptr && smlib_blend_order(below, 1, SMLIB_BLEND_THUMBWEIGHT, pick, &size, 1, 0.1, &r, nullptr) == SMLIB_OK);
+    smlib_brep *slab = box(25, -5, 15, 10, 15, 20);
+    SmProceduralBlend::ResetCounts();
+    CHECK(r != nullptr && slab != nullptr && smlib_boolean(r, slab, SMLIB_BOOLEAN_SUBTRACT, &cut) == SMLIB_OK && cut != nullptr);
+    const SmBlendCounts counts = SmProceduralBlend::GetCounts();
+    std::printf("  cut across the round: %llu definition evaluations, %llu station solves\n", counts.lEvaluations, counts.lSolves);
+    CHECK(cut != nullptr && sound(cut));
+    CHECK(counts.lEvaluations <= 1460 && counts.lSolves <= 335);
+    for (smlib_brep *x : {r, below, slab, cut})
+    {
+        smlib_brep_free(x);
+    }
+    smlib_surface_free(top);
+}
+
 void round_chain_on_a_c2_face_is_its_definition()
 {
     smlib_surface *top = twisted_top();
@@ -6476,6 +6504,7 @@ const TangentEndCase SECTION_CASES[] = {
     {"round_on_a_c2_face_is_its_definition", round_on_a_c2_face_is_its_definition, nullptr},
     {"round_chain_on_a_c2_face_is_its_definition", round_chain_on_a_c2_face_is_its_definition, nullptr},
     {"tessellating_a_definition_meshes_its_net", tessellating_a_definition_meshes_its_net, nullptr},
+    {"boolean_across_a_definition", boolean_across_a_definition, nullptr},
     {"variable_round_law_dip", section_variable_round_law_dip, nullptr},
     {"variable_round_law_dips", section_variable_round_law_dips, nullptr},
     {"variable_round_law_peak", section_variable_round_law_peak, nullptr},
