@@ -525,8 +525,6 @@ public:
     }
   }
 
-  SmStatus TestAndConvertBigRadFillet( SmFilletGeom * pFG, SmBoolean    & rbConvertedToCorner );
-
   SmStatus UpdateTopologyChanges( SmAttribute  *pFaceAttr, SmFace *pOrigFace );
 
   // simple data access
