@@ -6123,6 +6123,136 @@ void definition_round_trip()
     smlib_brep_free(r);
 }
 
+// A round of the ball's circle by its definition, graded on its own terms: at every station of a
+// grid each section is the circle of the ball's radius r (its points equidistant, by r, from the
+// centre of the circle through three of them, to rounding), the net within the certified bound of
+// the definition, and the definition continuous across the knot lines of the faces it rolls on
+// Returns how many faces were graded, and their nets' spans along s in all (the certified net as the
+// face keeps it, trimmed: a count the certificate's halving changes).
+int circle_definitions(const smlib_brep *b, double r, double &worst_circle, double &worst_net, int &spans)
+{
+    worst_circle = 0.0;
+    worst_net = 0.0;
+    spans = 0;
+    int graded = 0;
+    SmTArray<SmFace *> faces;
+    b->p->GetFaces(faces);
+    for (ULONG i = 0; i < faces.GetSize(); i++)
+    {
+        const SmProceduralBlend *pb = dynamic_cast<const SmProceduralBlend *>(faces[i]->GetSurface());
+        if (pb == nullptr || pb->GetOrder() != 1)
+        {
+            continue;
+        }
+        graded++;
+        // the knots along s: u's unless the face's surface was turned over
+        const bool u_is_s = pb->DefinitionParameters(SmPoint2d(1, 0)).x != pb->DefinitionParameters(SmPoint2d(0, 0)).x;
+        SmTArray<double> uk;
+        CHECK(pb->GetKnots(u_is_s ? SM_SP_U : SM_SP_V, uk) == SM_SUCCESS);
+        spans += static_cast<int>(uk.GetSize()) - 1;
+        const SmExtent2d dom = pb->GetNaturalUVDomain();
+        for (int a = 0; a <= 32; a++)
+        {
+            const double u = dom.GetMin().x + (dom.GetMax().x - dom.GetMin().x) * a / 32.0;
+            std::vector<SmPoint3d> p;
+            for (int c = 0; c <= 8; c++)
+            {
+                const SmPoint2d uv(u, dom.GetMin().y + (dom.GetMax().y - dom.GetMin().y) * c / 8.0);
+                SmPoint3d x, y;
+                CHECK(pb->EvaluatePoint(uv, x) == SM_SUCCESS && pb->SmBSplineSurface::EvaluatePoint(uv, y) == SM_SUCCESS);
+                p.push_back(x);
+                worst_net = std::max(worst_net, x.DistanceBetween(y) / pb->GetBound());
+            }
+            // the circle through the ends and the middle: its centre in their plane
+            const SmVector3d e1 = p[4] - p[0], e2 = p[8] - p[0], nrm = e1 * e2;
+            const double d = 2.0 * nrm.Dot(nrm);
+            if (!(d > 0.0))
+            {
+                worst_circle = HUGE_VAL;
+                continue;
+            }
+            const SmVector3d k = (nrm * e1) * e2.Dot(e2) + (e2 * nrm) * e1.Dot(e1);
+            const SmPoint3d centre = p[0] + k * (1.0 / d);
+            for (const SmPoint3d &x : p)
+            {
+                worst_circle = std::max(worst_circle, std::fabs(x.DistanceBetween(centre) - r));
+            }
+        }
+    }
+    return graded;
+}
+
+// The twisted wedge's front edge rounded r 3 by the ball's circle: the top is a cubic spline, so
+// the round is its definition (no exact class), its sections the ball's circles to rounding and its
+// net within the certified bound.
+void round_on_a_c2_face_is_its_definition()
+{
+    smlib_surface *top = twisted_top();
+    smlib_brep *below = nullptr, *above = nullptr, *r = nullptr;
+    smlib_brep *block = box(0, 0, 0, 60, 30, 50);
+    CHECK(top != nullptr && block != nullptr && smlib_split_body(block, top, &below, &above) == SMLIB_OK);
+    smlib_brep_free(block);
+    smlib_brep_free(above);
+    const double pick[3] = {30, 0, 25}, size = 3.0;
+    CHECK(below != nullptr && smlib_blend_order(below, 1, SMLIB_BLEND_THUMBWEIGHT, pick, &size, 1, 0.1, &r, nullptr) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        CHECK(sound(r));
+        double circle = 0.0, net = 0.0;
+        int spans = 0;
+        const int graded = circle_definitions(r, size, circle, net, spans);
+        std::printf("  %d round(s) by definition, %d spans: sections off the ball's circle by %.3g, the net at %.3g of its bound\n", graded, spans,
+                    circle, net);
+        CHECK(graded == 1 && spans == 190 && circle <= 1e-11 && net <= 1.0);
+    }
+    smlib_brep_free(r);
+    smlib_brep_free(below);
+    smlib_surface_free(top);
+}
+
+// A chain of three edges along the twisted top: the block's front-left corner is a quarter cylinder
+// R 10 about (10, 10), tangent to the front (y = 0) and to the left side (x = 0), so the top's edges
+// over the front, the arc and the side run into each other tangentially. Rounded r 3 in one call:
+// every round whose faces are not an exact class is its definition, graded as above, and the
+// chain's body is sound.
+void round_chain_on_a_c2_face_is_its_definition()
+{
+    smlib_surface *top = twisted_top();
+    Profile plan;
+    plan.line(10, 0, 60, 0, 0).line(60, 0, 60, 30, 0).line(60, 30, 0, 30, 0).line(0, 30, 0, 10, 0).arc(10, 10, 0, 1, 10, PI, 1.5 * PI);
+    smlib_brep *block = plan.extrude(50.0), *below = nullptr, *above = nullptr, *r = nullptr;
+    CHECK(top != nullptr && block != nullptr && smlib_split_body(block, top, &below, &above) == SMLIB_OK);
+    smlib_brep_free(block);
+    smlib_brep_free(above);
+    // the top's height at (x, y): the edges' points
+    auto z_at = [top](double x, double y)
+    {
+        double q[3] = {0, 0, 0};
+        // the top's v is (y + 1) / 32 and its u runs as x (its x is linear in u on the knots)
+        CHECK(smlib_surface_evaluate(top, x, (y + 1.0) / 32.0, q) == SMLIB_OK);
+        return q[2];
+    };
+    const double c = 10.0 - 10.0 / std::sqrt(2.0);
+    const double picks[9] = {35, 0, z_at(35, 0), c, c, z_at(c, c), 0, 20, z_at(0, 20)};
+    const double sizes[3] = {3.0, 3.0, 3.0};
+    CHECK(below != nullptr && smlib_blend_order(below, 1, SMLIB_BLEND_THUMBWEIGHT, picks, sizes, 3, 0.1, &r, nullptr) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        CHECK(sound(r));
+        double circle = 0.0, net = 0.0;
+        int spans = 0;
+        const int graded = circle_definitions(r, 3.0, circle, net, spans);
+        std::printf("  chain: %d round(s) by definition, %d spans: sections off the ball's circle by %.3g, the net at %.3g of its bound\n", graded,
+                    spans, circle, net);
+        // the front's, the arc's and the side's: the side and the top there (a = -tan 30) are planes,
+        // but the solver's centre line is a cubic, not the line the circles' sweep is told by
+        CHECK(graded == 3 && spans == 279 && circle <= 1e-11 && net <= 1.0);
+    }
+    smlib_brep_free(r);
+    smlib_brep_free(below);
+    smlib_surface_free(top);
+}
+
 // The section-order cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--section-orders-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SECTION_CASES[] = {
@@ -6146,6 +6276,8 @@ const TangentEndCase SECTION_CASES[] = {
     {"sharp_wedge_g2_equal_area", section_sharp_wedge_g2_equal_area, nullptr},
     {"twisted_wedge_g2_equal_area", section_twisted_wedge_g2_equal_area, nullptr},
     {"twisted_wedge_g2_equal_area_net_on_definition", section_twisted_wedge_g2_equal_area_net_on_definition, nullptr},
+    {"round_on_a_c2_face_is_its_definition", round_on_a_c2_face_is_its_definition, nullptr},
+    {"round_chain_on_a_c2_face_is_its_definition", round_chain_on_a_c2_face_is_its_definition, nullptr},
     {"variable_round_law_dip", section_variable_round_law_dip, nullptr},
     {"variable_round_law_dips", section_variable_round_law_dips, nullptr},
     {"variable_round_law_peak", section_variable_round_law_peak, nullptr},
