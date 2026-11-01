@@ -5451,7 +5451,8 @@ void turn_swept_corners(const smlib_brep *r)
 // the bisector plane of the walls through the vertical edge, (x - cx) ox = (y - cy) oy. Their crossing
 // is that plane's section of either cylinder: an ellipse arc from the rails' crossing on the plate,
 // (cx + ox, cy + oy, 10), to the side vertex on the edge, (cx, cy, 11). Exact: every point of the
-// mitre edge in the plane and on both cylinders to 1e-12.
+// mitre edge in the plane and on both cylinders to 1e-12, and its trim curves on the two rounds,
+// lifted onto them, on it to 1e-12 at its own parameters.
 void turn_mitre_corners(const smlib_brep *r)
 {
     SmTArray<SmEdge *> es;
@@ -5485,8 +5486,38 @@ void turn_mitre_corners(const smlib_brep *r)
                 cyl = std::max(cyl, std::fabs(std::hypot(p.x - (cx + ox), p.z - 11.0) - 1.0));
                 cyl = std::max(cyl, std::fabs(std::hypot(p.y - (cy + oy), p.z - 11.0) - 1.0));
             }
-            std::printf("  mitre at (%g, %g): its ends off X and S by %.3g, off the bisector plane by %.3g, off the cylinders by %.3g\n", cx, cy, ends, plane, cyl);
+            // its trim curves on the two rounds, lifted onto them, on it at its own parameters
+            double trims = 0.0;
+            std::vector<const SmFace *> rounds;
+            SmTArray<SmEdgeuse *> eus;
+            CHECK(es[k]->GetEdgeuses(eus) == SM_SUCCESS);
+            for (ULONG i = 0; i < eus.GetSize(); ++i)
+            {
+                const SmFace *f = eus[i]->GetFace();
+                SmBSplineCurve *uv = eus[i]->GetUVTrimCurve();
+                if (f == nullptr || std::find(rounds.begin(), rounds.end(), f) != rounds.end())
+                {
+                    continue;
+                }
+                rounds.push_back(f);
+                for (int t = 0; t <= 64; ++t)
+                {
+                    const double at = ivl.Evaluate(t / 64.0);
+                    SmPoint3d p, q, w;
+                    if (uv == nullptr || es[k]->GetCurve()->EvaluatePoint(at, p) != SM_SUCCESS || uv->EvaluatePoint(at, w) != SM_SUCCESS ||
+                        f->GetSurface()->EvaluatePoint(SmPoint2d(w.x, w.y), q) != SM_SUCCESS)
+                    {
+                        trims = HUGE_VAL;
+                        continue;
+                    }
+                    trims = std::max(trims, p.DistanceBetween(q));
+                }
+            }
+            std::printf("  mitre at (%g, %g): its ends off X and S by %.3g, off the bisector plane by %.3g, off the cylinders by %.3g, "
+                        "its %zu rounds' trim curves off it by %.3g\n",
+                        cx, cy, ends, plane, cyl, rounds.size(), trims);
             CHECK(ends <= 1e-12 && plane <= 1e-12 && cyl <= 1e-12);
+            CHECK(rounds.size() == 2 && trims <= 1e-12);
         }
     }
     for (int c = 0; c < 4; ++c)
@@ -6314,7 +6345,8 @@ int section_cases(bool known_failing, const char *only)
 // fails today fails (null: it passes). As TANGENT_END_CASES.
 const TangentEndCase TURN_CASES[] = {
     {"mitre_boss_base", turn_mitre_boss_base,
-     "the mitre is the rounds' marched intersection, fitted to the fillet's tolerance (1.39e-5 off the cylinders), not their exact plane section"},
+     "the mitre is the rounds' marched intersection, fitted to the fillet's tolerance (1.39e-5 off the cylinders), not their exact plane section, "
+     "and the rounds' trim curves along it are made again by projection in the merge"},
     {"swept_boss_base", turn_swept_boss_base, nullptr},
     {"swept_sharp_pocket_refused", turn_swept_sharp_pocket_refused, nullptr},
     {"swept_tori_turned_round", turn_swept_tori_turned_round, nullptr},
