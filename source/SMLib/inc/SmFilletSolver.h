@@ -116,9 +116,8 @@ public:
 /*******************************************************************//**
 PURPOSE: SolidCraft change. The rolling ball's local regularity at a station
     of a blend (the blend design's §6, the conditions for a rolling-ball
-    blend to be regular: each face locally encloses the ball, the spine is
-    transversal to the faces' bisector, every point of the section is
-    progressive).
+    blend to be regular: each face locally encloses the ball, and every
+    point of the section is progressive).
 
 NOTES: m_dEnclosed is the least over the two faces of 1 - r k, k the face's
     largest principal curvature toward the ball (> 0: the face encloses the
@@ -129,7 +128,7 @@ NOTES: m_dEnclosed is the least over the two faces of 1 - r k, k the face's
 ***********************************************************************/
 struct SmBallStation
 {
-  enum { SM_BS_UNJUDGED = 0, SM_BS_REGULAR, SM_BS_NOT_ENCLOSED, SM_BS_NOT_TRANSVERSAL, SM_BS_REGRESSIVE };
+  enum { SM_BS_UNJUDGED = 0, SM_BS_REGULAR, SM_BS_NOT_ENCLOSED, SM_BS_REGRESSIVE };
   ULONG     m_lCheck    = SM_BS_UNJUDGED; // the first check that fails, or SM_BS_REGULAR
   double    m_dRadius   = 0.0;            // the ball's radius there
   double    m_dEnclosed = SM_BIG_DOUBLE; // SM_BIG_DOUBLE: not judged

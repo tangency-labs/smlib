@@ -5720,11 +5720,7 @@ NOTES: With the ball's centre c and radius r, its contacts s1, s2 and the
        the face's curve: the hemispherical end of a pin as wide as the
        round, two rounds' corner ball) is a focal station, where the ball
        is the blend and the rest is not judged.
-    2. The spine is transversal to the faces' bisector: the centre moves,
-       c' x (s2 - s1) != 0. The derivatives below solve the station's
-       equations c = s_i + r n_i (i = 1, 2) with one more fixing the trace's
-       parameter t, and their matrix is singular where this fails.
-    3. Every point p of the section is progressive (the envelope does not
+    2. Every point p of the section is progressive (the envelope does not
        fold back over itself there): for the balls' family f(t, p) = (|p - c|^2 - r^2) / 2,
        f_tt = |c'|^2 - r'^2 - r r'' - <p - c, c''> > 0. On the touch circle
        (the sphere's points with <p - s1, c'> = 0) from s1 to s2, the short
@@ -5732,6 +5728,12 @@ NOTES: With the ball's centre c and radius r, its contacts s1, s2 and the
        section other than the ball's circle only its ends, the rails, are on
        the ball: there f_tt is the contact conformity mu_i = <s_i', c'>, and
        those two are judged.
+    The derivatives solve the station's equations c = s_i + r n_i (i = 1,
+    2) with one more fixing the trace's parameter t; their matrix is
+    singular only where the offsets touch tangentially (antipodal
+    contacts), where the section solve, the same system, finds no section,
+    so such a station is not judged (with distinct contacts c' x (s2 - s1)
+    = 0 only where c' = 0: no separate transversality check).
     The trace's parameter: for a law along the edge (rbOnEdge), the edge's
     t, the centre in the plane <C'(t), C(t) - c> = 0; for a constant ball a
     parameter along the fixed direction w = n1 x n2, <c', w> = 1 and
@@ -5849,10 +5851,7 @@ SmStatus SmFilletSolver::JudgeBallAt
       sW = asJet[0].n * asJet[1].n;
       const double dW = sW.Length();
       if (!(dW > SM_EFF_ZERO))
-        {
-          rStation.m_lCheck = SmBallStation::SM_BS_NOT_TRANSVERSAL;
-          return SM_SUCCESS;
-        }
+        { return SM_SUCCESS; } // antipodal contacts: the section solve is singular here too
       sW  = sW / dW;
       dA1 = 1.0;
     }
@@ -5869,12 +5868,8 @@ SmStatus SmFilletSolver::JudgeBallAt
   sm_Solve4(adA, adB, adX, bSingular);
   const SmVector3d sCp = asOu[0] * adX[0] + asOv[0] * adX[1] + asJet[0].n * dRp;
   const double dCp2 = sCp.LengthSquared();
-  if (   bSingular || !(dCp2 > 0.0)
-      || !((sCp * sChord).Length() > SM_EFF_ZERO * std::sqrt(dCp2) * sChord.Length()))
-    {
-      rStation.m_lCheck = SmBallStation::SM_BS_NOT_TRANSVERSAL;
-      return SM_SUCCESS;
-    }
+  if (bSingular || !(dCp2 > 0.0))
+    { return SM_SUCCESS; } // the offsets tangent: no c' (and no section solved, the same system)
 
   // 3. c'': the equations differentiated twice, K_i the terms without u_i'', v_i''
   const double adU[2][2] = { { adX[0], adX[1] }, { adX[2], adX[3] } };
@@ -5897,10 +5892,7 @@ SmStatus SmFilletSolver::JudgeBallAt
   adB[3] = dA2 - sW.Dot(asK[0]);
   sm_Solve4(adA, adB, adX, bSingular);
   if (bSingular)
-    {
-      rStation.m_lCheck = SmBallStation::SM_BS_NOT_TRANSVERSAL;
-      return SM_SUCCESS;
-    }
+    { return SM_SUCCESS; }
   const SmVector3d sCpp = asK[0] + asOu[0] * adX[0] + asOv[0] * adX[1];
 
   // f_tt on the section: A0 - <p - c, c''>

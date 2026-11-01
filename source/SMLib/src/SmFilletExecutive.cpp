@@ -3404,7 +3404,7 @@ SmStatus SmFilletExecutive::CreateFilletBrep
     { SER( sm_ExtendTraceToItsRails( m_vFilletSolvers[solverIdx] )); }
 
   // SolidCraft change: the rolling ball's local regularity along each blend's edge (the blend
-  // design's §6: each face encloses the ball, its centre moves along the edge, every point of
+  // design's §6: each face encloses the ball, every point of
   // its section is progressive; SmFilletSolver::BallIsRegular). A blend that is not regular
   // somewhere (a round wider than the rim of a pin it rounds, its ball centred beyond the axis;
   // a round run up a box's edge into a smaller round; a variable round whose balls fold over
@@ -3434,16 +3434,12 @@ SmStatus SmFilletExecutive::CreateFilletBrep
           { smos_sprintf( cWhy, _T("Fillet Error: a face curves tighter than the blend's offset of %.7g along it, which folds there: an offset below %.7g fits"), sWorst.m_dRadius, sWorst.m_dWorks ); }
         else if ( sWorst.m_bLaw && sWorst.m_lCheck == SmBallStation::SM_BS_REGRESSIVE )
           { smos_sprintf( cWhy, _T("Fillet Error: the round's balls fold over one another where its radius is %.7g: the radius changes faster there than a rolling ball can follow"), sWorst.m_dWorks ); }
-        else if ( sWorst.m_bLaw && sWorst.m_lCheck == SmBallStation::SM_BS_NOT_ENCLOSED )
-          { smos_sprintf( cWhy, _T("Fillet Error: a face curves tighter than the round's ball where its radius reaches %.7g: the ball does not fit the face past there"), sWorst.m_dWorks ); }
         else if ( sWorst.m_bLaw )
-          { smos_sprintf( cWhy, _T("Fillet Error: the round's ball is pinched between its faces where its radius is %.7g: its centre does not move along the edge there"), sWorst.m_dWorks ); }
+          { smos_sprintf( cWhy, _T("Fillet Error: a face curves tighter than the round's ball where its radius reaches %.7g: the ball does not fit the face past there"), sWorst.m_dWorks ); }
         else if ( sWorst.m_lCheck == SmBallStation::SM_BS_NOT_ENCLOSED )
           { smos_sprintf( cWhy, _T("Fillet Error: a face curves tighter than the rolling ball of radius %.7g, which does not fit it%s"), sWorst.m_dRadius, cWorks ); }
-        else if ( sWorst.m_lCheck == SmBallStation::SM_BS_REGRESSIVE )
-          { smos_sprintf( cWhy, _T("Fillet Error: the rolling ball of radius %.7g folds over itself along the edge (its touch circles move back)%s"), sWorst.m_dRadius, cWorks ); }
         else
-          { smos_sprintf( cWhy, _T("Fillet Error: the rolling ball of radius %.7g is pinched between its faces (its centre does not move along the edge)%s"), sWorst.m_dRadius, cWorks ); }
+          { smos_sprintf( cWhy, _T("Fillet Error: the rolling ball of radius %.7g folds over itself along the edge (its touch circles move back)%s"), sWorst.m_dRadius, cWorks ); }
         GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, cWhy );
         return SM_ERR;
       }
