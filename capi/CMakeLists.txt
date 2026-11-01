@@ -84,6 +84,7 @@ set(SMLIB_STATUS_CLEAN
   ${SRC}/SMLib/src/SmFilletIntersector.cpp
   ${SRC}/SMLib/src/SmCurveFilletExecutive.cpp
   ${SRC}/SMLib/src/SmBlendSurface.cpp
+  ${SRC}/SMLib/src/SmBlendSetback.cpp
   ${SRC}/SM_API/src/SmApiFillets.cpp
   ${SRC}/SMLib/src/SmMerge.cpp
   ${SRC}/SMLib/src/SmStitch.cpp
@@ -229,6 +230,8 @@ if(SMLIB_CAPI_TESTS)
   add_test(NAME smlib_test_ops_kernel_turns_known_failing COMMAND smlib_test_ops_kernel --turns-known-failing)
   # The blend scenarios that fail today (tests/ops_kernel.cpp, SCENARIO_CASES), held the same way.
   add_test(NAME smlib_test_ops_kernel_scenarios_known_failing COMMAND smlib_test_ops_kernel --scenarios-known-failing)
+  # The setback corner's fills that fail today (tests/ops_kernel.cpp, SETBACK_CASES), held the same way.
+  add_test(NAME smlib_test_ops_kernel_setbacks_known_failing COMMAND smlib_test_ops_kernel --setbacks-known-failing)
 
   # Flat arrays: SmBrep -> arrays -> SmBrep round trips, and hostile arrays. The test builds its
   # solids with SM_API directly and hands them to the C API as native files.

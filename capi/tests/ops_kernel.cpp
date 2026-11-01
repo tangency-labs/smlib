@@ -12,6 +12,7 @@
 #include <SmApiPrimitives.h>
 #include <SmApiQueries.h>
 #include <SmAssertArray.h>
+#include <SmBlendSetback.h>
 #include <SmBSplineCurve.h>
 #include <SmBSplineSurface.h>
 #include <SmCone.h>
@@ -5907,6 +5908,364 @@ int scenario_cases(bool known_failing, const char *only)
     return run_cases(SCENARIO_CASES, "scenario", known_failing, only);
 }
 
+// ---- Setback corners (SmBlendSetback) ----------------------------------------------------------
+
+// The corner of the box x, y, z >= 0 at the origin: face f (0, 1, 2) the plane where coordinate
+// f is 0, its normal out of the material -e_f. The edge along axis a lies between faces
+// (a + 1) % 3 and (a + 2) % 3.
+std::vector<SmBlendSetback::Face> box_corner_faces()
+{
+    std::vector<SmBlendSetback::Face> faces(3);
+    for (int f = 0; f < 3; f++)
+    {
+        faces[static_cast<size_t>(f)].m_sPoint = SmPoint3d(0, 0, 0);
+        double n[3] = {0, 0, 0};
+        n[f] = -1.0;
+        faces[static_cast<size_t>(f)].m_sNormal = SmVector3d(n[0], n[1], n[2]);
+    }
+    return faces;
+}
+
+std::vector<SmBlendSetback::Edge> box_corner_edges(const std::array<double, 3> &radii)
+{
+    std::vector<SmBlendSetback::Edge> edges(3);
+    for (int a = 0; a < 3; a++)
+    {
+        SmBlendSetback::Edge &e = edges[static_cast<size_t>(a)];
+        double d[3] = {0, 0, 0};
+        d[a] = 1.0;
+        e.m_sAway = SmVector3d(d[0], d[1], d[2]);
+        e.m_dRadius = radii[static_cast<size_t>(a)];
+        e.m_alFaces[0] = static_cast<ULONG>((a + 1) % 3);
+        e.m_alFaces[1] = static_cast<ULONG>((a + 2) % 3);
+    }
+    return edges;
+}
+
+SmPoint3d axis_point(int a, double along, int f, double at_f, int g, double at_g)
+{
+    double p[3] = {0, 0, 0};
+    p[a] = along;
+    p[f] = at_f;
+    p[g] = at_g;
+    return SmPoint3d(p[0], p[1], p[2]);
+}
+
+// The round of radius r along axis a of the box corner over a in [s, s + len], u along it, v
+// across from its rail on face f = (a + 1) % 3 (coordinate (a + 2) % 3 = r there) to its rail on
+// face g = (a + 2) % 3. order 1: the ball's circle, the rational quadratic arc about (r, r) in
+// the section. order 2: the order-2 section at thumbweight 0 between the two planes,
+// S(t) = ((1 - t)^3 T1(1 - t) + t^3 T2(t)) / ((1 - t)^3 + t^3), the feet T_i linear between the
+// rail and the edge's point E: in Bernstein form of degree 5 the points R1, (R1 + E) / 2, E, E,
+// (E + R2) / 2, R2 with weights 1, 2/5, 1/10, 1/10, 2/5, 1.
+SmBSplineSurface *box_corner_round(int a, double r, double s, double len, int order)
+{
+    const int f = (a + 1) % 3, g = (a + 2) % 3;
+    SmTArray<SmPoint3d> pts;
+    SmTArray<double> w;
+    const int nv = order == 1 ? 3 : 6;
+    for (int i = 0; i < 2; i++)
+    {
+        const double t = s + i * len;
+        const SmPoint3d R1 = axis_point(a, t, f, 0, g, r), R2 = axis_point(a, t, f, r, g, 0), E = axis_point(a, t, f, 0, g, 0);
+        if (order == 1)
+        {
+            pts.Add(R1);
+            pts.Add(E);
+            pts.Add(R2);
+            w.Add(1.0);
+            w.Add(std::sqrt(0.5));
+            w.Add(1.0);
+        }
+        else
+        {
+            const SmPoint3d sec[6] = {R1, SmPoint3d(0.5 * (SmVector3d(R1) + SmVector3d(E))), E, E, SmPoint3d(0.5 * (SmVector3d(E) + SmVector3d(R2))), R2};
+            const double ws[6] = {1.0, 0.4, 0.1, 0.1, 0.4, 1.0};
+            for (int j = 0; j < 6; j++)
+            {
+                pts.Add(sec[j]);
+                w.Add(ws[j]);
+            }
+        }
+    }
+    SmTArray<ULONG> um, vm;
+    SmTArray<double> uk, vk;
+    um.Add(2);
+    um.Add(2);
+    vm.Add(static_cast<ULONG>(nv));
+    vm.Add(static_cast<ULONG>(nv));
+    uk.Add(s);
+    uk.Add(s + len);
+    vk.Add(0.0);
+    vk.Add(1.0);
+    SmBSplineSurface *srf = nullptr;
+    CHECK(SmBSplineSurface::CreateCanonical(*SmApiGetOrCreateContext(), 1, static_cast<ULONG>(nv - 1), pts, SM_SF_UNSPECIFIED, um, vm, uk, vk,
+                                            SM_KT_UNSPECIFIED, &w, nullptr, srf) == SM_SUCCESS &&
+          srf != nullptr);
+    return srf;
+}
+
+// The order the surfaces a and b meet to across their common boundary, graded by seam_graph at
+// nine stations t = k / 10: a's side by uv_a(t) and a step into a along in_a (in its uv), b's
+// by uv_b(t) (b's own Newton walks from there). `order`: the least every station must reach at
+// the tight tolerances (1e-9, 1e-7 / mm, 1e-5 / mm^2, 1e-3 / mm^3).
+struct SeamSide
+{
+    const SmSurface *s;
+    std::function<SmPoint2d(double)> uv;
+    SmVector2d in;
+};
+void grade_seam(const char *name, const SeamSide &a, const SeamSide &b, double size, int order)
+{
+    const double tight[4] = {1e-9, 1e-7, 1e-5, 1e-3};
+    double most[4] = {0, 0, 0, 0};
+    bool ok = true;
+    for (int k = 1; k <= 9; k++)
+    {
+        const double t = k / 10.0, h = 1e-4;
+        SmPoint3d p, p0, p1, q;
+        const SmPoint2d uv = a.uv(t);
+        ok = ok && a.s->EvaluatePoint(uv, p) == SM_SUCCESS && a.s->EvaluatePoint(a.uv(t - h), p0) == SM_SUCCESS &&
+             a.s->EvaluatePoint(a.uv(t + h), p1) == SM_SUCCESS;
+        SmVector3d along = p1 - p0, n;
+        ok = ok && along.Unitize() == SM_SUCCESS && a.s->EvaluateNormal(uv, TRUE, TRUE, n) == SM_SUCCESS;
+        SmVector3d w = n * along;
+        ok = ok && w.Unitize() == SM_SUCCESS && a.s->EvaluatePoint(SmPoint2d(uv.x + 1e-3 * a.in.x, uv.y + 1e-3 * a.in.y), q) == SM_SUCCESS;
+        if (!ok)
+        {
+            break;
+        }
+        if ((q - p).Dot(w) < 0)
+        {
+            w = -w;
+        }
+        double ha[4], hb[4];
+        const double step = 0.004 * size;
+        ok = seam_graph(a.s, uv, p, along, w, n, step, ha) && seam_graph(b.s, b.uv(t), p, along, w, n, -step, hb);
+        if (!ok)
+        {
+            break;
+        }
+        for (int m = 0; m < 4; m++)
+        {
+            most[m] = std::max(most[m], std::fabs(ha[m] - hb[m]));
+        }
+    }
+    const int reached = ok ? seam_order(most, tight) : -1;
+    std::printf("  seam %s: derivatives 1 to 4 differ by up to %.3g, %.3g, %.3g, %.3g: G%d\n", name, most[0], most[1], most[2], most[3], reached);
+    CHECK(reached >= order);
+}
+
+// The box corner's rounds of radii `radii`, set back by SmBlendSetback::Distances, made to
+// `round_order` (and eased into the order-2 section over `ease` before their ends when that is
+// positive), filled to `order`: each setback patch's end row is its round's section, its spring
+// sides lie on their faces, every seam (the rounds' end sections, the spring curves' halves, the
+// inner curves' halves, the spokes) reaches `order`, and no patch stands past a face
+// (Containment, certified from the control points).
+void setback_box_corner(std::array<double, 3> radii, int round_order, double ease, ULONG order)
+{
+    SmContext &ctx = *SmApiGetOrCreateContext();
+    const std::vector<SmBlendSetback::Face> faces = box_corner_faces();
+    std::vector<double> setbacks;
+    CHECK(SmBlendSetback::Distances(faces, box_corner_edges(radii), setbacks) == SM_SUCCESS && setbacks.size() == 3);
+    if (setbacks.size() != 3)
+    {
+        return;
+    }
+    const double len = 10.0;
+    std::vector<SmBSplineSurface *> rounds;
+    std::vector<SmBlendSetback::Round> in;
+    for (int a = 0; a < 3; a++)
+    {
+        const double r = radii[static_cast<size_t>(a)], s = setbacks[static_cast<size_t>(a)];
+        SmBSplineSurface *own = box_corner_round(a, r, s, len, round_order);
+        if (ease > 0.0 && own != nullptr)
+        {
+            SmBSplineSurface *g2 = box_corner_round(a, r, s, len, 2), *eased = nullptr;
+            const std::vector<SmEaseRamp> ramp = {{s + ease, s}};
+            CHECK(g2 != nullptr && SmBlendSetback::EaseSurface(ctx, *own, *g2, SM_SP_U, ramp, eased) == SM_SUCCESS && eased != nullptr);
+            delete g2;
+            delete own;
+            own = eased;
+        }
+        rounds.push_back(own);
+        in.push_back({own, SM_SP_U, s, FALSE});
+    }
+    SmBlendSetback::Fill fill;
+    const SmStatus st = SmBlendSetback::FillHole(ctx, faces, in, order, TRUE, 1e-9, fill);
+    std::printf("  setbacks %.9g, %.9g, %.9g; fill status %d, interior degree %lu\n", setbacks[0], setbacks[1], setbacks[2], static_cast<int>(st),
+                static_cast<unsigned long>(fill.m_lDegree));
+    CHECK(st == SM_SUCCESS && fill.m_vPatches.size() == 6);
+    if (st != SM_SUCCESS || fill.m_vPatches.size() != 6)
+    {
+        for (SmBSplineSurface *p : rounds)
+        {
+            delete p;
+        }
+        return;
+    }
+    const double size = *std::max_element(setbacks.begin(), setbacks.end());
+    std::vector<SmPlane *> planes;
+    for (int f = 0; f < 3; f++)
+    {
+        double x[3] = {0, 0, 0}, y[3] = {0, 0, 0};
+        x[(f + 1) % 3] = 1.0;
+        y[(f + 2) % 3] = 1.0;
+        SmPlane *pl = nullptr;
+        CHECK(SmPlane::CreateCanonical(ctx, SmAxis2Placement(SmPoint3d(0, 0, 0), SmVector3d(x[0], x[1], x[2]), SmVector3d(y[0], y[1], y[2])), pl) == SM_SUCCESS &&
+              pl != nullptr);
+        planes.push_back(pl);
+    }
+    auto at = [](double x, double y) { return SmPoint2d(x, y); };
+    char name[64];
+    for (size_t m = 0; m < 3; m++)
+    {
+        const SmBSplineSurface *sp = fill.m_vPatches[m];
+        const size_t rnd = fill.m_vRound[m];
+        const SmBSplineSurface *round = rounds[rnd];
+        const bool rev = fill.m_vReversed[m] != FALSE;
+        const double end = in[rnd].m_dEnd;
+        const SmBlendSetback::Face &fa = faces[fill.m_vFace[m]], &fb = faces[fill.m_vFace[(m + 1) % 3]];
+        // the end row is the round's section, and the spring sides lie on their faces
+        double row = 0.0, spring = 0.0;
+        for (int k = 0; k <= 8; k++)
+        {
+            const double t = k / 8.0;
+            SmPoint3d p, q, pa, pb;
+            CHECK(sp->EvaluatePoint(at(0, t), p) == SM_SUCCESS && round->EvaluatePoint(at(end, rev ? 1 - t : t), q) == SM_SUCCESS);
+            CHECK(sp->EvaluatePoint(at(t, 0), pa) == SM_SUCCESS && sp->EvaluatePoint(at(t, 1), pb) == SM_SUCCESS);
+            row = std::max(row, p.DistanceBetween(q));
+            spring = std::max({spring, std::fabs((pa - fa.m_sPoint).Dot(fa.m_sNormal)), std::fabs((pb - fb.m_sPoint).Dot(fb.m_sNormal))});
+        }
+        std::printf("  setback patch %lu: end row off its round's section by %.3g, spring sides off their faces by %.3g\n",
+                    static_cast<unsigned long>(m), row, spring);
+        CHECK(row <= 1e-12 * size && spring <= 1e-12 * size);
+        // the round's end section
+        std::snprintf(name, sizeof name, "round %lu / setback %lu", static_cast<unsigned long>(rnd), static_cast<unsigned long>(m));
+        grade_seam(name, {sp, [&](double t) { return at(0, t); }, SmVector2d(1, 0)},
+                   {round, [&, rev, end](double t) { return at(end, rev ? 1 - t : t); }, SmVector2d(1, 0)}, size, static_cast<int>(order));
+        // the spring curves' halves
+        std::snprintf(name, sizeof name, "setback %lu / face %lu", static_cast<unsigned long>(m), static_cast<unsigned long>(fill.m_vFace[m]));
+        grade_seam(name, {sp, [&](double t) { return at(t, 0); }, SmVector2d(0, 1)}, {planes[fill.m_vFace[m]], [](double) { return SmPoint2d(0, 0); }, SmVector2d(0, 0)},
+                   size, static_cast<int>(order));
+        std::snprintf(name, sizeof name, "setback %lu / face %lu", static_cast<unsigned long>(m), static_cast<unsigned long>(fill.m_vFace[(m + 1) % 3]));
+        grade_seam(name, {sp, [&](double t) { return at(t, 1); }, SmVector2d(0, -1)},
+                   {planes[fill.m_vFace[(m + 1) % 3]], [](double) { return SmPoint2d(0, 0); }, SmVector2d(0, 0)}, size, static_cast<int>(order));
+        // the inner curve's halves, against interior parts m and m + 1
+        const SmBSplineSurface *im = fill.m_vPatches[3 + m], *in1 = fill.m_vPatches[3 + (m + 1) % 3];
+        std::snprintf(name, sizeof name, "setback %lu / interior %lu", static_cast<unsigned long>(m), static_cast<unsigned long>(m));
+        grade_seam(name, {sp, [&](double t) { return at(1, 0.5 * t); }, SmVector2d(-1, 0)}, {im, [&](double t) { return at(1, 1 - t); }, SmVector2d(-1, 0)}, size,
+                   static_cast<int>(order));
+        std::snprintf(name, sizeof name, "setback %lu / interior %lu", static_cast<unsigned long>(m), static_cast<unsigned long>((m + 1) % 3));
+        grade_seam(name, {sp, [&](double t) { return at(1, 0.5 + 0.5 * t); }, SmVector2d(-1, 0)}, {in1, [&](double t) { return at(t, 1); }, SmVector2d(0, -1)},
+                   size, static_cast<int>(order));
+        // the spoke between interior parts m and m + 1
+        std::snprintf(name, sizeof name, "interior %lu / interior %lu", static_cast<unsigned long>(m), static_cast<unsigned long>((m + 1) % 3));
+        grade_seam(name, {im, [&](double t) { return at(t, 0); }, SmVector2d(0, 1)}, {in1, [&](double t) { return at(0, t); }, SmVector2d(1, 0)}, size,
+                   static_cast<int>(order));
+    }
+    double worst = HUGE_VAL;
+    CHECK(SmBlendSetback::Containment(fill, faces, TRUE, worst) == SM_SUCCESS);
+    std::printf("  stands past a face by at most %.3g (certified)\n", worst);
+    CHECK(worst <= 1e-12 * size);
+    for (SmPlane *p : planes)
+    {
+        delete p;
+    }
+    for (SmBSplineSurface *p : rounds)
+    {
+        delete p;
+    }
+}
+
+// The setbacks of the box corner by the owner's rule, max(1.5 r, least + 0.25 r): the rails lie r
+// from their edges (faces square), and on each face the two rails cross the other's distance
+// along each edge, so an edge's least setback is the larger radius of the two other rounds.
+// Equal radii 2: least 2, setback 3 (1.5 r). Radii 2, 3, 4 along x, y, z: least 4, 4, 3, setbacks
+// 4.5 (4 + 0.5), 4.75 (4 + 0.75) and 6 (1.5 x 4).
+void setback_distances_box_corner()
+{
+    const std::vector<SmBlendSetback::Face> faces = box_corner_faces();
+    std::vector<double> s, least;
+    CHECK(SmBlendSetback::Distances(faces, box_corner_edges({2, 2, 2}), s, &least) == SM_SUCCESS && s.size() == 3);
+    for (size_t i = 0; i < s.size(); i++)
+    {
+        CHECK(std::fabs(s[i] - 3.0) <= 1e-15 && std::fabs(least[i] - 2.0) <= 1e-15);
+    }
+    CHECK(SmBlendSetback::Distances(faces, box_corner_edges({2, 3, 4}), s, &least) == SM_SUCCESS && s.size() == 3);
+    const double want[3] = {4.5, 4.75, 6.0}, want_least[3] = {4.0, 4.0, 3.0};
+    for (size_t i = 0; i < s.size() && i < 3; i++)
+    {
+        std::printf("  edge %lu: least %.17g, setback %.17g\n", static_cast<unsigned long>(i), least[i], s[i]);
+        CHECK(std::fabs(s[i] - want[i]) <= 1e-15 && std::fabs(least[i] - want_least[i]) <= 1e-14);
+    }
+    // a face between three edges is no corner of the rule
+    std::vector<SmBlendSetback::Edge> bad = box_corner_edges({2, 2, 2});
+    bad[0].m_alFaces[0] = 0;
+    CHECK(SmBlendSetback::Distances(faces, bad, s) == SM_ERR_INVALID_INPUT);
+}
+
+// Three rounds r 2 meeting at a box corner, filled to G1.
+void setback_box_corner_g1()
+{
+    setback_box_corner({2, 2, 2}, 1, 0.0, 1);
+}
+
+// The same rounds eased into the order-2 section over 2 before their setbacks, filled to G2.
+void setback_box_corner_g2_eased()
+{
+    setback_box_corner({2, 2, 2}, 1, 2.0, 2);
+}
+
+// Order-2 rounds r 2 (no ease), filled to G2.
+void setback_box_corner_g2_rounds()
+{
+    setback_box_corner({2, 2, 2}, 2, 0.0, 2);
+}
+
+// Rounds r 2, 3, 4 along x, y, z: no ball touches all three faces and rounds, so the corner is
+// set back (owner, 2026-11-01) and filled to G1.
+void setback_box_corner_unequal_g1()
+{
+    setback_box_corner({2, 3, 4}, 1, 0.0, 1);
+}
+
+// A G2 fill of circular rounds not eased first is refused: they meet their faces only to G1.
+void setback_g2_fill_of_uneased_rounds_refused()
+{
+    SmContext &ctx = *SmApiGetOrCreateContext();
+    const std::vector<SmBlendSetback::Face> faces = box_corner_faces();
+    std::vector<SmBSplineSurface *> rounds;
+    std::vector<SmBlendSetback::Round> in;
+    for (int a = 0; a < 3; a++)
+    {
+        rounds.push_back(box_corner_round(a, 2.0, 3.0, 10.0, 1));
+        in.push_back({rounds.back(), SM_SP_U, 3.0, FALSE});
+    }
+    SmBlendSetback::Fill fill;
+    CHECK(SmBlendSetback::FillHole(ctx, faces, in, 2, TRUE, 1e-9, fill) == SM_ERR_INVALID_INPUT && fill.m_vPatches.empty());
+    for (SmBSplineSurface *p : rounds)
+    {
+        delete p;
+    }
+}
+
+// The setback corner's cases, and why each that fails today fails (null: it passes). As
+// TANGENT_END_CASES: `--setbacks-known-failing` runs the failing ones and fails if one passes.
+const TangentEndCase SETBACK_CASES[] = {
+    {"distances_box_corner", setback_distances_box_corner, nullptr},
+    {"box_corner_g1", setback_box_corner_g1, "SmBlendSetback::FillHole is not built yet"},
+    {"box_corner_g2_eased", setback_box_corner_g2_eased, "SmBlendSetback::FillHole is not built yet"},
+    {"box_corner_g2_rounds", setback_box_corner_g2_rounds, "SmBlendSetback::FillHole is not built yet"},
+    {"box_corner_unequal_g1", setback_box_corner_unequal_g1, "SmBlendSetback::FillHole is not built yet"},
+    {"g2_fill_of_uneased_rounds_refused", setback_g2_fill_of_uneased_rounds_refused, "SmBlendSetback::FillHole is not built yet"},
+};
+
+int setback_cases(bool known_failing, const char *only)
+{
+    return run_cases(SETBACK_CASES, "setback", known_failing, only);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 2 && std::strcmp(argv[1], "--scenarios-known-failing") == 0)
@@ -5917,6 +6276,15 @@ int main(int argc, char **argv)
     {
         smlib_set_log([](void *, int32_t level, const char *line) { std::fprintf(stderr, "log %d %s\n", static_cast<int>(level), line); }, nullptr);
         return scenario_cases(false, argv[2]) == 0 ? 0 : 1;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--setbacks-known-failing") == 0)
+    {
+        return setback_cases(true, nullptr) == 0 ? 0 : 1;
+    }
+    if (argc == 3 && std::strcmp(argv[1], "--setback") == 0)
+    {
+        smlib_set_log([](void *, int32_t level, const char *line) { std::fprintf(stderr, "log %d %s\n", static_cast<int>(level), line); }, nullptr);
+        return setback_cases(false, argv[2]) == 0 ? 0 : 1;
     }
     if (argc == 2 && std::strcmp(argv[1], "--turns-known-failing") == 0)
     {
@@ -9376,6 +9744,7 @@ int main(int argc, char **argv)
     failures += section_cases(false, nullptr);
     failures += turn_cases(false, nullptr);
     failures += scenario_cases(false, nullptr);
+    failures += setback_cases(false, nullptr);
 
     // SolidCraft surface.offset of a ball's one face: the face taken off as a sheet is a closed
     // shell whose regions are all voids, which smlib_offset_sheet refused as a solid
