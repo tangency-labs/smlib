@@ -2294,8 +2294,8 @@ void crease_rounds_from_half_a_degree()
 }
 
 // The 60 x 40 x 20 box, its top edge at y = 40 rounded r5, its top edge at x = 60 rounded r3,
-// then the vertical edge at x = 60, y = 40 rounded `radius` with the edges tangent to it up into
-// the corner (main has the case), or null.
+// then the vertical edge at x = 60, y = 40 rounded `radius` with its tangent chain up into the
+// corner (main has the case), or null.
 smlib_brep *rounded_corner(double radius)
 {
     smlib_brep *slab = box(0, 0, 0, 60, 40, 20);
@@ -2304,10 +2304,11 @@ smlib_brep *rounded_corner(double radius)
     smlib_brep *corner = nullptr;
     const double top_edge[3] = {30, 40, 20};
     const double end_edge[3] = {60, 20, 20};
-    const double up[9] = {60, 40, 7.5, 60, 35.0 + std::sqrt(24.0), 16, 58.931891825700852, 37.55984948554854, 19.294016994391871};
     CHECK(smlib_fillet(slab, top_edge, 1, 0.1, 5.0, &top, nullptr) == SMLIB_OK);
     CHECK(top != nullptr && smlib_fillet(top, end_edge, 1, 0.1, 3.0, &both, nullptr) == SMLIB_OK);
-    CHECK(both != nullptr && smlib_fillet(both, up, 3, 0.1, radius, &corner, nullptr) == SMLIB_OK);
+    // the vertical edge with its tangent chain (decision register 11931, §27)
+    const std::vector<double> up = both != nullptr ? tangent_chain_points(both, {60, 40, 7.5}) : std::vector<double>();
+    CHECK(both != nullptr && smlib_fillet(both, up.data(), static_cast<int64_t>(up.size() / 3), 0.1, radius, &corner, nullptr) == SMLIB_OK);
     for (smlib_brep *x : {both, top, slab})
     {
         smlib_brep_free(x);
@@ -12637,34 +12638,76 @@ int main(int argc, char **argv)
         }
     }
 
-    // SolidCraft ladder 07-fillets/016: a 60 x 40 x 20 box, its top back edge rounded R5, its top
-    // right edge R3, then the vertical edge x = 60, y = 40 (z 0..15). The R3 round leaves the R5
-    // round's end arc on the x = 60 face 0.46 long; the vertical round's contact line there rolls
-    // over the R3 round's tangent edge past the round's end and never meets the arc. The corner
-    // has no end rib and the round is cut off where it meets the body: removed, outside the
-    // vertical round, the integral of min(R5, R3 top) over the corner column.
+    // SolidCraft ladder 07-fillets/016 and 018 (their recipes after decision register 11931,
+    // §27: the top edges' rounds with tangent propagation): a 60 x 40 x 20 box, its top back
+    // edge rounded R5, then its top right edge R3 with its tangent chain: at (60, 35, 20) that
+    // edge runs on tangentially into the R5 round's end arc on x = 60, which runs on at
+    // (60, 40, 15) into the vertical edge x = 60, y = 40, so the R3 rounds all three and the
+    // vertical edge is gone (its round the cylinder r3 about (57, 37)). The third pick (60, 40, 8)
+    // is 3 from that round's two contact lines and nearer no edge: r7 (016) and r2 (018) are both
+    // refused as picks, SMLIB_ERR_PICK_NONE ("give a point along one edge").
+    {
+        smlib_brep *block = box(0, 0, 0, 60, 40, 20);
+        const double back_top[3] = {30, 40, 20};
+        const double vertical[3] = {60, 40, 8};
+        smlib_brep *r5 = nullptr;
+        smlib_brep *r3 = nullptr;
+        CHECK(smlib_fillet(block, back_top, 1, 0.1, 5.0, &r5, nullptr) == SMLIB_OK);
+        const std::vector<double> right_top = r5 != nullptr ? tangent_chain_points(r5, {60, 20, 20}) : std::vector<double>();
+        std::printf("ladder 016/018: the R3's tangent chain: %zu edge(s)\n", right_top.size() / 3);
+        CHECK(right_top.size() == 9);
+        CHECK(r5 != nullptr && smlib_fillet(r5, right_top.data(), static_cast<int64_t>(right_top.size() / 3), 0.1, 3.0, &r3, nullptr) == SMLIB_OK);
+        for (double radius : {7.0, 2.0})
+        {
+            smlib_brep *refused = nullptr;
+            CHECK(r3 != nullptr && smlib_fillet(r3, vertical, 1, 0.1, radius, &refused, nullptr) == SMLIB_ERR_PICK_NONE && refused == nullptr);
+        }
+        for (smlib_brep *b : {block, r5, r3})
+        {
+            smlib_brep_free(b);
+        }
+    }
+
+    // SolidCraft ladder 07-fillets/020 and 021 (the partial-chain copies): the same box and R5, the
+    // R3 on its top right edge alone (tangent propagation off), then the vertical edge x = 60,
+    // y = 40 picked at (60, 40, 8) with its tangent chain (the vertical edge and the R5 round's end
+    // arc on x = 60 or more). 020, r7: refused, SMLIB_ERR_NO_ROOM (the rail on x = 60 is the arc
+    // offset in by r, a circle of radius 5 - r < 0). 021, r2: builds, one body of 11 faces (the
+    // box's 6, the two top rounds and 3 of the r2) within the box, sound. The up-chain corner below
+    // grades the refusal's size.
     {
         smlib_brep *block = box(0, 0, 0, 60, 40, 20);
         const double back_top[3] = {30, 40, 20};
         const double right_top[3] = {60, 20, 20};
-        const double vertical[3] = {60, 40, 7.5};
         smlib_brep *r5 = nullptr;
         smlib_brep *r3 = nullptr;
         CHECK(smlib_fillet(block, back_top, 1, 0.1, 5.0, &r5, nullptr) == SMLIB_OK);
         CHECK(r5 != nullptr && smlib_fillet(r5, right_top, 1, 0.1, 3.0, &r3, nullptr) == SMLIB_OK);
-        const double radii[3] = {7.0, 4.0, 2.0};
-        const double volumes[3] = {47418.926881, 47546.786538, 47591.811067};
-        for (int i = 0; i < 3 && r3 != nullptr; ++i)
+        const std::vector<double> chain = r3 != nullptr ? tangent_chain_points(r3, {60, 40, 8}) : std::vector<double>();
+        std::printf("ladder 020/021: the vertical edge's tangent chain: %zu edge(s)\n", chain.size() / 3);
+        CHECK(chain.size() >= 6);
+        smlib_brep *refused = nullptr;
+        CHECK(r3 != nullptr && smlib_fillet(r3, chain.data(), static_cast<int64_t>(chain.size() / 3), 0.1, 7.0, &refused, nullptr) == SMLIB_ERR_NO_ROOM &&
+              refused == nullptr);
+        if (r3 != nullptr && smlib_fillet(r3, chain.data(), static_cast<int64_t>(chain.size() / 3), 0.1, 2.0, &r, nullptr) == SMLIB_OK)
         {
-            if (smlib_fillet(r3, vertical, 1, 0.1, radii[i], &r, nullptr) == SMLIB_OK)
+            int64_t counts[3] = {0, 0, 0};
+            double lo[3] = {}, hi[3] = {};
+            CHECK(smlib_brep_counts(r, counts) == SMLIB_OK && counts[0] == 11);
+            CHECK(smlib_brep_bounds(r, lo, hi) == SMLIB_OK);
+            const double want_hi[3] = {60, 40, 20};
+            for (int k = 0; k < 3; ++k)
             {
-                CHECK(near(volume_of(r), volumes[i], 1e-8));
-                done(r);
+                CHECK(std::fabs(lo[k]) < 1e-9 && std::fabs(hi[k] - want_hi[k]) < 1e-9);
             }
-            else
-            {
-                CHECK(!"ladder 016's vertical round under the short R5 end arc");
-            }
+            std::printf("ladder 021 r2: %lld faces, box (%.9f %.9f %.9f) .. (%.9f %.9f %.9f)\n", static_cast<long long>(counts[0]), lo[0], lo[1], lo[2], hi[0],
+                        hi[1], hi[2]);
+            CHECK(sound(r));
+            done(r);
+        }
+        else
+        {
+            CHECK(!"ladder 021: the vertical edge's tangent chain rounded r2");
         }
         for (smlib_brep *b : {block, r5, r3})
         {
@@ -13017,7 +13060,7 @@ int main(int argc, char **argv)
     // ends it at y = 35: between 35 and 40 lengths of 9 (1 - pi/4) off), then the vertical edge
     // at x = 60, y = 40 with the edges tangent to it up into the corner: the side's edge on the
     // r5 round (a circular arc of radius 5 about the round's axis, y = 35, z = 15) and the edge
-    // between the two rounds. A round of r there rolls on the side and on the r5 round, its rail
+    // between the two rounds, as a caller sends them (the vertical edge's tangent chain). A round of r there rolls on the side and on the r5 round, its rail
     // on the side the arc offset in by r, a circle of radius 5 - r: past r = 5 it lies beyond
     // the axis and runs against the rail on the round (the round a spindle torus through
     // itself, its ball curving less than the r5 round around it). On the edge between the
@@ -13044,20 +13087,24 @@ int main(int argc, char **argv)
         CHECK(smlib_fillet(top, end_edge, 1, 0.1, 3.0, &both, nullptr) == SMLIB_OK && sound(both));
         const double rounded = volume_of(both);
         CHECK(rounded < volume_of(top) - 35.0 * 9.0 * quarter && rounded > volume_of(top) - 40.0 * 9.0 * quarter);
-        const double up[9] = {60, 40, 7.5, 60, 35.0 + std::sqrt(24.0), 16, 58.931891825700852, 37.55984948554854, 19.294016994391871};
+        // the vertical edge with its tangent chain (decision register 11931, §27; was three
+        // points on the edges of the chain)
+        const std::vector<double> chain = tangent_chain_points(both, {60, 40, 7.5});
+        const double *up = chain.data();
+        const int64_t n_up = static_cast<int64_t>(chain.size() / 3);
         // smlib_blend_reason names the radius below which the ball fits: 3, the r3 round's (the
         // least over the three edges' sections, the r5 round's 5 the vertical edge's).
         for (double radius : {3.1, 4.0, 5.0, 7.0})
         {
             smlib_brep *corner = nullptr;
-            CHECK(smlib_fillet(both, up, 3, 0.1, radius, &corner, nullptr) == SMLIB_ERR_NO_ROOM && corner == nullptr);
+            CHECK(smlib_fillet(both, up, n_up, 0.1, radius, &corner, nullptr) == SMLIB_ERR_NO_ROOM && corner == nullptr);
             CHECK(near(blend_reason_number("a radius below "), 3.0, 1e-6));
             CHECK(near(blend_fit(), 3.0, 1e-9));
         }
         for (double radius : {1.0, 2.0, 2.5, 2.9})
         {
             smlib_brep *corner = nullptr;
-            CHECK(smlib_fillet(both, up, 3, 0.1, radius, &corner, nullptr) == SMLIB_OK);
+            CHECK(smlib_fillet(both, up, n_up, 0.1, radius, &corner, nullptr) == SMLIB_OK);
             if (corner != nullptr)
             {
                 const double off = rounded - volume_of(corner);
