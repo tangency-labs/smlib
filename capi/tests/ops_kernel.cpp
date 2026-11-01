@@ -4959,6 +4959,84 @@ void section_variable_round_on_its_cone()
         g);
 }
 
+// A variable round whose law has a corner (tangency-labs/solidcore#430: SMLib traced it
+// smoothly across, missing the law past it; now the trace stops there and the face is split
+// there). Its round is the union of the balls: in each plane square to the edge, the corner cut
+// off by rays from the corner, each meeting the union first at the least entry over the balls,
+// integrated along the edge. Where the law peaks the ball there shows between the touch circles
+// of its two sides (a zone of its sphere); where it dips, the two sides' rounds cross and each
+// ends where they do. The balls' great circles, (1 - pi/4) r^2 per unit length, take more.
+
+// 2 -> w -> 2 (degree 1, a corner at the middle) on the top edge along y of a 10 x 20 x 30 box:
+// 21.799882, 27.093683, 29.389966 and 39.541034 removed for w 2.5, 3, 3.2 and 4. Corners in the
+// rails were found by the solver's 20 degree angle, so a gentle one (w 3: the rails turn 11
+// degrees) was skinned over and refused by the check.
+void section_variable_round_law_peak()
+{
+    smlib_brep *block = box(0, 0, 0, 10, 20, 30);
+    const double at[3] = {10, 10, 30}, from[3] = {10, 0, 30};
+    const double knots[5] = {0, 0, 0.5, 1, 1};
+    const std::array<std::array<double, 2>, 4> peaks = {{{2.5, 21.799882}, {3.0, 27.093683}, {3.2, 29.389966}, {4.0, 39.541034}}};
+    for (const auto &[w, removed] : peaks)
+    {
+        const double law[3] = {2, w, 2};
+        smlib_brep *r = nullptr;
+        CHECK(smlib_fillet_variable(block, at, 0.1, from, 1, knots, 5, law, 3, &r) == SMLIB_OK);
+        if (r != nullptr)
+        {
+            std::printf("  peak %g: removed %.9f, want %.9f\n", w, 6000.0 - volume_of(r), removed);
+            CHECK(near(6000.0 - volume_of(r), removed, 1e-4));
+            CHECK(sound(r));
+            smlib_brep_free(r);
+        }
+    }
+    smlib_brep_free(block);
+}
+
+// 4 -> 2 -> 4 on the 20 cube's edge y = z = 20, from either end, and the same law as a
+// quadratic with a corner at 0.5 (4, 3, 2 then 2, 3, 4, evenly spaced): 39.542073 removed.
+void section_variable_round_law_dip()
+{
+    smlib_brep *cube = box(0, 0, 0, 20, 20, 20);
+    const double edge[3] = {10, 20, 20}, from0[3] = {0, 20, 20}, from1[3] = {20, 20, 20};
+    const double v_knots[5] = {0, 0, 0.5, 1, 1}, v_radii[3] = {4, 2, 4};
+    const double q_knots[8] = {0, 0, 0, 0.5, 0.5, 1, 1, 1}, q_radii[5] = {4, 3, 2, 3, 4};
+    const double removed = 39.542073;
+    for (int k = 0; k < 3; ++k)
+    {
+        smlib_brep *r = nullptr;
+        const int32_t s = k < 2 ? smlib_fillet_variable(cube, edge, 0.1, k == 0 ? from0 : from1, 1, v_knots, 5, v_radii, 3, &r)
+                                : smlib_fillet_variable(cube, edge, 0.1, from0, 2, q_knots, 8, q_radii, 5, &r);
+        CHECK(s == SMLIB_OK);
+        if (r != nullptr)
+        {
+            std::printf("  dip %d: removed %.9f, want %.9f\n", k, 8000.0 - volume_of(r), removed);
+            CHECK(near(8000.0 - volume_of(r), removed, 1e-4));
+            CHECK(sound(r));
+            smlib_brep_free(r);
+        }
+    }
+    smlib_brep_free(cube);
+}
+
+// 4, 2, 4, 2 at 0, 0.25, 0.75, 1 on the 20 cube's edge y = z = 20: two dips, 38.818277 removed.
+void section_variable_round_law_dips()
+{
+    smlib_brep *cube = box(0, 0, 0, 20, 20, 20);
+    const double edge[3] = {10, 20, 20}, from0[3] = {0, 20, 20};
+    const double knots[6] = {0, 0, 0.25, 0.75, 1, 1}, radii[4] = {4, 2, 4, 2};
+    smlib_brep *r = nullptr;
+    CHECK(smlib_fillet_variable(cube, edge, 0.1, from0, 1, knots, 6, radii, 4, &r) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        std::printf("  dips: removed %.9f, want %.9f\n", 8000.0 - volume_of(r), 38.818277);
+        CHECK(near(8000.0 - volume_of(r), 38.818277, 1e-4));
+        CHECK(sound(r));
+        smlib_brep_free(r);
+    }
+    smlib_brep_free(cube);
+}
+
 // The section-order cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--section-orders-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SECTION_CASES[] = {
@@ -4975,6 +5053,12 @@ const TangentEndCase SECTION_CASES[] = {
     {"pipe_on_plate_round", section_pipe_on_plate_round, nullptr},
     {"pipe_on_plate_g2", section_pipe_on_plate_g2, nullptr},
     {"pipe_on_plate_g2_thumbweight_half", section_pipe_on_plate_g2_thumbweight_half, nullptr},
+    {"variable_round_law_dip", section_variable_round_law_dip,
+     "the two sides' rounds end on their own touch circles at the law's corner, not where they cross: 39.6456 removed against 39.5421"},
+    {"variable_round_law_dips", section_variable_round_law_dips,
+     "the sides' rounds end on their own touch circles at the law's corners, not where they cross: 39.0780 removed against 38.8183"},
+    {"variable_round_law_peak", section_variable_round_law_peak,
+     "the ball's sphere between its two sides' touch circles at the law's corner is not built: 39.8302 removed against 39.5410 (w 4)"},
     {"variable_round_on_its_cone", section_variable_round_on_its_cone, nullptr},
 };
 
@@ -5799,33 +5883,6 @@ int main(int argc, char **argv)
         smlib_brep_free(block);
     }
 
-    // A variable round 2 -> w -> 2 (degree 1, a corner at the middle) on the top edge along y of a
-    // 10 x 20 x 30 box. Corners in the rails were found by the solver's 20 degree angle, so a
-    // gentle one (w 3: the rails turn 11 degrees) was skinned over: the round off its law, its
-    // edges kinked inside and refused by the check. Each half is a cone-like round with r linear
-    // along 10: removed about 2 (1 - pi/4) 10 (4 + 2 w + w^2) / 3 (the ball's contact leans off
-    // the cross-section plane as r changes, to 1e-4 of it here).
-    {
-        smlib_brep *block = box(0, 0, 0, 10, 20, 30);
-        const double at[3] = {10, 10, 30}, from[3] = {10, 0, 30};
-        const double knots[5] = {0, 0, 0.5, 1, 1};
-        for (double w : {2.5, 3.0, 3.2, 4.0})
-        {
-            const double law[3] = {2, w, 2};
-            if (smlib_fillet_variable(block, at, 0.1, from, 1, knots, 5, law, 3, &r) == SMLIB_OK)
-            {
-                CHECK(near(6000.0 - volume_of(r), 20.0 * (1.0 - PI / 4.0) * (4.0 + 2.0 * w + w * w) / 3.0, 1e-4));
-                CHECK(r->p->GetNumFaces() == 8);
-                done(r);
-            }
-            else
-            {
-                CHECK(!"a variable round with a corner in its law");
-            }
-        }
-        smlib_brep_free(block);
-    }
-
     // tangency-labs/solidcore#458: a variable round whose law SMLib cannot evaluate past the edge's
     // ends (a constant law curve laid out with no slope, radius 2 as x and 0 as y, as the shim
     // once built it; extending a curve of zero speed fails). SmVariableRadiusFS::SetupOffsetValues
@@ -5889,50 +5946,12 @@ int main(int argc, char **argv)
         delete b;
     }
 
-    // tangency-labs/solidcore#430: a variable round whose radius law has a corner. SMLib traced
-    // the round smoothly across the corner, averaging the tangents of its two sides, and skinned
-    // one smooth surface over it: it missed the law past the corner and failed its own check.
-    // The trace now ends a step at the corner with the tangents of each side, the surface is
-    // skinned piece by piece, and the face is split there. On the cube's edge y = z = 20, the
-    // round takes (1 - pi/4) r^2 per unit length; for 4 -> 2 -> 4 that is the same as for a
-    // straight 4 -> 2 along the whole edge.
+    // A radius of zero inside the edge would pinch a variable round to a point: refused. (The
+    // laws with a corner are the section cases variable_round_law_peak, _dip and _dips.)
     {
-        const double PI4 = 1.0 - PI / 4.0;
         const double edge[3] = {10, 20, 20};
         const double from0[3] = {0, 20, 20};
-        const double from1[3] = {20, 20, 20};
         const double v_knots[5] = {0, 0, 0.5, 1, 1};
-        const double v_radii[3] = {4, 2, 4};
-        const double removed = PI4 * 20.0 * (16.0 + 8.0 + 4.0) / 3.0;
-        for (const double *from : {from0, from1})
-        {
-            CHECK(smlib_fillet_variable(cube, edge, 0.1, from, 1, v_knots, 5, v_radii, 3, &r) == SMLIB_OK);
-            if (r != nullptr)
-            {
-                CHECK(near(8000.0 - volume_of(r), removed, 1e-4));
-                done(r);
-            }
-        }
-        // Two corners (4, 2, 4, 2 at 0, 0.25, 0.75, 1): the straight 4 -> 2 in three pieces.
-        const double w_knots[6] = {0, 0, 0.25, 0.75, 1, 1};
-        const double w_radii[4] = {4, 2, 4, 2};
-        CHECK(smlib_fillet_variable(cube, edge, 0.1, from0, 1, w_knots, 6, w_radii, 4, &r) == SMLIB_OK);
-        if (r != nullptr)
-        {
-            CHECK(near(8000.0 - volume_of(r), removed, 1e-4));
-            done(r);
-        }
-        // The same law as a quadratic with a corner at 0.5 (the knot repeated twice): 4, 3, 2
-        // then 2, 3, 4, evenly spaced, are the straight halves again.
-        const double q_knots[8] = {0, 0, 0, 0.5, 0.5, 1, 1, 1};
-        const double q_radii[5] = {4, 3, 2, 3, 4};
-        CHECK(smlib_fillet_variable(cube, edge, 0.1, from0, 2, q_knots, 8, q_radii, 5, &r) == SMLIB_OK);
-        if (r != nullptr)
-        {
-            CHECK(near(8000.0 - volume_of(r), removed, 1e-4));
-            done(r);
-        }
-        // A radius of zero inside the edge would pinch the round to a point: refused.
         const double p_radii[3] = {4, 0, 4};
         CHECK(smlib_fillet_variable(cube, edge, 0.1, from0, 1, v_knots, 5, p_radii, 3, &r) == SMLIB_ERR_UNSUPPORTED && r == nullptr);
     }
@@ -5942,26 +5961,16 @@ int main(int argc, char **argv)
     // lies on the face, so the trace's span test held for any step up to its angle tolerance,
     // and the rails between the traced points cut across the law: the round came out up to
     // 0.05 mm off its radius and took 0.2% too much. Each span's rails are now held to the
-    // fillet solved inside the span. The round takes (1 - pi/4) r^2 per unit length, integrated
-    // here (Simpson, 2000 panels, exact to 1e-12 on this polynomial); the sections are cubics
-    // within 0.05% of the radius, so to 1e-4.
+    // fillet solved inside the span. The round is the balls' envelope: in each plane x = const the
+    // area it cuts off the corner (by rays from the corner, each meeting the union of the balls
+    // first at the least entry over them), integrated over x, takes 64.159987 (the balls' great
+    // circles, (1 - pi/4) r^2 per unit length, would take 65.6068); to 1e-4, the fitted sections.
     {
         const double edge[3] = {10, 20, 20};
         const double from0[3] = {0, 20, 20};
         const double knots[8] = {0, 0, 0, 0, 1, 1, 1, 1};
         const double radii[4] = {6, 6, 1, 1};
-        auto law = [&](double t) {
-            const double u = 1.0 - t;
-            return radii[0] * u * u * u + 3.0 * radii[1] * u * u * t + 3.0 * radii[2] * u * t * t + radii[3] * t * t * t;
-        };
-        const int n = 2000;
-        double sum = 0.0;
-        for (int i = 0; i <= n; ++i)
-        {
-            const double t = static_cast<double>(i) / n, rr = law(t);
-            sum += (i == 0 || i == n ? 1.0 : (i % 2 == 1 ? 4.0 : 2.0)) * rr * rr;
-        }
-        const double removed = (1.0 - PI / 4.0) * 20.0 * sum / (3.0 * n);
+        const double removed = 64.159987;
         CHECK(smlib_fillet_variable(cube, edge, 0.1, from0, 3, knots, 8, radii, 4, &r) == SMLIB_OK);
         if (r != nullptr)
         {
@@ -5971,17 +5980,20 @@ int main(int argc, char **argv)
     }
 
     // A variable round 2 -> r1 on the top edge x = 10, z = 30 of a 10 x 20 x 30 box. The top is
-    // 10 wide: up to r1 = 10 the round fits, and takes (1 - pi/4) L (a^2 + ab + b^2) / 3. Past
-    // it the contact line on the top leaves it across its far edge x = 0 before the round's end
-    // (and past r1 = 30 the one on the side leaves it across its bottom edge): a convex round
-    // overflowing cliffs, built on the faces' continuations and subtracted from the box, from
-    // either end, as is a constant R12. The analytic volume integrates, along y, the section of
-    // the round's removal region (the r x r square at the edge less the quarter disc about the
-    // ball's centre (10 - r, 30 - r), SMLib's circular section in the planes y = const) inside
-    // the box's section [0, 10] x [0, 30] (closed form in local coordinates a, b from the disc's
-    // centre: a, b in [0, r], a^2 + b^2 >= r^2, a >= r - 10, b >= r - 30), by Gauss-Legendre in
-    // pieces split where r passes 10 and 30. SMLib's variable round sections are cubics within
-    // about 2e-5 of the radius: the variable rounds are checked to 1e-4, the constant to 1e-7.
+    // 10 wide: up to r1 = 10 the round fits. Past it the contact line on the top leaves it across
+    // its far edge x = 0 before the round's end (and past r1 = 30 the one on the side leaves it
+    // across its bottom edge): a convex round overflowing cliffs, built on the faces'
+    // continuations and subtracted from the box, from either end, as is a constant R12. A linear
+    // law's balls envelop a cone; its removal region in each plane y = const (the corner cut off
+    // by the cone's section, by rays from the corner, each meeting the union of the balls first
+    // at the least entry over them, and inside the box's section [0, 10] x [0, 30]), integrated
+    // over y, takes 168.743038 for 2 -> 10, 197.556852 for 11, 496.112865 for 20, 815.942555
+    // for 30 and 1306.391503 for 50 (the balls' great circles would take 177.40, 210.30, 608.45,
+    // 1180.6 and 2453.8). The constant R12's round is the great circle's: the r x r square at
+    // the edge less the quarter disc about the ball's centre (10 - r, 30 - r) inside the box's
+    // section (closed form in local coordinates a, b from the disc's centre: a, b in [0, r],
+    // a^2 + b^2 >= r^2, a >= r - 10, b >= r - 30). The variable rounds' sections are fitted, to
+    // 1e-4; the constant to 1e-7.
     // (The corner without an end rib, for a short side edge, had built r1 = 20 and 30 across the
     // top's far edge as valid bodies; then they were refused, SMLIB_ERR_NO_ROOM.)
     {
@@ -5994,7 +6006,7 @@ int main(int argc, char **argv)
         CHECK(smlib_fillet_variable(slab, edge, 0.1, from0, 1, knots, 4, fits, 2, &r) == SMLIB_OK);
         if (r != nullptr)
         {
-            CHECK(near(6000.0 - volume_of(r), (1.0 - PI / 4.0) * 20.0 * (4.0 + 20.0 + 100.0) / 3.0, 1e-4));
+            CHECK(near(6000.0 - volume_of(r), 168.743038, 1e-4));
             done(r);
         }
         // the integral of sqrt(r^2 - a^2) da
@@ -6014,54 +6026,12 @@ int main(int argc, char **argv)
             const double top = std::max(al, std::sqrt(std::max(rr * rr - be * be, 0.0)));
             return (rr - al) * rr - (disc(rr, top) - disc(rr, al) + be * (rr - top));
         };
-        // 20-point Gauss-Legendre on [lo, hi]
-        auto gauss = [](double lo, double hi, const auto &f)
-        {
-            static const double x[10] = {0.0765265211334973, 0.2277858511416451, 0.3737060887154195, 0.5108670019508271,
-                                         0.6360536807265150, 0.7463319064601508, 0.8391169718222188, 0.9122344282513259,
-                                         0.9639719272779138, 0.9931285991850949};
-            static const double w[10] = {0.1527533871307258, 0.1491729864726037, 0.1420961093183820, 0.1316886384491766,
-                                         0.1181945319615184, 0.1019301198172404, 0.0832767415767048, 0.0626720483341091,
-                                         0.0406014298003869, 0.0176140071391521};
-            const double m = 0.5 * (lo + hi), h = 0.5 * (hi - lo);
-            double sum = 0.0;
-            for (int i = 0; i < 10; ++i)
-            {
-                sum += w[i] * (f(m - h * x[i]) + f(m + h * x[i]));
-            }
-            return h * sum;
-        };
-        // the volume removed by the round going linearly r0 -> r1 along y in [0, 20]
-        auto removed = [&](double r0, double r1)
-        {
-            auto at = [&](double y) { return section(r0 + (r1 - r0) * y / 20.0); };
-            std::vector<double> cuts = {0.0, 20.0};
-            for (double c : {10.0, 30.0})
-            {
-                const double y = (r1 != r0) ? 20.0 * (c - r0) / (r1 - r0) : -1.0;
-                if (y > 0.0 && y < 20.0)
-                {
-                    cuts.push_back(y);
-                }
-            }
-            std::sort(cuts.begin(), cuts.end());
-            double sum = 0.0;
-            for (size_t i = 0; i + 1 < cuts.size(); ++i)
-            {
-                // ten pieces per stretch between kinks
-                for (int k = 0; k < 10; ++k)
-                {
-                    const double lo = cuts[i] + (cuts[i + 1] - cuts[i]) * k / 10.0, hi = cuts[i] + (cuts[i + 1] - cuts[i]) * (k + 1) / 10.0;
-                    sum += gauss(lo, hi, at);
-                }
-            }
-            return sum;
-        };
-        for (double r1 : {11.0, 20.0, 30.0, 50.0})
+        const std::array<std::array<double, 2>, 4> overflows = {{{11.0, 197.556852}, {20.0, 496.112865}, {30.0, 815.942555}, {50.0, 1306.391503}}};
+        for (const auto &[r1, taken] : overflows)
         {
             const double law[2] = {2, r1};
             const double back[2] = {r1, 2};
-            const double want = 6000.0 - removed(2.0, r1);
+            const double want = 6000.0 - taken;
             for (int from = 0; from < 2; ++from)
             {
                 const int32_t s = from == 0 ? smlib_fillet_variable(slab, edge, 0.1, from0, 1, knots, 4, law, 2, &r)
@@ -6081,7 +6051,7 @@ int main(int argc, char **argv)
         CHECK(smlib_fillet(slab, edge, 1, 0.1, 12.0, &r, nullptr) == SMLIB_OK);
         if (r != nullptr)
         {
-            CHECK(near(volume_of(r), 6000.0 - removed(12.0, 12.0), 1e-7));
+            CHECK(near(volume_of(r), 6000.0 - 20.0 * section(12.0), 1e-7));
             done(r);
         }
         smlib_brep_free(slab);
@@ -6915,10 +6885,13 @@ int main(int argc, char **argv)
     // extended past the edge's end, is larger: there it leaves the top across the right face's
     // edge. The second search for that rail's end held the radius at r1 even though the corner
     // is not calculated as constant radius (the first search holds it only then), found the
-    // arc's end, and the variable round's trace could not pass through it (1001). Removed: the
-    // section (1 - pi/4) r^2 along 55, and past x = 55 (s along it, the law going on as
-    // r = r1 + (r1 - r0) s / 55) the square r x r less the quarter disc as far as the R5
-    // cylinder reaches, y - 35 < sqrt(25 - s^2).
+    // arc's end, and the variable round's trace could not pass through it (1001). The linear
+    // law's balls envelop a cone, going on past x = 55; its removal region in each plane
+    // x = const (the corner cut off by the cone's section, by rays from the corner, each meeting
+    // the union of the balls first at the least entry over them, and past x = 55, s along it,
+    // only as far as the R5 cylinder reaches, y - 35 < sqrt(25 - s^2)), integrated over x,
+    // takes 137.573156 for r0 = 1 and 168.865031 for r0 = 2 (the balls' great circles would
+    // take 137.819 and 169.034).
     {
         smlib_brep *block = box(0, 0, 0, 60, 40, 20);
         const double corner_edge[3] = {60, 40, 10};
@@ -6927,22 +6900,11 @@ int main(int argc, char **argv)
         const double back_top[3] = {27.5, 40, 20};
         const double from[3] = {0, 40, 20};
         const double knots[4] = {0, 0, 1, 1};
-        auto under_arc = [](double rr, double a) { // the integral of rr - sqrt(rr^2 - w^2) over 0 < w < a
-            a = std::max(0.0, std::min(a, rr));
-            return rr * a - (0.5 * a * std::sqrt(rr * rr - a * a) + 0.5 * rr * rr * std::asin(a / rr));
-        };
-        for (double r0 : {1.0, 2.0})
+        const std::array<std::array<double, 2>, 2> starts = {{{1.0, 137.573156}, {2.0, 168.865031}}};
+        for (const auto &[r0, removed] : starts)
         {
             const double r1 = 5.0;
             const double law[2] = {r0, r1};
-            double removed = (1.0 - PI / 4.0) * 55.0 * (r1 * r1 * r1 - r0 * r0 * r0) / (3.0 * (r1 - r0));
-            const int steps = 200000;
-            for (int i = 0; i < steps; ++i)
-            {
-                double s = (i + 0.5) * 5.0 / steps;
-                double rr = r1 + (r1 - r0) * s / 55.0;
-                removed += under_arc(rr, std::sqrt(25.0 - s * s) - 5.0 + rr) * 5.0 / steps;
-            }
             if (rounded != nullptr && smlib_fillet_variable(rounded, back_top, 0.1, from, 1, knots, 4, law, 2, &r) == SMLIB_OK)
             {
                 CHECK(near(volume_of(r), volume_of(rounded) - removed, 1e-6));
