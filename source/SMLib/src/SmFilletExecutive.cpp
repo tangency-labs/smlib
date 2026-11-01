@@ -796,6 +796,7 @@ SmStatus SmFilletExecutive::SetFilletParameters
   m_bDoTrimming          = TRUE;
   m_bDoClassification    = TRUE;
   m_bCliffOverflow       = FALSE; // SolidCraft change
+  m_vOpenEnds.clear();
   m_vFanSplitPoints.clear(); // SolidCraft change
   m_vOverflowEdges.RemoveAll(); // SolidCraft change
   m_vMitredEdges.RemoveAll();   // SolidCraft change
@@ -977,6 +978,7 @@ SmStatus SmFilletExecutive::SetFilletParameters
   m_bDoTrimming          = TRUE;
   m_bDoClassification    = TRUE;
   m_bCliffOverflow       = FALSE; // SolidCraft change
+  m_vOpenEnds.clear();
   m_vFanSplitPoints.clear(); // SolidCraft change
   m_vOverflowEdges.RemoveAll(); // SolidCraft change
   m_vMitredEdges.RemoveAll();   // SolidCraft change

@@ -13,14 +13,17 @@
 * (CreateFilletBrep, m_bCliffOverflow): m_pFilletBrep is the sheet of fillet
 * and corner faces, its boundary on the surfaces of the faces the blends roll
 * on and end on, or past them where the blend runs on. TrimAtCreases
+*   0. cuts the fillet off at the ends its Nx1 corners left uncut, by the end
+*      face's surface continued (CutFilletAtOpenEnd: the end's own event);
 *   1. finds each sheet face's creases: its surface sectioned by the surface of
 *      each face of the body it may cross (exactly by a plane: a line on a
 *      cylinder, a conic on a cone, a circle on a torus; a certified surface
 *      intersection otherwise), each kept where it lies on that face;
 *   2. splits the sheet face along them and keeps the pieces inside the body;
 *   3. continues a support face on its plane to a kept rail that runs past the
-*      face's foot into the material (a chamfer's leg past its wall's foot: the
-*      wall carries on down to the leg), between the lines of its side edges;
+*      face's boundary into the material (a chamfer's leg past its wall's foot:
+*      the wall carries on down to the leg; an end rib under a lip: the end face
+*      carries on under the lip);
 *   4. imprints the kept sheet's boundary (its rails, creases and end ribs) on
 *      the body's faces, deletes the faces it encloses round the blended edges,
 *      and sews the sheet in.
@@ -226,11 +229,13 @@ struct sm_Extension
   SmVector3d                m_sNormal;
   std::vector<sm_LoopCurve> m_vLoop;
   std::vector<SmEdge*>      m_vAlong;
+  std::vector<std::pair<SmPoint3d, SmPoint3d>> m_vAlongPieces;  // pieces of the face's edges it runs along, by their ends
   sm_Extension() = default;
   sm_Extension(const sm_Extension &) = delete;
   sm_Extension & operator=(const sm_Extension &) = delete;
   sm_Extension(sm_Extension && rOther) noexcept
-    : m_sAt( rOther.m_sAt ), m_sNormal( rOther.m_sNormal ), m_vLoop( std::move( rOther.m_vLoop )), m_vAlong( std::move( rOther.m_vAlong ))
+    : m_sAt( rOther.m_sAt ), m_sNormal( rOther.m_sNormal ), m_vLoop( std::move( rOther.m_vLoop )), m_vAlong( std::move( rOther.m_vAlong )),
+      m_vAlongPieces( std::move( rOther.m_vAlongPieces ))
     { rOther.m_vLoop.clear(); }
   ~sm_Extension() { for (sm_LoopCurve & rC : m_vLoop) { delete rC.m_pCurve; } }
 };
@@ -303,57 +308,155 @@ SmStatus sm_SideLineThrough(const SmFace & crFace, const SmPoint3d & crPnt, cons
   return SM_SUCCESS;
 }
 
-/* The extension of the planar support face crFace to the kept rails on its plane that run past
-   its boundary into the material (a chamfer whose leg passes the foot of its wall: the wall's
-   plane carries on down to the leg). Each chain of such rails ends at vertices on the lines of
-   the face's side edges (the walls beside it meet it there); the loop runs along the chain, along
-   each end's side line to the side edge's end, and along the face's boundary between those ends,
-   away from the blended edges. rcWhy is set where the extension is not one this builds. */
+// A run of a kept rail off its support face, in the material: its curve (owned), and at each end
+// the sheet vertex it ends at (where the rail ends there) or the face's edge it crosses there.
+struct sm_OffRun
+{
+  SmCurve  * m_pCurve = NULL;
+  SmPoint3d  m_asEnd[2];
+  SmVertex * m_apVertex[2] = { NULL, NULL };
+  SmEdge   * m_apCross[2]  = { NULL, NULL };
+  sm_OffRun() = default;
+  sm_OffRun(const sm_OffRun &) = delete;
+  sm_OffRun & operator=(const sm_OffRun &) = delete;
+  sm_OffRun(sm_OffRun && rOther) noexcept
+    : m_pCurve( rOther.m_pCurve )
+    {
+      for (ULONG k=0; k<2; k++) { m_asEnd[k] = rOther.m_asEnd[k]; m_apVertex[k] = rOther.m_apVertex[k]; m_apCross[k] = rOther.m_apCross[k]; }
+      rOther.m_pCurve = NULL;
+    }
+  ~sm_OffRun() { delete m_pCurve; }
+};
+
+// A copy of crEdge's curve from crFrom to crTo (both on it).
+SmStatus sm_EdgePiece(const SmContext & crContext, const SmEdge & crEdge, const SmPoint3d & crFrom, const SmPoint3d & crTo, double dTol,
+                      SmCurve *& rpPiece)
+{
+  rpPiece = NULL;
+  SmCurve * pCurve = NULL;
+  SER( sm_EdgeCurve( crContext, crEdge, pCurve ));
+  SmObjDelete sClean( pCurve );
+  double adT[2] = { 0.0, 0.0 };
+  const SmPoint3d asAt[2] = { crFrom, crTo };
+  for (ULONG k=0; k<2; k++)
+    {
+      SmBoolean bOn = FALSE;
+      double    dDist = SM_BIG_DOUBLE;
+      SER( pCurve->DropPoint( pCurve->GetNaturalInterval(), asAt[k], NULL, SM_BIG_DOUBLE, NULL, bOn, adT[k], dDist ));
+      if ( !bOn || dDist > 10.0 * dTol )
+        { SER( SM_ERR ); }
+    }
+  SmExtent1d sIvl;
+  SER( sIvl.SetMinMax( smos_Min( adT[0], adT[1] ), smos_Max( adT[0], adT[1] )));
+  if ( sIvl.GetLength() <= SM_EFF_ZERO )
+    { return SM_SUCCESS; }
+  if ( !( sIvl == pCurve->GetNaturalInterval() ))
+    { SER( pCurve->Trim( sIvl )); }
+  sClean.Clear();
+  rpPiece = pCurve;
+  return SM_SUCCESS;
+}
+
+// A point of a loop on the plane (crAt, crX, crY): its sampled polygon, in order.
+SmStatus sm_LoopPolygon(const std::vector<sm_LoopCurve> & crLoop, const SmPoint3d & crAt, const SmVector3d & crX, const SmVector3d & crY,
+                        std::vector<SmPoint2d> & rUV)
+{
+  for (const sm_LoopCurve & rC : crLoop)
+    {
+      SmExtent1d sIvl = rC.m_pCurve->GetNaturalInterval();
+      for (ULONG i=0; i<16; i++)
+        {
+          const double dT = ( rC.m_eOrient == SM_OT_SAME ) ? i / 16.0 : 1.0 - i / 16.0;
+          SmPoint3d sPnt;
+          SER( rC.m_pCurve->EvaluatePoint( sIvl.Evaluate( dT ), sPnt ));
+          const SmVector3d sD = sPnt - crAt;
+          rUV.push_back( SmPoint2d( sD.Dot( crX ), sD.Dot( crY )));
+        }
+    }
+  return SM_SUCCESS;
+}
+
+// Axes in the plane square to crNormal.
+SmStatus sm_PlaneAxes(const SmVector3d & crNormal, SmVector3d & rX, SmVector3d & rY)
+{
+  SmVector3d sAxis( 1.0, 0.0, 0.0 );
+  if ( smos_Fabs( crNormal.y ) < smos_Fabs( crNormal.x ) && smos_Fabs( crNormal.y ) <= smos_Fabs( crNormal.z ))
+    { sAxis = SmVector3d( 0.0, 1.0, 0.0 ); }
+  else if ( smos_Fabs( crNormal.z ) < smos_Fabs( crNormal.x ))
+    { sAxis = SmVector3d( 0.0, 0.0, 1.0 ); }
+  rX = crNormal * sAxis;
+  if ( rX.Unitize() != SM_SUCCESS )
+    { SER( SM_ERR ); }
+  rY = crNormal * rX;
+  return SM_SUCCESS;
+}
+
+/* The extension of the planar support face crFace to the kept rails on its plane that run off it
+   into the material: a chamfer's leg past its wall's foot (the wall carries on down to the leg),
+   an end rib under a lip standing on the end face (the end face carries on under the lip). Each
+   chain of such runs ends where it crosses the face's boundary, or at a vertex of the sheet on the
+   line of a side edge of the face (the walls beside it meet it there), joined to that edge's end
+   along its line. The loop runs along the chain and back along the face's boundary, off the
+   blended and side edges, the way round whose inside, beside the chain, lies in the material.
+   rcWhy is set where the extension is not one this builds. */
 SmStatus sm_Extend(const SmContext & crContext, const SmBrep & crTarget, const SmFace & crFace, const std::vector<SmEdge*> & crRails,
                    const std::set<SmEdge*> & crBlended, double dTol, std::vector<sm_Extension> & rExtensions, const TCHAR *& rcWhy)
 {
   rcWhy = NULL;
-  // the rails wholly off the face, in the material
-  std::vector<SmEdge*> vOff;
+  // the runs of the rails off the face, in the material
+  std::vector<sm_OffRun> vRuns;
   for (SmEdge * pRail : crRails)
     {
       SmCurve * pCurve = NULL;
       SER( sm_EdgeCurve( crContext, *pRail, pCurve ));
       SmObjDelete sClean( pCurve );
-      SmCurveClassification sClass( pCurve, pCurve->GetNaturalInterval(), NULL, dTol );
+      const SmExtent1d sAll = pCurve->GetNaturalInterval();
+      SmCurveClassification sClass( pCurve, sAll, NULL, dTol );
       SER( crFace.CurveOnClassify( TRUE, sClass, TRUE ));
-      SmBoolean bOff = FALSE, bOn = FALSE;
       for (ULONG j=0; j<sClass.GetSize(); j++)
         {
+          if ( sClass[j].m_vMid.GetPointClass() != SM_PC_UNKNOWN )
+            { continue; }
           SmExtent1d sRun = sClass.GetSubInterval( j );
-          SmPoint3d sA, sB;
+          SmPoint3d sA, sB, sMid;
           SER( pCurve->EvaluatePoint( sRun.GetMin(), sA ));
           SER( pCurve->EvaluatePoint( sRun.GetMax(), sB ));
           if ( sA.DistanceBetween( sB ) <= dTol )
             { continue; }
-          if ( sClass[j].m_vMid.GetPointClass() == SM_PC_UNKNOWN )
+          SER( pCurve->EvaluatePoint( sRun.Evaluate( 0.5 ), sMid ));
+          SmBoolean bIn = FALSE, bOnBoundary = FALSE;
+          SER( sm_InMaterial( crTarget, sMid, bIn, bOnBoundary ));
+          if ( !bIn )
+            { continue; }  // in the open: cut off along a crease elsewhere
+          sm_OffRun sRunOff;
+          SER( pCurve->Copy( crContext, sRunOff.m_pCurve ));
+          NER(sRunOff.m_pCurve);
+          if ( !( sRun == sRunOff.m_pCurve->GetNaturalInterval() ))
+            { SER( sRunOff.m_pCurve->Trim( sRun )); }
+          sRunOff.m_asEnd[0] = sA;
+          sRunOff.m_asEnd[1] = sB;
+          const SmPointClassification * apPC[2] = { &sClass[j].m_vStart, &sClass[j].m_vEnd };
+          const double adT[2] = { sRun.GetMin(), sRun.GetMax() };
+          for (ULONG k=0; k<2; k++)
             {
-              SmPoint3d sMid;
-              SER( pCurve->EvaluatePoint( sRun.Evaluate( 0.5 ), sMid ));
-              SmBoolean bIn = FALSE, bOnBoundary = FALSE;
-              SER( sm_InMaterial( crTarget, sMid, bIn, bOnBoundary ));
-              if ( bIn )
-                { bOff = TRUE; }
-              else
-                { bOn = TRUE; }  // in the open: cut off along a crease elsewhere
+              SmVertex * pRailEnd = ( smos_Fabs( adT[k] - sAll.GetMin() ) <= SM_EFF_ZERO_SQRT * smos_Max( 1.0, sAll.GetLength() ))
+                                    ? pRail->GetStartVertex()
+                                    : ( smos_Fabs( adT[k] - sAll.GetMax() ) <= SM_EFF_ZERO_SQRT * smos_Max( 1.0, sAll.GetLength() ))
+                                      ? pRail->GetEndVertex() : NULL;
+              if ( pRailEnd != NULL && pRailEnd->GetPoint().DistanceBetween( sRunOff.m_asEnd[k] ) <= 10.0 * dTol )
+                { sRunOff.m_apVertex[k] = pRailEnd; }
+              else if ( apPC[k]->GetPointClass() == SM_PC_EDGE )
+                { sRunOff.m_apCross[k] = SM_CAST_PTR( SmEdge, apPC[k]->GetObject() ); }
+              if ( sRunOff.m_apVertex[k] == NULL && sRunOff.m_apCross[k] == NULL )
+                {
+                  rcWhy = _T("Fillet Error: a blend's rail runs off a face into the material across a vertex of the face");
+                  return SM_ERR;
+                }
             }
-          else
-            { bOn = TRUE; }
+          vRuns.push_back( std::move( sRunOff ));
         }
-      if ( bOff && bOn )
-        {
-          rcWhy = _T("Fillet Error: a blend's rail runs past a face's boundary into the material partway along it");
-          return SM_ERR;
-        }
-      if ( bOff )
-        { vOff.push_back( pRail ); }
     }
-  if ( vOff.empty() )
+  if ( vRuns.empty() )
     { return SM_SUCCESS; }
 
   SmPoint3d  sAt;
@@ -365,56 +468,69 @@ SmStatus sm_Extend(const SmContext & crContext, const SmBrep & crTarget, const S
       rcWhy = _T("Fillet Error: a blend's rail runs past the boundary of a face that is not planar into the material");
       return SM_ERR;
     }
+  SmVector3d sX, sY;
+  SER( sm_PlaneAxes( sNormal, sX, sY ));
+  SmTArray<SmEdge*> sFaceEdges;
+  crFace.GetEdges( sFaceEdges );
 
-  // the chains of off rails, by the sheet's vertices
-  std::set<SmEdge*> sDone;
-  for (SmEdge * pFirst : vOff)
+  // the chains of runs, joined at the sheet's vertices; each run once
+  std::vector<bool> vUsed( vRuns.size(), false );
+  for (size_t r0=0; r0<vRuns.size(); r0++)
     {
-      if ( sDone.count( pFirst ))
+      if ( vUsed[r0] )
         { continue; }
-      std::vector<SmEdge*>   vChain( 1, pFirst );
-      std::vector<SmVertex*> vVerts = { pFirst->GetStartVertex(), pFirst->GetEndVertex() };
-      sDone.insert( pFirst );
+      // the chain as (run, reversed) pairs, its ends the first run's start and the last run's end
+      std::vector<std::pair<size_t, bool>> vChain( 1, std::make_pair( r0, false ));
+      vUsed[r0] = true;
       for (ULONG lSide=0; lSide<2; lSide++)
         {
           for (;;)
             {
-              SmVertex * pAt = ( lSide == 0 ) ? vVerts.back() : vVerts.front();
-              SmEdge   * pNext = NULL;
-              for (SmEdge * pE : vOff)
-                {
-                  if ( !sDone.count( pE ) && ( pE->GetStartVertex() == pAt || pE->GetEndVertex() == pAt ))
-                    { pNext = pE; break; }
-                }
-              if ( pNext == NULL )
+              const std::pair<size_t, bool> & rAt = ( lSide == 0 ) ? vChain.back() : vChain.front();
+              const sm_OffRun & rRun = vRuns[rAt.first];
+              const ULONG lEnd = ( lSide == 0 ) ? ( rAt.second ? 0 : 1 ) : ( rAt.second ? 1 : 0 );
+              SmVertex * pV = rRun.m_apVertex[lEnd];
+              if ( pV == NULL )
                 { break; }
-              sDone.insert( pNext );
-              if ( lSide == 0 )
-                { vChain.push_back( pNext ); vVerts.push_back( pNext->GetOtherVertex( pAt )); }
-              else
-                { vChain.insert( vChain.begin(), pNext ); vVerts.insert( vVerts.begin(), pNext->GetOtherVertex( pAt )); }
+              size_t lNext = vRuns.size();
+              bool   bRev  = false;
+              for (size_t q=0; q<vRuns.size(); q++)
+                {
+                  if ( vUsed[q] )
+                    { continue; }
+                  if ( vRuns[q].m_apVertex[0] == pV ) { lNext = q; bRev = ( lSide != 0 ); break; }
+                  if ( vRuns[q].m_apVertex[1] == pV ) { lNext = q; bRev = ( lSide == 0 ); break; }
+                }
+              if ( lNext == vRuns.size() )
+                { break; }
+              vUsed[lNext] = true;
+              if ( lSide == 0 ) { vChain.push_back( std::make_pair( lNext, bRev )); }
+              else              { vChain.insert( vChain.begin(), std::make_pair( lNext, bRev )); }
             }
         }
-      if ( vVerts.front() == vVerts.back() )
+      // the chain's two ends: [0] its start, [1] its end
+      SmPoint3d  asEnd[2];
+      SmVertex * apV[2];
+      SmEdge   * apCross[2];
+      {
+        const sm_OffRun & rFirst = vRuns[vChain.front().first];
+        const sm_OffRun & rLast  = vRuns[vChain.back().first];
+        const ULONG lF = vChain.front().second ? 1 : 0, lL = vChain.back().second ? 0 : 1;
+        asEnd[0] = rFirst.m_asEnd[lF]; apV[0] = rFirst.m_apVertex[lF]; apCross[0] = rFirst.m_apCross[lF];
+        asEnd[1] = rLast.m_asEnd[lL];  apV[1] = rLast.m_apVertex[lL];  apCross[1] = rLast.m_apCross[lL];
+      }
+      if ( apV[0] != NULL && apV[0] == apV[1] )
         {
           rcWhy = _T("Fillet Error: a blend's rail runs all round past a face's boundary into the material");
           return SM_ERR;
         }
-      sm_Extension sExt;
-      sExt.m_sAt     = sAt;
-      sExt.m_sNormal = sNormal;
-      for (size_t e=0; e<vChain.size(); e++)
-        {
-          SmCurve * pCurve = NULL;
-          SER( sm_EdgeCurve( crContext, *vChain[e], pCurve ));
-          SER( sm_AddCurve( sExt.m_vLoop, pCurve, vVerts[e]->GetPoint(), vVerts[e+1]->GetPoint() ));
-        }
-      // each end along its side line to the side edge's end on the face
+      // where each end meets the face's boundary: its crossing, or its side line's end on the face
       SmEdge   * apSide[2] = { NULL, NULL };
       SmVertex * apFoot[2] = { NULL, NULL };
-      const SmPoint3d asEnd[2] = { vVerts.front()->GetPoint(), vVerts.back()->GetPoint() };
       for (ULONG k=0; k<2; k++)
         {
+          if ( apCross[k] != NULL )
+            { continue; }
           SER( sm_SideLineThrough( crFace, asEnd[k], crBlended, 10.0 * dTol, apSide[k], apFoot[k] ));
           if ( apSide[k] == NULL )
             {
@@ -422,50 +538,181 @@ SmStatus sm_Extend(const SmContext & crContext, const SmBrep & crTarget, const S
               return SM_ERR;
             }
         }
-      if ( asEnd[1].DistanceBetween( apFoot[1]->GetPoint() ) > dTol )
+      // The ways round the face's boundary from the chain's end to its start: from a foot vertex,
+      // or from a crossing to either end of the edge crossed, on along edges that are neither
+      // blended nor side edges, to the start's foot or crossed edge.
+      struct sm_Way { std::vector<SmEdge*> m_vEdges; std::vector<SmVertex*> m_vVerts; };
+      std::vector<sm_Way> vWays;
+      std::vector<SmVertex*> vStarts;
+      if ( apFoot[1] != NULL ) { vStarts.push_back( apFoot[1] ); }
+      else { vStarts.push_back( apCross[1]->GetStartVertex() ); vStarts.push_back( apCross[1]->GetEndVertex() ); }
+      for (SmVertex * pStart : vStarts)
         {
-          SmBSplineCurve * pLine = NULL;
-          SER( SmBSplineCurve::CreateLineSegment( crContext, 3, asEnd[1], apFoot[1]->GetPoint(), pLine ));
-          SER( sm_AddCurve( sExt.m_vLoop, pLine, asEnd[1], apFoot[1]->GetPoint() ));
-        }
-      // along the face's boundary from the end's foot to the start's, off the blended and side edges
-      SmTArray<SmEdge*> sEdges;
-      crFace.GetEdges( sEdges );
-      SmVertex * pAt = apFoot[1];
-      SmEdge   * pFrom = NULL;
-      for (ULONG lSteps=0; pAt != apFoot[0]; lSteps++)
-        {
-          SmEdge * pNext = NULL;
-          for (ULONG e=0; e<sEdges.GetSize() && lSteps<=sEdges.GetSize(); e++)
+          // a start edge's own direction, from a foot: each edge at it
+          std::vector<SmEdge*> vFirst;
+          if ( apFoot[1] != NULL )
             {
-              SmEdge * pE = sEdges[e];
-              if ( pE == pFrom || pE == apSide[0] || pE == apSide[1] || crBlended.count( pE )
-                   || ( pE->GetStartVertex() != pAt && pE->GetEndVertex() != pAt ))
+              for (ULONG e=0; e<sFaceEdges.GetSize(); e++)
+                {
+                  SmEdge * pE = sFaceEdges[e];
+                  if ( pE != apSide[0] && pE != apSide[1] && !crBlended.count( pE ) && ( pE->GetStartVertex() == pStart || pE->GetEndVertex() == pStart ))
+                    { vFirst.push_back( pE ); }
+                }
+            }
+          else
+            { vFirst.push_back( NULL ); }  // leaving the crossed edge at pStart
+          for (SmEdge * pFirst : vFirst)
+            {
+              sm_Way sWay;
+              sWay.m_vVerts.push_back( pStart );
+              SmVertex * pAt = pStart;
+              SmEdge   * pFrom = ( pFirst == NULL ) ? apCross[1] : NULL;
+              SmEdge   * pNext = pFirst;
+              SmBoolean  bDone = FALSE;
+              for (ULONG lSteps=0; lSteps<=sFaceEdges.GetSize() && !bDone; lSteps++)
+                {
+                  // arrived: at the start's foot, or at an end of the edge the start crosses
+                  if ( pNext == NULL && (( apFoot[0] != NULL && pAt == apFoot[0] ) ||
+                                         ( apCross[0] != NULL && pFrom != NULL && pFrom != apCross[0] &&
+                                           ( apCross[0]->GetStartVertex() == pAt || apCross[0]->GetEndVertex() == pAt ))))
+                    { bDone = TRUE; break; }
+                  if ( pNext == NULL )
+                    {
+                      for (ULONG e=0; e<sFaceEdges.GetSize(); e++)
+                        {
+                          SmEdge * pE = sFaceEdges[e];
+                          if ( pE == pFrom || pE == apSide[0] || pE == apSide[1] || crBlended.count( pE ) || pE == apCross[1]
+                               || ( pE->GetStartVertex() != pAt && pE->GetEndVertex() != pAt ))
+                            { continue; }
+                          if ( pNext != NULL ) { pNext = NULL; break; }  // a branch: no one way
+                          pNext = pE;
+                        }
+                      if ( pNext == NULL )
+                        { break; }
+                    }
+                  if ( pNext == apCross[0] && apCross[0] != NULL )
+                    { pFrom = pNext; bDone = TRUE; break; }  // the start's crossing lies on this edge
+                  sWay.m_vEdges.push_back( pNext );
+                  pAt = pNext->GetOtherVertex( pAt );
+                  sWay.m_vVerts.push_back( pAt );
+                  pFrom = pNext;
+                  pNext = NULL;
+                }
+              if ( bDone )
+                { vWays.push_back( sWay ); }
+            }
+        }
+      // each way's loop; the one whose inside beside the chain lies in the material
+      std::vector<sm_Extension> vCandidates;
+      for (const sm_Way & rWay : vWays)
+        {
+          sm_Extension sExt;
+          sExt.m_sAt     = sAt;
+          sExt.m_sNormal = sNormal;
+          for (const std::pair<size_t, bool> & rLink : vChain)
+            {
+              const sm_OffRun & rRun = vRuns[rLink.first];
+              SmCurve * pCopy = NULL;
+              SER( rRun.m_pCurve->Copy( crContext, pCopy ));
+              const ULONG lFrom = rLink.second ? 1 : 0;
+              SER( sm_AddCurve( sExt.m_vLoop, pCopy, rRun.m_asEnd[lFrom], rRun.m_asEnd[1 - lFrom] ));
+            }
+          // the end to the way's first vertex
+          SmPoint3d sHere = asEnd[1];
+          const SmPoint3d sFirst = rWay.m_vVerts.front()->GetPoint();
+          if ( sHere.DistanceBetween( sFirst ) > dTol )
+            {
+              SmCurve * pPiece = NULL;
+              if ( apCross[1] != NULL )
+                { SER( sm_EdgePiece( crContext, *apCross[1], sHere, sFirst, dTol, pPiece )); }
+              else
+                {
+                  SmBSplineCurve * pLine = NULL;
+                  SER( SmBSplineCurve::CreateLineSegment( crContext, 3, sHere, sFirst, pLine ));
+                  pPiece = pLine;
+                }
+              if ( pPiece != NULL )
+                { SER( sm_AddCurve( sExt.m_vLoop, pPiece, sHere, sFirst )); }
+              if ( apCross[1] != NULL )
+                { sExt.m_vAlongPieces.push_back( std::make_pair( sHere, sFirst )); }
+            }
+          for (size_t e=0; e<rWay.m_vEdges.size(); e++)
+            {
+              SmCurve * pCurve = NULL;
+              SER( sm_EdgeCurve( crContext, *rWay.m_vEdges[e], pCurve ));
+              SER( sm_AddCurve( sExt.m_vLoop, pCurve, rWay.m_vVerts[e]->GetPoint(), rWay.m_vVerts[e+1]->GetPoint() ));
+              sExt.m_vAlong.push_back( rWay.m_vEdges[e] );
+            }
+          // the way's last vertex to the start
+          const SmPoint3d sLast = rWay.m_vVerts.back()->GetPoint();
+          if ( sLast.DistanceBetween( asEnd[0] ) > dTol )
+            {
+              SmCurve * pPiece = NULL;
+              if ( apCross[0] != NULL )
+                { SER( sm_EdgePiece( crContext, *apCross[0], sLast, asEnd[0], dTol, pPiece )); }
+              else
+                {
+                  SmBSplineCurve * pLine = NULL;
+                  SER( SmBSplineCurve::CreateLineSegment( crContext, 3, sLast, asEnd[0], pLine ));
+                  pPiece = pLine;
+                }
+              if ( pPiece != NULL )
+                { SER( sm_AddCurve( sExt.m_vLoop, pPiece, sLast, asEnd[0] )); }
+              if ( apCross[0] != NULL )
+                { sExt.m_vAlongPieces.push_back( std::make_pair( sLast, asEnd[0] )); }
+            }
+          // inside beside the chain's middle: in the material, off the face
+          std::vector<SmPoint2d> vUV;
+          SER( sm_LoopPolygon( sExt.m_vLoop, sAt, sX, sY, vUV ));
+          double dArea = 0.0;
+          for (size_t p=0; p<vUV.size(); p++)
+            {
+              const SmPoint2d & rA = vUV[p];
+              const SmPoint2d & rB = vUV[(p+1) % vUV.size()];
+              dArea += rA.x * rB.y - rB.x * rA.y;
+            }
+          const sm_OffRun & rMidRun = vRuns[vChain.front().first];
+          SmExtent1d sIvl = rMidRun.m_pCurve->GetNaturalInterval();
+          SmVector3d asD[2];
+          SER( rMidRun.m_pCurve->Evaluate( sIvl.Evaluate( 0.5 ), 1, TRUE, asD, FALSE ));
+          SmVector3d sTan = vChain.front().second ? -asD[1] : asD[1];
+          const double dLen = rMidRun.m_asEnd[0].DistanceBetween( rMidRun.m_asEnd[1] );
+          SmVector3d sIn = sNormal * sTan;  // left of the run in the plane, as the loop runs
+          if ( sIn.Unitize() != SM_SUCCESS )
+            { SER( SM_ERR ); }
+          const double dSide = ( dArea > 0.0 ) ? 1.0 : -1.0;
+          SmPoint3d sProbe = SmPoint3d( asD[0] ) + sIn * ( dSide * 0.01 * dLen );
+          SmBoolean bIn = FALSE, bOnBoundary = FALSE;
+          SER( sm_InMaterial( crTarget, sProbe, bIn, bOnBoundary ));
+          // and on the side of the chain the blend takes off: toward the blended edge's nearest
+          // point, seen in the plane (the material may lie on both sides, a lip over the end)
+          double dNearest = SM_BIG_DOUBLE;
+          SmPoint3d sToward;
+          for (SmEdge * pBlended : crBlended)
+            {
+              SmBoolean bOnCurve = FALSE;
+              double    dParam = 0.0, dDist = SM_BIG_DOUBLE;
+              SER( pBlended->GetCurve()->DropPoint( pBlended->GetInterval(), SmPoint3d( asD[0] ), NULL, SM_BIG_DOUBLE, NULL, bOnCurve, dParam, dDist ));
+              if ( !bOnCurve || dDist >= dNearest )
                 { continue; }
-              if ( pNext != NULL )
-                { pNext = NULL; break; }  // a branch: not one path
-              pNext = pE;
+              dNearest = dDist;
+              SER( pBlended->GetCurve()->EvaluatePoint( dParam, sToward ));
             }
-          if ( pNext == NULL )
-            {
-              rcWhy = _T("Fillet Error: a blend's rail past a face's boundary does not close on the face between its side edges");
-              return SM_ERR;
-            }
-          SmVertex * pOther = pNext->GetOtherVertex( pAt );   NER(pOther);
-          SmCurve  * pCurve = NULL;
-          SER( sm_EdgeCurve( crContext, *pNext, pCurve ));
-          SER( sm_AddCurve( sExt.m_vLoop, pCurve, pAt->GetPoint(), pOther->GetPoint() ));
-          sExt.m_vAlong.push_back( pNext );
-          pFrom = pNext;
-          pAt   = pOther;
+          if ( dNearest == SM_BIG_DOUBLE )
+            { SER( SM_ERR ); }
+          SmVector3d sOff = sToward - SmPoint3d( asD[0] );
+          sOff = sOff - sNormal * sOff.Dot( sNormal );
+          if ( sOff.Dot( sIn ) * dSide <= 0.0 )
+            { bIn = FALSE; }
+          if ( bIn )
+            { vCandidates.push_back( std::move( sExt )); }
         }
-      if ( asEnd[0].DistanceBetween( apFoot[0]->GetPoint() ) > dTol )
+      if ( vCandidates.size() != 1 )
         {
-          SmBSplineCurve * pLine = NULL;
-          SER( SmBSplineCurve::CreateLineSegment( crContext, 3, apFoot[0]->GetPoint(), asEnd[0], pLine ));
-          SER( sm_AddCurve( sExt.m_vLoop, pLine, apFoot[0]->GetPoint(), asEnd[0] ));
+          rcWhy = _T("Fillet Error: a blend's rail past a face's boundary does not close on the face in one way");
+          return SM_ERR;
         }
-      rExtensions.push_back( std::move( sExt ));
+      rExtensions.push_back( std::move( vCandidates[0] ));
     }
   return SM_SUCCESS;
 }
@@ -475,30 +722,11 @@ SmStatus sm_Extend(const SmContext & crContext, const SmBrep & crTarget, const S
 SmStatus sm_MakeExtensionFace(const SmContext & crContext, SmBrep & rBrep, sm_Extension & rExt, double dTol, SmFace *& rpFace)
 {
   rpFace = NULL;
-  SmVector3d sAxis( 1.0, 0.0, 0.0 );
-  const SmVector3d & rN = rExt.m_sNormal;
-  if ( smos_Fabs( rN.y ) < smos_Fabs( rN.x ) && smos_Fabs( rN.y ) <= smos_Fabs( rN.z ))
-    { sAxis = SmVector3d( 0.0, 1.0, 0.0 ); }
-  else if ( smos_Fabs( rN.z ) < smos_Fabs( rN.x ))
-    { sAxis = SmVector3d( 0.0, 0.0, 1.0 ); }
-  SmVector3d sX = rN * sAxis;
-  if ( sX.Unitize() != SM_SUCCESS )
-    { SER( SM_ERR ); }
-  SmVector3d sY = rN * sX;
+  SmVector3d sX, sY;
+  SER( sm_PlaneAxes( rExt.m_sNormal, sX, sY ));
   // the loop's points in the plane's coordinates, in its order: its box and signed area
   std::vector<SmPoint2d> vUV;
-  for (const sm_LoopCurve & rC : rExt.m_vLoop)
-    {
-      SmExtent1d sIvl = rC.m_pCurve->GetNaturalInterval();
-      for (ULONG i=0; i<8; i++)
-        {
-          const double dT = ( rC.m_eOrient == SM_OT_SAME ) ? i / 8.0 : 1.0 - i / 8.0;
-          SmPoint3d sPnt;
-          SER( rC.m_pCurve->EvaluatePoint( sIvl.Evaluate( dT ), sPnt ));
-          const SmVector3d sD = sPnt - rExt.m_sAt;
-          vUV.push_back( SmPoint2d( sD.Dot( sX ), sD.Dot( sY )));
-        }
-    }
+  SER( sm_LoopPolygon( rExt.m_vLoop, rExt.m_sAt, sX, sY, vUV ));
   if ( vUV.empty() )
     { SER( SM_ERR ); }
   SmExtent2d sBox( vUV[0], vUV[0] );
@@ -644,6 +872,150 @@ static SmStatus sm_HoldsItsLaw
 } // end sm_HoldsItsLaw
 
 /*******************************************************************//**
+PURPOSE: SolidCraft change. Note an end of a fillet that its Nx1 corner left
+    uncut in a cliff overflow (SmFilletNx1Corner::CalcCornerEdgeGeom).
+
+NOTES: pEndFace's surface, continued, cuts the fillet off there
+    (CutFilletAtOpenEnd).
+***********************************************************************/
+SmStatus SmFilletExecutive::NoteOpenEnd
+  (SmFilletSolver * pSolver,   // in : the solver of the filleted edge
+   SmVertex       * pVertex,   // in : the edge's vertex at that end
+   SmFace         * pEndFace)  // in : the end face there
+{
+  NER(pSolver);
+  NER(pVertex);
+  NER(pEndFace);
+  SmFilletOpenEnd sEnd;
+  sEnd.m_pSolver  = pSolver;
+  sEnd.m_pVertex  = pVertex;
+  sEnd.m_pEndFace = pEndFace;
+  m_vOpenEnds.push_back( sEnd );
+  return SM_SUCCESS;
+} // end SmFilletExecutive::NoteOpenEnd
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. Cut the fillet off at an end its Nx1 corner left
+    uncut, by the end face's surface continued.
+
+NOTES: The fillet face of the end's solver runs on past the end, its rails
+    past their side edges. The end face, planar, continues as its plane: the
+    plane sections the fillet face (SmSurface::CreatePlanarSectionCurves,
+    exact for the fillet's analytic surfaces), its section nearest the
+    edge's end (the end rib) splits it (SmBrep::MergeCurvesOnSurface), and of
+    the two pieces the one beyond the
+    end goes: the piece kept holds the fillet's point nearest the middle of
+    the filleted edge. A rib that does not split the face in two is
+    SM_FILERR_NO_ROOM, as is an end face that is not planar.
+***********************************************************************/
+SmStatus SmFilletExecutive::CutFilletAtOpenEnd
+  (const SmFilletOpenEnd & crEnd)   // in : the end left uncut
+{
+  NER(crEnd.m_pSolver);
+  NER(crEnd.m_pEndFace);
+  SmFilletSolver * pSolver = crEnd.m_pSolver;
+  double           dTol    = pSolver->GetThisApproxTol3d();
+
+  const SmSurface * pEndSurface = crEnd.m_pEndFace->GetSurface();   NER(pEndSurface);
+  SmPoint3d  sAt;
+  SmVector3d sNormal;
+  if ( !pEndSurface->IsPlanar( SM_EFF_ZERO, &sAt, &sNormal ))
+    {
+      GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, _T("Fillet Error: a cliff overflow runs past a fillet end whose end face is not planar") );
+      return SM_ERR;
+    }
+  SmPlane sCut( sAt, sNormal, &m_crContext );
+
+  // the fillet's point nearest the middle of the filleted edge
+  SmEdge * pFilEdge = pSolver->GetEdgeuse(0)->GetEdge();             NER(pFilEdge);
+  SmPoint3d sEdgeMid;
+  SER( pFilEdge->GetCurve()->EvaluatePoint( pFilEdge->GetInterval().Evaluate( 0.5 ), sEdgeMid ));
+
+  SmTArray<SmFilletGeom*> sFGs;
+  pSolver->GetFilletGeoms( sFGs );
+  for (ULONG k=0; k<sFGs.GetSize(); k++)
+    {
+      SmFilletGeom * pFG = sFGs[k];
+      if ( pFG == NULL || pFG->GetFilletSurface() == NULL )
+        { continue; }
+      SmFace * pFace = SM_CAST_PTR( SmFace, pFG->GetFilletSurface()->GetOwner() );
+      if ( pFace == NULL || pFace->GetBrep() != m_pFilletBrep )
+        { continue; }
+      SmSurface * pSurface = pFace->GetSurface();                      NER(pSurface);
+
+      SmBoolean bDropped = FALSE, bMulti = FALSE;
+      SmPoint2d sMidUV;
+      double    dGap = SM_BIG_DOUBLE;
+      SER( pSurface->DropPoint( sEdgeMid, pFace->GetUVDomain(), NULL, bDropped, sMidUV, dGap, bMulti ));
+      if ( !bDropped )
+        { SER( SM_ERR ); }
+      SmPoint3d sKeep;
+      SER( pSurface->EvaluatePoint( sMidUV, sKeep ));
+
+      // section the face by the end's plane, and split it there
+      SmApproxTol3d       sApprox( dTol );
+      SmTArray<SmCurve*>  s3DCurves, sUVCurves;
+      SmObjsDelete<SmCurve*> sClean3D( &s3DCurves ), sCleanUV( &sUVCurves );
+      SER( pSurface->CreatePlanarSectionCurves( m_crContext, pFace->GetUVDomain(), sAt, sNormal, &sApprox, NULL, &s3DCurves, &sUVCurves ));
+      if ( s3DCurves.GetSize() == 0 )
+        { continue; }  // this face does not reach the end
+      // The end rib: the section nearest the edge's end (a fillet traced far past its end
+      // can cross the plane again out there, where it is cut off anyway).
+      ULONG  lRib = 0;
+      double dNearest = SM_BIG_DOUBLE;
+      for (ULONG c=0; c<s3DCurves.GetSize(); c++)
+        {
+          SmBoolean bOnCurve = FALSE;
+          double    dParam = 0.0, dDist = SM_BIG_DOUBLE;
+          SER( s3DCurves[c]->DropPoint( s3DCurves[c]->GetNaturalInterval(), crEnd.m_pVertex->GetPoint(), NULL, SM_BIG_DOUBLE, NULL, bOnCurve, dParam, dDist ));
+          if ( bOnCurve && dDist < dNearest )
+            {
+              dNearest = dDist;
+              lRib     = c;
+            }
+        }
+      SmTArray<SmCurve*> sRib3D, sRibUV;
+      sRib3D.Add( s3DCurves[lRib] );
+      if ( sUVCurves.GetSize() == s3DCurves.GetSize() )
+        { sRibUV.Add( sUVCurves[lRib] ); }
+      SmTArray<SmFace*> sNewFaces;
+      SmTArray<SmEdge*> sOnEdges;
+      SER( m_pFilletBrep->MergeCurvesOnSurface( *pSurface, dTol, sRib3D,
+                                                ( sRibUV.GetSize() == 1 ) ? &sRibUV : NULL,
+                                                sNewFaces, sOnEdges, FALSE, &sCut ));
+      if ( sNewFaces.GetSize() == 0 )
+        { continue; }  // the section only touches it
+      if ( sNewFaces.GetSize() != 1 )
+        {
+          GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, _T("Fillet Error: the end face's plane does not cut a fillet that overflows its end in two") );
+          return SM_ERR;
+        }
+      // keep the piece holding the fillet's middle, delete the one beyond the end
+      SmFace * apPieces[2] = { pFace, sNewFaces[0] };
+      SmBoolean abHolds[2] = { FALSE, FALSE };
+      for (ULONG p=0; p<2; p++)
+        {
+          SmPointClassification sClass;
+          SER( apPieces[p]->Point3DClassify( sKeep, SmTol::GetZoneTol3d( apPieces[p] ), TRUE, sClass ));
+          abHolds[p] = ( sClass.GetPointClass() != SM_PC_UNKNOWN ) ? TRUE : FALSE;
+        }
+      if ( abHolds[0] == abHolds[1] )
+        {
+          GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, _T("Fillet Error: the end face's plane does not part a fillet that overflows its end from its middle") );
+          return SM_ERR;
+        }
+      SmFace * pBeyond = abHolds[0] ? apPieces[1] : apPieces[0];
+      if ( abHolds[1] )
+        {
+          // the kept piece is the fillet surface's face from here on
+          pFG->SetFilletSurface( apPieces[1]->GetSurface() );
+        }
+      SER( m_pFilletBrep->DeleteFace( pBeyond, TRUE ));
+    }
+  return SM_SUCCESS;
+} // end SmFilletExecutive::CutFilletAtOpenEnd
+
+/*******************************************************************//**
 PURPOSE: SolidCraft change. In a cliff overflow, trim the blends along
     their creases with the faces beyond the cliffs and sew them into the
     target: the blends built on their faces' continuations, the sharp edges
@@ -681,6 +1053,11 @@ SmStatus SmFilletExecutive::TrimAtCreases()
           return SM_ERR;
         }
     }
+
+  // the ends the corners left uncut, cut off by their end faces' surfaces continued (an end's
+  // event: the end face cuts the blend whatever lies past it, a lip over a wall's top)
+  for (const SmFilletOpenEnd & rEnd : m_vOpenEnds)
+    { SER( CutFilletAtOpenEnd( rEnd )); }
 
   double dTol = m_pFilletBrep->GetTolerance();
   for (ULONG i=0; i<m_vFilletSolvers.GetSize(); i++)
@@ -898,9 +1275,22 @@ SmStatus SmFilletExecutive::TrimAtCreases()
   // the material the blends take off
   SmTArray<SmEdge*> sTargetEdges;
   m_pTargetBrep->GetEdges( sTargetEdges );
-  for (ULONG e=0; e<sTargetEdges.GetSize() && sAlong.GetSize() > 0; e++)
+  for (ULONG e=0; e<sTargetEdges.GetSize(); e++)
     {
       SmEdge * pEdge = sTargetEdges[e];
+      // a piece of an edge an extension runs along, cut at its crossing by the imprint
+      for (const sm_Extension & rExt : vExtensions)
+        {
+          for (const std::pair<SmPoint3d, SmPoint3d> & rEnds : rExt.m_vAlongPieces)
+            {
+              const SmPoint3d sS = pEdge->GetStartVertex()->GetPoint(), sE = pEdge->GetEndVertex()->GetPoint();
+              if (( sS.DistanceBetween( rEnds.first ) <= 10.0 * dTol && sE.DistanceBetween( rEnds.second ) <= 10.0 * dTol ) ||
+                  ( sS.DistanceBetween( rEnds.second ) <= 10.0 * dTol && sE.DistanceBetween( rEnds.first ) <= 10.0 * dTol ))
+                { sImprinted.insert( pEdge ); }
+            }
+        }
+      if ( sAlong.GetSize() == 0 )
+        { continue; }
       SmPoint3d sMid;
       SER( pEdge->GetCurve()->EvaluatePoint( pEdge->GetInterval().Evaluate( 0.5 ), sMid ));
       for (ULONG c=0; c<sAlong.GetSize(); c++)
@@ -971,6 +1361,45 @@ SmStatus SmFilletExecutive::TrimAtCreases()
       if ( sSheetEdges[i]->FindAttribute( SM_AI_ALL_FILLET_EDGES ) == m_pAttributeE )
         { sSheetEdges[i]->RemoveAttribute( m_pAttributeE ); }
     }
+
+  // The sheet's boundary is cut where an extension's loop meets it: a rib that passes under a lip
+  // runs on the end face, under the lip (the extension's edge) and on the end face again, three
+  // edges of the body for one of the sheet's.
+  {
+    for (const sm_Extension & rExt : vExtensions)
+      {
+        for (const sm_LoopCurve & rC : rExt.m_vLoop)
+          {
+            SmPoint3d sA, sB;
+            SER( sm_CurveEnds( *rC.m_pCurve, sA, sB ));
+            for (const SmPoint3d & rP : { sA, sB })
+              {
+                SmEdge * pFound = NULL;
+                double   dAt = 0.0;
+                SmTArray<SmEdge*> sEdges;
+                m_pFilletBrep->GetEdges( sEdges );
+                for (ULONG e=0; e<sEdges.GetSize() && pFound == NULL; e++)
+                  {
+                    SmEdge * pEdge = sEdges[e];
+                    if ( !pEdge->IsLamina() || pEdge->GetStartVertex()->GetPoint().DistanceBetween( rP ) <= 10.0 * dTol
+                         || pEdge->GetEndVertex()->GetPoint().DistanceBetween( rP ) <= 10.0 * dTol )
+                      { continue; }
+                    SmBoolean bOnCurve = FALSE;
+                    double    dParam = 0.0, dDist = SM_BIG_DOUBLE;
+                    SER( pEdge->GetCurve()->DropPoint( pEdge->GetInterval(), rP, NULL, SM_BIG_DOUBLE, NULL, bOnCurve, dParam, dDist ));
+                    if ( bOnCurve && dDist <= 10.0 * dTol )
+                      { pFound = pEdge; dAt = dParam; }
+                  }
+                if ( pFound != NULL )
+                  {
+                    SmEdge   * pOne = NULL, * pTwo = NULL;
+                    SmVertex * pNew = NULL;
+                    SER( m_pFilletBrep->MakeVertexSplitEdge( pFound, dAt, pOne, pTwo, pNew ));
+                  }
+              }
+          }
+      }
+  }
 
   // the sheet sewn in, and the body oriented. The sheet is merged in as the fillet's normal path
   // merges it (SmBrep::MergeBrep, surfaces kept as they are): its edges keep their own

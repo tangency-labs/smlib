@@ -779,14 +779,16 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   the sharp edge moves (the owner's ruling, rig 5158, 5181, 5236, #422, solidcraft#1080). The
   rails' crossings are not rolled over (`TestRollOver` is skipped); an Nx1 corner whose rails miss
   their side edges (or meet them only clamped at the side edge's far vertex, off the fillet)
-  leaves that end uncut. Each face of the sheet of fillet and corner faces is sectioned by the
+  leaves that end uncut, and the fillet is cut there by the end face's plane, whatever lies past
+  it (`CutFilletAtOpenEnd`: a lip over a shelled box's rim is left over the chamfer). Each face of the sheet of fillet and corner faces is sectioned by the
   surface of each body face near it that holds none of its boundary: by a plane exactly
   (`CreatePlanarSectionCurves`: a line on a cylinder, a conic on a cone, a circle on a torus),
   by SMLib's surface intersection otherwise, fitted to the body's tolerance; each crease is kept
   where it lies inside both faces, the sheet face split along them and the pieces inside the
   body kept (each piece's UV domain from its own trims). A support face whose kept rail runs past
-  its foot into the material (a pocket rim's chamfer past the floor) carries on along its plane
-  to the rail, between the lines of its side edges. The kept sheet's boundary is imprinted on the
+  its foot into the material (a pocket rim's chamfer past the floor, an end rib under a lip)
+  carries on along its plane to the rail: between the lines of its side edges, or back along its
+  own boundary from where the rail crosses it, the way round on the side the blend takes off. The kept sheet's boundary is imprinted on the
   body's faces (`SmBrep::MergeCurvesOnSurface`), the faces it encloses round the blended edges
   are deleted, and the sheet is merged in (`SmBrep::MergeBrep`: the body keeps its tolerance, the
   edges it is sewn along take the sheet's), stitched and oriented. No boolean: the body is only
