@@ -435,7 +435,6 @@ public:
   // modifiers
   SmStatus         CalcBlendingRail         (const SmContext & crContext);
   virtual SmStatus CalcCornerEdgeGeom       ();
-  SmStatus         AdjustCrossSection       (const SmContext & crContext, SmFilletCorner * pCorner, SmVertex * pFVOfDegenerateCurve);
   SmStatus         CalcCrossSection         (const SmContext & crContext, SmFilletCorner * pOptCorner = NULL);
   SmStatus         CalcEdgeOnEdge           (const SmContext & crContext, SmFilletCorner * pOptCorner = NULL);
   SmStatus         CalcEdgeOnExtendedEdge   (const SmContext & crContext, SmFilletCorner * pOptCorner = NULL);
