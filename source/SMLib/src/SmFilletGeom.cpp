@@ -2843,8 +2843,8 @@ SmStatus SmFilletVertex::CalcFilletIntFillet
   // check state
   NER(m_cpCorner);
 
-  // First, check if we have an adjusted Nx2 Concave corner
-  if (   m_cpCorner->GetCornerType() == SM_FCR_N_x_2
+  // First, check if we have an adjusted two-blend (blend corner) concave corner
+  if (   m_cpCorner->GetCornerType() == SM_FCR_BLEND
    // && !m_cpCorner->IsBlendingCorner()
       && !m_cpCorner->IsBevelCorner())
     {
@@ -6018,7 +6018,7 @@ iDebugLevel = DebugLevel();
             const SmVertex * cpVertex = pCorner->GetFilletedVertex();
             switch (pCorner->GetCornerType())
             {
-            case SM_FCR_N_x_2:
+            case SM_FCR_BLEND:
                 bAtStartOfGeom1 = ( pFilSolver1->GetVertex(0) == cpVertex );
 
                 bAtStartOfGeom2 = ( pFilSolver2->GetVertex(0) == cpVertex );
@@ -6044,7 +6044,6 @@ iDebugLevel = DebugLevel();
             case SM_FCR_N_x_N:
             case SM_FCR_N_x_N_CONVEX:
             case SM_FCR_N_x_N_CONCAVE:
-            case SM_FCR_BLEND:
                break;
             }  // end case
 
@@ -9053,9 +9052,9 @@ SmStatus SmFilletEdge::CalcSetBackRail
   sClean1.Clear() ;
   sClean2.Clear() ;
 
-  // for Corner of type = SM_FCR_N_x_2,
+  // for Corner of type = SM_FCR_BLEND (two blends at the corner),
   if(   pOptCorner
-     && pOptCorner->GetCornerType() == SM_FCR_N_x_2)
+     && pOptCorner->GetCornerType() == SM_FCR_BLEND)
     {
       double dLen = pNewRailCurve->ApproximateLength(sTrimIvl,5);
       if (dLen < pOptCorner->GetThisApproxTol3d())
@@ -9070,7 +9069,7 @@ SmStatus SmFilletEdge::CalcSetBackRail
           // all done
           return SM_SUCCESS;
         } // end NewCurve is short check
-    } // end CornerTyupe is SM_FCR_N_x_2 check
+    } // end CornerTyupe is SM_FCR_BLEND check
 
   // add the PrimEU to the m_vSideEUs array
   pFilletGeom->AddSideFilletEdgeuse(pPrimEU);

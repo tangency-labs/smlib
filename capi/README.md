@@ -829,7 +829,7 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   it cuts keeps the rest of its length. R21 with R5 on the corner's other edges is R21's alone
   (6107.529370); with R5 on the back upright the R5 rounds the upright above the R21 cylinder.
   Where no edge overflows on its own, or every one does, the edges are blended together as before.
-  Rounds mitred at a face's concave corner (`SmFilletNx2Corner::IsMitre`, `GetMitredEdges`) are one
+  Rounds mitred at a face's concave corner (`SmBlendCorner::IsMitre`, `GetMitredEdges`) are one
   corner: a round mitred to one that goes first goes with it (a sloped basin's rim rounded R4,
   solidcraft#1080, its front round past the 1 mm rim: the right round, built after it, met its
   cut beyond its wall and was refused, SMLIB_ERR_NO_ROOM).

@@ -15,6 +15,7 @@
 
 #ifndef __SMFILLETSTANDARDSOLVER_H__
 #include <SmFilletStandardSolver.h>
+#include <SmBlendCorner.h>
 #include <SmBSplineSurface.h>
 #include <SmBSplineCurve.h>
 #endif
@@ -4139,10 +4140,10 @@ SmStatus SmFilletExecutive::CreateFilletBrep
       for (ULONG c=0; c<m_vFilletCorners.GetSize(); c++)
         {
           SmFilletCorner * pCorner = m_vFilletCorners[c];
-          if ( pCorner == NULL || pCorner->GetCornerType() != SM_FCR_N_x_2 || !((SmFilletNx2Corner*)pCorner)->IsMitre() )
+          if ( pCorner == NULL || pCorner->GetCornerType() != SM_FCR_BLEND || !((SmBlendCorner*)pCorner)->IsMitre() )
             { continue; }
           SmEdgeuse * apEUs[2] = { NULL, NULL };
-          SER( ((SmFilletNx2Corner*)pCorner)->GetFilletedEdgeuses( apEUs[0], apEUs[1] ));
+          SER( ((SmBlendCorner*)pCorner)->GetFilletedEdgeuses( apEUs[0], apEUs[1] ));
           m_vMitredEdges.Add( apEUs[0]->GetEdge() );
           m_vMitredEdges.Add( apEUs[1]->GetEdge() );
         }
@@ -6529,8 +6530,8 @@ SmStatus SmFilletExecutive::TestAndConvertBigRadFillet
                 return SM_SUCCESS;
             }
         }
-        if (  pStartCorner->GetCornerType() != SM_FCR_N_x_2
-             || pEndCorner->GetCornerType() != SM_FCR_N_x_2
+        if (  pStartCorner->GetCornerType() != SM_FCR_BLEND
+             || pEndCorner->GetCornerType() != SM_FCR_BLEND
              || pStartV[ii]->IsProcessed() == FALSE
              ||   pEndV[ii]->IsProcessed() == FALSE
            )

@@ -92,7 +92,6 @@ enum SmFilletCornerType
   SM_FCR_4_x_3,
   SM_FCR_N_x_1_CLOSED,
   SM_FCR_N_x_1,
-  SM_FCR_N_x_2,
   SM_FCR_N_x_N,
   SM_FCR_N_x_N_CONVEX,
   SM_FCR_N_x_N_CONCAVE,

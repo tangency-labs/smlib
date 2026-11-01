@@ -253,7 +253,7 @@ protected:
                                                     //   building nothing, m_vOverflowEdges the edges whose blends overflow
   SmTArray<SmEdge*>         m_vOverflowEdges;       // SolidCraft change: the edges of the blends that overflow, when stopped so
   SmTArray<SmEdge*>         m_vMitredEdges;         // SolidCraft change: when stopped so, the edges of each two blends mitred at a
-                                                    //   face's concave corner (SmFilletNx2Corner::IsMitre), two by two
+                                                    //   face's concave corner (SmBlendCorner::IsMitre), two by two
 
   // gwc: Only one of m_bDoPiecewiseMerge, m_bDoTopologyInsertion, and m_bDoGlobalMerge should be TRUE in any SmFilletExecutive.
   //      They are 3 different ways to do the same thing; move m_pFilletBrep Topology and Geometry into m_pTargetBrep. 

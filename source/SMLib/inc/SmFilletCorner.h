@@ -65,7 +65,7 @@ protected:
   SmBoolean                 m_bTopologyAdjusted;     // TRUE = corner topology has been altered
   SmBoolean                 m_bBevelGapPatch;        // SolidCraft change: TRUE = a bevel (mitre) whose rails meet the side
                                                      //   edge at two places, the gap between them on the side face's
-                                                     //   continuation filled by a patch (SmFilletNx2Corner::AdjustTopology)
+                                                     //   continuation filled by a patch (SmBlendCorner::AdjustTwoBlendTopology)
   SmBoolean                 m_bExtendedSurfacePatch; // TRUE = EndFace->Surface is defined by sideFace->ExtendedSurface
                                                      // FALSE=EndFace->Surface is defined by interpolating filletEdges
                                                      // default:[TRUE]
@@ -449,60 +449,6 @@ public:
     virtual SmStatus MakeCornerTopology();
 
 } ; // end class SmFillet3x2MixedConvexityCorner
-
-/*******************************************************************//**
-PURPOSE: An Nx2 corner represents a corner with N adjacent
-    edges and two of them are filleted. If N = 3, typically, a bevel corner
-    (i.e. without corner surface) will be created for convex and
-    tangential corners, and a blending corner patch will be generated
-    for concave filleted edges. If N = 4, the two filleted edges
-    should not share the same face and the corner will consists of only
-    one intersection curve between two fillets just as in 3x2 case.
-
-
-NOTES: Corners with N > 4 are not yet implemented.
-
-***********************************************************************/
-class SM_EXPORT SmFilletNx2Corner : public SmFilletCorner
-{
-public:
-    SmBoolean  m_bG1Case;  // Do the two filleted edges meet G1?
-    SmBoolean  m_bMitre;   // SolidCraft change: are the two blends mitred at the common face's concave corner?
-
-    SmFilletNx2Corner(const SmContext      & crContext,
-                      const SmVertex       * cpVertex,
-                      SmTArray<SmEdgeuse*> * pSolverEUs,
-                      SmTArray<SmEdgeuse*> * pAllEUs,
-                      SmFilletExecutive    * pExec,
-                      double                 dApproxTol3d,
-                      double                 dTangencyTolRadians);
-
-    SmStatus AdjustConcaveCornerTopology();
-
-    virtual SmStatus AdjustTangentCorner();
-
-    virtual SmStatus AdjustTopology();
-
-    virtual SmStatus CreateCornerPatch();
-
-    virtual SmFilletSolver * GetTangentFilletSolver( const SmFilletSolver *pFS );
-
-    virtual SmBoolean IsTangentCorner() const { return m_bG1Case; }
-
-    // SolidCraft change: whether the two blends are mitred at the common face's concave corner
-    // (MakeCornerTopology), and the two filleted edgeuses, outward from the corner's vertex.
-    SmBoolean IsMitre() const { return m_bMitre; }
-    SmStatus  GetFilletedEdgeuses(SmEdgeuse *& rpFirst, SmEdgeuse *& rpSecond) const;
-
-    virtual SmFilletCornerType GetCornerType() const { return SM_FCR_N_x_2; }
-
-    virtual void GetName(TCHAR * pcMyName, size_t lMyNameAllocLen) const { smos_WStrCpy(pcMyName, lMyNameAllocLen, _T("SmFilletNx2Corner")); }
-
-    virtual SmStatus MakeCornerTopology();
-
-    SmStatus Make4x2ConcaveCornerTopology();
-
-} ; // end class SmFilletNx2Corner
 
 /*******************************************************************//**
 PURPOSE: A 4x3 corner represents a corner with 4 adjacent

@@ -7,8 +7,10 @@
 *   corner events at a filleted vertex, replacing the SmFilletCorner
 *   hierarchy event by event. Its first event is the Turn: two blends that
 *   share a face, with one sharp unblended side edge between their other
-*   faces (a boss's base at its sharp corner, a pocket's rim). A Turn is
-*   Mitred (the default; still SmFilletNx2Corner's) or Swept (here).
+*   faces (a boss's base at its sharp corner, a pocket's rim), Mitred (the
+*   default) or Swept; and the Join, two blends whose edges continue each
+*   other. It builds every corner of two blends of one convexity among three
+*   or four edges.
 **********************************************************************/
 
 #ifndef __SMBLENDCORNER_H__
@@ -26,7 +28,8 @@ PURPOSE: The corner events SmBlendCorner builds, and a Turn's two modes.
 enum SmBlendCornerEvent
 {
   SM_BCE_NONE, // not an event of the blend corner (yet): the corner hierarchy builds it
-  SM_BCE_TURN  // two blends sharing a face turn at a sharp side edge between their other faces
+  SM_BCE_TURN, // two blends turn at the unblended side edge(s) between their faces
+  SM_BCE_JOIN  // two blends whose edges continue each other (G1) at the vertex
 };
 
 enum SmBlendTurn
@@ -57,15 +60,33 @@ NOTES: Two rounds, R1 and R2, share the common face F0; E lies between
 class SM_EXPORT SmBlendCorner : public SmFilletCorner
 {
 protected:
-  SmBlendTurn               m_eTurn;        // the turn's mode (SM_BT_SWEPT: only that is built here so far)
-  SmEdgeuse               * m_pSideEU;      // the side edge E's edgeuse the rails of the first round meet
-  SmTorus                 * m_pTurnSurface; // the corner's face's surface, from CalcCornerEdgeGeom until CreateCornerPatch hands it to its face
-  SmTArray<SmCurve*>        m_vTurn3d;      // its loop's 3D curves (natural iso-curves, the pole at S left out)
+  SmBlendCornerEvent        m_eEvent;       // the corner's event (Classify)
+  SmBlendTurn               m_eTurn;        // a Turn's mode
+  SmBoolean                 m_bG1Case;      // the two blended edges meet G1 (MakeTwoBlendTopology)
+  SmBoolean                 m_bMitre;       // the two blends are mitred at the common face's concave corner
+  SmEdgeuse               * m_pSideEU;      // Swept: the side edge E's edgeuse the rails of the first round meet
+  SmTorus                 * m_pTurnSurface; // Swept: the corner's face's surface, from CalcCornerEdgeGeom until CreateCornerPatch hands it to its face
+  SmTArray<SmCurve*>        m_vTurn3d;      // Swept: its loop's 3D curves (natural iso-curves, the pole at S left out)
   SmTArray<SmBSplineCurve*> m_vTurnUV;      // and their uv lines
   SmTArray<SmOrientType>    m_vTurnOrients; // and their orientations in the loop
 
+  SmBoolean IsSwept() const { return ( m_eEvent == SM_BCE_TURN && m_eTurn == SM_BT_SWEPT ) ? TRUE : FALSE; }
+
+  // the Swept turn
+  SmStatus MakeSweptTopology();
   SmStatus BuildSweptSurface();  // m_pTurnSurface and its loop, from the processed vertices
   void     DeleteSweptSurface();
+  SmStatus CreateSweptPatch();
+
+  // the Mitre turn and the Join: the two blends run on to their intersection (bevel), or end on
+  // one common section (blending). Where the rails meet a side edge at two places, the gap on the
+  // side face's continuation is filled by a patch (m_bBevelGapPatch).
+  SmStatus MakeTwoBlendTopology();
+  SmStatus Make4x2ConcaveCornerTopology();
+  SmStatus AdjustConcaveCornerTopology();
+  SmStatus AdjustTwoBlendTopology();
+  SmStatus AdjustTwoBlendTangentCorner();
+  SmStatus CreateTwoBlendPatch();
 
 public:
   SmBlendCorner(const SmContext      & crContext,
@@ -75,13 +96,15 @@ public:
                 SmFilletExecutive    * pExec,
                 double                 dApproxTol3d,
                 double                 dTangencyTolRadians,
+                SmBlendCornerEvent     eEvent,
                 SmBlendTurn            eTurn);
   virtual ~SmBlendCorner();
 
-  // The event at a filleted vertex with two blended edgeuses among three (pAllEUs, the corner's
-  // ring), the blends of one convexity: a Turn when their edges do not continue each other. With
-  // SmFilletExecutive::GetSweptTurns() the Turn is Swept, and a sharp concave side edge is refused
-  // (SM_ERR, SM_FILERR_NO_ROOM noted with the radius that edge must be rounded at first).
+  // The event at a filleted vertex with two blended edgeuses of one convexity among three or
+  // four (pAllEUs, the corner's ring): a Join when their edges continue each other (G1), else a
+  // Turn. With SmFilletExecutive::GetSweptTurns() a Turn is Swept, refused (SM_ERR, the reason
+  // noted) at a sharp concave side edge (SM_FILERR_NO_ROOM, with the radius that edge must be
+  // rounded at first) and where the Swept build does not reach yet (SM_FILERR_CORNER_UNSUPPORTED).
   static SmStatus Classify(const SmVertex             * cpVertex,
                            const SmTArray<SmEdgeuse*> & crSolverEUs,
                            const SmTArray<SmEdgeuse*> & crAllEUs,
@@ -91,10 +114,21 @@ public:
                            SmBlendTurn                & reTurn);
 
   virtual SmStatus MakeCornerTopology();
+  virtual SmStatus AdjustTopology();
+  virtual SmStatus AdjustTangentCorner();
   virtual SmStatus CalcCornerEdgeGeom();
   virtual SmStatus CreateCornerPatch();
 
-  SmBlendTurn GetTurn() const { return m_eTurn; }
+  virtual SmFilletSolver * GetTangentFilletSolver( const SmFilletSolver *pFS );
+  virtual SmBoolean        IsTangentCorner() const { return m_bG1Case; }
+
+  SmBlendCornerEvent GetEvent() const { return m_eEvent; }
+  SmBlendTurn        GetTurn()  const { return m_eTurn; }
+
+  // whether the two blends are mitred at the common face's concave corner (MakeTwoBlendTopology),
+  // and the two filleted edgeuses, outward from the corner's vertex
+  SmBoolean IsMitre() const { return m_bMitre; }
+  SmStatus  GetFilletedEdgeuses(SmEdgeuse *& rpFirst, SmEdgeuse *& rpSecond) const;
 
   virtual SmFilletCornerType GetCornerType() const { return SM_FCR_BLEND; }
   virtual void GetName(TCHAR * pcMyName, size_t lMyNameAllocLen) const { smos_WStrCpy(pcMyName, lMyNameAllocLen, _T("SmBlendCorner")); }
@@ -117,5 +151,10 @@ SmBoolean sm_TestG1Continuity(const SmVertex * pVert, const SmEdge * pEdge1, con
 
 // The face the sectors of two edgeuses share, not pEU3's face (when not NULL); NULL when none.
 SmFace * sm_GetFaceByTwoEdgeuses(SmEdgeuse * pEU1, SmEdgeuse * pEU2, SmEdgeuse * pEU3);
+
+// Whether the face corner at pCornerVert between two edgeuses (through the tangent edge pOptRefEU
+// when not NULL) has the convexity opposite to theirs (SmFilletCorner.cpp).
+SmBoolean sm_CheckFaceComplimentaryCornerConcavity(const SmVertex * pCornerVert, SmEdgeuse * pTestEU1, SmEdgeuse * pTestEU2,
+                                                   SmEdgeuse * pOptRefEU, int iDebugLevel);
 
 #endif // __SMBLENDCORNER_H__
