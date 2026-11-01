@@ -18,16 +18,19 @@
 * ball there). The corner's face is the sphere's triangle P_0 P_1 P_2
 * between the three sections: exact, G1 to every round.
 *
-* Its face is the sphere's natural patch: the pole at the contact P_k of the
-* plane square to the other two (n_k . n_i = n_k . n_j = 0), so that the
-* sections through P_k are meridians and the section P_i P_j is the equator:
+* Where one plane is square to the other two (n_k . n_i = n_k . n_j = 0) the
+* face is the SmSphere's natural patch: the pole at that plane's contact
+* P_k, so that the sections through P_k are meridians and the section
+* P_i P_j is the equator:
 *   S(u, v) = C + r (cos v (cos u X + sin u Y) + sin v Z),
 * Z = (P_k - C) / r, X = (P_i - C) / r, Y = Z x X, u in [0, theta] (theta the
-* angle from X to P_j - C), v in [0, 90] degrees. Its loop is that patch's
-* natural boundary, the pole left out: two meridians and the equator arc.
-* Where no plane is square to the other two, no side of the triangle is a
-* meridian and the equator at once: a great circle off them has no rational
-* curve in the sphere's NURB parameters. That corner is not a Ball yet.
+* angle from X to P_j - C), v in [0, 90] degrees. Elsewhere no side of the
+* triangle is the equator of a pole at another vertex, and a great circle
+* off the meridians and the equator has no rational curve in the SmSphere's
+* NURB parameters: the face is one rational patch of degree (4, 2) on the
+* sphere whose natural boundary is the triangle (sm_BallTrianglePatch). Its
+* loop, either way, is that patch's natural boundary, the pole left out: the
+* three sections.
 **********************************************************************/
 
 #include "StdAfx.h"
@@ -68,13 +71,178 @@ ULONG sm_BallPole(const SmVector3d asNormal[3], double dSinTol)
   return 3;
 }
 
+// A polynomial in (s, t) of degree (m, n) in the Bernstein basis: c[i][j] the coefficient of
+// B^m_i(s) B^n_j(t). Degrees up to (4, 2), the ball patch's.
+struct SmBallPoly
+{
+  ULONG  m = 0, n = 0;
+  double c[5][3] = {};
+};
+
+double sm_Choose(ULONG n, ULONG k)
+{
+  double d = 1.0;
+  for (ULONG i=1; i<=k; i++) { d = d * double( n - k + i ) / double( i ); }
+  return d;
+}
+
+// The product of two polynomials in the Bernstein basis, of the sum of their degrees.
+SmBallPoly sm_BallTimes(const SmBallPoly & crA, const SmBallPoly & crB)
+{
+  SmBallPoly sP;
+  sP.m = crA.m + crB.m;
+  sP.n = crA.n + crB.n;
+  for (ULONG i=0; i<=sP.m; i++)
+    for (ULONG j=0; j<=sP.n; j++)
+      {
+        double d = 0.0;
+        for (ULONG a=0; a<=crA.m; a++)
+          for (ULONG b=0; b<=crA.n; b++)
+            {
+              if ( a > i || b > j || i - a > crB.m || j - b > crB.n )
+                { continue; }
+              d += crA.c[a][b] * crB.c[i-a][j-b] * sm_Choose( crA.m, a ) * sm_Choose( crB.m, i - a ) * sm_Choose( crA.n, b ) * sm_Choose( crB.n, j - b );
+            }
+        sP.c[i][j] = d / ( sm_Choose( sP.m, i ) * sm_Choose( sP.n, j ));
+      }
+  return sP;
+}
+
+// dA crA + dB crB, of one degree.
+SmBallPoly sm_BallSum(double dA, const SmBallPoly & crA, double dB, const SmBallPoly & crB)
+{
+  SmBallPoly sP = crA;
+  for (ULONG i=0; i<=sP.m; i++)
+    for (ULONG j=0; j<=sP.n; j++)
+      { sP.c[i][j] = dA * crA.c[i][j] + dB * crB.c[i][j]; }
+  return sP;
+}
+
+/*******************************************************************//**
+PURPOSE: The ball's triangle between the contacts as one rational patch on
+    the sphere, where no contact is a pole with the opposite side its
+    equator (see the file's head).
+
+NOTES: The sphere's stereographic projection from the antipode of the
+    contact a_k (the pole, at the plane's origin) takes the sides through it
+    to segments of lines through the origin, from 0 to A and to B, and the
+    side between the others to a circle's arc from A to B: a rational
+    quadratic c(s). The plane's sector t c(s), s, t in [0, 1], taken back to
+    the sphere by the inverse projection (of degree 2), is a rational patch
+    of degree (4, 2) on the sphere: exactly the triangle, t = 0 the pole,
+    s = 0 and s = 1 its sides through the pole, t = 1 the third.
+    Homogeneously, with (U, V, T) = (t X(s), t Y(s), W(s)):
+      S = C + r (2 U T e1 + 2 V T e2 + (U^2 + V^2 - T^2) e3) / (U^2 + V^2 + T^2),
+    e3 the projection's centre, -a_k. With bReverseS, s runs the other way
+    (and the normal is turned).
+***********************************************************************/
+SmStatus sm_BallTrianglePatch
+  (const SmContext  & crContext,
+   const SmPoint3d  & crCentre,
+   double             dRadius,
+   const SmVector3d   asDir[3],   // unit: the contacts less the centre, over the radius
+   ULONG              lPole,
+   SmBoolean          bReverseS,
+   SmBSplineSurface *& rpPatch,
+   ULONG            & rlFrom,     // the contact at s = 0, t = 1
+   ULONG            & rlTo)       // and at s = 1
+{
+  rpPatch = NULL;
+  rlFrom = (lPole+1)%3;
+  rlTo   = (lPole+2)%3;
+  SmVector3d sE3 = -asDir[lPole];
+  SmVector3d sE1 = asDir[rlFrom] - sE3 * asDir[rlFrom].Dot( sE3 );
+  SER( sE1.Unitize() );
+  SmVector3d sE2 = sE3 * sE1;
+  // the projection: p -> (p.e1, p.e2) / (1 - p.e3)
+  double adA[2], adB[2], adM[2];
+  SmVector3d sMid = asDir[rlFrom] + asDir[rlTo];
+  SER( sMid.Unitize() );
+  const SmVector3d * apP[3] = { &asDir[rlFrom], &asDir[rlTo], &sMid };
+  double * apOut[3] = { adA, adB, adM };
+  for (ULONG ii=0; ii<3; ii++)
+    {
+      const double dDen = 1.0 - apP[ii]->Dot( sE3 );
+      if ( dDen <= SM_EFF_ZERO )
+        { SER( SM_ERR ); }
+      apOut[ii][0] = apP[ii]->Dot( sE1 ) / dDen;
+      apOut[ii][1] = apP[ii]->Dot( sE2 ) / dDen;
+    }
+  // the third side's great circle (normal m) projects to the circle about -(m1, m2) / m3,
+  // of radius^2 1 + (m1^2 + m2^2) / m3^2
+  SmVector3d sM = asDir[rlFrom] * asDir[rlTo];
+  SER( sM.Unitize() );
+  const double dM3 = sM.Dot( sE3 );
+  if ( smos_Fabs( dM3 ) <= SM_EFF_ZERO )
+    { SER( SM_ERR ); } // the third side runs through the pole: no triangle
+  const double adO[2] = { -sM.Dot( sE1 ) / dM3, -sM.Dot( sE2 ) / dM3 };
+  const double dR = sqrt( 1.0 + ( adO[0] * adO[0] + adO[1] * adO[1] ));
+  double adUA[2] = { ( adA[0] - adO[0] ) / dR, ( adA[1] - adO[1] ) / dR };
+  double adUB[2] = { ( adB[0] - adO[0] ) / dR, ( adB[1] - adO[1] ) / dR };
+  const double dCos = adUA[0] * adUB[0] + adUA[1] * adUB[1];
+  // the arc from A to B through the middle's image, less than a half turn: its middle control
+  // point where the tangents at A and B cross, its weight the cosine of half its angle
+  if (   1.0 + dCos <= SM_EFF_ZERO_SQRT
+      || ( adM[0] - adO[0] ) * ( adUA[0] + adUB[0] ) + ( adM[1] - adO[1] ) * ( adUA[1] + adUB[1] ) <= 0.0 )
+    { SER( SM_ERR ); }
+  const double dW = sqrt( 0.5 * ( 1.0 + dCos ));
+  const double adD[2] = { adO[0] + dR * ( adUA[0] + adUB[0] ) / ( 1.0 + dCos ), adO[1] + dR * ( adUA[1] + adUB[1] ) / ( 1.0 + dCos ) };
+
+  // (U, V, T) of degree (2, 1)
+  SmBallPoly sU, sV, sT;
+  sU.m = sV.m = sT.m = 2;
+  sU.n = sV.n = sT.n = 1;
+  const double adX[3] = { adA[0], dW * adD[0], adB[0] };
+  const double adY[3] = { adA[1], dW * adD[1], adB[1] };
+  const double adWt[3] = { 1.0, dW, 1.0 };
+  for (ULONG i=0; i<3; i++)
+    {
+      sU.c[i][1] = adX[i];
+      sV.c[i][1] = adY[i];
+      sT.c[i][0] = sT.c[i][1] = adWt[i];
+    }
+  const SmBallPoly sUT = sm_BallTimes( sU, sT ), sVT = sm_BallTimes( sV, sT );
+  const SmBallPoly sSq = sm_BallSum( 1.0, sm_BallTimes( sU, sU ), 1.0, sm_BallTimes( sV, sV ));
+  const SmBallPoly sTT = sm_BallTimes( sT, sT );
+  const SmBallPoly sH3 = sm_BallSum( 1.0, sSq, -1.0, sTT ), sH4 = sm_BallSum( 1.0, sSq, 1.0, sTT );
+
+  // control points, s (u) outer, t (v) inner
+  SmTArray<SmPoint3d> sPoints;
+  SmTArray<double>    sWeights;
+  for (ULONG ii=0; ii<=4; ii++)
+    {
+      const ULONG i = bReverseS ? 4 - ii : ii;
+      for (ULONG j=0; j<=2; j++)
+        {
+          const double dWij = sH4.c[i][j];
+          if ( dWij <= SM_EFF_ZERO )
+            { SER( SM_ERR ); }
+          const SmVector3d sOff = ( sE1 * ( 2.0 * sUT.c[i][j] ) + sE2 * ( 2.0 * sVT.c[i][j] ) + sE3 * sH3.c[i][j] ) * ( dRadius / dWij );
+          sPoints.Add( crCentre + sOff );
+          sWeights.Add( dWij );
+        }
+    }
+  if ( bReverseS )
+    { ULONG lSwap = rlFrom; rlFrom = rlTo; rlTo = lSwap; }
+  SmTArray<ULONG> sUMults, sVMults;
+  sUMults.Add( 5 ); sUMults.Add( 5 );
+  sVMults.Add( 3 ); sVMults.Add( 3 );
+  SmTArray<double> sKnots;
+  sKnots.Add( 0.0 ); sKnots.Add( 1.0 );
+  SER( SmBSplineSurface::CreateCanonical( crContext, 4, 2, sPoints, SM_SF_UNSPECIFIED, sUMults, sVMults, sKnots, sKnots,
+                                          SM_KT_PIECEWISE_BEZIER_KNOTS, &sWeights, NULL, rpPatch ));
+  NER( rpPatch );
+  return SM_SUCCESS;
+
+} // end sm_BallTrianglePatch
+
 } // namespace
 
 /*******************************************************************//**
 PURPOSE: Whether a filleted vertex is a Ball: every edge there blended (three
     of them), each a constant circular round of the same radius, all convex
-    or all concave, the three faces planes, one of them square to the other
-    two, and the caller not setting the vertex back (a setback corner).
+    or all concave, the three faces planes meeting at a point, and the
+    caller not setting the vertex back (a setback corner).
 ***********************************************************************/
 SmStatus SmBlendCorner::ClassifyBall
   (const SmVertex             * cpVertex,
@@ -123,8 +291,7 @@ SmStatus SmBlendCorner::ClassifyBall
   if ( !( dRadius > dTol ))
     { return SM_SUCCESS; }
 
-  // three planes, one square to the other two: off square by an angle whose sine is s, a section
-  // through its pole leaves the meridian's plane by up to s r, held to the fillet's tolerance
+  // three planes
   SmFace * apFace[3];
   sm_BallRingFaces( crAllEUs, apFace );
   SmVector3d asNormal[3];
@@ -133,7 +300,7 @@ SmStatus SmBlendCorner::ClassifyBall
       if ( apFace[ii] == NULL || apFace[ii]->GetSurface() == NULL || !apFace[ii]->GetSurface()->IsPlanar( dTol, NULL, &asNormal[ii] ))
         { return SM_SUCCESS; }
     }
-  if ( apFace[0] == apFace[1] || apFace[1] == apFace[2] || apFace[2] == apFace[0] || sm_BallPole( asNormal, dTol / dRadius ) == 3 )
+  if ( apFace[0] == apFace[1] || apFace[1] == apFace[2] || apFace[2] == apFace[0] || smos_Fabs( asNormal[0].Dot( asNormal[1] * asNormal[2] )) <= SM_EFF_ZERO_SQRT )
     { return SM_SUCCESS; }
   reEvent = SM_BCE_BALL;
   return SM_SUCCESS;
@@ -267,6 +434,9 @@ SmStatus SmBlendCorner::BuildBallSurface()
       asContact[ii] = sCentre - asNormal[ii] * ( adSide[ii] * dRadius );
       if ( asContact[ii].DistanceBetween( m_vVertices[ii]->GetPoint() ) > dTol )
         { SER( SM_ERR ); } // vertex i is the ball's contact with face i
+      // the contact in closed form, not as the rails' crossing was solved: the rounds' end
+      // sections are made through it (SmFilletEdge::CalcCrossSection)
+      m_vVertices[ii]->SetPoint( asContact[ii] );
     }
 
   // The face's normal is its surface's (SmBrep::OrientTrimmedSurfaces turns a face the other way
@@ -314,7 +484,33 @@ SmStatus SmBlendCorner::BuildBallSurface()
       SER( pSphere->MakeNurb() );
     }
   else
-    { SER( SM_ERR ); } // ClassifyBall found one
+    {
+      // one rational patch on the sphere, the pole at contact 0, its normal turned as the face's
+      lPole = 0;
+      SmVector3d asDir[3];
+      for (ULONG ii=0; ii<3; ii++)
+        {
+          asDir[ii] = asContact[ii] - sCentre;
+          SER( asDir[ii].Unitize() );
+        }
+      for (ULONG lTurn=0; lTurn<2 && pSurface == NULL; lTurn++)
+        {
+          SmBSplineSurface * pPatch = NULL;
+          SER( sm_BallTrianglePatch( m_crContext, sCentre, dRadius, asDir, lPole, lTurn == 1 ? TRUE : FALSE, pPatch, lFrom, lTo ));
+          SmObjDelete sClean( pPatch );
+          const SmPoint2d sMid = pPatch->GetNaturalUVDomain().Evaluate( 0.5, 0.5 );
+          SmPoint3d  sAt;
+          SmVector3d sNormal;
+          SER( pPatch->EvaluatePoint( sMid, sAt ));
+          SER( pPatch->EvaluateNormal( sMid, TRUE, TRUE, sNormal ));
+          if ( ( sNormal.Dot( sAt - sCentre ) < 0.0 ) == ( bAddsMaterial ? TRUE : FALSE ))
+            {
+              sClean.Clear();
+              m_pBallSurface = pSurface = pPatch;
+            }
+        }
+      NER( pSurface );
+    }
 
   // its corners are the contacts: the pole at v = vmax (the sphere) or v = vmin (the patch)
   const SmExtent2d sNurbDomain = pSurface->GetNaturalUVDomain();

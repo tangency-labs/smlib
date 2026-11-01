@@ -141,8 +141,8 @@ public:
                            SmBlendTurn                & reTurn);
 
   // The Ball at a filleted vertex where all three edges are blended (pAllEUs, the corner's ring):
-  // constant circular rounds of one radius, all convex or all concave, between three planes one of
-  // which is square to the other two, the vertex not set back (SmFilletExecutive::IsSetBackVertex).
+  // constant circular rounds of one radius, all convex or all concave, between three planes, the
+  // vertex not set back (SmFilletExecutive::IsSetBackVertex).
   // reEvent SM_BCE_BALL, else SM_BCE_NONE (the corner hierarchy builds it).
   static SmStatus ClassifyBall(const SmVertex             * cpVertex,
                                const SmTArray<SmEdgeuse*> & crSolverEUs,

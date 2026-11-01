@@ -7077,7 +7077,7 @@ const TangentEndCase BALL_CASES[] = {
     {"pocket_corner", ball_pocket_corner, nullptr},
     {"prism_corner", ball_prism_corner, nullptr},
     {"oblique_corner", ball_oblique_corner,
-     "no plane square to the other two: SmFilletConvexNxNCorner's sphere (CreateSphereFromArcs) is trimmed by fitted curves, its seams 2.0e-6 rad off G1, the volume 2.7e-10 off"},
+     "the rounds' end circles 1.3e-12 off the sphere: each exact round's axis and span run between its trace's end sections as solved at the rails' crossings, not through the ball's centre"},
     {"sphere_turned_round", ball_sphere_turned_round, nullptr},
 };
 
