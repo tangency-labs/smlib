@@ -5027,6 +5027,20 @@ const
   // 3rd edgeuse locals = same oriented edgeuse on different face to edgeuse[0]
   SmEdgeuse * pEU2   = sEUs[2];
   SmFace    * pFace2 = pEU2->GetFace();
+
+  // SolidCraft change: the same face on both sides, and the edge's primary edgeuse and its radial
+  // partner in two loopuses (the face meeting itself along the edge from its two sides, or its
+  // radial pairing the other way round): SmBrep::DeleteEdge, which reads that pair, would take
+  // the two sides for two faces and merge the face into itself, deleting it. Not removable.
+  // With the pair in one loopuse it is a slit, which DeleteEdge splits off the loop.
+  {
+    const SmEdgeuse * pPrimary = GetPrimaryEdgeuse();
+    const SmEdgeuse * pRadial  = ( pPrimary != NULL ) ? pPrimary->GetRadial() : NULL;
+    if ( pPrimary == NULL || pRadial == NULL )
+      { return FALSE; }
+    if ( pPrimary->GetFace() == pRadial->GetFace() && pPrimary->GetLoopuse() != pRadial->GetLoopuse() )
+      { return FALSE; }
+  }
   paSurf[1]          = pFace2->GetSurface();
   saUVDomain[1]      = paSurf[1]->GetNaturalUVDomain() ; 
 
