@@ -319,10 +319,11 @@ void note_fit(double size, int32_t what)
     g_blend_fit = size;
     g_blend_fit_what = what;
     char text[160];
-    const char *of = what == SMLIB_FIT_SETBACK ? "setback" : what == SMLIB_FIT_SCALE ? "factor on both sizes" : "size";
+    const char *of = (what == SMLIB_FIT_SETBACK || what == SMLIB_FIT_SETBACK_AT_LEAST) ? "setback" : what == SMLIB_FIT_SCALE ? "factor on both sizes" : "size";
     if (size > 0.0)
     {
-        std::snprintf(text, sizeof text, " (the largest %s that builds is %.9g)", of, size);
+        // a setback too short names the smallest that builds; every other cause the largest
+        std::snprintf(text, sizeof text, " (the %s %s that builds is %.9g)", what == SMLIB_FIT_SETBACK_AT_LEAST ? "smallest" : "largest", of, size);
     }
     else
     {
@@ -359,10 +360,10 @@ int32_t blend_failure(SmFilletExecutive &exec, int32_t s)
     {
     case SM_FILERR_NO_ROOM:
     {
-        // a setback corner's: the setback that builds its convex fill
+        // a setback corner's: the smallest setback that builds its convex fill
         if (exec.GetFitSetBack() >= 0.0)
         {
-            note_fit(exec.GetFitSetBack(), SMLIB_FIT_SETBACK);
+            note_fit(exec.GetFitSetBack(), SMLIB_FIT_SETBACK_AT_LEAST);
             return SMLIB_ERR_NO_ROOM;
         }
         // the cause's largest radius that builds, as the call's size
