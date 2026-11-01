@@ -139,7 +139,9 @@ SmBoolean sm_SbEdgeBlended(SmFilletExecutive * pExec, const SmEdge * pEdge)
 // every room, rdLargest then the largest that fits (the least room less the ease); and below
 // an edge's contact-line minimum (rbShort). Else the rule's (Distances), each shrunk to its
 // room less a quarter of its radius where longer, as long as that is at or above its minimum
-// (rbFits FALSE where not: the rounds beside an edge cross past its room, an overflow).
+// (rbFits FALSE where not: the rounds beside an edge cross past its room, an overflow). The
+// quarter radius is the rule's own margin (least + 0.25 r): one margin, kept from the
+// contact-line minimum and from the far end alike, so the round keeps 0.25 r of its edge.
 SmStatus sm_SbSetBacks(const SmVertex * cpVertex, const SmTArray<SmEdgeuse*> & crAllEUs, SmFilletExecutive * pExec,
                        const std::vector<SmBlendSetback::Face> & crPlanes, const std::vector<SmBlendSetback::Edge> & crEdges, double dTol,
                        std::vector<double> & rvSetBacks, std::vector<double> & rvLeast, std::vector<double> & rvRoom,
