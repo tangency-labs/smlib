@@ -237,6 +237,30 @@ SmStatus SmConstantRadiusFS::SetupOffsetValues
 
 
 /*******************************************************************//**
+PURPOSE: SolidCraft change. The ball this solver rolls: one, of constant
+    radius, when both faces are offset by the same radius.
+
+NOTES: For SmFilletSolver::JudgeBallAt. The trace is free (its stations are
+    planes square to the spine), so rbOnEdge is FALSE and asC unused.
+***********************************************************************/
+SmStatus SmConstantRadiusFS::GetBallLaw
+  (const SmTsectPnt & /*crPnt*/,   // in : the station
+   SmBoolean        & rbBall,      // out: TRUE = one ball rolls on both faces
+   SmBoolean        & rbOnEdge,    // out: FALSE: a free trace
+   double             adR[3],      // out: r, 0, 0
+   SmVector3d         asC[4])      // out: unused
+{
+  SM_REF1(asC);
+  const double dR = m_dFilletRadii[0];
+  rbOnEdge = FALSE;
+  rbBall   = ( dR > 0.0 && smos_Fabs( m_dFilletRadii[1] - dR ) <= SM_EFF_ZERO * ( 1.0 + dR )) ? TRUE : FALSE;
+  adR[0] = dR;
+  adR[1] = 0.0;
+  adR[2] = 0.0;
+  return SM_SUCCESS;
+} // end SmConstantRadiusFS::GetBallLaw
+
+/*******************************************************************//**
 PURPOSE: Load the current Jacobian matrix in an incremental way
     and update the parameters.
 
@@ -2485,6 +2509,30 @@ SmStatus SmVariableRadiusFS::SetupOffsetValues
   return SM_SUCCESS;
 
 } // end SmVariableRadiusFS::SetupOffsetValues
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. The ball this solver rolls at a station: its
+    radius law r(t) and the filleted edge's curve C(t) there, t the
+    station's law parameter (m_adUserDoubles[0]).
+
+NOTES: For SmFilletSolver::JudgeBallAt: the ball's centre c lies in the
+    plane square to the edge at C(t), <C'(t), C(t) - c> = 0 (LoadJacobian).
+***********************************************************************/
+SmStatus SmVariableRadiusFS::GetBallLaw
+  (const SmTsectPnt & crPnt,       // in : the station
+   SmBoolean        & rbBall,      // out: TRUE
+   SmBoolean        & rbOnEdge,    // out: TRUE
+   double             adR[3],      // out: r, r', r'' at t
+   SmVector3d         asC[4])      // out: C, C', C'', C''' at t
+{
+  NER(m_rLaw);
+  const double dT = crPnt.m_adUserDoubles[0];
+  SER(m_rLaw->Evaluate(dT, m_vLawInterval, m_bLawOrientation, adR));
+  SER(EvaluateBaseCurve(dT, 3, asC));
+  rbBall   = TRUE;
+  rbOnEdge = TRUE;
+  return SM_SUCCESS;
+} // end SmVariableRadiusFS::GetBallLaw
 
 /*******************************************************************//**
 PURPOSE: Load the current Jacobian matrix in an incremental way

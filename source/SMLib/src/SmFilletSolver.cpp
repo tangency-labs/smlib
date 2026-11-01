@@ -34,6 +34,7 @@
 #include <SmSurfOfRevolution.h>
 #include <SmPlane.h>
 #include <SmFilletExact.h>
+#include <vector>
 
 // Forward decl of local routine:
 static SmBoolean sm_TestManifoldTangentRollover
@@ -5549,116 +5550,690 @@ SmStatus SmFilletSolver::RailsFitTheirFaces
 } // end SmFilletSolver::RailsFitTheirFaces
 
 /*******************************************************************//**
-PURPOSE: SolidCraft change. Whether this solver's rolling ball fits the
-    faces it rolls on, section by section.
+PURPOSE: SolidCraft change. A face's jet at a contact: its point, first to
+    third derivatives, its unit normal toward the ball's centre and the
+    normal's derivatives, and its fundamental forms there.
 
-NOTES: The ball touches each face where the face's offset surface (its
-    points moved along the normal, toward the ball's centre, by the ball's
-    radius r) passes through the centre. Along a direction in which the face
-    curves by k toward the ball's side the offset is stretched by 1 - r k;
-    past the face's centre of curvature (r > 1/k) the stretch is negative:
-    the face curves tighter than the ball, the ball cuts through it, and the
-    blend's rail there runs back against the filleted edge, the blend passing
-    through itself. A round of r2 on the rim of a pin of radius 1.5 (its
-    ball centred on the far side of the axis, the round a spindle torus); a
-    round of r7 run up a box's vertical edge into a round of r5 on the top
-    edge (its ball rolling on the r5 round, 1 - 7/5 around it), and any
-    round over r3 run on into a round of r3 (the r5 round's offset and the
-    r3 round's meet only in a point: 5 - r + r - 3 is the 2 between their
-    axes). rbFits is FALSE where a stretch is negative.
-
-    For CreateFilletBrep, before the corners (which look for a rail's end
-    where it cannot be). Nine sections along the edge are judged, each
-    through an edge point in the plane normal to the edge there
-    (PointOnPlaneSolve, its ball at the radius the solver has there). On
-    each face, with B its surface and O the offset, O's derivatives in B's,
-    Ou = m11 Bu + m12 Bv and Ov = m21 Bu + m22 Bv, give the stretches as the
-    eigenvalues of M, real (M is I - r S, S the face's shape operator): both
-    at least zero when det M and trace M are. A stretch of zero (a ball as
-    wide as the face's curve, its centre on an axis: the hemispherical end
-    of a pin as wide as the round, two rounds' corner ball) fits, by a
-    millionth. A section the solve does not find, or at a pole of a surface
-    (a parameter direction that does not move), judges nothing.
+NOTES: The normal n = s * m / |m|, m = Su x Sv, s = +-1 toward the centre.
+    Its derivatives follow from n |m| = m: n_a = (m_a - n l_a) / l and
+    n_ab = (m_ab - n_a l_b - n_b l_a - n l_ab) / l, l = |m|, l_a = <n, m_a>,
+    l_ab = <n_b, m_a> + <n, m_ab> (m's derivatives need S's third). E, F, G
+    and L, M, N (L = <Suu, n>) are the first and second fundamental forms
+    with n toward the ball. rbJudged is FALSE at a pole (Su x Sv = 0).
 ***********************************************************************/
-SmStatus SmFilletSolver::BallFitsItsFaces
-  (SmBoolean & rbFits)  // out: FALSE = a face curves tighter than the ball at a section
+namespace
 {
-  rbFits = TRUE;
-  SmOffsetSurface * apOffset[2] = { GetSurface(0), GetSurface(1) };
-  if ( apOffset[0] == NULL || apOffset[1] == NULL )
+  struct sm_FaceJet
+  {
+    SmVector3d s, su, sv, suu, suv, svv;
+    SmVector3d n, nu, nv, nuu, nuv, nvv;
+    double     E = 0.0, F = 0.0, G = 0.0, L = 0.0, M = 0.0, N = 0.0;
+  };
+}
+
+static SmStatus sm_FaceJetAt
+  (const SmSurface  & crSurface,  // in : the face's surface
+   const SmPoint2d  & crUV,       // in : the contact
+   const SmVector3d & crCentre,   // in : the ball's centre
+   sm_FaceJet       & rJet,       // out: the jet
+   SmBoolean        & rbJudged)   // out: FALSE at a pole
+{
+  rbJudged = FALSE;
+  // Evaluate's 1d order with three derivatives each way: index u*4 + v
+  SmVector3d d[16];
+  SER(crSurface.Evaluate(crUV, 3, 3, TRUE, TRUE, TRUE, d, FALSE));
+  rJet.s = d[0];  rJet.sv = d[1];  rJet.svv = d[2];
+  rJet.su = d[4]; rJet.suv = d[5]; rJet.suu = d[8];
+  const SmVector3d & sVvv = d[3];
+  const SmVector3d & sUvv = d[6];
+  const SmVector3d & sUuv = d[9];
+  const SmVector3d & sUuu = d[12];
+
+  const SmVector3d sM = rJet.su * rJet.sv;
+  const double dL = sM.Length();
+  if (!(dL > SM_EFF_ZERO * rJet.su.Length() * rJet.sv.Length()) || !(dL > 0.0))
     { return SM_SUCCESS; }
-  const SmSurface * apBase[2] = { apOffset[0]->GetBaseSurface(), apOffset[1]->GetBaseSurface() };
-  NER( apBase[0] );
-  NER( apBase[1] );
-  SmExtent2d asDomain[2] = { apBase[0]->GetNaturalUVDomain(), apBase[1]->GetNaturalUVDomain() };
-  NER( GetEdgeuse(0) );
-  const SmEdge  * pEdge  = GetEdgeuse(0)->GetEdge();  NER( pEdge );
-  const SmCurve * pCurve = pEdge->GetCurve();         NER( pCurve );
-  const double dFit = 1.0e-6;
-  const ULONG lNumSamples = 9;
-  for (ULONG j=0; j<lNumSamples && rbFits; j++)
+  const SmVector3d sMu  = rJet.suu * rJet.sv + rJet.su * rJet.suv;
+  const SmVector3d sMv  = rJet.suv * rJet.sv + rJet.su * rJet.svv;
+  const SmVector3d sMuu = sUuu * rJet.sv + 2.0 * (rJet.suu * rJet.suv) + rJet.su * sUuv;
+  const SmVector3d sMuv = sUuv * rJet.sv + rJet.suu * rJet.svv + rJet.su * sUvv;
+  const SmVector3d sMvv = sUvv * rJet.sv + 2.0 * (rJet.suv * rJet.svv) + rJet.su * sVvv;
+
+  const SmVector3d sN = sM / dL;
+  const double dLu = sN.Dot(sMu), dLv = sN.Dot(sMv);
+  const SmVector3d sNu = (sMu - sN * dLu) / dL;
+  const SmVector3d sNv = (sMv - sN * dLv) / dL;
+  const double dLuu = sNu.Dot(sMu) + sN.Dot(sMuu);
+  const double dLuv = sNv.Dot(sMu) + sN.Dot(sMuv);
+  const double dLvv = sNv.Dot(sMv) + sN.Dot(sMvv);
+  const SmVector3d sNuu = (sMuu - sNu * (2.0 * dLu) - sN * dLuu) / dL;
+  const SmVector3d sNuv = (sMuv - sNu * dLv - sNv * dLu - sN * dLuv) / dL;
+  const SmVector3d sNvv = (sMvv - sNv * (2.0 * dLv) - sN * dLvv) / dL;
+
+  const double dSide = (sN.Dot(crCentre - rJet.s) < 0.0) ? -1.0 : 1.0;
+  rJet.n   = sN   * dSide; rJet.nu  = sNu  * dSide; rJet.nv  = sNv  * dSide;
+  rJet.nuu = sNuu * dSide; rJet.nuv = sNuv * dSide; rJet.nvv = sNvv * dSide;
+  rJet.E = rJet.su.Dot(rJet.su);  rJet.F = rJet.su.Dot(rJet.sv);  rJet.G = rJet.sv.Dot(rJet.sv);
+  rJet.L = rJet.suu.Dot(rJet.n);  rJet.M = rJet.suv.Dot(rJet.n);  rJet.N = rJet.svv.Dot(rJet.n);
+  rbJudged = TRUE;
+  return SM_SUCCESS;
+} // end sm_FaceJetAt
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. The face's largest principal curvature toward
+    the ball: the largest root k of (L - k E)(N - k G) - (M - k F)^2 = 0.
+
+NOTES: The ball of radius r is locally enclosed by the face (every normal
+    section curves less toward the ball than the ball does: (E - rL) x^2 +
+    2 (F - rM) x y + (G - rN) y^2 positive definite) exactly when 1 - r k > 0 for this k: h(r) = (E - rL)(G - rN)
+    - (F - rM)^2 first reaches 0, as r grows from 0, at r = 1 / k.
+***********************************************************************/
+static double sm_LargestCurvatureTowardBall
+  (const sm_FaceJet & crJet)  // in : the face's jet at the contact
+{
+  const double dA = crJet.L * crJet.N - crJet.M * crJet.M;
+  const double dB = crJet.E * crJet.N + crJet.G * crJet.L - 2.0 * crJet.F * crJet.M;
+  const double dC = crJet.E * crJet.G - crJet.F * crJet.F;
+  const double dDisc = dB * dB - 4.0 * dA * dC;
+  return (dB + std::sqrt(dDisc > 0.0 ? dDisc : 0.0)) / (2.0 * dC);
+} // end sm_LargestCurvatureTowardBall
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. Solve the 4 x 4 system A x = b by Gaussian
+    elimination with partial pivoting; rbSingular where A is singular to
+    working precision (its determinant over the product of its columns'
+    lengths, Hadamard's bound, at most SM_EFF_ZERO).
+***********************************************************************/
+static void sm_Solve4
+  (const double   cadA[4][4],  // in : A
+   const double   cadB[4],     // in : b
+   double         adX[4],      // out: x
+   SmBoolean    & rbSingular)  // out: TRUE = A singular
+{
+  double adM[4][5];
+  double dHadamard = 1.0;
+  for (int j=0; j<4; j++)
     {
-      SmVector3d sPV[2];
-      SER( pCurve->Evaluate( pEdge->GetInterval().Evaluate( (j + 0.5) / lNumSamples ), 1, TRUE, sPV ));
-      if ( !( sPV[1].Length() > SM_EFF_ZERO ))
-        { continue; }
-      SER( sPV[1].Unitize() );
-
-      // the edge point on each face's surface: the section's guess
-      SmVector2d asGuess[2];
-      SmBoolean  bDropped = TRUE;
-      for (ULONG k=0; k<2 && bDropped; k++)
+      double dCol = 0.0;
+      for (int i=0; i<4; i++)
+        { dCol += cadA[i][j] * cadA[i][j]; }
+      dHadamard *= std::sqrt(dCol);
+    }
+  for (int i=0; i<4; i++)
+    {
+      for (int j=0; j<4; j++)
+        { adM[i][j] = cadA[i][j]; }
+      adM[i][4] = cadB[i];
+    }
+  double dDet = 1.0;
+  for (int k=0; k<4; k++)
+    {
+      int iPivot = k;
+      for (int i=k+1; i<4; i++)
+        if (smos_Fabs(adM[i][k]) > smos_Fabs(adM[iPivot][k]))
+          { iPivot = i; }
+      if (iPivot != k)
         {
-          SmBoolean bMulti = FALSE;
-          SmPoint2d sUV;
-          double    dGap = SM_BIG_DOUBLE;
-          SER( apBase[k]->DropPoint( sPV[0], asDomain[k], NULL, bDropped, sUV, dGap, bMulti ));
-          asGuess[k] = SmVector2d( sUV.x, sUV.y );
+          for (int j=0; j<5; j++)
+            { const double d = adM[k][j]; adM[k][j] = adM[iPivot][j]; adM[iPivot][j] = d; }
+          dDet = -dDet;
         }
-      if ( !bDropped )
-        { continue; }
-
-      // the section through it
-      SmTsectPnt sSection;
-      SmBoolean  bFound = FALSE;
-      SER( PointOnPlaneSolve( sPV[0], sPV[1], asDomain[0], asDomain[1], asGuess[0], asGuess[1], bFound, sSection ));
-      if ( !bFound )
-        { continue; }
-      if ( OffsetRadiiCanChange() )
-        { SER( SetupOffsetValues( sSection )); }
-
-      // the derivatives of the offset (O) and base (B) surfaces there (Evaluate's 1,1 in its
-      // 1d order: [0] the point, [1] Dv, [2] Du; exact tangents)
-      SmVector3d asO[2][4], asB[2][4];
-      for (ULONG k=0; k<2; k++)
+      dDet *= adM[k][k];
+      if (adM[k][k] == 0.0)
+        { break; }
+      for (int i=k+1; i<4; i++)
         {
-          SER( apOffset[k]->Evaluate( sSection.UVPos(k), 1, 1, TRUE, TRUE, TRUE, asO[k], FALSE ));
-          SER( apBase[k]->Evaluate( sSection.UVPos(k), 1, 1, TRUE, TRUE, TRUE, asB[k], FALSE ));
-        }
-      if ( OffsetRadiiCanChange() )
-        { ReloadSurfaceOffsets(); }
-
-      // each face's stretches: M = H G^-1, G = [Bi.Bj], H = [Oi.Bj]
-      for (ULONG k=0; k<2 && rbFits; k++)
-        {
-          const SmVector3d & sB1 = asB[k][1];
-          const SmVector3d & sB2 = asB[k][2];
-          const SmVector3d & sO1 = asO[k][1];
-          const SmVector3d & sO2 = asO[k][2];
-          double dG11 = sB1.Dot( sB1 ), dG12 = sB1.Dot( sB2 ), dG22 = sB2.Dot( sB2 );
-          double dDetG = dG11 * dG22 - dG12 * dG12;
-          // a pole (a parameter direction that does not move) has no stretch to judge
-          if ( !( dDetG > SM_EFF_ZERO * dG11 * dG22 ))
-            { continue; }
-          double dH11 = sO1.Dot( sB1 ), dH12 = sO1.Dot( sB2 ), dH21 = sO2.Dot( sB1 ), dH22 = sO2.Dot( sB2 );
-          double dDetM   = ( dH11 * dH22 - dH12 * dH21 ) / dDetG;
-          double dTraceM = ( dH11 * dG22 - dH12 * dG12 - dH21 * dG12 + dH22 * dG11 ) / dDetG;
-          if ( dDetM < -dFit || dTraceM < -dFit )
-            { rbFits = FALSE; }
+          const double dF = adM[i][k] / adM[k][k];
+          for (int j=k; j<5; j++)
+            { adM[i][j] -= dF * adM[k][j]; }
         }
     }
+  rbSingular = (!(dHadamard > 0.0) || !(smos_Fabs(dDet) > SM_EFF_ZERO * dHadamard)) ? TRUE : FALSE;
+  for (int i=0; i<4; i++)
+    { adX[i] = 0.0; }
+  if (rbSingular)
+    { return; }
+  for (int i=3; i>=0; i--)
+    {
+      double d = adM[i][4];
+      for (int j=i+1; j<4; j++)
+        { d -= adM[i][j] * adX[j]; }
+      adX[i] = d / adM[i][i];
+    }
+} // end sm_Solve4
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. The rolling ball's local regularity at the
+    station crPnt (its contacts' uv on the solver's two faces): the blend
+    design's §6 checks.
+
+NOTES: With the ball's centre c and radius r, its contacts s1, s2 and the
+    faces' unit normals n1, n2 there toward c:
+    1. Each face locally encloses the ball: 1 - r k_i > 0, k_i the face's
+       largest principal curvature toward the ball (h_i(r) > 0 with the
+       form positive definite). Equal (to a millionth, a ball as wide as
+       the face's curve: the hemispherical end of a pin as wide as the
+       round, two rounds' corner ball) is a focal station, where the ball
+       is the blend and the rest is not judged.
+    2. The spine is transversal to the faces' bisector: the centre moves,
+       c' x (s2 - s1) != 0. The derivatives below solve the station's
+       equations c = s_i + r n_i (i = 1, 2) with one more fixing the trace's
+       parameter t, and their matrix is singular where this fails.
+    3. Every point p of the section is progressive (the envelope does not
+       fold back over itself there): for the balls' family f(t, p) = (|p - c|^2 - r^2) / 2,
+       f_tt = |c'|^2 - r'^2 - r r'' - <p - c, c''> > 0. On the touch circle
+       (the sphere's points with <p - s1, c'> = 0) from s1 to s2, the short
+       way, f_tt is linear in p and its least value is in closed form. For a
+       section other than the ball's circle only its ends, the rails, are on
+       the ball: there f_tt is the contact conformity mu_i = <s_i', c'>, and
+       those two are judged.
+    The trace's parameter: for a law along the edge (rbOnEdge), the edge's
+    t, the centre in the plane <C'(t), C(t) - c> = 0; for a constant ball a
+    parameter along the fixed direction w = n1 x n2, <c', w> = 1 and
+    <c'', w> = 0 (f_tt / |c'|^2 does not depend on it). c' and c'' come from
+    differentiating the equations once and twice: the second needs the
+    normals' second derivatives (sm_FaceJetAt). Where the contacts meet
+    (the tangent end, an event of its own) only check 1 is judged; a pole is
+    not judged.
+***********************************************************************/
+SmStatus SmFilletSolver::JudgeBallAt
+  (const SmTsectPnt & crPnt,      // in : the station: UVPos(0), UVPos(1) and, for a law, its t
+   SmBallStation    & rStation)   // out: the station's judgement
+{
+  rStation = SmBallStation();
+  SmBoolean bBall = FALSE, bOnEdge = FALSE;
+  double adR[3] = { 0.0, 0.0, 0.0 };
+  SmVector3d asC[4];
+  SER(GetBallLaw(crPnt, bBall, bOnEdge, adR, asC));
+  if (!bBall)
+    { return SM_SUCCESS; }
+  SmOffsetSurface * apOffset[2] = { GetSurface(0), GetSurface(1) };
+  NER(apOffset[0]); NER(apOffset[1]);
+  const SmSurface * apBase[2] = { apOffset[0]->GetBaseSurface(), apOffset[1]->GetBaseSurface() };
+  NER(apBase[0]); NER(apBase[1]);
+  rStation.m_bLaw = bOnEdge;
+
+  // the centre: the first face's offset at the station's radius
+  const SmBoolean bRadiusChanges = OffsetRadiiCanChange();
+  if (bRadiusChanges)
+    { SER(SetupOffsetValues(crPnt)); }
+  SmPoint3d sCentre;
+  const SmStatus eCentre = apOffset[0]->EvaluatePoint(crPnt.m_vUVCurvePV[0][0], sCentre);
+  if (bRadiusChanges)
+    { ReloadSurfaceOffsets(); }
+  SER(eCentre);
+  const SmVector3d sC(sCentre);
+
+  // each face's surface as its offset evaluates it there: the base, or past the base's domain
+  // its extension (made by the offset's own evaluation, which the trace solves on)
+  sm_FaceJet asJet[2];
+  for (ULONG k=0; k<2; k++)
+    {
+      const SmPoint2d & crUV = crPnt.m_vUVCurvePV[k][0];
+      SmPoint3d sOn;
+      SER(apOffset[k]->EvaluatePoint(crUV, sOn));
+      const SmSurface * pActing = apBase[k];
+      const SmSurface * pExtended = apOffset[k]->GetExtendedBaseSurface();
+      if (   !apBase[k]->GetNaturalUVDomain().ContainsPoint2d(crUV)
+          && pExtended != NULL && pExtended->GetNaturalUVDomain().ContainsPoint2d(crUV))
+        { pActing = pExtended; }
+      SmBoolean bJudged = FALSE;
+      SER(sm_FaceJetAt(*pActing, crUV, sC, asJet[k], bJudged));
+      if (!bJudged)
+        { return SM_SUCCESS; }
+    }
+  const double dR = (sC - asJet[0].s).Length();
+  const SmVector3d sChord = asJet[1].s - asJet[0].s;
+  rStation.m_dRadius = dR;
+  if (!(dR > SM_EFF_ZERO))
+    { return SM_SUCCESS; }
+
+  // 1. each face encloses the ball
+  const double dFocal = 1.0e-6;
+  rStation.m_dEnclosed = SM_BIG_DOUBLE;
+  for (ULONG k=0; k<2; k++)
+    {
+      const double dK = sm_LargestCurvatureTowardBall(asJet[k]);
+      const double dMargin = 1.0 - dR * dK;
+      if (dMargin < rStation.m_dEnclosed)
+        { rStation.m_dEnclosed = dMargin; }
+      if (dK > 0.0 && 1.0 / dK < rStation.m_dFits)
+        { rStation.m_dFits = 1.0 / dK; }
+    }
+  if (rStation.m_dEnclosed < -dFocal)
+    {
+      rStation.m_lCheck = SmBallStation::SM_BS_NOT_ENCLOSED;
+      return SM_SUCCESS;
+    }
+  rStation.m_lCheck = SmBallStation::SM_BS_REGULAR;
+  // a focal station, or contacts that meet (the faces tangent there: a tangent end, an event of
+  // its own), judge nothing further
+  if (rStation.m_dEnclosed <= dFocal || !(sChord.Length() > GetThisApproxTol3d()))
+    { return SM_SUCCESS; }
+
+  // 2. the spine's tangent: O_i = s_i + r n_i, O_i' = O_iu u_i' + O_iv v_i' + r' n_i
+  const double dRp = adR[1], dRpp = adR[2];
+  SmVector3d asOu[2], asOv[2];
+  for (ULONG k=0; k<2; k++)
+    {
+      asOu[k] = asJet[k].su + asJet[k].nu * dR;
+      asOv[k] = asJet[k].sv + asJet[k].nv * dR;
+    }
+  SmVector3d sW;
+  double dA1 = 0.0;
+  if (bOnEdge)
+    {
+      sW  = asC[1];
+      dA1 = asC[1].Dot(asC[1]) + asC[2].Dot(asC[0] - sC);
+    }
+  else
+    {
+      sW = asJet[0].n * asJet[1].n;
+      const double dW = sW.Length();
+      if (!(dW > SM_EFF_ZERO))
+        {
+          rStation.m_lCheck = SmBallStation::SM_BS_NOT_TRANSVERSAL;
+          return SM_SUCCESS;
+        }
+      sW  = sW / dW;
+      dA1 = 1.0;
+    }
+  double adA[4][4], adB[4], adX[4];
+  for (ULONG i=0; i<3; i++)
+    {
+      adA[i][0] = asOu[0][i];  adA[i][1] = asOv[0][i];
+      adA[i][2] = -asOu[1][i]; adA[i][3] = -asOv[1][i];
+      adB[i] = -dRp * (asJet[0].n[i] - asJet[1].n[i]);
+    }
+  adA[3][0] = sW.Dot(asOu[0]); adA[3][1] = sW.Dot(asOv[0]); adA[3][2] = 0.0; adA[3][3] = 0.0;
+  adB[3] = dA1 - dRp * sW.Dot(asJet[0].n);
+  SmBoolean bSingular = FALSE;
+  sm_Solve4(adA, adB, adX, bSingular);
+  const SmVector3d sCp = asOu[0] * adX[0] + asOv[0] * adX[1] + asJet[0].n * dRp;
+  const double dCp2 = sCp.LengthSquared();
+  if (   bSingular || !(dCp2 > 0.0)
+      || !((sCp * sChord).Length() > SM_EFF_ZERO * std::sqrt(dCp2) * sChord.Length()))
+    {
+      rStation.m_lCheck = SmBallStation::SM_BS_NOT_TRANSVERSAL;
+      return SM_SUCCESS;
+    }
+
+  // 3. c'': the equations differentiated twice, K_i the terms without u_i'', v_i''
+  const double adU[2][2] = { { adX[0], adX[1] }, { adX[2], adX[3] } };
+  SmVector3d asK[2];
+  for (ULONG k=0; k<2; k++)
+    {
+      const sm_FaceJet & crJ = asJet[k];
+      const double dU = adU[k][0], dV = adU[k][1];
+      const SmVector3d sOuu = crJ.suu + crJ.nuu * dR;
+      const SmVector3d sOuv = crJ.suv + crJ.nuv * dR;
+      const SmVector3d sOvv = crJ.svv + crJ.nvv * dR;
+      asK[k] =   sOuu * (dU * dU) + sOuv * (2.0 * dU * dV) + sOvv * (dV * dV)
+               + (crJ.nu * dU + crJ.nv * dV) * (2.0 * dRp) + crJ.n * dRpp;
+    }
+  double dA2 = 0.0;
+  if (bOnEdge)
+    { dA2 = asC[3].Dot(asC[0] - sC) + 2.0 * asC[2].Dot(asC[1] - sCp) + asC[1].Dot(asC[2]); }
+  for (ULONG i=0; i<3; i++)
+    { adB[i] = -(asK[0][i] - asK[1][i]); }
+  adB[3] = dA2 - sW.Dot(asK[0]);
+  sm_Solve4(adA, adB, adX, bSingular);
+  if (bSingular)
+    {
+      rStation.m_lCheck = SmBallStation::SM_BS_NOT_TRANSVERSAL;
+      return SM_SUCCESS;
+    }
+  const SmVector3d sCpp = asK[0] + asOu[0] * adX[0] + asOv[0] * adX[1];
+
+  // f_tt on the section: A0 - <p - c, c''>
+  const double dA0 = dCp2 - dRp * dRp - dR * dRpp;
+  double dLeast = SM_BIG_DOUBLE;
+  for (ULONG k=0; k<2; k++)
+    {
+      const double dEnd = dA0 - (asJet[k].s - sC).Dot(sCpp);
+      if (dEnd < dLeast)
+        { dLeast = dEnd; }
+    }
+  if (m_pFSG != NULL && m_pFSG->GetFilletSurfaceGeneratorType() == SM_FSG_CIRCULAR)
+    {
+      // the touch circle: centre m on the centre line, through s1 and s2
+      const SmVector3d sM = sC + sCp * ((asJet[0].s - sC).Dot(sCp) / dCp2);
+      SmVector3d sE1 = asJet[0].s - sM;
+      const double dRho = sE1.Length();
+      if (dRho > SM_EFF_ZERO * dR)
+        {
+          sE1 = sE1 / dRho;
+          const SmVector3d sQ = asJet[1].s - sM;
+          SmVector3d sE2 = sQ - sE1 * sQ.Dot(sE1);
+          const double dE2 = sE2.Length();
+          if (dE2 > SM_EFF_ZERO * dR)
+            { sE2 = sE2 / dE2; }
+          else
+            {
+              sE2 = sCp * sE1;
+              SER(sE2.Unitize());
+            }
+          const double dPhi = std::atan2(sQ.Dot(sE2), sQ.Dot(sE1));
+          // the most of a cos(phi) + b sin(phi) over [0, phi]
+          const double dA = sE1.Dot(sCpp), dB = sE2.Dot(sCpp);
+          double dMost = dA;
+          const double dAtEnd = dA * std::cos(dPhi) + dB * std::sin(dPhi);
+          if (dAtEnd > dMost)
+            { dMost = dAtEnd; }
+          const double dStar = std::atan2(dB, dA);
+          if (dStar > 0.0 && dStar < dPhi)
+            { dMost = std::sqrt(dA * dA + dB * dB); }
+          const double dArc = dA0 - (sM - sC).Dot(sCpp) - dRho * dMost;
+          if (dArc < dLeast)
+            { dLeast = dArc; }
+        }
+    }
+  rStation.m_dProgress = dLeast / dCp2;
+  if (!(rStation.m_dProgress > 0.0))
+    { rStation.m_lCheck = SmBallStation::SM_BS_REGRESSIVE; }
   return SM_SUCCESS;
-} // end SmFilletSolver::BallFitsItsFaces
+} // end SmFilletSolver::JudgeBallAt
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. The solver's section in the plane square to its
+    filleted edge at the edge's parameter dT (PointOnPlaneSolve on the
+    faces' surfaces extended as the trace extends them), with the ball at
+    the offsets the solver's surfaces have. Its guess is the edge point
+    dropped on each face, or where that finds none, a section found near
+    (continuing from it as the trace does: a wide ball's contacts lie far
+    from the edge).
+***********************************************************************/
+static SmStatus sm_BallSectionAt
+  (SmFilletSolver   & rSolver,     // in : the solver
+   const SmCurve    & crEdgeCurve, // in : the filleted edge's curve
+   double             dT,          // in : the edge's parameter
+   const SmTsectPnt * pGuess,      // in : a section found near, whose contacts are the guess (NULL: none)
+   SmBoolean        & rbFound,     // out: TRUE = the section was found
+   SmTsectPnt      & rPnt)        // out: the section's contacts (and, for a law, its t)
+{
+  rbFound = FALSE;
+  const SmSurface * apBase[2] = { rSolver.GetSurface(0)->GetBaseSurface(), rSolver.GetSurface(1)->GetBaseSurface() };
+  NER(apBase[0]); NER(apBase[1]);
+  // the domains the trace solves on: the natural ones, extended as for the trace
+  SmExtent2d asDomain[2] = { apBase[0]->GetNaturalUVDomain(), apBase[1]->GetNaturalUVDomain() };
+  rSolver.SetupOffsetExtension(apBase[0], asDomain[0]);
+  rSolver.SetupOffsetExtension(apBase[1], asDomain[1]);
+  SmVector3d sPV[2];
+  SER(crEdgeCurve.Evaluate(dT, 1, TRUE, sPV));
+  if (!(sPV[1].Length() > SM_EFF_ZERO))
+    { return SM_SUCCESS; }
+  SER(sPV[1].Unitize());
+  SmVector2d asGuess[2];
+  SmBoolean  bDropped = TRUE;
+  for (ULONG k=0; k<2 && bDropped; k++)
+    {
+      SmBoolean bMulti = FALSE;
+      SmPoint2d sUV;
+      double    dGap = SM_BIG_DOUBLE;
+      SER(apBase[k]->DropPoint(sPV[0], asDomain[k], NULL, bDropped, sUV, dGap, bMulti));
+      asGuess[k] = SmVector2d(sUV.x, sUV.y);
+    }
+  if (bDropped)
+    { SER(rSolver.PointOnPlaneSolve(sPV[0], sPV[1], asDomain[0], asDomain[1], asGuess[0], asGuess[1], rbFound, rPnt)); }
+  if (!rbFound && pGuess != NULL)
+    {
+      SER(rSolver.PointOnPlaneSolve(sPV[0], sPV[1], asDomain[0], asDomain[1], pGuess->m_vUVCurvePV[0][0],
+                                    pGuess->m_vUVCurvePV[1][0], rbFound, rPnt));
+    }
+  return SM_SUCCESS;
+} // end sm_BallSectionAt
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. Whether the solver's ball is regular at the
+    section at the edge's dT (JudgeBallAt), with the ball's radius dRadius
+    for a constant ball (0: the solver's own), its surfaces' offsets back at
+    the solver's own after.
+***********************************************************************/
+static SmStatus sm_RegularAt
+  (SmFilletSolver  & rSolver,     // in : the solver
+   const SmCurve   & crEdgeCurve, // in : the filleted edge's curve
+   double            dT,          // in : the edge's parameter
+   double            dRadius,     // in : a constant ball's trial radius, 0 for the solver's
+   SmTsectPnt      & rNear,       // i/o: a section found near (the guess) and then this one, if found
+   SmBoolean       & rbNear,      // i/o: whether rNear holds one
+   SmBoolean       & rbRegular,   // out: TRUE = regular there (or not judged)
+   SmBallStation   & rStation)    // out: the judgement
+{
+  rbRegular = TRUE;
+  rStation  = SmBallStation();
+  double dOwn = 0.0;
+  if (dRadius > 0.0)
+    {
+      SmTsectPnt sAny;
+      SmBoolean bBall = FALSE, bOnEdge = FALSE;
+      double adR[3] = { 0.0, 0.0, 0.0 };
+      SmVector3d asC[4];
+      SER(rSolver.GetBallLaw(sAny, bBall, bOnEdge, adR, asC));
+      dOwn = adR[0];
+      if (!bBall || bOnEdge || !rSolver.SetBallRadius(dRadius))
+        { return SM_SUCCESS; }
+    }
+  SmTsectPnt sPnt;
+  SmBoolean  bFound = FALSE;
+  SmStatus eStatus = sm_BallSectionAt(rSolver, crEdgeCurve, dT, rbNear ? &rNear : NULL, bFound, sPnt);
+  if (eStatus == SM_SUCCESS && bFound)
+    {
+      eStatus = rSolver.JudgeBallAt(sPnt, rStation);
+      rNear   = sPnt;
+      rbNear  = TRUE;
+    }
+  if (dRadius > 0.0)
+    { (void)rSolver.SetBallRadius(dOwn); } // the solver's own radius back, whatever the solve did
+  SER(eStatus);
+  if (dRadius > 0.0 && !bFound)
+    { rbRegular = FALSE; } // no section at the trial radius: not one that works
+  else if (   rStation.m_lCheck != SmBallStation::SM_BS_UNJUDGED
+           && rStation.m_lCheck != SmBallStation::SM_BS_REGULAR)
+    { rbRegular = FALSE; }
+  return SM_SUCCESS;
+} // end sm_RegularAt
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. Whether this solver's rolling ball is regular
+    along its edge (JudgeBallAt at sections across the edge), and where it
+    is not, the radius that works.
+
+NOTES: For CreateFilletBrep, before the corners (which look for a rail's end
+    where it cannot be when the ball does not fit). The sections are at the
+    middles of 32 equal steps of the edge's parameter; where all of them are
+    regular, each margin (m_dEnclosed, m_dProgress) is minimized about the
+    section where it is least (golden section over the steps either side),
+    so that a narrow dip between sections is found. rFirst is the station
+    that fails (m_lCheck SM_BS_REGULAR where none does), with m_dWorks:
+    - a constant ball: the largest radius regular at the failing station,
+      by bisection on the radius with the section solved again at each (the
+      contacts move with r), the least over the failing stations (0 where
+      no radius down to a millionth of r is regular there);
+    - a radius law: the radius where the law first stops being regular
+      along the edge, by bisection on t from a regular section below.
+    A section the solve does not find and a pole are not judged.
+***********************************************************************/
+SmStatus SmFilletSolver::BallIsRegular
+  (SmBallStation & rFirst)  // out: the failing station and the radius that works
+{
+  rFirst = SmBallStation();
+  rFirst.m_lCheck = SmBallStation::SM_BS_REGULAR;
+  if (GetSurface(0) == NULL || GetSurface(1) == NULL || GetEdgeuse(0) == NULL)
+    { return SM_SUCCESS; }
+  const SmEdge  * pEdge  = GetEdgeuse(0)->GetEdge();  NER(pEdge);
+  const SmCurve * pCurve = pEdge->GetCurve();         NER(pCurve);
+  const SmExtent1d sIvl  = pEdge->GetInterval();
+  const ULONG lSteps = 32;
+  const ULONG lBisections = 40;
+  std::vector<SmTsectPnt> vSections(lSteps);  // each step's section, the guess about it (vFound: one was found)
+  std::vector<SmBoolean>  vFound(lSteps, FALSE);
+
+  // the radius that works at a failing section dT (judged crFail), from a regular one at
+  // dPassT below it (bPass) for a law, the solves continuing from crNear (bHaveNear)
+  auto Fail = [&](double dT, const SmBallStation & crFail, SmBoolean bPass, double dPassT,
+                  const SmTsectPnt & crNear, SmBoolean bHaveNear) -> SmStatus
+  {
+    SmTsectPnt sNear = crNear;
+    SmBoolean  bNear = bHaveNear;
+    if (crFail.m_bLaw)
+      {
+        SmBallStation sOnset = crFail;
+        if (bPass)
+          {
+            double dLo = dPassT, dHi = dT;
+            for (ULONG i=0; i<lBisections; i++)
+              {
+                const double dMid = 0.5 * (dLo + dHi);
+                SmBoolean bMid = TRUE;
+                SmBallStation sMid;
+                SER(sm_RegularAt(*this, *pCurve, dMid, 0.0, sNear, bNear, bMid, sMid));
+                if (bMid)
+                  { dLo = dMid; }
+                else
+                  {
+                    dHi = dMid;
+                    sOnset = sMid;
+                  }
+              }
+          }
+        if (rFirst.m_lCheck == SmBallStation::SM_BS_REGULAR)
+          {
+            rFirst = sOnset;
+            rFirst.m_dWorks = sOnset.m_dRadius;
+          }
+        return SM_SUCCESS;
+      }
+    const double dRadius = crFail.m_dRadius;
+    double dLo = 0.0, dHi = dRadius;
+    SmBallStation sLo;
+    for (double dTry = 0.5 * dRadius; dTry > 1.0e-6 * dRadius; dTry *= 0.5)
+      {
+        SmBoolean bTry = TRUE;
+        SmBallStation sTry;
+        SER(sm_RegularAt(*this, *pCurve, dT, dTry, sNear, bNear, bTry, sTry));
+        if (bTry)
+          {
+            dLo = dTry;
+            sLo = sTry;
+            break;
+          }
+        dHi = dTry;
+      }
+    if (dLo > 0.0)
+      {
+        for (ULONG i=0; i<lBisections; i++)
+          {
+            const double dMid = 0.5 * (dLo + dHi);
+            SmBoolean bMid = TRUE;
+            SmBallStation sMid;
+            SER(sm_RegularAt(*this, *pCurve, dT, dMid, sNear, bNear, bMid, sMid));
+            if (bMid)
+              {
+                dLo = dMid;
+                sLo = sMid;
+              }
+            else
+              { dHi = dMid; }
+          }
+      }
+    // a ball that does not fit: the limit is where h(r) reaches 0 at the contacts of the largest
+    // regular radius (the bisection itself stops at the focal tolerance, a millionth past it)
+    if (dLo > 0.0 && crFail.m_lCheck == SmBallStation::SM_BS_NOT_ENCLOSED && sLo.m_dFits < SM_BIG_DOUBLE)
+      { dLo = sLo.m_dFits; }
+    if (rFirst.m_lCheck == SmBallStation::SM_BS_REGULAR || dLo < rFirst.m_dWorks)
+      {
+        rFirst = crFail;
+        rFirst.m_dWorks = dLo;
+      }
+    return SM_SUCCESS;
+  };
+
+  SmTArray<double> sT;
+  SmTArray<double> asMargin[2];
+  SmBoolean bPassed = FALSE;
+  double    dPassedT = 0.0;
+  SmTsectPnt sNear;
+  SmBoolean  bNear = FALSE;
+  for (ULONG j=0; j<lSteps; j++)
+    {
+      const double dT = sIvl.Evaluate((j + 0.5) / lSteps);
+      SmBoolean bRegular = TRUE;
+      SmBallStation sStation;
+      SER(sm_RegularAt(*this, *pCurve, dT, 0.0, sNear, bNear, bRegular, sStation));
+      vSections[j] = sNear; // this step's section, or the last one found before it
+      vFound[j]    = bNear;
+      sT.Add(dT);
+      asMargin[0].Add(sStation.m_dEnclosed);
+      asMargin[1].Add(sStation.m_dProgress);
+      if (bRegular)
+        {
+          bPassed  = TRUE;
+          dPassedT = dT;
+          continue;
+        }
+      SER(Fail(dT, sStation, bPassed, dPassedT, sNear, bNear));
+      if (sStation.m_bLaw)
+        { return SM_SUCCESS; } // a law: the first failing section along the edge
+    }
+  if (rFirst.m_lCheck != SmBallStation::SM_BS_REGULAR)
+    { return SM_SUCCESS; }
+
+  // every section regular: each margin's least between the sections about its least one
+  for (ULONG m=0; m<2; m++)
+    {
+      ULONG lLeast = 0;
+      for (ULONG j=1; j<sT.GetSize(); j++)
+        if (asMargin[m][j] < asMargin[m][lLeast])
+          { lLeast = j; }
+      if (sT.GetSize() == 0 || !(asMargin[m][lLeast] < SM_BIG_DOUBLE))
+        { continue; }
+      double dA = (lLeast > 0) ? sT[lLeast-1] : sIvl.GetMin();
+      double dB = (lLeast + 1 < sT.GetSize()) ? sT[lLeast+1] : sIvl.GetMax();
+      const double dGolden = 0.5 * (std::sqrt(5.0) - 1.0);
+      sNear = vSections[lLeast];
+      bNear = vFound[lLeast];
+      auto Margin = [&](double dT, double & rdMargin, SmBallStation & rStation) -> SmStatus
+      {
+        SmBoolean bRegular = TRUE;
+        SER(sm_RegularAt(*this, *pCurve, dT, 0.0, sNear, bNear, bRegular, rStation));
+        rdMargin = (m == 0) ? rStation.m_dEnclosed : rStation.m_dProgress;
+        if (!bRegular)
+          { rdMargin = -SM_BIG_DOUBLE; } // failing: as low as it gets
+        return SM_SUCCESS;
+      };
+      double dX1 = dB - dGolden * (dB - dA), dX2 = dA + dGolden * (dB - dA);
+      double dF1 = 0.0, dF2 = 0.0;
+      SmBallStation s1, s2;
+      SER(Margin(dX1, dF1, s1));
+      SER(Margin(dX2, dF2, s2));
+      for (ULONG i=0; i<lBisections && dF1 > -SM_BIG_DOUBLE && dF2 > -SM_BIG_DOUBLE; i++)
+        {
+          if (dF1 < dF2)
+            {
+              dB = dX2; dX2 = dX1; dF2 = dF1; s2 = s1;
+              dX1 = dB - dGolden * (dB - dA);
+              SER(Margin(dX1, dF1, s1));
+            }
+          else
+            {
+              dA = dX1; dX1 = dX2; dF1 = dF2; s1 = s2;
+              dX2 = dA + dGolden * (dB - dA);
+              SER(Margin(dX2, dF2, s2));
+            }
+        }
+      const SmBoolean bFirstFails = (dF1 <= dF2) ? TRUE : FALSE;
+      const double dFailT = bFirstFails ? dX1 : dX2;
+      const SmBallStation & crFail = bFirstFails ? s1 : s2;
+      if (   crFail.m_lCheck == SmBallStation::SM_BS_UNJUDGED
+          || crFail.m_lCheck == SmBallStation::SM_BS_REGULAR)
+        { continue; }
+      // a regular section below the failing one: the least section's, or the one before it
+      const double dPassT = (sT[lLeast] < dFailT) ? sT[lLeast] : ((lLeast > 0) ? sT[lLeast-1] : sIvl.GetMin());
+      const SmBoolean bPass = (sT[lLeast] < dFailT || lLeast > 0) ? TRUE : FALSE;
+      SER(Fail(dFailT, crFail, bPass, dPassT, vSections[lLeast], vFound[lLeast]));
+    }
+  return SM_SUCCESS;
+} // end SmFilletSolver::BallIsRegular
 
 /*******************************************************************//**
 PURPOSE: SolidCraft change. Whether a rail leaves the face it rolls on, at crLeave (rail

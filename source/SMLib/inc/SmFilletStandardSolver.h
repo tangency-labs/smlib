@@ -54,6 +54,13 @@ public:
         smos_WStrCpy(pcMyName,lMyNameAllocLen,_T("SmConstantRadiusFS")); }
 
     double GetFilletRadius(ULONG lIndex) { return m_dFilletRadii[lIndex]; }
+    // SolidCraft change: one ball when both radii are equal, of constant radius
+    virtual SmStatus GetBallLaw(const SmTsectPnt & crPnt, SmBoolean & rbBall, SmBoolean & rbOnEdge,
+                                double adR[3], SmVector3d asC[4]);
+    virtual SmBoolean SetBallRadius(double dRadius)
+      { m_dFilletRadii[0] = m_dFilletRadii[1] = dRadius;
+        GetSurface(0)->SetOffsetDistance(dRadius*m_dOrientations[0]);
+        GetSurface(1)->SetOffsetDistance(dRadius*m_dOrientations[1]); return TRUE; }
 
     virtual SmFilletSolverType GetSolverType() { return SM_FS_CONST_RADIUS; }
 
@@ -357,6 +364,9 @@ public:
     virtual SmStatus  GetRadiusCornerParameters(SmTArray<double> & rParams);
     virtual SmBoolean IsAtRadiusCorner(const SmTsectPnt & crTsectPnt);
     virtual SmBoolean GetRadiusParameter(const SmTsectPnt & crTsectPnt, double & rdParam);
+    // SolidCraft change: the law's ball, its centre in the plane square to the edge at C(t)
+    virtual SmStatus GetBallLaw(const SmTsectPnt & crPnt, SmBoolean & rbBall, SmBoolean & rbOnEdge,
+                                double adR[3], SmVector3d asC[4]);
 
     virtual ULONG GetJacobianSize() const;
 

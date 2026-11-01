@@ -114,6 +114,32 @@ public:
 } ; // end class SmFilletSolverOffsetsData
 
 /*******************************************************************//**
+PURPOSE: SolidCraft change. The rolling ball's local regularity at a station
+    of a blend (the blend design's §6, the conditions for a rolling-ball
+    blend to be regular: each face locally encloses the ball, the spine is
+    transversal to the faces' bisector, every point of the section is
+    progressive).
+
+NOTES: m_dEnclosed is the least over the two faces of 1 - r k, k the face's
+    largest principal curvature toward the ball (> 0: the face encloses the
+    ball). m_dProgress is the least of F_tt / |c'|^2 over the section's points
+    (> 0: progressive), F the balls' family. m_dWorks is the radius that works
+    (the largest that is regular there, or for a radius law the radius where
+    the law first stops being regular).
+***********************************************************************/
+struct SmBallStation
+{
+  enum { SM_BS_UNJUDGED = 0, SM_BS_REGULAR, SM_BS_NOT_ENCLOSED, SM_BS_NOT_TRANSVERSAL, SM_BS_REGRESSIVE };
+  ULONG     m_lCheck    = SM_BS_UNJUDGED; // the first check that fails, or SM_BS_REGULAR
+  double    m_dRadius   = 0.0;            // the ball's radius there
+  double    m_dEnclosed = SM_BIG_DOUBLE; // SM_BIG_DOUBLE: not judged
+  double    m_dProgress = SM_BIG_DOUBLE;
+  double    m_dWorks    = 0.0;
+  double    m_dFits     = SM_BIG_DOUBLE; // the least over the faces of 1 / k: the radius h(r) first reaches 0 at
+  SmBoolean m_bLaw      = FALSE;          // the radius follows a law along the edge
+};
+
+/*******************************************************************//**
 PURPOSE: The Fillet Solver object is the abstract object which 
      presents a consistent interface to filleting operations to the
      high level fillet framework.
@@ -384,7 +410,21 @@ public:
   SmStatus     TestRollOver(SmTArray<SmFilletCorner*> & rAdjustedCorners);
   SmStatus     EndSectionsFitTheirFaces(SmBoolean & rbFit); // SolidCraft change: whether the fillet's end section at each Nx1 end lies on its end face
   SmStatus     RailsFitTheirFaces(SmBoolean & rbFit, SmBoolean & rbRollsOver, SmBoolean & rbIntoMaterial); // SolidCraft change: whether every rail stays on the face it rolls on, rolls over a tangent edge, or runs into the body
-  SmStatus     BallFitsItsFaces(SmBoolean & rbFits); // SolidCraft change: whether the rolling ball fits the faces' curvature at each section (no face curves tighter than it)
+  // SolidCraft change: the rolling ball's local regularity along the edge (SmBallStation), and
+  // the radius that works where it is not regular (SmFilletSolver.cpp, the blend design's §6)
+  SmStatus     BallIsRegular(SmBallStation & rFirst);
+  SmStatus     JudgeBallAt(const SmTsectPnt & crPnt, SmBallStation & rStation);
+  // SolidCraft change: whether the solver rolls one ball on both faces at crPnt (rbBall), and its
+  // radius law there: adR = r, dr/dt, d2r/dt2 in the trace's parameter t. rbOnEdge: t is the
+  // filleted edge's parameter, the ball's centre in the plane square to the edge at C(t), asC =
+  // C, C', C'', C''' there; otherwise the radius is constant and the trace free.
+  virtual SmStatus GetBallLaw(const SmTsectPnt & crPnt, SmBoolean & rbBall, SmBoolean & rbOnEdge,
+                              double adR[3], SmVector3d asC[4])
+    { SM_REF5(crPnt, rbBall, rbOnEdge, adR, asC); rbBall = FALSE; rbOnEdge = FALSE; return SM_SUCCESS; }
+  // SolidCraft change: a constant ball's radius set to dRadius (both faces' offsets, as the solve
+  // takes them), for the room checks' bisections, which set it back after; FALSE where the
+  // solver has no constant ball
+  virtual SmBoolean SetBallRadius(double dRadius) { SM_REF1(dRadius); return FALSE; }
   static SmBoolean IsKnifeEdge(SmEdge * pEdge, double dTangencyTolRad); // SolidCraft change: faces tangent along the edge and folded back on each other
   static SmStatus IsConcaveEdge(const SmEdge & crEdge, SmBoolean & rbConcave); // SolidCraft change: whether the body's material wedge at the edge exceeds a half turn
   SmStatus     LeavesPastAnEnd(const SmFace & crFace, const SmCurve & crRail, double dRailParam, const SmPointClassification & crLeave, SmBoolean & rbPastAnEnd, const SmVertex ** ppEnd = NULL, SmBoolean * pbBySide = NULL) const; // SolidCraft change: whether a rail leaves its face past an end of the filleted edge, and which
