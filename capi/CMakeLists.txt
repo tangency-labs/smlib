@@ -78,6 +78,7 @@ set(SMLIB_STATUS_CLEAN
   ${SRC}/SMLib/src/SmFilletExact.cpp
   ${SRC}/SMLib/src/SmFilletSection.cpp
   ${SRC}/SMLib/src/SmFilletCorner.cpp
+  ${SRC}/SMLib/src/SmBlendCorner.cpp
   ${SRC}/SMLib/src/SmFilletStandardSolver.cpp
   ${SRC}/SMLib/src/SmFilletCustomSolver.cpp
   ${SRC}/SMLib/src/SmFilletIntersector.cpp
