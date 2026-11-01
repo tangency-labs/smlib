@@ -11,6 +11,8 @@
 #include <SmApiFillets.h>
 #include <SmApiPrimitives.h>
 #include <SmApiQueries.h>
+#include <SmApiTessellationParams.h>
+#include <SmPoly.h>
 #include <SmAssertArray.h>
 #include <SmBlendSetback.h>
 #include <SmBSplineCurve.h>
@@ -6375,6 +6377,41 @@ void round_on_a_c2_face_is_its_definition()
 // over the front, the arc and the side run into each other tangentially. Rounded r 3 in one call:
 // every round whose faces are not an exact class is its definition, graded as above, and the
 // chain's body is sound.
+// A body with a round by its definition tessellated (SmApiTessellate, chord 0.01 mm, 20 degrees):
+// the tessellator meshes the round's net, the certified approximation it is made for, not its
+// definition: no definition evaluations. The mesh's vertices on the round are within the chord
+// and the net's bound of the definition.
+void tessellating_a_definition_meshes_its_net()
+{
+    smlib_surface *top = twisted_top();
+    smlib_brep *below = nullptr, *above = nullptr, *r = nullptr;
+    smlib_brep *block = box(0, 0, 0, 60, 30, 50);
+    CHECK(top != nullptr && block != nullptr && smlib_split_body(block, top, &below, &above) == SMLIB_OK);
+    smlib_brep_free(block);
+    smlib_brep_free(above);
+    const double pick[3] = {30, 0, 25}, size = 3.0;
+    CHECK(below != nullptr && smlib_blend_order(below, 1, SMLIB_BLEND_THUMBWEIGHT, pick, &size, 1, 0.1, &r, nullptr) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        SmTessellationParams params;
+        params.dChordHeightTol = 0.01;
+        params.dCurveAngleTolDeg = 20.0;
+        params.dSurfaceAngleTolDeg = 20.0;
+        params.dMaxEdgeLength = 0.0;
+        params.dMaxAspectRatio = 0.0;
+        SmPolyBrep *poly = nullptr;
+        SmProceduralBlend::ResetCounts();
+        CHECK(SmApiTessellate(r->p, poly, params) == SM_SUCCESS && poly != nullptr);
+        const SmBlendCounts counts = SmProceduralBlend::GetCounts();
+        std::printf("  tessellated: %llu definition evaluations\n", counts.lEvaluations);
+        CHECK(counts.lEvaluations == 0);
+        delete poly;
+    }
+    smlib_brep_free(r);
+    smlib_brep_free(below);
+    smlib_surface_free(top);
+}
+
 void round_chain_on_a_c2_face_is_its_definition()
 {
     smlib_surface *top = twisted_top();
@@ -6438,6 +6475,7 @@ const TangentEndCase SECTION_CASES[] = {
     {"twisted_wedge_g2_equal_area_net_on_definition", section_twisted_wedge_g2_equal_area_net_on_definition, nullptr},
     {"round_on_a_c2_face_is_its_definition", round_on_a_c2_face_is_its_definition, nullptr},
     {"round_chain_on_a_c2_face_is_its_definition", round_chain_on_a_c2_face_is_its_definition, nullptr},
+    {"tessellating_a_definition_meshes_its_net", tessellating_a_definition_meshes_its_net, nullptr},
     {"variable_round_law_dip", section_variable_round_law_dip, nullptr},
     {"variable_round_law_dips", section_variable_round_law_dips, nullptr},
     {"variable_round_law_peak", section_variable_round_law_peak, nullptr},
