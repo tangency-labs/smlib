@@ -152,17 +152,18 @@ public:
   };
 
   // The hole the rounds leave at a corner of the faces, filled to lOrder (1: G1, 2: G2) by the
-  // setback split (file header). bConvex: the corner is convex (the patches lie in every face's
-  // material side) or concave (in none's). dTol: the length the faces and the rounds' ends are
-  // matched to. Refused (SM_ERR_INVALID_INPUT, with its reason): rounds that do not close round
+  // setback split (file header). dTol: the length the faces and the rounds' ends are matched to
+  // (the rounds' rails on their faces, their end rows' first columns on the faces' planes). The
+  // fill is not held to the faces' half-spaces here: Containment bounds that. Refused (SM_ERR_INVALID_INPUT, with its reason): rounds that do not close round
   // the vertex face to face, a round with more than one span across, a round that does not meet
   // its faces to lOrder at its end, an order other than 1 or 2. SM_ERR: conditions on the
   // interior map no degree up to 9 can meet, or a fill that folds.
   static SmStatus FillHole(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Round> & crRounds, ULONG lOrder,
-                           SmBoolean bConvex, double dTol, Fill & rFill);
+                           double dTol, Fill & rFill);
 
-  // The most any patch of crFill stands past a face on the wrong side (positive: past it; the
-  // material side for a convex corner): a certified bound, from the patches' control points.
+  // The most any patch of crFill stands past a face out of the corner (positive: past it): out
+  // of the material for a convex corner (bConvex), into it for a concave one. A certified bound:
+  // every patch lies in the convex hull of its control points (weights positive).
   static SmStatus Containment(const Fill & crFill, const std::vector<Face> & crFaces, SmBoolean bConvex, double & rdWorst);
 };
 

@@ -6008,7 +6008,37 @@ SmBSplineSurface *box_corner_round(int a, double r, double s, double len, int or
 // The order the surfaces a and b meet to across their common boundary, graded by seam_graph at
 // nine stations t = k / 10: a's side by uv_a(t) and a step into a along in_a (in its uv), b's
 // by uv_b(t) (b's own Newton walks from there). `order`: the least every station must reach at
-// the tight tolerances (1e-9, 1e-7 / mm, 1e-5 / mm^2, 1e-3 / mm^3).
+// the tight tolerances (1e-9, 1e-7 / mm, 1e-5 / mm^2, 1e-3 / mm^3). And directly, from each
+// surface's own derivatives: the normals within 1e-12, and for order 2 the normal curvatures
+// across the seam within 1e-9 / size (with the normals one along it, the second fundamental
+// forms are then one).
+// The normal curvature of s at uv in the direction of its tangent w (w's part in the tangent
+// plane), from its first and second derivatives: II(d, d) / I(d, d), d the uv direction whose
+// image is w's projection.
+bool cross_curvature(const SmSurface *s, SmPoint2d uv, const SmVector3d &w, double &k)
+{
+    SmVector3d e[9]; // D, Dv, Dvv, Du, Duv, Duvv, Duu, Duuv, Duuvv
+    if (s->Evaluate(uv, 2, 2, TRUE, TRUE, FALSE, e, FALSE) != SM_SUCCESS)
+    {
+        return false;
+    }
+    const SmVector3d &Su = e[3], &Sv = e[1], &Suu = e[6], &Suv = e[4], &Svv = e[2];
+    SmVector3d nrm = Su * Sv;
+    if (nrm.Unitize() != SM_SUCCESS)
+    {
+        return false;
+    }
+    const double g11 = Su.Dot(Su), g12 = Su.Dot(Sv), g22 = Sv.Dot(Sv), b1 = w.Dot(Su), b2 = w.Dot(Sv), det = g11 * g22 - g12 * g12;
+    if (!(det > 0.0))
+    {
+        return false;
+    }
+    const double du = (b1 * g22 - b2 * g12) / det, dv = (g11 * b2 - g12 * b1) / det;
+    const SmVector3d d1 = Su * du + Sv * dv, d2 = Suu * (du * du) + Suv * (2.0 * du * dv) + Svv * (dv * dv);
+    k = nrm.Dot(d2) / d1.Dot(d1);
+    return true;
+}
+
 struct SeamSide
 {
     const SmSurface *s;
@@ -6018,7 +6048,7 @@ struct SeamSide
 void grade_seam(const char *name, const SeamSide &a, const SeamSide &b, double size, int order)
 {
     const double tight[4] = {1e-9, 1e-7, 1e-5, 1e-3};
-    double most[4] = {0, 0, 0, 0};
+    double most[4] = {0, 0, 0, 0}, normals = 0.0, curvatures = 0.0;
     bool ok = true;
     for (int k = 1; k <= 9; k++)
     {
@@ -6040,8 +6070,22 @@ void grade_seam(const char *name, const SeamSide &a, const SeamSide &b, double s
             w = -w;
         }
         double ha[4], hb[4];
-        const double step = 0.004 * size;
+        // the setback patches are small and bend hard: at 0.004 size (section_blend's step) the
+        // degree-7 fit's truncation reads 1e-7 on slopes that agree to 1e-16 (the normals below);
+        // at 0.0005 size it is under the tight tolerances, and the readings no longer move with the step
+        const double step = 0.0005 * size;
         ok = seam_graph(a.s, uv, p, along, w, n, step, ha) && seam_graph(b.s, b.uv(t), p, along, w, n, -step, hb);
+        // directly: the normals, and the normal curvature across the seam (along w), from each
+        // surface's own derivatives
+        double kab[2];
+        SmVector3d nb;
+        ok = ok && b.s->EvaluateNormal(b.uv(t), TRUE, TRUE, nb) == SM_SUCCESS && cross_curvature(a.s, uv, w, kab[0]) && cross_curvature(b.s, b.uv(t), w, kab[1]);
+        if (!ok)
+        {
+            break;
+        }
+        normals = std::max(normals, (n * nb).Length());
+        curvatures = std::max(curvatures, std::fabs(kab[0] - kab[1]));
         if (!ok)
         {
             break;
@@ -6052,8 +6096,10 @@ void grade_seam(const char *name, const SeamSide &a, const SeamSide &b, double s
         }
     }
     const int reached = ok ? seam_order(most, tight) : -1;
-    std::printf("  seam %s: derivatives 1 to 4 differ by up to %.3g, %.3g, %.3g, %.3g: G%d\n", name, most[0], most[1], most[2], most[3], reached);
+    std::printf("  seam %s: derivatives 1 to 4 differ by up to %.3g, %.3g, %.3g, %.3g: G%d; normals %.3g apart, curvatures across %.3g\n", name,
+                most[0], most[1], most[2], most[3], reached, normals, curvatures);
     CHECK(reached >= order);
+    CHECK(ok && normals <= 1e-12 && (order < 2 || curvatures <= 1e-9 / size));
 }
 
 // The box corner's rounds of radii `radii`, set back by SmBlendSetback::Distances, made to
@@ -6092,7 +6138,7 @@ void setback_box_corner(std::array<double, 3> radii, int round_order, double eas
         in.push_back({own, SM_SP_U, s, FALSE});
     }
     SmBlendSetback::Fill fill;
-    const SmStatus st = SmBlendSetback::FillHole(ctx, faces, in, order, TRUE, 1e-9, fill);
+    const SmStatus st = SmBlendSetback::FillHole(ctx, faces, in, order, 1e-9, fill);
     std::printf("  setbacks %.9g, %.9g, %.9g; fill status %d, interior degree %lu\n", setbacks[0], setbacks[1], setbacks[2], static_cast<int>(st),
                 static_cast<unsigned long>(fill.m_lDegree));
     CHECK(st == SM_SUCCESS && fill.m_vPatches.size() == 6);
@@ -6243,7 +6289,7 @@ void setback_g2_fill_of_uneased_rounds_refused()
         in.push_back({rounds.back(), SM_SP_U, 3.0, FALSE});
     }
     SmBlendSetback::Fill fill;
-    CHECK(SmBlendSetback::FillHole(ctx, faces, in, 2, TRUE, 1e-9, fill) == SM_ERR_INVALID_INPUT && fill.m_vPatches.empty());
+    CHECK(SmBlendSetback::FillHole(ctx, faces, in, 2, 1e-9, fill) == SM_ERR_INVALID_INPUT && fill.m_vPatches.empty());
     for (SmBSplineSurface *p : rounds)
     {
         delete p;
@@ -6254,11 +6300,11 @@ void setback_g2_fill_of_uneased_rounds_refused()
 // TANGENT_END_CASES: `--setbacks-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SETBACK_CASES[] = {
     {"distances_box_corner", setback_distances_box_corner, nullptr},
-    {"box_corner_g1", setback_box_corner_g1, "SmBlendSetback::FillHole is not built yet"},
-    {"box_corner_g2_eased", setback_box_corner_g2_eased, "SmBlendSetback::FillHole is not built yet"},
-    {"box_corner_g2_rounds", setback_box_corner_g2_rounds, "SmBlendSetback::FillHole is not built yet"},
-    {"box_corner_unequal_g1", setback_box_corner_unequal_g1, "SmBlendSetback::FillHole is not built yet"},
-    {"g2_fill_of_uneased_rounds_refused", setback_g2_fill_of_uneased_rounds_refused, "SmBlendSetback::FillHole is not built yet"},
+    {"box_corner_g1", setback_box_corner_g1, nullptr},
+    {"box_corner_g2_eased", setback_box_corner_g2_eased, nullptr},
+    {"box_corner_g2_rounds", setback_box_corner_g2_rounds, nullptr},
+    {"box_corner_unequal_g1", setback_box_corner_unequal_g1, nullptr},
+    {"g2_fill_of_uneased_rounds_refused", setback_g2_fill_of_uneased_rounds_refused, nullptr},
 };
 
 int setback_cases(bool known_failing, const char *only)
