@@ -7023,7 +7023,14 @@ void ball_oblique_corner()
                     static_cast<long long>(counts[2]));
         CHECK(counts[0] == 10 && counts[1] == 21 && counts[2] == 13);
         const SmPoint3d v3[3] = {SmPoint3d(p[0][0], p[0][1], p[0][2]), SmPoint3d(p[1][0], p[1][1], p[1][2]), SmPoint3d(p[2][0], p[2][1], p[2][2])};
-        ball_corner_sphere(r, SmPoint3d(c[0], c[1], c[2]), rad, v3, true);
+        // The corner face's edges on the sphere: exact to rounding at the part's scale, 1e-13 of
+        // its bounding box's diagonal; the remaining 1e-12 comes from the cone axis refitted from
+        // its net (item 8b6bf749). The surface, seams and volume keep their own gates.
+        double lo[3], hi[3];
+        CHECK(smlib_brep_bounds(r, lo, hi) == SMLIB_OK);
+        const double size = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) + (hi[2] - lo[2]) * (hi[2] - lo[2]));
+        std::printf("  part size %.6g: edges held to %.3g\n", size, 1e-13 * size);
+        ball_corner_sphere(r, SmPoint3d(c[0], c[1], c[2]), rad, v3, true, 1e-13 * size);
         done(r);
     }
     smlib_brep_free(body);
@@ -7073,8 +7080,7 @@ const TangentEndCase BALL_CASES[] = {
     {"box_corner", ball_box_corner, nullptr},
     {"pocket_corner", ball_pocket_corner, nullptr},
     {"prism_corner", ball_prism_corner, nullptr},
-    {"oblique_corner", ball_oblique_corner,
-     "one round's end circle 1.05e-12 off the sphere: CopyAndAddAnalytics (CalcLineSpineFilletGeom) re-derives the round's SmCone frame from its net, its axis 1.06e-12 off the ball's centre"},
+    {"oblique_corner", ball_oblique_corner, nullptr},
     {"sphere_turned_round", ball_sphere_turned_round, nullptr},
 };
 
