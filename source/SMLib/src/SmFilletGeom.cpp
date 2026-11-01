@@ -989,10 +989,14 @@ static ULONG lDebugCount = 0 ;
   // its domain does not end the curve. (Points off a surface, and an end where the surface
   // touches the plane, a singular point of the curve with several branches out of it, are met
   // by the intersectors below.)
+  // A surface that is itself flat (a chamfer's, a planar B-spline) meets the plane in a line,
+  // which the analytic intersector below gives exactly: only a curved surface is traced.
   SmBoolean bEndsOnBoth = FALSE;
+  const SmSurface * pNotPlane = ( pSurf1->GetType() == SmPlane_TYPE ) ? pSurf2 : pSurf1;
   if (   s3DCurves.GetSize() == 0
       && pStartV != NULL && pEndV != NULL
-      && ( pSurf1->GetType() == SmPlane_TYPE ) != ( pSurf2->GetType() == SmPlane_TYPE ))
+      && ( pSurf1->GetType() == SmPlane_TYPE ) != ( pSurf2->GetType() == SmPlane_TYPE )
+      && !pNotPlane->IsPlanar( dApproxTol ))
     {
       bEndsOnBoth = TRUE;
       SmVector3d asNormal[2][2]; // [surface][end]
