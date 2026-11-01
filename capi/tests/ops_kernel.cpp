@@ -6762,7 +6762,7 @@ void ball_corner_sphere(const smlib_brep *r, const SmPoint3d &c, double rad, con
         const SmBSplineSurface *bss = SM_CAST_PTR(SmBSplineSurface, srf);
         std::printf("  corner face %lu: type %d, rational %d\n", static_cast<unsigned long>(f), static_cast<int>(srf->GetType()),
                     bss != nullptr ? static_cast<int>(bss->IsRational()) : -1);
-        CHECK(srf->GetType() == SmBSplineSurface_TYPE && bss != nullptr && bss->IsRational());
+        CHECK(srf->IsKindOf(SmBSplineSurface_TYPE) && srf->GetType() != SmSphere_TYPE && bss != nullptr && bss->IsRational());
         // the surface on the sphere about c, its normal out of the body
         double surf_off = 0.0, edge_off = 0.0, normal_off = 0.0;
         const SmExtent2d dom = srf->GetNaturalUVDomain();
@@ -8205,6 +8205,103 @@ const TangentEndCase SETBACK_CASES[] = {
 int setback_cases(bool known_failing, const char *only)
 {
     return run_cases(SETBACK_CASES, "setback", known_failing, only);
+}
+
+// The shelled box's corner faces (a x b x c, all edges rounded r, walls r - inner): at each of the
+// eight corners, one face whose three vertices lie on the sphere about the corner ball's centre
+// (r in from each face) of radius r, and one on the concentric sphere of radius `inner`. Each
+// face's surface over the face (the box of its edges' uv curves) on its sphere to 1e-12 (the
+// offset of an exact patch on a sphere is exact). Its edges' distance from it is printed: the
+// shell's inner edges are where it intersects the offset faces, to its tolerance.
+void ball_faces_on_concentric_spheres(const smlib_brep *r, double a, double b, double c, double rad, double inner)
+{
+    SmTArray<SmFace *> faces;
+    r->p->GetFaces(faces);
+    int found[2] = {0, 0};
+    double worst = 0.0, worst_edge = 0.0;
+    for (ULONG f = 0; f < faces.GetSize(); ++f)
+    {
+        SmSurface *srf = faces[f]->GetSurface();
+        SmTArray<SmVertex *> vs;
+        faces[f]->GetVertices(vs);
+        if (srf == nullptr || vs.GetSize() != 3)
+        {
+            continue;
+        }
+        for (int corner = 0; corner < 8; ++corner)
+        {
+            const SmPoint3d centre((corner & 1) ? a - rad : rad, (corner & 2) ? b - rad : rad, (corner & 4) ? c - rad : rad);
+            for (int k = 0; k < 2; ++k)
+            {
+                const double want = k == 0 ? rad : inner;
+                bool on = true;
+                for (ULONG i = 0; i < vs.GetSize(); ++i)
+                {
+                    on = on && std::fabs((vs[i]->GetPoint() - centre).Length() - want) <= 1e-9;
+                }
+                if (!on)
+                {
+                    continue;
+                }
+                found[k]++;
+                // the face's own part of its surface: the box of its edges' uv curves (a shell's
+                // faces are on surfaces extended past them, the extension tangent, not the sphere)
+                SmTArray<SmEdge *> fe;
+                faces[f]->GetEdges(fe);
+                SmPoint2d lo(HUGE_VAL, HUGE_VAL), hi(-HUGE_VAL, -HUGE_VAL);
+                for (ULONG e = 0; e < fe.GetSize(); ++e)
+                {
+                    SmTArray<SmEdgeuse *> eus;
+                    fe[e]->GetEdgeuses(eus);
+                    for (ULONG u = 0; u < eus.GetSize(); ++u)
+                    {
+                        SmBSplineCurve *uv = eus[u]->GetFace() == faces[f] ? eus[u]->GetUVTrimCurve() : nullptr;
+                        if (uv == nullptr)
+                        {
+                            continue;
+                        }
+                        SmExtent1d ivl = uv->GetNaturalInterval();
+                        for (int q = 0; q <= 32; ++q)
+                        {
+                            SmPoint3d p;
+                            if (uv->EvaluatePoint(ivl.Evaluate(q / 32.0), p) == SM_SUCCESS)
+                            {
+                                lo = SmPoint2d(std::min(lo.x, p.x), std::min(lo.y, p.y));
+                                hi = SmPoint2d(std::max(hi.x, p.x), std::max(hi.y, p.y));
+                            }
+                        }
+                    }
+                }
+                const SmExtent2d dom(lo, hi);
+                for (int i = 0; i <= 16; ++i)
+                {
+                    for (int j = 0; j <= 16; ++j)
+                    {
+                        SmPoint3d p;
+                        worst = std::max(worst, srf->EvaluatePoint(dom.Evaluate(i / 16.0, j / 16.0), p) == SM_SUCCESS
+                                                    ? std::fabs((p - centre).Length() - want)
+                                                    : HUGE_VAL);
+                    }
+                }
+                SmTArray<SmEdge *> es;
+                faces[f]->GetEdges(es);
+                for (ULONG e = 0; e < es.GetSize(); ++e)
+                {
+                    SmExtent1d ivl = es[e]->GetInterval();
+                    for (int q = 0; q <= 32; ++q)
+                    {
+                        SmPoint3d p;
+                        worst_edge = std::max(worst_edge, es[e]->GetCurve() != nullptr && es[e]->GetCurve()->EvaluatePoint(ivl.Evaluate(q / 32.0), p) == SM_SUCCESS
+                                                    ? std::fabs((p - centre).Length() - want)
+                                                    : HUGE_VAL);
+                    }
+                }
+            }
+        }
+    }
+    std::printf("  corner faces on their spheres: %d of radius %g, %d of radius %g, surfaces %.3g off, edges %.3g\n", found[0], rad, found[1], inner, worst,
+                worst_edge);
+    CHECK(found[0] == 8 && found[1] == 8 && worst <= 1e-12);
 }
 
 int main(int argc, char **argv)
@@ -10423,6 +10520,12 @@ int main(int argc, char **argv)
             {
                 // (a cavity rounded r - t is SMLib's approximation of the offset, to its tolerance)
                 CHECK(near(volume_of(r), outer - inner, rad > t ? 1e-6 : 1e-7));
+                if (every && rad > t)
+                {
+                    // each corner's ball face and its offset: on the spheres about the corner
+                    // balls' centres of radius r and r - t, every point of the surface and edges
+                    ball_faces_on_concentric_spheres(r, a, b, c, rad, rad - t);
+                }
                 done(r);
             }
             if (rad <= t)
