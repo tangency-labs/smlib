@@ -9598,12 +9598,10 @@ const TangentEndCase SETBACK_CASES[] = {
     {"box_corner_g2_gn_section_rounds", setback_box_corner_g2_gn_section_rounds, nullptr},
     {"box_corner_unequal_g1", setback_box_corner_unequal_g1, nullptr},
     {"g2_fill_of_uneased_rounds_refused", setback_g2_fill_of_uneased_rounds_refused, nullptr},
-    {"fill_is_the_geometry_s", setback_fill_is_the_geometry_s,
-     "the fill takes the rounds' homogeneous derivatives along their own parameter: rounds in other parameters along give other fills, G1 0.0722 off (rational), G2 0.0619 (polynomial), 0.102 (rational)"},
+    {"fill_is_the_geometry_s", setback_fill_is_the_geometry_s, nullptr},
     {"corner_rounds_2_3_4", setback_corner_rounds_2_3_4, nullptr},
     {"corner_curvature_g2", setback_corner_curvature_g2, nullptr},
-    {"corner_eased_g2", setback_corner_eased_g2,
-     "the executive's eased rounds are the order-2 sections at the setback but in their own parameter along, and the fill takes it: its patches 0.074 off the fill of the linear rounds"},
+    {"corner_eased_g2", setback_corner_eased_g2, nullptr},
     {"concave_corner_rounds", setback_concave_corner_rounds, nullptr},
 };
 

@@ -636,10 +636,14 @@ void sm_SbFirst(const sm_SbNet & crN, double u, double v, SmVector3d & rP, SmVec
 }
 
 // A round's homogeneous derivatives along its rails at its end section, H[j] (j = 0 .. k) the
-// across Bezier curve of the j-th derivative by the rail parameter, columns from its across
-// start; and its across degree.
+// across Bezier curve of the j-th derivative, columns from its across start; and its across
+// degree. They are the round's geometry's, not its parameter's: its homogeneous coordinates
+// divided by the mean weight of its two rails, W = (w_0 + w_q) / 2 (so that W is 1 along it),
+// and its parameter along that of the mean arc length of its rails, s with
+// ds/dt = (|r_0'| + |r_q'|) / 2 (r_0, r_q its rails): two parameters of one round, polynomial or
+// rational, give the same jets. rdDtDs: dt/ds there.
 SmStatus sm_SbRoundJets(const SmContext & crContext, const SmBlendSetback::Round & crRound, ULONG k,
-                        std::vector< std::vector<sm_SbH> > & rH, size_t & rlQ, const TCHAR *& rpReason)
+                        std::vector< std::vector<sm_SbH> > & rH, size_t & rlQ, double & rdDtDs, const TCHAR *& rpReason)
 {
   rH.clear();
   NER(crRound.m_pSurface);
@@ -748,6 +752,68 @@ SmStatus sm_SbRoundJets(const SmContext & crContext, const SmBlendSetback::Round
         }
     }
   rlQ = lQ;
+
+  // the weights' share: G = H / W, W the rails' mean weight
+  rdDtDs = 1.0;
+  if (k > 2)
+    { SER(SM_ERR); } // the jets are taken to second order
+  std::vector<double> sW(3, 0.0);
+  for (ULONG d=0; d<=k; d++)
+    { sW[d] = 0.5 * (rH[d][0].a[3] + rH[d][lQ].a[3]); }
+  if (!(sW[0] > 0.0))
+    { SM_SB_FAIL(rpReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's weights must be positive")); }
+  const double dRho0 = 1.0 / sW[0];
+  const double dRho1 = -sW[1] / (sW[0] * sW[0]);
+  const double dRho2 = (2.0 * sW[1] * sW[1] - sW[0] * sW[2]) / (sW[0] * sW[0] * sW[0]);
+  std::vector< std::vector<sm_SbH> > sG(rH);
+  for (ULONG j=0; j<=lQ; j++)
+    {
+      sm_SbH h0 = sm_SbZero(), h1 = sm_SbZero(), h2 = sm_SbZero();
+      h0 = sm_SbAxpy(h0, dRho0, rH[0][j]);
+      if (k >= 1)
+        {
+          h1 = sm_SbAxpy(h1, dRho1, rH[0][j]);
+          h1 = sm_SbAxpy(h1, dRho0, rH[1][j]);
+        }
+      if (k >= 2)
+        {
+          h2 = sm_SbAxpy(h2, dRho2, rH[0][j]);
+          h2 = sm_SbAxpy(h2, 2.0 * dRho1, rH[1][j]);
+          h2 = sm_SbAxpy(h2, dRho0, rH[2][j]);
+        }
+      sG[0][j] = h0;
+      if (k >= 1) { sG[1][j] = h1; }
+      if (k >= 2) { sG[2][j] = h2; }
+    }
+  // the rails' points and their first two derivatives by t, from the homogeneous ones
+  double dSpeed = 0.0, dAccel = 0.0;
+  for (int e=0; e<2; e++)
+    {
+      const ULONG c = (e == 0) ? 0 : lQ;
+      const double w0 = sG[0][c].a[3];
+      const double w1 = (k >= 1) ? sG[1][c].a[3] : 0.0;
+      const double w2 = (k >= 2) ? sG[2][c].a[3] : 0.0;
+      SmVector3d P0(sG[0][c].a[0] / w0, sG[0][c].a[1] / w0, sG[0][c].a[2] / w0);
+      SmVector3d P1(0.0, 0.0, 0.0), P2(0.0, 0.0, 0.0);
+      if (k >= 1)
+        { P1 = (SmVector3d(sG[1][c].a[0], sG[1][c].a[1], sG[1][c].a[2]) - P0 * w1) / w0; }
+      if (k >= 2)
+        { P2 = (SmVector3d(sG[2][c].a[0], sG[2][c].a[1], sG[2][c].a[2]) - P1 * (2.0 * w1) - P0 * w2) / w0; }
+      const double dLen = P1.Length();
+      if (!(dLen > 0.0))
+        { SM_SB_FAIL(rpReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's rails do not move along it at its end")); }
+      dSpeed += 0.5 * dLen;
+      dAccel += 0.5 * P1.Dot(P2) / dLen;
+    }
+  // the parameter along: s, ds/dt = dSpeed; dt/ds = 1 / dSpeed, d2t/ds2 = -dAccel / dSpeed^3
+  const double dTs = 1.0 / dSpeed, dTss = -dAccel / (dSpeed * dSpeed * dSpeed);
+  for (ULONG j=0; j<=lQ; j++)
+    {
+      rH[0][j] = sG[0][j];
+      if (k >= 1) { rH[1][j] = sm_SbAxpy(sm_SbZero(), dTs, sG[1][j]); }
+      if (k >= 2) { rH[2][j] = sm_SbAxpy(sm_SbAxpy(sm_SbZero(), dTs * dTs, sG[2][j]), dTss, sG[1][j]); }
+    }
+  rdDtDs = dTs;
   return SM_SUCCESS;
 }
 
@@ -933,12 +999,13 @@ SmStatus SmBlendSetback::FillHole(const SmContext & crContext, const std::vector
   // each round's jets at its end, and the faces its across ends lie on
   std::vector< std::vector< std::vector<sm_SbH> > > sJets(n);
   std::vector<size_t> sQ(n);
+  std::vector<double> sDtDs(n, 1.0);
   std::vector<size_t> sFaceAt[2];
   sFaceAt[0].assign(n, n);
   sFaceAt[1].assign(n, n);
   for (size_t r=0; r<n; r++)
     {
-      SER(sm_SbRoundJets(crContext, crRounds[r], k, sJets[r], sQ[r], rFill.m_pReason));
+      SER(sm_SbRoundJets(crContext, crRounds[r], k, sJets[r], sQ[r], sDtDs[r], rFill.m_pReason));
       for (int e=0; e<2; e++)
         {
           const sm_SbH & crH = sJets[r][0][e == 0 ? 0 : sQ[r]];
@@ -1029,7 +1096,7 @@ SmStatus SmBlendSetback::FillHole(const SmContext & crContext, const std::vector
         const SmPoint2d sUV = (crR.m_eAlong == SM_SP_U) ? SmPoint2d(crR.m_dEnd, sAcross.Evaluate(0.5)) : SmPoint2d(sAcross.Evaluate(0.5), crR.m_dEnd);
         SER(crR.m_pSurface->Evaluate(sUV, 1, 1, TRUE, TRUE, FALSE, sD, FALSE));
         sMid[m] = SmPoint3d(sD[0]);
-        sSpeed[m] = ((crR.m_eAlong == SM_SP_U) ? sD[2] : sD[1]).Length();
+        sSpeed[m] = ((crR.m_eAlong == SM_SP_U) ? sD[2] : sD[1]).Length() * sDtDs[sRound[m]]; // by s (sm_SbRoundJets)
         sCentre = sCentre + sD[0] * (1.0 / static_cast<double>(n));
       }
     for (size_t m=0; m<n; m++)
