@@ -2826,35 +2826,6 @@ SmStatus SmBlendCorner::AdjustTwoBlendTopology()
 
       double dDist = sPnt1.DistanceBetween(sPnt2) ;
 
-      // Check for the big-radius case, where we're rolling a large fillet
-      // on the inside of a smaller-radius edge.
-      // In that case, we'll create a 3x3 corner for the vertex.
-      //
-      // We'll also check for the Nx2 tangent case, with N > 3.
-      if(this->IsBlendingCorner())     // Big-radius doesn't apply if Beveled.
-        {
-          SmBoolean           bConvertedToCorner;
-          SmFilletExecutive * pExec = GetFilletExecutive();
-
-          // This routine in the fillet exec will check for the
-          // large-radius case, and convert the corner if so.
-          SER( pExec->TestAndConvertBigRadFillet(pFilletGeom1, bConvertedToCorner ));
-          if ( !bConvertedToCorner )
-            {
-              SER( pExec->TestAndConvertBigRadFillet( pFilletGeom2,
-                      bConvertedToCorner ));
-            }
-
-          if ( bConvertedToCorner ) 
-            { return SM_SUCCESS ; }
-
-          if(dDist > 500.0 * m_dThisApproxTol3d)
-            { MSG( _T("Big gap found. Will try to fix it later") ) ; }
-
-          continue ;
-
-        }  // End big-radius check.
-
       SM_ASSERT(m_bBevel == TRUE); // Bevel cases
 
       // If rails hit side edge at same point, no adjustment is needed.
