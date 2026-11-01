@@ -196,6 +196,9 @@ public:
   SmStatus            GetPatchFaces(SmTArray<SmFace*> & rFaces) const;
   const SmVertex    * GetFilletedVertex()                              { return m_cpVertex; }
   double              GetSetBackDist()                                 { return m_dSetBackDist; }
+  // SolidCraft change: the setback along one of the corner's filleted edges (a setback corner of
+  // the blend corner sets each edge back by its own; elsewhere one setback holds for all).
+  virtual double      GetSetBackDistAlong(const SmEdge * pEdge)        { SM_REF1(pEdge) ; return m_dSetBackDist; }
   double              GetEaseDist()                                    { return m_dEaseDist; } // SolidCraft change
   SmFilStatus         GetStatus()                                      { return m_eStatus; }
   double              GetTangencyTolRadians()                          { SM_ASSERT_TOL(m_dTangencyTolRadians) ; return m_dTangencyTolRadians; }

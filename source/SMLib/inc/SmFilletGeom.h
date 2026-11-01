@@ -145,6 +145,7 @@ enum SmFilletVertexType
   SM_FV_RAIL_X_EXTENDED_EDGEUSE,  //
   SM_FV_SETBACK,                  //
   SM_FV_JOIN_SECTION,             // SolidCraft change: a Join's shared section, its end on the first blend's side (SmBlendCornerJoin.cpp)
+  SM_FV_PRECOMPUTED,              // SolidCraft change: placed by its corner's own build (a setback fill's base point)
   SM_FV_UNKNOWN
 };
 

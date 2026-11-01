@@ -1695,6 +1695,11 @@ void SmFilletVertex::GetName
             smos_WStrCpy(pcMyName,lMyNameAllocSize,_T("SM_FV_SETBACK"));
             break;
         }
+    case SM_FV_PRECOMPUTED: // SolidCraft change
+        {
+            smos_WStrCpy(pcMyName,lMyNameAllocSize,_T("SM_FV_PRECOMPUTED"));
+            break;
+        }
     case SM_FV_FILLET_X_EDGEUSE:
         {
             smos_WStrCpy(pcMyName,lMyNameAllocSize,_T("SM_FV_FILLET_X_EDGEUSE"));
@@ -3325,6 +3330,7 @@ SmStatus SmFilletVertex::CalcSetBackVert()
   SmEdgeuse * pEU = pFilSolver->GetEdgeuse(0);
   SmEdge * pE = pEU->GetEdge();
   SmCurve * pCurve = pE->GetCurve(); NER(pCurve);
+  dSetBackDist = m_cpCorner->GetSetBackDistAlong(pE); // SolidCraft change: each edge's own
   // SolidCraft change: walk dSetBackDist along the edge from the filleted vertex, over the
   // edge's own interval from the end that vertex marks: GetStartVertex() marks the interval's
   // start. (GetVertex() is the primary edgeuse's vertex, the curve's end where that edgeuse

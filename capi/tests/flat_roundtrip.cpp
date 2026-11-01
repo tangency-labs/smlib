@@ -212,7 +212,10 @@ const std::map<std::string, std::vector<int64_t>> g_kinds = {
     {"sphere", {0, 0, 1, 0}},    // the seam: an SmCircle half circle
     {"torus", {0, 0, 2, 0}},     // SmCircle seam circles
     {"fillet", {0, 24, 24, 0}},  // the box's trimmed lines, the fillets' SmCircle arcs
-    {"blend", {48, 0, 0, 0}},    // blend-curve fillets: all B-splines
+    // blend-curve (G2) fillets, each corner a Setback filled to G2 (the setback split: six
+    // patches): 6 + 12 + 8 x 6 = 66 faces, 8 x 13 vertices (six section ends, three base points,
+    // three inner-curve middles and the centre a corner), so 104 + 66 - 2 = 168 edges, all B-splines
+    {"blend", {168, 0, 0, 0}},
     {"blend1", {4, 11, 0, 0}},   // the blend face's four B-spline edges, the box's eleven lines
     {"boolean", {0, 13, 2, 0}},  // the hole's rims: SmCircles
     {"incline", {0, 1, 1, 2}},   // SmCircle bottom rim, line seam, two SmEllipse arcs

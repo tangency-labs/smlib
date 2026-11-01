@@ -327,7 +327,10 @@ SmBlendCorner::SmBlendCorner
    m_bMitre(FALSE),
    m_pSideEU(NULL),
    m_pTurnSurface(NULL),
-   m_pBallSurface(NULL)
+   m_pBallSurface(NULL),
+   m_lFillOrder(1),
+   m_bConvexSetBack(TRUE),
+   m_pFill(NULL)
 {
 }
 
@@ -335,6 +338,7 @@ SmBlendCorner::~SmBlendCorner()
 {
   DeleteSweptSurface();
   DeleteBallSurface();
+  delete m_pFill;
 }
 
 void SmBlendCorner::DeleteSweptSurface()
@@ -736,6 +740,11 @@ SmStatus SmBlendCorner::CalcCornerEdgeGeom()
   if ( IsBall() )
     {
       SER( BuildBallSurface() );
+      return SmFilletCorner::CalcCornerEdgeGeom();
+    }
+  if ( IsSetBack() )
+    {
+      SER( BuildSetBackFill() );
       return SmFilletCorner::CalcCornerEdgeGeom();
     }
   if ( !IsSwept() )
@@ -1425,19 +1434,21 @@ SmStatus SmBlendCorner::MakeCornerTopology()
     { return MakeJoinTopology(); }
   if ( m_eEvent == SM_BCE_END )
     { return ( m_eEnd == SM_BEND_OPEN ) ? MakeEndOpen() : ( m_eEnd == SM_BEND_RUNS_OUT ) ? MakeEndRunningOut() : MakeEndOnEndFace(); }
+  if ( IsSetBack() )
+    { return MakeSetBackTopology(); }
   return IsSwept() ? MakeSweptTopology() : IsMitreTurn() ? MakeMitreTopology() : MakeTwoBlendTopology();
 }
 
 SmStatus SmBlendCorner::AdjustTopology()
 {
-  if ( IsBall() || m_eEvent == SM_BCE_JOIN || m_eEvent == SM_BCE_END )
+  if ( IsBall() || IsSetBack() || m_eEvent == SM_BCE_JOIN || m_eEvent == SM_BCE_END )
     { return SM_SUCCESS; }
   return IsSwept() ? SM_SUCCESS : IsMitreTurn() ? AdjustMitreTopology() : AdjustTwoBlendTopology();
 }
 
 SmStatus SmBlendCorner::AdjustTangentCorner()
 {
-  return ( IsBall() || m_eEvent == SM_BCE_JOIN || m_eEvent == SM_BCE_END || IsSwept() || IsMitreTurn() ) ? SM_SUCCESS : AdjustTwoBlendTangentCorner();
+  return ( IsBall() || IsSetBack() || m_eEvent == SM_BCE_JOIN || m_eEvent == SM_BCE_END || IsSwept() || IsMitreTurn() ) ? SM_SUCCESS : AdjustTwoBlendTangentCorner();
 }
 
 SmStatus SmBlendCorner::CreateCornerPatch()
@@ -1448,6 +1459,8 @@ SmStatus SmBlendCorner::CreateCornerPatch()
     { return CreateEndPatchOfEnd(); }
   if ( m_eEvent == SM_BCE_JOIN )
     { return SM_SUCCESS; }
+  if ( IsSetBack() )
+    { return CreateSetBackPatches(); }
   return IsSwept() ? CreateSweptPatch() : IsMitreTurn() ? CreateMitrePatch() : CreateTwoBlendPatch();
 }
 

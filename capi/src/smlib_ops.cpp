@@ -22,6 +22,7 @@
 #include <SmApiQueries.h>
 #include <SmAttribute.h>
 #include <SmBSplineCurve.h>
+#include <SmBlendCorner.h>
 #include <SmCone.h>
 #include <SmEdge.h>
 #include <SmEdgeuse.h>
@@ -680,10 +681,15 @@ int32_t round_edges(SmBrep *b, const std::vector<SmEdge *> &edges, const std::ve
     exec.SetSweptTurns(section.turn == SMLIB_TURN_SWEPT ? TRUE : FALSE);
     // A feature (a boss, a cut) standing inside a round's band stays, or the round takes it.
     exec.SetKeepFeatures(section.keep_features ? TRUE : FALSE);
-    // A corner set back is classified as one: never the Ball.
+    // A corner set back is classified as one: never the Ball. A setback corner closed by SMLib is
+    // the blend corner's Setback, its hole filled by the setback split (G2 with an ease or
+    // curvature-continuous sections, else G1) where it builds one (every face there a plane, every
+    // edge straight): asked before the corners are made. One left open keeps SMLib's corner patch
+    // for the caller to remove.
     for (const auto &sb : setbacks)
     {
         exec.AddSetBackVertex(sb.vertex);
+        exec.SetSetBackFill(sb.vertex, sb.distance, sb.ease, patches != nullptr ? TRUE : FALSE);
     }
     s = status(exec.CreateFilletCorners());
     if (s != SMLIB_OK)
@@ -711,7 +717,8 @@ int32_t round_edges(SmBrep *b, const std::vector<SmEdge *> &edges, const std::ve
         // one convexity do not, and its sections there come out kinked (a coincident pair of
         // control points) and the result no solid.
         SmFilletCornerType type = corner->GetCornerType();
-        if (type != SM_FCR_N_x_N_CONVEX)
+        const bool filled = type == SM_FCR_BLEND && static_cast<SmBlendCorner *>(corner)->GetEvent() == SM_BCE_SETBACK;
+        if (type != SM_FCR_N_x_N_CONVEX && !filled)
         {
             if (refused != nullptr)
             {

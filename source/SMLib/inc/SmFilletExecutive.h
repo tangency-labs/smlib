@@ -251,6 +251,11 @@ protected:
                                                     //   FALSE = the rounds are mitred there (Mitre, the default)
   SmTArray<const SmVertex*> m_vSetBackVertices;     // SolidCraft change: the vertices the caller sets back (SmFilletCorner::SetSetBackDist,
                                                     //   after CreateFilletCorners): no Ball corner there (SmBlendCorner::ClassifyBall)
+  // SolidCraft change: corners asked to be set back, before the corners are made (SetSetBackFill):
+  // each vertex with its setback along every edge there, the ease before it, and whether it is
+  // left open (for the caller to fill).
+  struct SetBackFill { const SmVertex * m_cpVertex; double m_dSetBack; double m_dEase; SmBoolean m_bOpen; };
+  std::vector<SetBackFill>  m_vSetBackFills;
   SmBoolean                 m_bClassifyOnly;        // SolidCraft change: TRUE = stop after classifying the rails (SM_FILERR_OVERFLOW_FIRST),
                                                     //   building nothing, m_vOverflowEdges the edges whose blends overflow
   SmTArray<SmEdge*>         m_vOverflowEdges;       // SolidCraft change: the edges of the blends that overflow, when stopped so
@@ -478,6 +483,18 @@ public:
   SmBoolean GetSweptTurns() const { return m_bSweptTurns; }
   void      AddSetBackVertex(const SmVertex * cpVertex) { m_vSetBackVertices.Add( cpVertex ); } // SolidCraft change: before CreateFilletCorners
   SmBoolean IsSetBackVertex(const SmVertex * cpVertex) const { return m_vSetBackVertices.IsIn( cpVertex ); }
+  // SolidCraft change: the corner at cpVertex set back dSetBack along each of its edges, with an
+  // ease dEase before it (0: none): asked before CreateFilletCorners, which then makes that corner
+  // the blend corner's Setback (SmBlendCorner), filled by the setback split, where it can; unless
+  // it is left open (bOpen), when it stays the corner patch the caller removes (SetSetBackDist).
+  void      SetSetBackFill(const SmVertex * cpVertex, double dSetBack, double dEase, SmBoolean bOpen) { SetBackFill s = { cpVertex, dSetBack, dEase, bOpen }; m_vSetBackFills.push_back(s); }
+  SmBoolean GetSetBackFill(const SmVertex * cpVertex, double & rdSetBack, double & rdEase, SmBoolean & rbOpen) const
+  {
+    for (size_t i=0; i<m_vSetBackFills.size(); i++)
+      if (m_vSetBackFills[i].m_cpVertex == cpVertex)
+        { rdSetBack = m_vSetBackFills[i].m_dSetBack; rdEase = m_vSetBackFills[i].m_dEase; rbOpen = m_vSetBackFills[i].m_bOpen; return TRUE; }
+    return FALSE;
+  }
   const SmTArray<SmEdge*> & GetOverflowEdges() const { return m_vOverflowEdges; }
   const SmTArray<SmEdge*> & GetMitredEdges() const { return m_vMitredEdges; }
   SmStatus  NoteOpenEnd(SmFilletSolver * pSolver, SmVertex * pVertex, SmFace * pEndFace); // an end the Nx1 corner left uncut
