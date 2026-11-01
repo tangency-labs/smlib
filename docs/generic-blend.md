@@ -35,7 +35,7 @@ deletes one of them.
 
 The other rules follow from that one:
 - every result is exact or certified (§2.4); nothing is fitted and then hoped to be close enough;
-- a blend that cannot be built is refused with the size that would build (§3.6); the user's
+- a blend that cannot be built is refused with the size that would build (§3.5); the user's
   geometry is never changed silently;
 - the design is grounded in the published literature, cited here.
 
@@ -169,7 +169,7 @@ root of a scalar or a small system along the trace, solved where it is well cond
 | an end face tangent to F along a seam T | tangent end | the end curve built outward from P (§3.1) |
 | another spine | corner | Turn, Join, Ball or Setback (§3.2) |
 | its face's boundary: the rail reaches a rim | overflow | the blend kept and trimmed at its crease (§3.4) |
-| a face that cannot hold the ball | fold or room | refused, naming the size that fits (§3.5, §3.6) |
+| a face that cannot hold the ball | fold or room | refused, naming the size that fits (§3.3, §3.5) |
 
 ### 3.1 The tangent end
 
