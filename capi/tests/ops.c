@@ -154,16 +154,20 @@ int main(void)
     const double bad[2] = {1.0, -1.0};
     CHECK(smlib_blend(a, SMLIB_BLEND_ROUND, tops, bad, 2, 0.1, &r, NULL) == SMLIB_ERR_ARG);
 
-    /* A radius running linearly from 3 at x = 0 to 1 at x = 20 along the edge at y = 20, z = 20:
-     * (1 - pi/4) L (r0^2 + r0 r1 + r1^2) / 3 taken away, whichever way the edge runs. */
+    /* A radius running linearly from 3 at x = 0 to 1 at x = 20 along the edge at y = 20, z = 20,
+     * whichever way the edge runs. The balls' envelope is the cone about their centres' line with
+     * apex at x = 30; the area its section in each plane x = const cuts off the corner, integrated
+     * over x, is 18.5377834 taken away (the balls' great circles would take 18.5988258, the
+     * (1 - pi/4) L (r0^2 + r0 r1 + r1^2) / 3 of quarter circles of radius r(x)). */
     const double knots[4] = {0, 0, 1, 1};
     const double law[2] = {3.0, 1.0};
     const double from0[3] = {0, 20, 20};
     const double from1[3] = {20, 20, 20};
-    double linear = 8000.0 - quarter * 20.0 * (9.0 + 3.0 + 1.0) / 3.0;
+    double linear = 8000.0 - 18.5377834;
     CHECK(smlib_fillet_variable(a, edge, 0.1, from0, 1, knots, 4, law, 2, &r) == SMLIB_OK);
     double v0 = volume(r);
-    CHECK(fabs(v0 - linear) < 0.05);
+    printf("variable round: volume %.9f, want %.9f\n", v0, linear);
+    CHECK(fabs(v0 - linear) < 0.01);
     smlib_brep_free(r);
     r = NULL;
     CHECK(smlib_fillet_variable(a, edge, 0.1, from1, 1, knots, 4, law, 2, &r) == SMLIB_OK);
