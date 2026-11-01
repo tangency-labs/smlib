@@ -7408,6 +7408,81 @@ void scenario_square_bar_rounded_to_a_rod()
     scenario_blend(box(0, 0, 0, 20, 4, 4), SMLIB_BLEND_ROUND, {10, 0, 0, 10, 4, 0, 10, 0, 4, 10, 4, 4}, {2, 2, 2, 2}, 80.0 * PI, 1e-9, 6);
 }
 
+// A bar 30 x 10 x 10 (y within 5) less what lies outside the cylinder R 20 about z: its end at
+// x = sqrt(400 - y^2) is the cylinder. Its top front edge (y = -5, z = 10) rounded r 2 ends on
+// that end face: the round's end rib is where the round meets the cylinder, a quartic, certified:
+// it lies within the fillet's tolerance (100 times the body's) of the cylinder, its largest
+// distance found precisely (the plane through the rib's ends and the vertex is 0.025 off it).
+// The round takes the section 2 - sqrt(4 - (y + 3)^2) high at y in [-5, -3], each strip as long
+// as sqrt(400 - y^2): with y = -3 - 2 sin t, the integral of 4 (1 - cos t) cos t sqrt(400 - y^2)
+// over t in [0, pi / 2], 16.714055107294; to 1e-6, as the rib is certified.
+void scenario_round_ending_on_a_cylinder()
+{
+    const double o[3] = {0, 0, 0};
+    smlib_brep *cyl = nullptr;
+    CHECK(smlib_make_cylinder(o, 20.0, 10.0, &cyl) == SMLIB_OK);
+    smlib_brep *bar = combined(box(0, -5, 0, 30, 10, 10), cyl, SMLIB_BOOLEAN_INTERSECT);
+    const double v0 = volume_of(bar), tol = bar != nullptr ? 100.0 * static_cast<double>(bar->p->GetTolerance()) : 0.0;
+    const double at[3] = {10, -5, 10};
+    smlib_brep *r = nullptr;
+    const int32_t s = bar == nullptr ? SMLIB_ERR_ARG : smlib_fillet(bar, at, 1, 0.1, 2.0, &r, nullptr);
+    smlib_brep_free(bar);
+    std::printf("  status %d\n", static_cast<int>(s));
+    CHECK(s == SMLIB_OK && r != nullptr);
+    if (r == nullptr)
+    {
+        return;
+    }
+    const int n = 4000;
+    const double h = 0.5 * PI / n;
+    double removed = 0.0;
+    for (int i = 0; i <= n; ++i)
+    {
+        const double t = i * h, y = -3.0 - 2.0 * std::sin(t);
+        const double f = 4.0 * (1.0 - std::cos(t)) * std::cos(t) * std::sqrt(400.0 - y * y);
+        removed += (i == 0 || i == n ? 1.0 : (i % 2 ? 4.0 : 2.0)) * f;
+    }
+    removed *= h / 3.0;
+    const double v = volume_of(r);
+    // the edges between the round and the cylinder's face, and the largest distance of each from
+    // the cylinder (SurfaceMaxDistanceBetween with no samples: the precise maximum)
+    double off = 0.0;
+    int ribs = 0;
+    SmTArray<SmEdge *> edges;
+    r->p->GetEdges(edges);
+    for (ULONG i = 0; i < edges.GetSize(); i++)
+    {
+        SmTArray<SmFace *> faces;
+        edges[i]->GetFaces(faces);
+        SmFace *cylinder = nullptr;
+        bool on_round = false;
+        for (ULONG k = 0; k < faces.GetSize(); k++)
+        {
+            SmSurface *srf = faces[k]->GetSurface();
+            if (SM_CAST_PTR(SmCylinder, srf) != nullptr)
+            {
+                cylinder = faces[k];
+            }
+            on_round = on_round || (SM_CAST_PTR(SmCylinder, srf) == nullptr && SM_CAST_PTR(SmPlane, srf) == nullptr);
+        }
+        if (cylinder == nullptr || !on_round)
+        {
+            continue;
+        }
+        ribs++;
+        double d = 0.0;
+        CHECK(edges[i]->GetCurve()->SurfaceMaxDistanceBetween(edges[i]->GetInterval(), *cylinder->GetSurface(), cylinder->GetUVDomain(), 0,
+                                                              nullptr, d) == SM_SUCCESS);
+        off = std::max(off, d);
+    }
+    std::printf("  removed %.9f, want %.9f; %d rib(s) off the cylinder by %.3g (allowed %.3g)\n", v0 - v, removed, ribs, off, tol);
+    CHECK(near(v0 - v, removed, 1e-6));
+    CHECK(ribs == 1);
+    CHECK(off <= tol);
+    CHECK(sound(r));
+    done(r);
+}
+
 // A 20 x 4 x 10 block with a slot 4 wide (x 8 to 12) cut through it from below to 1 under its
 // top: two pillars joined by a bridge 1 thick (656). Its top front edge (y = 0, z = 10, the whole
 // 20) is blended. In the section square to the edge, coordinates y (in from the front) and z,
@@ -7795,6 +7870,7 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"hole_short_of_band", scenario_hole_short_of_band, nullptr},
     {"round_at_a_pin_on_a_slope_folds_refused", scenario_round_at_a_pin_on_a_slope_folds_refused, nullptr},
     {"round_at_a_pin_on_a_slope_just_inside", scenario_round_at_a_pin_on_a_slope_just_inside, nullptr},
+    {"round_ending_on_a_cylinder", scenario_round_ending_on_a_cylinder, nullptr},
     {"round_cutting_a_bridge_refused", scenario_round_cutting_a_bridge_refused, nullptr},
     {"round_of_an_arc_wall_into_its_tip", scenario_round_of_an_arc_wall_into_its_tip, nullptr},
     {"round_over_a_thin_rib_not_a_cut", scenario_round_over_a_thin_rib_not_a_cut, nullptr},
