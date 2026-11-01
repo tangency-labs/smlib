@@ -3447,6 +3447,44 @@ SmStatus SmFilletExecutive::CreateFilletBrep
       }
   }
 
+  // SolidCraft change: a convex blend (one that removes material) that would take all of the part
+  // between its rails somewhere along its edge (a round or chamfer through the bridge over a
+  // slot) would cut the part into pieces: refused as too large, naming the largest size that
+  // keeps it whole (SmFilletSolver::BandCutsThePart), before anything is built.
+  {
+    SmBoolean bCut = FALSE, bChamfer = FALSE;
+    double dRadius = 0.0, dSetback = 0.0;
+    for(ULONG lCutIdx=0; lCutIdx<m_vFilletSolvers.GetSize(); lCutIdx++)
+      {
+        SmFilletSolver * pFS = m_vFilletSolvers[lCutIdx];
+        SmBoolean bAdds = FALSE;
+        SER( sm_BlendAddsMaterial( pFS, bAdds ));
+        if ( bAdds )
+          { continue; }
+        SmBoolean bCuts = FALSE;
+        double dR = 0.0, dS = 0.0;
+        SER( pFS->BandCutsThePart( *m_pTargetBrep, bCuts, dR, dS ));
+        if ( bCuts && ( !bCut || dR < dRadius ))
+          {
+            bCut     = TRUE;
+            dRadius  = dR;
+            dSetback = dS;
+            bChamfer = ( pFS->GetFilletSurfaceGenerator() != NULL
+                         && pFS->GetFilletSurfaceGenerator()->GetFilletSurfaceGeneratorType() == SM_FSG_LINEAR ) ? TRUE : FALSE;
+          }
+      }
+    if ( bCut )
+      {
+        TCHAR cWhy[SM_TBLOCK_SIZE];
+        if ( bChamfer )
+          { smos_sprintf( cWhy, _T("Fillet Error: the chamfer would take all of the part between its sides along the edge and cut it into pieces: a chamfer set back less than %.7g keeps it whole"), dSetback ); }
+        else
+          { smos_sprintf( cWhy, _T("Fillet Error: the round would take all of the part between its rails along the edge and cut it into pieces: a radius below %.7g keeps it whole"), dRadius ); }
+        GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, cWhy );
+        return SM_ERR;
+      }
+  }
+
   // Process corners by calculating the vertices first.
   // Those vertices will determine the connectivity between
   // corner surfaces and the adjacent edge fillets.

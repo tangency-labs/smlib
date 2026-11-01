@@ -414,6 +414,9 @@ public:
   // the radius that works where it is not regular (SmFilletSolver.cpp, the blend design's §6)
   SmStatus     BallIsRegular(SmBallStation & rFirst);
   SmStatus     JudgeBallAt(const SmTsectPnt & crPnt, SmBallStation & rStation);
+  // SolidCraft change: whether this convex blend would take all of the part between its rails
+  // somewhere, cutting it into pieces, and the largest radius (and its setback) that does not
+  SmStatus     BandCutsThePart(const SmBrep & crBody, SmBoolean & rbCuts, double & rdRadius, double & rdSetback);
   // SolidCraft change: whether the solver rolls one ball on both faces at crPnt (rbBall), and its
   // radius law there: adR = r, dr/dt, d2r/dt2 in the trace's parameter t. rbOnEdge: t is the
   // filleted edge's parameter, the ball's centre in the plane square to the edge at C(t), asC =

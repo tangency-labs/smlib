@@ -34,6 +34,8 @@
 #include <SmSurfOfRevolution.h>
 #include <SmPlane.h>
 #include <SmFilletExact.h>
+#include <SmRegion.h>
+#include <SmTol.h>
 #include <vector>
 
 // Forward decl of local routine:
@@ -6234,6 +6236,276 @@ SmStatus SmFilletSolver::BallIsRegular
     }
   return SM_SUCCESS;
 } // end SmFilletSolver::BallIsRegular
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. The points where the body's edges cross the
+    plane through crOrigin square to crNormal: each edge's curve, its sign
+    changes of <C(t) - origin, normal> over 32 equal steps of its interval,
+    each bisected to the curve's precision.
+***********************************************************************/
+static SmStatus sm_EdgesCrossingPlane
+  (const SmBrep      & crBody,    // in : the body
+   const SmPoint3d   & crOrigin,  // in : a point of the plane
+   const SmVector3d  & crNormal,  // in : its unit normal
+   SmTArray<SmPoint3d> & rCrossings) // out: the crossings
+{
+  rCrossings.RemoveAll();
+  SmTArray<SmEdge*> sEdges;
+  crBody.GetEdges(sEdges);
+  const ULONG lSteps = 32;
+  for (ULONG i=0; i<sEdges.GetSize(); i++)
+    {
+      const SmEdge  * pEdge  = sEdges[i];
+      const SmCurve * pCurve = (pEdge != NULL) ? pEdge->GetCurve() : NULL;
+      if (pCurve == NULL)
+        { continue; }
+      const SmExtent1d sIvl = pEdge->GetInterval();
+      auto Side = [&](double dT, double & rdSide) -> SmStatus
+      {
+        SmPoint3d sAt;
+        SER(pCurve->EvaluatePoint(dT, sAt));
+        rdSide = (sAt - crOrigin).Dot(crNormal);
+        return SM_SUCCESS;
+      };
+      double dT0 = sIvl.GetMin(), dS0 = 0.0;
+      SER(Side(dT0, dS0));
+      for (ULONG j=1; j<=lSteps; j++)
+        {
+          const double dT1 = sIvl.Evaluate(double(j) / lSteps);
+          double dS1 = 0.0;
+          SER(Side(dT1, dS1));
+          if (dS0 == 0.0 || (dS0 < 0.0) != (dS1 < 0.0))
+            {
+              double dLo = dT0, dHi = dT1, dSLo = dS0;
+              for (ULONG k=0; k<60 && dSLo != 0.0; k++)
+                {
+                  const double dMid = 0.5 * (dLo + dHi);
+                  double dSMid = 0.0;
+                  SER(Side(dMid, dSMid));
+                  if ((dSMid < 0.0) == (dSLo < 0.0) && dSMid != 0.0)
+                    { dLo = dMid; dSLo = dSMid; }
+                  else
+                    { dHi = dMid; }
+                }
+              SmPoint3d sAt;
+              SER(pCurve->EvaluatePoint(dSLo == 0.0 ? dLo : 0.5 * (dLo + dHi), sAt));
+              rCrossings.Add(sAt);
+            }
+          dT0 = dT1;
+          dS0 = dS1;
+        }
+    }
+  return SM_SUCCESS;
+} // end sm_EdgesCrossingPlane
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. Whether the part keeps material behind the
+    section of a convex blend at a station: the region between the section
+    and the ball's centre c (the ball's sector between the rails for a
+    round, the triangle c, s1, s2 for a chamfer's chord).
+
+NOTES: Kept where a body edge crosses the station's plane inside that region
+    (the part's boundary reaches behind the section), or a point of the
+    section lies in the part (inside it or on its boundary). Otherwise the
+    blend takes all of the part between its rails there: the slice is
+    removed whole and the part falls apart along the edge.
+***********************************************************************/
+static SmStatus sm_KeepsMaterialBehind
+  (const SmBrep              & crBody,      // in : the body
+   const SmPoint3d           & crCentre,    // in : the ball's centre
+   const SmPoint3d           & crRail1,     // in : the section's ends
+   const SmPoint3d           & crRail2,
+   SmBoolean                   bChord,      // in : TRUE: the section is the chord, else the ball's arc
+   const SmTArray<SmPoint3d> & crCrossings, // in : the body's edges crossing the station's plane
+   SmBoolean                 & rbKeeps)     // out: TRUE = material behind the section
+{
+  rbKeeps = TRUE;
+  const SmVector3d sA = crRail1 - crCentre, sB = crRail2 - crCentre;
+  const double dR2 = smos_Max(sA.LengthSquared(), sB.LengthSquared());
+  const double dAA = sA.Dot(sA), dAB = sA.Dot(sB), dBB = sB.Dot(sB);
+  const double dDet = dAA * dBB - dAB * dAB;
+  if (!(dDet > SM_EFF_ZERO * dAA * dBB))
+    { return SM_SUCCESS; } // rails opposite or together: no region to judge
+  const double dTol = 1.0e-9 * std::sqrt(dR2);
+  for (ULONG i=0; i<crCrossings.GetSize(); i++)
+    {
+      const SmVector3d sX = crCrossings[i] - crCentre;
+      const double dXA = sX.Dot(sA), dXB = sX.Dot(sB);
+      const double dAlpha = (dXA * dBB - dXB * dAB) / dDet;
+      const double dBeta  = (dXB * dAA - dXA * dAB) / dDet;
+      if (dAlpha < -1.0e-12 || dBeta < -1.0e-12)
+        { continue; }
+      if (bChord ? (dAlpha + dBeta <= 1.0 + 1.0e-12) : (sX.Length() <= std::sqrt(dR2) + dTol))
+        { return SM_SUCCESS; }
+    }
+  // the section's points: the chord, or the arc from the first rail to the second the short way
+  const ULONG lPoints = 16;
+  SmVector3d sE2 = sB - sA * (dAB / dAA);
+  const double dE2 = sE2.Length();
+  const double dPhi = std::atan2(dE2 / std::sqrt(dBB), dAB / std::sqrt(dAA * dBB));
+  for (ULONG k=0; k<lPoints; k++)
+    {
+      const double dF = (k + 0.5) / lPoints;
+      SmPoint3d sAt;
+      if (bChord)
+        { sAt = crRail1 + (crRail2 - crRail1) * dF; }
+      else
+        {
+          const double dRho = std::sqrt(dAA);
+          sAt = crCentre + sA * std::cos(dF * dPhi) + (sE2 / dE2) * (dRho * std::sin(dF * dPhi));
+        }
+      SmPointClassification sClass;
+      SER(crBody.Point3DClassify(sAt, SmTol::GetZoneTol3d(&crBody), TRUE, sClass));
+      if (sClass.GetPointClass() != SM_PC_REGION)
+        { return SM_SUCCESS; } // on the part's boundary
+      const SmRegion * pRegion = static_cast<const SmRegion *>(sClass.GetObject());
+      if (pRegion != NULL && !pRegion->IsVoid())
+        { return SM_SUCCESS; }
+    }
+  rbKeeps = FALSE;
+  return SM_SUCCESS;
+} // end sm_KeepsMaterialBehind
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. Whether this convex blend (one that removes
+    material) would take all of the part between its rails somewhere along
+    its edge, cutting it into pieces (a round or chamfer through the bridge
+    over a slot); and where it would, the largest size that keeps the part
+    whole.
+
+NOTES: For CreateFilletBrep, before the corners. At the same sections as
+    BallIsRegular (the middles of 32 equal steps of the edge), with the
+    body's edges crossing each section's plane found once. A section where
+    no material lies behind the blend's section (sm_KeepsMaterialBehind) is
+    a cut. The limit is then found at each cutting section by bisection on
+    the ball's radius, the section solved again at each, the least over the
+    sections: rdRadius the ball's radius there, rdSetback the distance from
+    the edge to the first rail (a chamfer's size). A constant ball only.
+***********************************************************************/
+SmStatus SmFilletSolver::BandCutsThePart
+  (const SmBrep & crBody,     // in : the body blended
+   SmBoolean    & rbCuts,     // out: TRUE = the blend would cut the part
+   double       & rdRadius,   // out: the largest radius that keeps it whole
+   double       & rdSetback)  // out: and that radius's setback from the edge
+{
+  rbCuts = FALSE;
+  rdRadius = rdSetback = 0.0;
+  if (GetSurface(0) == NULL || GetSurface(1) == NULL || GetEdgeuse(0) == NULL)
+    { return SM_SUCCESS; }
+  const SmEdge  * pEdge  = GetEdgeuse(0)->GetEdge();  NER(pEdge);
+  const SmCurve * pCurve = pEdge->GetCurve();         NER(pCurve);
+  const SmExtent1d sIvl  = pEdge->GetInterval();
+  SmTsectPnt sProbe;
+  SmBoolean bBall = FALSE, bOnEdge = FALSE;
+  double adR[3] = { 0.0, 0.0, 0.0 };
+  SmVector3d asC[4];
+  SER(GetBallLaw(sProbe, bBall, bOnEdge, adR, asC));
+  if (!bBall || bOnEdge)
+    { return SM_SUCCESS; }
+  const SmBoolean bChord = (m_pFSG != NULL && m_pFSG->GetFilletSurfaceGeneratorType() == SM_FSG_LINEAR) ? TRUE : FALSE;
+
+  // at the edge's dT with the ball's radius dTrial (0: the solver's): whether material is kept
+  // behind the section, and the section's centre and rails
+  auto Keeps = [&](double dT, double dTrial, const SmTArray<SmPoint3d> & crCrossings, SmTsectPnt & rNear,
+                   SmBoolean & rbNear, SmBoolean & rbJudged, SmBoolean & rbKeeps, double & rdSetbackHere) -> SmStatus
+  {
+    rbJudged = FALSE;
+    rbKeeps  = TRUE;
+    if (dTrial > 0.0 && !SetBallRadius(dTrial))
+      { return SM_SUCCESS; }
+    SmTsectPnt sPnt;
+    SmBoolean  bFound = FALSE;
+    SmStatus eStatus = sm_BallSectionAt(*this, *pCurve, dT, rbNear ? &rNear : NULL, bFound, sPnt);
+    SmPoint3d asAt[3];
+    if (eStatus == SM_SUCCESS && bFound)
+      {
+        eStatus = GetSurface(0)->EvaluatePoint(sPnt.UVPos(0), asAt[0]);
+        if (eStatus == SM_SUCCESS) { eStatus = GetSurface(0)->GetBaseSurface()->EvaluatePoint(sPnt.UVPos(0), asAt[1]); }
+        if (eStatus == SM_SUCCESS) { eStatus = GetSurface(1)->GetBaseSurface()->EvaluatePoint(sPnt.UVPos(1), asAt[2]); }
+      }
+    // the rails past a base surface's domain lie on its extension, as the offset evaluates it
+    for (ULONG k=0; k<2 && eStatus == SM_SUCCESS && bFound; k++)
+      {
+        const SmSurface * pExtended = GetSurface(k)->GetExtendedBaseSurface();
+        if (   !GetSurface(k)->GetBaseSurface()->GetNaturalUVDomain().ContainsPoint2d(sPnt.UVPos(k))
+            && pExtended != NULL && pExtended->GetNaturalUVDomain().ContainsPoint2d(sPnt.UVPos(k)))
+          { eStatus = pExtended->EvaluatePoint(sPnt.UVPos(k), asAt[k+1]); }
+      }
+    if (dTrial > 0.0)
+      { (void)SetBallRadius(adR[0]); }
+    SER(eStatus);
+    if (!bFound)
+      { return SM_SUCCESS; }
+    rNear  = sPnt;
+    rbNear = TRUE;
+    rbJudged = TRUE;
+    SmPoint3d sP;
+    SER(pCurve->EvaluatePoint(dT, sP));
+    rdSetbackHere = sP.DistanceBetween(asAt[1]);
+    SER(sm_KeepsMaterialBehind(crBody, asAt[0], asAt[1], asAt[2], bChord, crCrossings, rbKeeps));
+    return SM_SUCCESS;
+  };
+
+  const ULONG lSteps = 32;
+  const ULONG lBisections = 40;
+  SmTsectPnt sNear;
+  SmBoolean  bNear = FALSE;
+  for (ULONG j=0; j<lSteps; j++)
+    {
+      const double dT = sIvl.Evaluate((j + 0.5) / lSteps);
+      SmVector3d sPV[2];
+      SER(pCurve->Evaluate(dT, 1, TRUE, sPV));
+      if (!(sPV[1].Length() > SM_EFF_ZERO))
+        { continue; }
+      SER(sPV[1].Unitize());
+      SmTArray<SmPoint3d> sCrossings;
+      SER(sm_EdgesCrossingPlane(crBody, sPV[0], sPV[1], sCrossings));
+      SmBoolean bJudged = FALSE, bKeeps = TRUE;
+      double dSetback = 0.0;
+      SER(Keeps(dT, 0.0, sCrossings, sNear, bNear, bJudged, bKeeps, dSetback));
+      if (!bJudged || bKeeps)
+        { continue; }
+      // the largest radius that keeps material behind its section here
+      SmTsectPnt sAt = sNear;
+      SmBoolean  bAt = bNear;
+      const double dRadius = adR[0];
+      double dLo = 0.0, dHi = dRadius, dLoSetback = 0.0;
+      for (double dTry = 0.5 * dRadius; dTry > 1.0e-6 * dRadius; dTry *= 0.5)
+        {
+          SmBoolean bTryJudged = FALSE, bTryKeeps = TRUE;
+          double dTrySetback = 0.0;
+          SER(Keeps(dT, dTry, sCrossings, sAt, bAt, bTryJudged, bTryKeeps, dTrySetback));
+          if (bTryJudged && bTryKeeps)
+            {
+              dLo = dTry;
+              dLoSetback = dTrySetback;
+              break;
+            }
+          dHi = dTry;
+        }
+      for (ULONG i=0; i<lBisections && dLo > 0.0; i++)
+        {
+          const double dMid = 0.5 * (dLo + dHi);
+          SmBoolean bMidJudged = FALSE, bMidKeeps = TRUE;
+          double dMidSetback = 0.0;
+          SER(Keeps(dT, dMid, sCrossings, sAt, bAt, bMidJudged, bMidKeeps, dMidSetback));
+          if (bMidJudged && bMidKeeps)
+            {
+              dLo = dMid;
+              dLoSetback = dMidSetback;
+            }
+          else
+            { dHi = dMid; }
+        }
+      if (!rbCuts || dLo < rdRadius)
+        {
+          rbCuts    = TRUE;
+          rdRadius  = dLo;
+          rdSetback = dLoSetback;
+        }
+    }
+  return SM_SUCCESS;
+} // end SmFilletSolver::BandCutsThePart
 
 /*******************************************************************//**
 PURPOSE: SolidCraft change. Whether a rail leaves the face it rolls on, at crLeave (rail
