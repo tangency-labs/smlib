@@ -6064,6 +6064,12 @@ void section_variable_round_spline_folds()
     smlib_brep *r = nullptr;
     CHECK(smlib_fillet_variable(block, at, 0.1, from, 3, knots, 9, folds, 5, &r) == SMLIB_ERR_NO_ROOM && r == nullptr);
     CHECK(near(blend_reason_number("where its radius is "), 19.6356317, 1e-6));
+    // a round on a radius law has no single size: none is returned, and the reason says why
+    {
+        char why[1024];
+        int64_t length = 0;
+        CHECK(blend_fit() < 0.0 && smlib_blend_reason(why, sizeof why, &length) == SMLIB_OK && std::strstr(why, "no single size") != nullptr);
+    }
     CHECK(smlib_fillet_variable(block, at, 0.1, from, 3, knots, 9, past, 5, &r) == SMLIB_ERR_NO_ROOM && r == nullptr);
     CHECK(near(blend_reason_number("where its radius is "), 7.8386732, 1e-6));
     for (const double *law : {inside, holds})
@@ -7948,6 +7954,20 @@ void scenario_chamfer_two_distances_past_the_top_refused()
     const std::string why = last_blend_reason();
     std::printf("  status %d: %s\n", static_cast<int>(s), why.c_str());
     CHECK(s == SMLIB_ERR_NO_ROOM && r == nullptr && !why.empty());
+    // the largest that builds is the pair scaled along its ratio: the wall's offset (the 12)
+    // reaches the axis at 10, a factor 10 / 12 (open: the top would close to a point), less the
+    // margin over the larger offset; built there it takes the triangle (10, 20), (10 - 12 f, 20),
+    // (10, 20 - 3 f) revolved about the axis
+    int32_t what = -1;
+    const double f = blend_fit(&what);
+    CHECK(what == SMLIB_FIT_SCALE && f < 10.0 / 12.0 && f > 10.0 / 12.0 - 0.02 / 12.0);
+    CHECK(smlib_chamfer_sides(can, rim, 1, 0.1, 12.0 * f, 3.0 * f, 0, up, &r, nullptr) == SMLIB_OK && r != nullptr);
+    if (r != nullptr)
+    {
+        const double a = 12.0 * f, b = 3.0 * f;
+        const double ring = 2.0 * PI * (10.0 + (10.0 - a) + 10.0) / 3.0 * 0.5 * a * b;
+        CHECK(near(volume_of(r), PI * 100.0 * 20.0 - ring, 1e-7));
+    }
     smlib_brep_free(r);
     smlib_brep_free(can);
 }
@@ -8036,6 +8056,119 @@ void scenario_cube_corner_rounds_as_wide_as_faces_refused()
     smlib_brep_free(cube);
 }
 
+// The margin under an open bound (SmFilletExecutive::FitMargin, a thousand of the edge's
+// tolerances) is that wide because SMLib does not build every sliver a size closer to the bound
+// leaves. Each such size builds in exact geometry, so each failure is a defect, held here.
+// (One tolerance, 1e-5, under the bridged block's bound 5 + 2 sqrt 2 the round builds two solids:
+// that is right, the bridge's remainder there is thinner than the tolerance and the part does
+// split at that width.)
+
+// The bossed can (cylinder r7 h48.2, boss r2.7 on its top) with its top rim rounded a hundred of
+// its edge's tolerances under the bound 4.3, r = 4.299: the round leaves a 0.001 wide annulus of
+// top round the boss's footprint. It should build (r = 4.29 does, taking (1 - pi/4) r^2 about the
+// axis at its centroid).
+void scenario_round_just_under_a_boss_footprint()
+{
+    smlib_brep *can = cylinder(0, 0, 0, 7, 48.2), *boss = cylinder(0, 0, 48.2, 2.7, 2), *bossed = combined(can, boss, SMLIB_BOOLEAN_UNION), *r = nullptr;
+    const double at = 100.0 * PI / 180.0, rim[3] = {7.0 * std::cos(at), 7.0 * std::sin(at), 48.2}, d = 4.3 - 1e-3;
+    const int32_t st = bossed == nullptr ? SMLIB_ERR_ARG : smlib_fillet(bossed, rim, 1, 0.1, d, &r, nullptr);
+    std::printf("  status %d: %s\n", static_cast<int>(st), last_blend_reason().c_str());
+    CHECK(st == SMLIB_OK && r != nullptr);
+    if (r != nullptr)
+    {
+        const double off = 2.0 * PI * (7.0 - d * (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI)) * (1.0 - PI / 4.0) * d * d;
+        CHECK(near(volume_of(r), PI * 49.0 * 48.2 + PI * 2.7 * 2.7 * 2.0 - off, 1e-6));
+    }
+    smlib_brep_free(r);
+    smlib_brep_free(bossed);
+}
+
+// The bridged block's top front edge rounded ten of its edge's tolerances under the bound
+// 5 + 2 sqrt 2 (r - 1e-4): the bridge keeps a strip of about that width behind the round, and the
+// part one solid. It should build as one solid (3e-4 under does).
+void scenario_round_just_under_a_bridge_cut()
+{
+    smlib_brep *body = bridged_block(), *r = nullptr;
+    const double point[3] = {2, 0, 10}, d = 5.0 + 2.0 * std::sqrt(2.0) - 1e-4;
+    const int32_t st = body == nullptr ? SMLIB_ERR_ARG : smlib_blend(body, SMLIB_BLEND_ROUND, point, &d, 1, 0.1, &r, nullptr);
+    std::printf("  status %d: %s\n", static_cast<int>(st), last_blend_reason().c_str());
+    int64_t solids = 0;
+    CHECK(st == SMLIB_OK && r != nullptr && smlib_brep_solid_count(r, &solids) == SMLIB_OK && solids == 1);
+    smlib_brep_free(r);
+    smlib_brep_free(body);
+}
+
+// A 20 x 10 x 10 block, its back top edge rounded R3, then its front top edge rounded R9: the
+// front round's rail on the top (y = r) runs off the top's flat across the tangent edge (y = 7)
+// onto the back round, which it would cut. Refused; the largest radius whose rail stays on the
+// top is 7 (open), just under it, and there the rounds take 20 (1 - pi/4) (9 + r^2).
+void scenario_round_onto_a_tangent_round_refused()
+{
+    smlib_brep *b = box(0, 0, 0, 20, 10, 10), *backed = nullptr, *r = nullptr;
+    const double back[3] = {10, 10, 10}, front[3] = {10, 0, 10};
+    CHECK(smlib_fillet(b, back, 1, 0.1, 3.0, &backed, nullptr) == SMLIB_OK && backed != nullptr);
+    smlib_brep_free(b);
+    CHECK(backed != nullptr && smlib_fillet(backed, front, 1, 0.1, 9.0, &r, nullptr) == SMLIB_ERR_NO_ROOM && r == nullptr);
+    std::printf("  reason: %s\n", last_blend_reason().c_str());
+    const double fit = blend_fit();
+    CHECK(just_under(fit, 7.0));
+    CHECK(backed != nullptr && smlib_fillet(backed, front, 1, 0.1, fit, &r, nullptr) == SMLIB_OK && r != nullptr);
+    if (r != nullptr)
+    {
+        CHECK(near(volume_of(r), 2000.0 - 20.0 * (1.0 - PI / 4.0) * (9.0 + fit * fit), 1e-6));
+        smlib_brep_free(r);
+    }
+    smlib_brep_free(backed);
+}
+
+// The concave L (a floor 20 x 20 x 2 and a wall 2 thick, 10 high, at x = 0) its inner edge blended
+// at a chord width 13: the chord of a ball of radius r in the square corner is r sqrt 2, its rail
+// on the wall at z = 2 + r reaches the wall's top at r = 8, a width of 8 sqrt 2 (open). Refused;
+// the largest width that builds is just under 8 sqrt 2, and there the blend (a circular section of
+// that width, the ball's) adds (1 - pi/4) (w^2 / 2) along 20.
+void scenario_chord_past_a_wall_refused()
+{
+    smlib_brep *l = combined(box(0, 0, 0, 20, 20, 2), box(0, 0, 0, 2, 20, 10), SMLIB_BOOLEAN_UNION), *r = nullptr;
+    const double inner[3] = {2, 10, 2}, wide = 13.0;
+    CHECK(l != nullptr && smlib_blend(l, SMLIB_BLEND_CHORD, inner, &wide, 1, 0.1, &r, nullptr) == SMLIB_ERR_NO_ROOM && r == nullptr);
+    std::printf("  reason: %s\n", last_blend_reason().c_str());
+    const double fit = blend_fit();
+    CHECK(just_under(fit, 8.0 * std::sqrt(2.0)));
+    CHECK(l != nullptr && smlib_blend(l, SMLIB_BLEND_CHORD, inner, &fit, 1, 0.1, &r, nullptr) == SMLIB_OK && r != nullptr);
+    if (r != nullptr)
+    {
+        CHECK(near(volume_of(r), 800.0 + 320.0 + (1.0 - PI / 4.0) * 0.5 * fit * fit * 20.0, 1e-6));
+        smlib_brep_free(r);
+    }
+    smlib_brep_free(l);
+}
+
+// A 10 cube's four top edges chamfered 5: the top, a square of 10, is taken whole (the chamfers
+// would end in a point). Each chamfer's ball touching the top at q has radius d_i(q) (square
+// faces), so the top lasts while the size is below max over q of the least distance to its four
+// edges, 5 at the centre (open). Refused; the largest that builds is just under 5, and there the
+// chamfers take the top slab d thick less the frustum from the 10 square to the (10 - 2d) one,
+// 100 d - d (100 + (10 - 2d)^2 + 10 (10 - 2d)) / 3.
+void scenario_chamfers_taking_a_square_top_refused()
+{
+    smlib_brep *cube = box(0, 0, 0, 10, 10, 10), *r = nullptr;
+    const std::vector<double> edges = {5, 0, 10, 10, 5, 10, 5, 10, 10, 0, 5, 10};
+    const double five[4] = {5, 5, 5, 5};
+    CHECK(smlib_blend(cube, SMLIB_BLEND_CHAMFER, edges.data(), five, 4, 0.1, &r, nullptr) == SMLIB_ERR_NO_ROOM && r == nullptr);
+    std::printf("  reason: %s\n", last_blend_reason().c_str());
+    const double fit = blend_fit();
+    CHECK(just_under(fit, 5.0));
+    const double at[4] = {fit, fit, fit, fit};
+    CHECK(smlib_blend(cube, SMLIB_BLEND_CHAMFER, edges.data(), at, 4, 0.1, &r, nullptr) == SMLIB_OK && r != nullptr);
+    if (r != nullptr)
+    {
+        const double d = fit, side = 10.0 - 2.0 * d;
+        CHECK(near(volume_of(r), 1000.0 - (100.0 * d - d * (100.0 + side * side + 10.0 * side) / 3.0), 1e-6));
+        smlib_brep_free(r);
+    }
+    smlib_brep_free(cube);
+}
+
 // The scenario cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--scenarios-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SCENARIO_CASES[] = {
@@ -8047,7 +8180,10 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"chamfer_past_the_rim_over_an_opening", scenario_chamfer_past_the_rim_over_an_opening, nullptr},
     {"chamfer_two_distances_past_the_top_refused", scenario_chamfer_two_distances_past_the_top_refused, nullptr},
     {"chamfers_of_an_arc_wall_and_the_top_front", scenario_chamfers_of_an_arc_wall_and_the_top_front, nullptr},
+    {"chamfers_taking_a_square_top_refused", scenario_chamfers_taking_a_square_top_refused,
+     "SMLib fails with \"Fillet Surface Computation Failure\" before it judges the top taken whole, so the refusal is not SMLIB_ERR_NO_ROOM and names no size"},
     {"chord_on_a_60_degree_edge", scenario_chord_on_a_60_degree_edge, nullptr},
+    {"chord_past_a_wall_refused", scenario_chord_past_a_wall_refused, nullptr},
     {"cube_corner_rounds_as_wide_as_faces_refused", scenario_cube_corner_rounds_as_wide_as_faces_refused, nullptr},
     {"hole_in_band_kept", scenario_hole_in_band_kept, nullptr},
     {"hole_in_band_taken", scenario_hole_in_band_taken, nullptr},
@@ -8058,7 +8194,12 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"round_ending_where_its_edge_runs_on", scenario_round_ending_where_its_edge_runs_on,
      "status 0, but no End at the smooth vertex (the End on the end face takes the tangent side edge): 2373.945975411, 1.585 below the closed form, and no end face at x = 20"},
     {"round_cutting_a_bridge_refused", scenario_round_cutting_a_bridge_refused, nullptr},
+    {"round_just_under_a_boss_footprint", scenario_round_just_under_a_boss_footprint,
+     "status 1001 with no reason: SMLib does not build the round that leaves a 0.001 wide annulus of the can's top round the boss (4.29 builds)"},
+    {"round_just_under_a_bridge_cut", scenario_round_just_under_a_bridge_cut,
+     "SMLIB_ERR_NO_ROOM, \"a blend past its faces keeps no length of its edge\": the merge after the overflow loses the bridge's 1e-4 strip (3e-4 under builds one solid)"},
     {"round_of_an_arc_wall_into_its_tip", scenario_round_of_an_arc_wall_into_its_tip, nullptr},
+    {"round_onto_a_tangent_round_refused", scenario_round_onto_a_tangent_round_refused, nullptr},
     {"round_over_a_thin_rib_not_a_cut", scenario_round_over_a_thin_rib_not_a_cut, nullptr},
     {"round_past_the_rim_over_an_opening", scenario_round_past_the_rim_over_an_opening, nullptr},
     {"square_bar_rounded_to_a_rod", scenario_square_bar_rounded_to_a_rod, nullptr},
