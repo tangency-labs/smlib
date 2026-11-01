@@ -8633,7 +8633,21 @@ void grade_seam(const char *name, const SeamSide &a, const SeamSide &b, double s
     CHECK(ok && normals <= 1e-12 && (order < 2 || curvatures <= 1e-9 / size));
 }
 
-// The box corner's rounds of radii `radii`, set back by SmBlendSetback::Distances, made to
+// The box corner's setbacks grown to the least scale at which its G1 fill is certified convex
+// (SmBlendSetback::CertifiedScale; owner, 2026-11-01), as SMLib's corner grows the rule's.
+std::vector<double> box_corner_g1_setbacks(const std::array<double, 3> &radii, std::vector<double> setbacks)
+{
+    double scale = 0.0;
+    CHECK(SmBlendSetback::CertifiedScale(*SmApiGetOrCreateContext(), box_corner_faces(), box_corner_edges(radii), setbacks, scale) == SM_SUCCESS && scale >= 1.0);
+    for (double &x : setbacks)
+    {
+        x *= scale;
+    }
+    return setbacks;
+}
+
+// The box corner's rounds of radii `radii`, set back by SmBlendSetback::Distances (grown to a
+// certified convex fill for G1: box_corner_g1_setbacks), made to
 // `round_order` (3: order 2 by SmGnSectionFSG) (and eased into the order-2 section over `ease` before their ends when that is
 // positive), filled to `order`: each setback patch's end row is its round's section, its spring
 // sides lie on their faces, every seam (the rounds' end sections, the spring curves' halves, the
@@ -8648,6 +8662,10 @@ void setback_box_corner(std::array<double, 3> radii, int round_order, double eas
     if (setbacks.size() != 3)
     {
         return;
+    }
+    if (order == 1)
+    {
+        setbacks = box_corner_g1_setbacks(radii, setbacks);
     }
     const double len = 10.0;
     std::vector<SmBSplineSurface *> rounds;
@@ -8869,7 +8887,8 @@ SmBSplineSurface *box_corner_round_reparametrized(int a, double r, double s, dou
     return srf;
 }
 
-// The fill is the rounds' geometry's: the box corner's rounds r 2, 3, 4 (box_corner_round,
+// The fill is the rounds' geometry's: the box corner's rounds r 2, 3, 4 (for G1 at the setbacks
+// grown to a certified convex fill, box_corner_g1_setbacks) (box_corner_round,
 // linear along their edges) and the same rounds in other parameters along them
 // (box_corner_round_reparametrized: polynomial and rational, at other speeds and accelerations
 // at their ends), and for G2 also the circular rounds eased into the order-2 sections over 2
@@ -8885,9 +8904,11 @@ void setback_fill_is_the_geometry_s()
     {
         return;
     }
+    const std::vector<double> rule = setbacks;
     for (ULONG order = 1; order <= 2; order++)
     {
         const int round_order = static_cast<int>(order);
+        setbacks = order == 1 ? box_corner_g1_setbacks(radii, rule) : rule;
         // 0: linear; 1: quadratic, polynomial; 2: quadratic, rational; 3 (G2): eased
         double worst[4] = {0, 0, 0, 0};
         std::vector<std::vector<SmBSplineSurface *>> sets(4);
@@ -9024,6 +9045,18 @@ void setback_corner_built(smlib_brep *r, const std::array<double, 3> &radii, int
     if (setback > 0.0)
     {
         setbacks.assign(3, setback);
+    }
+    if (order == 1 && setbacks.size() == 3)
+    {
+        // a G1 fill is certified convex: the rule's setbacks grow to the least scale that is
+        double scale = 0.0;
+        CHECK(SmBlendSetback::CertifiedScale(*SmApiGetOrCreateContext(), box_corner_faces(), box_corner_edges(radii), setbacks, scale) == SM_SUCCESS &&
+              scale >= 1.0 && scale <= 1.07);
+        std::printf("  the rule's setbacks grown %.6g times to certify the fill convex\n", scale);
+        for (double &x : setbacks)
+        {
+            x *= scale;
+        }
     }
     int64_t counts[3] = {0, 0, 0};
     CHECK(smlib_brep_counts(r, counts) == SMLIB_OK);
@@ -9269,7 +9302,7 @@ void setback_corner_eased_g2()
 // The reentrant corner (10, 10, 10) of the box [0, 20]^3 less [10, 20]^3, its three concave edges
 // (along x, y and z from it) rounded r 1, 1.5 and 2 together: a concave Setback filled to G1,
 // each round set back by the owner's rule (its faces square, as at a convex box corner: 2.25,
-// 2.375 and 3). Sound; the 9 faces of the notched box, the 3 rounds and the 6 patches; each
+// 2.375 and 3), grown to the least scale whose fill is certified convex about the void. Sound; the 9 faces of the notched box, the 3 rounds and the 6 patches; each
 // round's end section at its setback, r from the edge on each face; every seam of the patches
 // G1 (normals within 1e-9 rad); the patches in the notch, [10, 20]^3, where the material is not
 // (Containment, certified: a concave corner's fill stands past no face into the material).
@@ -9299,7 +9332,34 @@ void setback_concave_corner_rounds()
     CHECK(smlib_brep_counts(r, counts) == SMLIB_OK);
     std::printf("  faces %lld\n", static_cast<long long>(counts[0]));
     CHECK(counts[0] == 18);
-    const double setbacks[3] = {2.25, 2.375, 3.0};
+    // the rule's, grown to the least scale whose G1 fill is certified (the void's) convex
+    std::vector<double> setbacks = {2.25, 2.375, 3.0};
+    {
+        std::vector<SmBlendSetback::Face> faces(3);
+        std::vector<SmBlendSetback::Edge> sides(3);
+        for (int f = 0; f < 3; f++)
+        {
+            double n[3] = {0, 0, 0};
+            n[f] = 1.0;
+            faces[static_cast<size_t>(f)] = {SmPoint3d(10, 10, 10), SmVector3d(n[0], n[1], n[2])};
+        }
+        for (int a = 0; a < 3; a++)
+        {
+            double d[3] = {0, 0, 0};
+            d[a] = 1.0;
+            sides[static_cast<size_t>(a)].m_sAway = SmVector3d(d[0], d[1], d[2]);
+            sides[static_cast<size_t>(a)].m_dRadius = radii[a];
+            sides[static_cast<size_t>(a)].m_alFaces[0] = static_cast<ULONG>((a + 1) % 3);
+            sides[static_cast<size_t>(a)].m_alFaces[1] = static_cast<ULONG>((a + 2) % 3);
+        }
+        double scale = 0.0;
+        CHECK(SmBlendSetback::CertifiedScale(*SmApiGetOrCreateContext(), faces, sides, setbacks, scale) == SM_SUCCESS && scale >= 1.0 && scale <= 1.07);
+        for (double &x : setbacks)
+        {
+            x *= scale;
+        }
+        std::printf("  setbacks grown %.6g times to certify the fill convex\n", scale);
+    }
     SmTArray<SmVertex *> vs;
     r->p->GetVertices(vs);
     double worst_end = 0.0;
@@ -9360,8 +9420,11 @@ void setback_concave_corner_rounds()
 // edge (5.5); its far end is no setback corner, so the edge's room is its length, and the default
 // shrinks to that room less a quarter of its round's radius, 5.5 - 1 = 4.5, at or above its
 // contact-line minimum, 3 (owner, 2026-11-01: a default setback shrinks to fit). The others keep
-// theirs, 4.5 and 4.75. Sound; the box's 6 faces, 3 rounds and 6 patches; the end sections'
-// ends there, r from their edges; the patches' seams G1 (1e-9 rad), within the box.
+// theirs, 4.5 and 4.75, until the G1 fill is certified convex (owner, 2026-11-01): there the
+// setbacks grow to the least scale that certifies (SmBlendSetback::CertifiedScale), the upright
+// one held at its room less r / 4 (4.5) and the others growing on. Sound; the box's 6 faces, 3
+// rounds and 6 patches; the end sections' ends there, r from their edges; the patches' seams G1
+// (1e-9 rad), within the box.
 void setback_default_shrinks_to_fit()
 {
     smlib_brep *part = box(0, 0, 0, 20, 20, 5.5), *r = nullptr;
@@ -9380,7 +9443,19 @@ void setback_default_shrinks_to_fit()
     CHECK(smlib_brep_counts(r, counts) == SMLIB_OK);
     std::printf("  faces %lld\n", static_cast<long long>(counts[0]));
     CHECK(counts[0] == 15);
-    const double setbacks[3] = {4.5, 4.75, 4.5};
+    std::vector<double> setbacks = {4.5, 4.75, 4.5};
+    {
+        const std::vector<double> most = {20.0 - 0.5, 20.0 - 0.75, 5.5 - 1.0};
+        double scale = 0.0;
+        CHECK(SmBlendSetback::CertifiedScale(*SmApiGetOrCreateContext(), box_corner_faces(), box_corner_edges({2, 3, 4}), setbacks, scale, nullptr, nullptr,
+                                             &most) == SM_SUCCESS &&
+              scale > 1.0 && scale <= 1.1);
+        for (size_t a = 0; a < 3; a++)
+        {
+            setbacks[a] = std::min(scale * setbacks[a], most[a]);
+        }
+        std::printf("  setbacks grown %.6g times to certify the fill convex: %.6g, %.6g, %.6g\n", scale, setbacks[0], setbacks[1], setbacks[2]);
+    }
     SmTArray<SmVertex *> vs;
     r->p->GetVertices(vs);
     double worst_end = 0.0;
@@ -9451,6 +9526,35 @@ void setback_asked_too_long_names_what_fits()
     const std::string why = last_blend_reason();
     std::printf("  status %d: %s\n", static_cast<int>(st), why.c_str());
     CHECK(st == SMLIB_ERR_NO_ROOM && r == nullptr && names_size(why, 20.0, 1e-9));
+    smlib_brep_free(part);
+    smlib_brep_free(r);
+}
+
+// Rounds r 2, 3 and 4 along x, y and z of the box [0, 20]^3, their corner (0, 0, 0) set back 4.25
+// along each edge on request: past every rail crossing (4), but too short for the G1 fill to be
+// certified convex (owner, 2026-11-01: a setback asked for is not grown). Refused
+// (SMLIB_ERR_NO_ROOM), naming the setback that builds the convex fill, smlib_blend_fit_size's
+// (SMLIB_FIT_SETBACK): the least scale of 4.25 that certifies, to 1e-2 (SmBlendSetback::
+// CertifiedScale). At that setback the corner builds.
+void setback_asked_too_short_names_what_builds()
+{
+    smlib_brep *part = box(0, 0, 0, 20, 20, 20), *r = nullptr;
+    const double edges[9] = {10, 0, 0, 0, 10, 0, 0, 0, 10};
+    const double radii[3] = {2, 3, 4};
+    const double corner[3] = {0, 0, 0};
+    const double setback = 4.25;
+    int32_t st = smlib_blend_setback(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, 1, 0.1, &r, nullptr, nullptr);
+    const std::string why = last_blend_reason();
+    int32_t what = -1;
+    const double fit = blend_fit(&what);
+    std::printf("  status %d: %s\n", static_cast<int>(st), why.c_str());
+    CHECK(st == SMLIB_ERR_NO_ROOM && r == nullptr && what == SMLIB_FIT_SETBACK && fit > setback && fit < 1.2 * setback && names_size(why, fit, 1e-9));
+    if (fit > setback)
+    {
+        st = smlib_blend_setback(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &fit, 1, 0.1, &r, nullptr, nullptr);
+        std::printf("  at %.9g: status %d\n", fit, static_cast<int>(st));
+        CHECK(st == SMLIB_OK && r != nullptr && sound(r));
+    }
     smlib_brep_free(part);
     smlib_brep_free(r);
 }
@@ -9948,7 +10052,34 @@ void fill_margins(const SmBlendSetback::Fill &fill, const std::array<double, 3> 
 // by the rule (the default), the r 5 rounds set back 8 (corner_setback's corner), and the notch's
 // rounds 1, 1.5, 2 by the rule (its concave corner is the convex void's: the same shape about the
 // void).
-void setback_g1_fill_keeps_the_body_convex(const std::array<double, 3> &radii, double setback, const char *what)
+// The rounds of the box corner (radii) set back `setbacks`, filled to G1; the fill's patches in
+// `fill` (FillHole's status returned).
+SmStatus box_corner_g1_fill(const std::array<double, 3> &radii, const std::vector<double> &setbacks, SmBlendSetback::Fill &fill)
+{
+    SmContext &ctx = *SmApiGetOrCreateContext();
+    std::vector<SmBSplineSurface *> rounds;
+    std::vector<SmBlendSetback::Round> in;
+    for (int a = 0; a < 3; a++)
+    {
+        rounds.push_back(box_corner_round(a, radii[static_cast<size_t>(a)], setbacks[static_cast<size_t>(a)], 10.0, 1));
+        in.push_back({rounds.back(), SM_SP_U, setbacks[static_cast<size_t>(a)], FALSE});
+    }
+    const SmStatus st = SmBlendSetback::FillHole(ctx, box_corner_faces(), in, 1, 1e-9, fill);
+    for (SmBSplineSurface *q : rounds)
+    {
+        delete q;
+    }
+    return st;
+}
+
+// The box corner's G1 fill at its setbacks (the rule's, or `setback` on every edge), grown to the
+// least scale of them whose fill is certified convex (SmBlendSetback::CertifiedScale), within
+// [scale_lo, scale_hi], the search in at most 6 quadratic programmes (counted, not timed); at a
+// scale above 1 the fill at the setbacks themselves is refused as not certified, proven so by the
+// one quadratic programme at degree 9. The fill at the scale keeps the
+// body convex (fill_keeps_the_body_convex), its certified margins printed (fill_margins).
+void setback_g1_fill_keeps_the_body_convex(const std::array<double, 3> &radii, double setback, const char *what, double scale_lo = 1.0,
+                                           double scale_hi = 1.0)
 {
     SmContext &ctx = *SmApiGetOrCreateContext();
     std::vector<double> setbacks;
@@ -9957,30 +10088,67 @@ void setback_g1_fill_keeps_the_body_convex(const std::array<double, 3> &radii, d
     {
         setbacks.assign(3, setback);
     }
-    std::vector<SmBSplineSurface *> rounds;
-    std::vector<SmBlendSetback::Round> in;
-    for (int a = 0; a < 3; a++)
+    double scale = 0.0;
+    ULONG solves = 0;
+    const TCHAR *why = nullptr;
+    const SmStatus st = SmBlendSetback::CertifiedScale(ctx, box_corner_faces(), box_corner_edges(radii), setbacks, scale, &solves, &why);
+    std::printf("  %s, set back %g, %g, %g: certified from %.6g times them (%lu quadratic programmes)%s%s\n", what, setbacks[0], setbacks[1], setbacks[2], scale,
+                static_cast<unsigned long>(solves), why != nullptr ? ": " : "", why != nullptr ? why : "");
+    CHECK(st == SM_SUCCESS && scale >= scale_lo && scale <= scale_hi && solves <= 6);
+    if (scale > 1.0)
     {
-        rounds.push_back(box_corner_round(a, radii[static_cast<size_t>(a)], setbacks[static_cast<size_t>(a)], 10.0, 1));
-        in.push_back({rounds.back(), SM_SP_U, setbacks[static_cast<size_t>(a)], FALSE});
+        SmBlendSetback::Fill at;
+        CHECK(box_corner_g1_fill(radii, setbacks, at) != SM_SUCCESS && at.m_bUncertified && at.m_vPatches.empty() && at.m_lSolves == 1);
+        std::printf("  at the setbacks themselves: refused (%s), %lu quadratic programme\n", at.m_pReason != nullptr ? at.m_pReason : "no reason",
+                    static_cast<unsigned long>(at.m_lSolves));
+    }
+    if (!(scale > 0.0))
+    {
+        return;
+    }
+    for (double &s : setbacks)
+    {
+        s *= scale;
     }
     SmBlendSetback::Fill fill;
-    CHECK(SmBlendSetback::FillHole(ctx, box_corner_faces(), in, 1, 1e-9, fill) == SM_SUCCESS && fill.m_vPatches.size() == 6);
+    CHECK(box_corner_g1_fill(radii, setbacks, fill) == SM_SUCCESS && fill.m_vPatches.size() == 6);
     if (fill.m_vPatches.size() == 6)
     {
         double k_low = 0.0, past_high = 0.0;
         fill_margins(fill, radii, k_low, past_high);
-        std::printf("  %s, set back %g, %g, %g: K >= %.3g, out of a prism by <= %.3g (certified bounds)\n", what, setbacks[0], setbacks[1], setbacks[2], k_low,
+        std::printf("  %s, set back %.6g, %.6g, %.6g: degree %lu, %lu quadratic programmes; K >= %.3g, out of a prism by <= %.3g (certified bounds)\n", what,
+                    setbacks[0], setbacks[1], setbacks[2], static_cast<unsigned long>(fill.m_lDegree), static_cast<unsigned long>(fill.m_lSolves), k_low,
                     past_high);
     }
     CHECK(fill.m_vPatches.size() == 6 && fill_keeps_the_body_convex(fill, radii, what));
-    for (SmBSplineSurface *q : rounds)
+}
+
+// Growing the setbacks keeps a corner certified (the scale search's assumption, bisecting between
+// a failing and a certifying scale): rounds 2, 3, 4 certify at the least scale and at 1.5 times it.
+void setback_g1_convex_grows_with_the_setback()
+{
+    SmContext &ctx = *SmApiGetOrCreateContext();
+    const std::array<double, 3> radii = {2, 3, 4};
+    std::vector<double> setbacks;
+    CHECK(SmBlendSetback::Distances(box_corner_faces(), box_corner_edges(radii), setbacks) == SM_SUCCESS && setbacks.size() == 3);
+    double scale = 0.0;
+    CHECK(SmBlendSetback::CertifiedScale(ctx, box_corner_faces(), box_corner_edges(radii), setbacks, scale) == SM_SUCCESS && scale > 1.0);
+    for (double k : {scale, 1.5 * scale})
     {
-        delete q;
+        std::vector<double> at(setbacks);
+        for (double &s : at)
+        {
+            s *= k;
+        }
+        SmBlendSetback::Fill fill;
+        CHECK(box_corner_g1_fill(radii, at, fill) == SM_SUCCESS && fill.m_vPatches.size() == 6);
+        char what[64];
+        std::snprintf(what, sizeof what, "rounds 2, 3, 4 at %.6g times the rule's setbacks", k);
+        CHECK(fill.m_vPatches.size() == 6 && fill_keeps_the_body_convex(fill, radii, what));
     }
 }
-void setback_g1_convex_rounds_2_3_4() { setback_g1_fill_keeps_the_body_convex({2, 3, 4}, 0.0, "rounds 2, 3, 4"); }
-void setback_g1_convex_notch() { setback_g1_fill_keeps_the_body_convex({1, 1.5, 2}, 0.0, "rounds 1, 1.5, 2"); }
+void setback_g1_convex_rounds_2_3_4() { setback_g1_fill_keeps_the_body_convex({2, 3, 4}, 0.0, "rounds 2, 3, 4", 1.05, 1.07); }
+void setback_g1_convex_notch() { setback_g1_fill_keeps_the_body_convex({1, 1.5, 2}, 0.0, "rounds 1, 1.5, 2", 1.05, 1.07); }
 // corner_setback's corner (60, 40, 20), r 5 set back 8, at the origin (p -> (60, 40, 20) - p).
 void setback_corner_setback_8() { setback_g1_fill_keeps_the_body_convex({5, 5, 5}, 8.0, "rounds 5 set back 8"); }
 
@@ -10009,6 +10177,7 @@ void setback_g1_base_points_on_the_spring_conics()
         {
             setbacks.assign(3, c.setback);
         }
+        setbacks = box_corner_g1_setbacks(c.radii, setbacks);
         std::vector<SmBSplineSurface *> rounds;
         std::vector<SmBlendSetback::Round> in;
         for (int a = 0; a < 3; a++)
@@ -10053,26 +10222,38 @@ void setback_g1_base_points_on_the_spring_conics()
 // TANGENT_END_CASES: `--setbacks-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SETBACK_CASES[] = {
     {"distances_box_corner", setback_distances_box_corner, nullptr},
-    {"box_corner_g1", setback_box_corner_g1, nullptr},
+    {"box_corner_g1", setback_box_corner_g1,
+     "the G1 setbacks grown to a certified convex fill (SmBlendSetback::CertifiedScale) are not built yet"},
     {"box_corner_g2_eased", setback_box_corner_g2_eased, nullptr},
     {"box_corner_g2_rounds", setback_box_corner_g2_rounds, nullptr},
     {"box_corner_g2_gn_section_rounds", setback_box_corner_g2_gn_section_rounds, nullptr},
-    {"box_corner_unequal_g1", setback_box_corner_unequal_g1, nullptr},
+    {"box_corner_unequal_g1", setback_box_corner_unequal_g1,
+     "the G1 setbacks grown to a certified convex fill (SmBlendSetback::CertifiedScale) are not built yet"},
     {"g2_fill_of_uneased_rounds_refused", setback_g2_fill_of_uneased_rounds_refused, nullptr},
-    {"corner_setback_8", setback_corner_setback_8, nullptr},
+    {"corner_setback_8", setback_corner_setback_8,
+     "the G1 setbacks grown to a certified convex fill (SmBlendSetback::CertifiedScale) are not built yet"},
     {"corner_setback_8_volume", corner_setback, nullptr},
-    {"fill_is_the_geometry_s", setback_fill_is_the_geometry_s, nullptr},
+    {"fill_is_the_geometry_s", setback_fill_is_the_geometry_s,
+     "the G1 setbacks grown to a certified convex fill (SmBlendSetback::CertifiedScale) are not built yet"},
     {"g1_convex_rounds_2_3_4", setback_g1_convex_rounds_2_3_4,
-     "no G1 fill up to degree 9 meets the linear convexity conditions at the rule's setbacks 4.5, 4.75, 6 (from 1.06 times them it is certified); the least-energy fill: K >= -0.0606, up to 0.0356 out of a prism (certified bounds)"},
-    {"g1_base_points_on_the_spring_conics", setback_g1_base_points_on_the_spring_conics, nullptr},
+     "the G1 setbacks grown to a certified convex fill (SmBlendSetback::CertifiedScale) are not built yet"},
+    {"g1_base_points_on_the_spring_conics", setback_g1_base_points_on_the_spring_conics,
+     "the G1 setbacks grown to a certified convex fill (SmBlendSetback::CertifiedScale) are not built yet"},
+    {"g1_convex_grows_with_the_setback", setback_g1_convex_grows_with_the_setback,
+     "the G1 setbacks grown to a certified convex fill (SmBlendSetback::CertifiedScale) are not built yet"},
     {"g1_convex_notch", setback_g1_convex_notch,
-     "no G1 fill up to degree 9 meets the linear convexity conditions at the rule's setbacks 2.25, 2.375, 3 (from 1.06 times them it is certified); the least-energy fill: K >= -0.243, up to 0.0178 out of a prism (certified bounds)"},
-    {"default_shrinks_to_fit", setback_default_shrinks_to_fit, nullptr},
+     "the G1 setbacks grown to a certified convex fill (SmBlendSetback::CertifiedScale) are not built yet"},
+    {"default_shrinks_to_fit", setback_default_shrinks_to_fit,
+     "SMLib's setback corner does not yet grow the rule's setbacks to a certified convex G1 fill (CertifiedScale not built)"},
     {"asked_too_long_names_what_fits", setback_asked_too_long_names_what_fits, nullptr},
-    {"corner_rounds_2_3_4", setback_corner_rounds_2_3_4, nullptr},
+    {"asked_too_short_names_what_builds", setback_asked_too_short_names_what_builds,
+     "a setback asked for that is too short for a certified convex G1 fill is built, not refused naming the setback that builds"},
+    {"corner_rounds_2_3_4", setback_corner_rounds_2_3_4,
+     "SMLib's setback corner does not yet grow the rule's setbacks to a certified convex G1 fill (CertifiedScale not built)"},
     {"corner_curvature_g2", setback_corner_curvature_g2, nullptr},
     {"corner_eased_g2", setback_corner_eased_g2, nullptr},
-    {"concave_corner_rounds", setback_concave_corner_rounds, nullptr},
+    {"concave_corner_rounds", setback_concave_corner_rounds,
+     "SMLib's setback corner does not yet grow the rule's setbacks to a certified convex G1 fill (CertifiedScale not built)"},
 };
 
 int setback_cases(bool known_failing, const char *only)

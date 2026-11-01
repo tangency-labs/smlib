@@ -147,6 +147,8 @@ public:
   //   as its side s = 0 (its t the same as part q's s).
   // m_vRound[m]: the caller's index of the cycle's round m; m_vFace[m]: of face m.
   // m_lDegree: the interior map's degree. m_pReason: why FillHole refused, NULL when it did not.
+  // m_lSolves: the quadratic programmes a G1 fill solved (its count, not its time).
+  // m_bUncertified: FillHole refused a G1 fill as no fill up to degree 9 is certified convex.
   // The patches are owned by the fill.
   struct Fill
   {
@@ -156,6 +158,8 @@ public:
     std::vector<SmBoolean>          m_vReversed;
     ULONG                           m_lDegree = 0;
     const TCHAR *                   m_pReason = NULL;
+    ULONG                           m_lSolves = 0;
+    bool                            m_bUncertified = false;
 
     Fill() {}
     ~Fill();
@@ -169,9 +173,39 @@ public:
   // fill is not held to the faces' half-spaces here: Containment bounds that. Refused (SM_ERR_INVALID_INPUT, with its reason): rounds that do not close round
   // the vertex face to face, a round with more than one span across, a round that does not meet
   // its faces to lOrder at its end, an order other than 1 or 2. SM_ERR: conditions on the
-  // interior map no degree up to 9 can meet, or a fill that folds.
+  // interior map no degree up to 9 can meet, or a fill that folds. A G1 fill is taken only
+  // certified convex (at a convex corner; the void's at a concave one): SM_ERR, its reason and
+  // m_bUncertified, where none up to degree 9 is (its setbacks too short for it: CertifiedScale).
   static SmStatus FillHole(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Round> & crRounds, ULONG lOrder,
                            double dTol, Fill & rFill);
+
+  // CertifiedScale's probe of a G1 fill at degree 9: whether its conditions can be met
+  // (m_bFeasible), and the least uniform violation of its normalized sector conditions over the
+  // heights (m_dMargin: <= 0 where met, m_bMargin asks it), one quadratic programme each; or
+  // (m_bFill) the fill as FillHole's, its degrees tried from the least up only.
+  struct Probe
+  {
+    bool   m_bFill = false;   // the fill itself, from the least degree up (no degree-9 proof first)
+    bool   m_bMargin = false;
+    bool   m_bFeasible = false;
+    double m_dMargin = 0.0;
+  };
+  static SmStatus FillHoleProbe(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Round> & crRounds, double dTol,
+                                Fill & rFill, Probe & rProbe);
+
+  // The least scale k of the setbacks crSetBacks (one per edge, the edges and faces as for
+  // Distances, every face a plane through the corner's vertex, every edge a straight line there),
+  // each held at its most (pvMost, optional), at which the G1 fill of the corner's constant
+  // circular rounds (radius m_dRadius between the edge's two faces, each round's end section
+  // square to its edge at its setback) is certified convex (FillHole), to 1e-2: 1 where the
+  // setbacks themselves are; else the certifying end of a bracket 1e-2 wide, found from the
+  // margin by which the fill's conditions fail (FillHoleProbe: at 1, 1.02, their secant's root,
+  // then the parabola's), up to 2; 0, with its reason (ppReason), where none up to 2 is. plSolves
+  // (optional): the quadratic programmes solved. Refused (SM_ERR_INVALID_INPUT, its reason) where
+  // the corner is not one of planes and straight edges.
+  static SmStatus CertifiedScale(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Edge> & crEdges,
+                                 const std::vector<double> & crSetBacks, double & rdScale, ULONG * plSolves = NULL, const TCHAR ** ppReason = NULL,
+                                 const std::vector<double> * pvMost = NULL);
 
   // The most any patch of crFill stands past a face out of the corner (positive: past it): out
   // of the material for a convex corner (bConvex), into it for a concave one. A certified bound:

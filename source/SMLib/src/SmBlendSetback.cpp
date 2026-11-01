@@ -2570,3 +2570,24 @@ SmStatus SmBlendSetback::Containment(const Fill & crFill, const std::vector<Face
     }
   return SM_SUCCESS;
 }
+
+// Not built yet (the tests that need them come first): the G1 fill's probe and its certified
+// scale.
+SmStatus SmBlendSetback::FillHoleProbe(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Round> & crRounds, double dTol,
+                                       Fill & rFill, Probe & rProbe)
+{
+  (void)crContext; (void)crFaces; (void)crRounds; (void)dTol; (void)rProbe;
+  rFill.m_pReason = _T("SmBlendSetback: the G1 fill's probe is not built yet");
+  return SM_ERR;
+}
+
+SmStatus SmBlendSetback::CertifiedScale(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Edge> & crEdges,
+                                        const std::vector<double> & crSetBacks, double & rdScale, ULONG * plSolves, const TCHAR ** ppReason,
+                                        const std::vector<double> * pvMost)
+{
+  (void)crContext; (void)crFaces; (void)crEdges; (void)crSetBacks; (void)pvMost;
+  rdScale = 0.0;
+  if (plSolves != NULL) { *plSolves = 0; }
+  if (ppReason != NULL) { *ppReason = _T("SmBlendSetback: the certified scale is not built yet"); }
+  return SM_ERR;
+}
