@@ -445,9 +445,9 @@ public:
 } ; // end class SmFilletSurfaceGenerator
 
 // SolidCraft change: the highest order of SmGnSectionFSG, and its default thumbweight: the equal
-// area one, a value outside the thumbweights' range that SmGnSectionFSG resolves per blend to the w
-// at which its section, on the same rails, takes off the area the ball's circle does
-// (SmGnSectionFSG::EqualAreaThumbweight).
+// area one, a value outside the thumbweights' range that SmGnSectionFSG resolves at every station,
+// from that station's wedge, to the w at which its section, on the same rails, takes off the area
+// the ball's circle does (SmGnSectionFSG::EqualAreaThumbweight): w varies along the blend.
 #define SM_GN_MAX_ORDER 4
 #define SM_GN_THUMBWEIGHT_EQUAL_AREA (2.0)
 #define SM_GN_DEFAULT_THUMBWEIGHT SM_GN_THUMBWEIGHT_EQUAL_AREA
@@ -484,7 +484,7 @@ class SM_EXPORT SmGnSectionFSG : public SmFilletSurfaceGenerator
 protected:
   SmArcSection m_sArcs;     // order 1: how the circles are built
   ULONG  m_lOrder;          // n
-  mutable double m_dThumbweight; // w < 1, or SM_GN_THUMBWEIGHT_EQUAL_AREA until resolved
+  double m_dThumbweight;     // w < 1, or SM_GN_THUMBWEIGHT_EQUAL_AREA (resolved per station)
   double m_dCertifiedBound; // the last surface built: its certified distance from the blend, mm (-1: none yet)
   ULONG  m_lCertifiedSpans; // and its number of spans along the rails
 public:
@@ -535,9 +535,9 @@ public:
   // rails, the area the ball's circle does: r^2 (cot(alpha/2) - (pi - alpha)/2).
   static SmStatus EqualAreaThumbweight(ULONG lOrder, double dAlpha, double & rdW);
 
-  // the thumbweight used: the one given, or the equal area one for the wedge whose ball has its
-  // centre at crCentre and touches the faces at crRail1 and crRail2
-  SmStatus ResolveThumbweight(const SmPoint3d & crCentre, const SmPoint3d & crRail1, const SmPoint3d & crRail2) const;
+  // the thumbweight at a station whose ball's radii to its contacts meet at the angle whose cosine
+  // is dCosRadii: the one given, or the equal area one of that station's wedge
+  SmStatus ThumbweightAt(double dCosRadii, double & rdW) const;
 
   ULONG  GetOrder() const       { return m_lOrder; }
 
@@ -548,6 +548,7 @@ public:
                           const SmPoint3d (&crRail)[2], ULONG lRail, ULONG & rlOrder) const;
   double GetCertifiedBound() const { return m_dCertifiedBound; }
   ULONG  GetCertifiedSpans() const { return m_lCertifiedSpans; }
+  // the thumbweight given: w, or SM_GN_THUMBWEIGHT_EQUAL_AREA
   double GetThumbweight() const { return m_dThumbweight; }
 
   // the kind of section: the chord (order 0), the circle (1), the G^n section (2 and up)

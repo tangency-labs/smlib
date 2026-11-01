@@ -27,7 +27,12 @@
 * along s (piecewise cubic Hermite interpolants of the jets' exact values and
 * s-derivatives at the stations, all on the same knots) with that one
 * rational section; a jet constant along s (a straight spine) is carried
-* exactly.
+* exactly. The equal area thumbweight varies along s, w(s) resolved at each
+* station from its own wedge: the surface then interpolates the section's
+* homogeneous rows W_j(w(s)) P_j(s) and W_j(w(s)), each a cubic Hermite
+* curve of its values and s-derivatives at the stations (dw/ds from the
+* implicit function I(w) = target), and the certificate bounds those rows'
+* remainder too (sm_GnRowTermsOver).
 *
 * The jets and their s-derivatives come from the system G(x; s, tau) = 0 in
 * the feet's parameters x = (u1, v1, u2, v2):
@@ -52,6 +57,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -493,9 +499,10 @@ template <class T> struct sm_GnSystem
 };
 
 // G and the feet F_i as series, given the feet's parameters as series x[0..3] (u1, v1, u2, v2),
-// whose constant terms are the point the partials were taken at.
+// whose constant terms are the point the partials were taken at; pV: the point V(tau) off face 1
+// (the ball's centre at tau = 1).
 template <class T> SmStatus sm_GnEvaluate(const sm_GnSystem<T> & crSys, const sm_Ser<T> (&x)[4], const sm_Trunc & tr,
-                                          sm_Ser<T> (&rG)[4], sm_VSer<T> (&rF)[2])
+                                          sm_Ser<T> (&rG)[4], sm_VSer<T> (&rF)[2], sm_VSer<T> * pV = NULL)
 {
   sm_VSer<T> asV[2];
   const int lM = tr.s + tr.e;
@@ -549,6 +556,8 @@ template <class T> SmStatus sm_GnEvaluate(const sm_GnSystem<T> & crSys, const sm
   const sm_VSer<T> sDiff = sm_VSerSub(asV[0], asV[1], tr);
   for (int j=0; j<3; j++) { rG[j] = sDiff.a[j]; }
   rG[3] = sm_VSerDot(sm_VSerSub(asV[0], crSys.sLeader, tr), crSys.sTangent, tr);
+  if (pV != NULL)
+    { *pV = asV[0]; }
   return SM_SUCCESS;
 }
 
@@ -619,6 +628,9 @@ struct sm_GnStation
   double            dS;
   sm_Ser<double>    asX[4];  // u1, v1, u2, v2 in (sigma, eps)
   sm_VSer<double>   asF[2];  // the feet on faces 1 and 2
+  sm_VSer<double>   sV;      // V, the point at tau r_i from the faces (the ball's centre at tau = 1)
+  double            dW;      // the equal area thumbweight there, and its s-derivative (NaN: not resolved)
+  double            dWds;
 };
 
 /*******************************************************************//**
@@ -661,6 +673,7 @@ SmStatus sm_GnSolveStation(const SmSurface * apFace[2], const SmBSplineCurve & c
                            sm_GnStation & rStation)
 {
   rStation.dS = dS;
+  rStation.dW = rStation.dWds = std::numeric_limits<double>::quiet_NaN();
   const int lK = tr.s + tr.e + 1;
   sm_Partials<double> asP[2];
   sm_GnSystem<double> sSys;
@@ -728,37 +741,275 @@ SmStatus sm_GnSolveStation(const SmSurface * apFace[2], const SmBSplineCurve & c
       }
     }
   sm_Ser<double> sG[4];
-  SER(sm_GnEvaluate(sSys, rStation.asX, tr, sG, rStation.asF));
+  SER(sm_GnEvaluate(sSys, rStation.asX, tr, sG, rStation.asF, &rStation.sV));
   return SM_SUCCESS;
 }
 
 /*******************************************************************//**
-   Bernstein polynomials: coefficients of degree size() - 1.
+   Truncated Taylor series in one variable x, to order SM_GN_TAY: c[i] the
+   coefficient of x^i, the i-th derivative over i!. Over intervals each
+   coefficient holds that derivative at every point the constant term's
+   interval stands for: the operations are the derivatives' own rules
+   (Leibniz's, the chain rule's recurrences) applied at each point, so they
+   hold pointwise (interval automatic differentiation). Every constant they
+   take is an S, so that in intervals none is rounded unaccounted for.
+***********************************************************************/
+const int SM_GN_TAY = 4;
+
+template <class S> struct sm_Tay
+{
+  S c[SM_GN_TAY + 1];
+  sm_Tay() { for (int i=0; i<=SM_GN_TAY; i++) { c[i] = S(0.0); } }
+  sm_Tay(double d) { for (int i=0; i<=SM_GN_TAY; i++) { c[i] = S(0.0); } c[0] = S(d); }
+};
+
+// x0 + x1 x
+template <class S> sm_Tay<S> sm_TayOf(const S & x0, const S & x1)
+{
+  sm_Tay<S> r;
+  r.c[0] = x0;
+  r.c[1] = x1;
+  return r;
+}
+
+template <class S> sm_Tay<S> operator+(const sm_Tay<S> & a, const sm_Tay<S> & b)
+{
+  sm_Tay<S> r;
+  for (int i=0; i<=SM_GN_TAY; i++) { r.c[i] = a.c[i] + b.c[i]; }
+  return r;
+}
+
+template <class S> sm_Tay<S> operator-(const sm_Tay<S> & a, const sm_Tay<S> & b)
+{
+  sm_Tay<S> r;
+  for (int i=0; i<=SM_GN_TAY; i++) { r.c[i] = a.c[i] - b.c[i]; }
+  return r;
+}
+
+template <class S> sm_Tay<S> operator*(const sm_Tay<S> & a, const sm_Tay<S> & b)
+{
+  sm_Tay<S> r;
+  for (int i=0; i<=SM_GN_TAY; i++)
+    {
+      S sSum(0.0);
+      for (int k=0; k<=i; k++) { sSum = sSum + a.c[k] * b.c[i-k]; }
+      r.c[i] = sSum;
+    }
+  return r;
+}
+
+// a / b: q_i = (a_i - sum_{k=1..i} b_k q_(i-k)) / b_0 (an interval b_0 holding 0 gives the whole line)
+template <class S> sm_Tay<S> operator/(const sm_Tay<S> & a, const sm_Tay<S> & b)
+{
+  sm_Tay<S> r;
+  for (int i=0; i<=SM_GN_TAY; i++)
+    {
+      S sSum = a.c[i];
+      for (int k=1; k<=i; k++) { sSum = sSum - b.c[k] * r.c[i-k]; }
+      r.c[i] = sSum / b.c[0];
+    }
+  return r;
+}
+
+// The constant terms' functions, rounded outward in intervals: the C library's acos, sin and cos are
+// within an ulp or two of the exact values, inside the margin of 1e-15 relative (four ulps) kept here.
+inline sm_Ivl sm_Wide(double a, double b)
+{
+  if (std::isnan(a) || std::isnan(b))
+    { return sm_Whole(); }
+  return sm_Ivl(a - (std::fabs(a) * 1.0e-15 + 1.0e-300), b + (std::fabs(b) * 1.0e-15 + 1.0e-300));
+}
+inline double sm_Acos(double x) { return smos_ArcCosine(smos_Max(-1.0, smos_Min(1.0, x))); }
+inline sm_Ivl sm_Acos(const sm_Ivl & x)
+{
+  if (!(x.lo >= -1.0 && x.hi <= 1.0))
+    { return sm_Whole(); }
+  return sm_Wide(smos_ArcCosine(x.hi), smos_ArcCosine(x.lo));
+}
+inline void sm_SinCos(double u, double & rS, double & rC) { rS = smos_Sine(u); rC = smos_Cosine(u); }
+// on [0, pi/2] (the double below pi/2 its top), where sin rises and cos falls
+inline void sm_SinCos(const sm_Ivl & u, sm_Ivl & rS, sm_Ivl & rC)
+{
+  if (!(u.lo >= 0.0 && u.hi <= 1.5707963267948966))
+    {
+      rS = rC = sm_Whole();
+      return;
+    }
+  rS = sm_Wide(smos_Sine(u.lo), smos_Sine(u.hi));
+  rC = sm_Wide(smos_Cosine(u.hi), smos_Cosine(u.lo));
+}
+
+// sqrt(y): r_0 = sqrt(y_0), r_i = (y_i - sum_{k=1..i-1} r_k r_(i-k)) / (2 r_0)
+template <class S> sm_Tay<S> sm_TaySqrt(const sm_Tay<S> & y)
+{
+  sm_Tay<S> r;
+  r.c[0] = sm_Sqrt(y.c[0]);
+  for (int i=1; i<=SM_GN_TAY; i++)
+    {
+      S sSum = y.c[i];
+      for (int k=1; k<i; k++) { sSum = sSum - r.c[k] * r.c[i-k]; }
+      r.c[i] = sSum / (S(2.0) * r.c[0]);
+    }
+  return r;
+}
+
+// sin u and cos u: (sin u)' = cos u u', (cos u)' = -sin u u', coefficient by coefficient
+template <class S> void sm_TaySinCos(const sm_Tay<S> & u, sm_Tay<S> & rS, sm_Tay<S> & rC)
+{
+  sm_SinCos(u.c[0], rS.c[0], rC.c[0]);
+  for (int i=1; i<=SM_GN_TAY; i++)
+    {
+      S a(0.0), b(0.0);
+      for (int k=1; k<=i; k++)
+        {
+          a = a + S(static_cast<double>(k)) * u.c[k] * rC.c[i-k];
+          b = b + S(static_cast<double>(k)) * u.c[k] * rS.c[i-k];
+        }
+      rS.c[i] = a / S(static_cast<double>(i));
+      rC.c[i] = (S(0.0) - b) / S(static_cast<double>(i));
+    }
+}
+
+template <class Z> Z sm_PowN(const Z & a, ULONG n)
+{
+  Z r(1.0);
+  for (ULONG m=0; m<n; m++) { r = r * a; }
+  return r;
+}
+
+/*******************************************************************//**
+   The area integral I(w) of the order-n section between two planes
+   (EqualAreaThumbweight): the integral over t in [0, 1] of a b' - a' b,
+   a = f (1 - p1), b = (1 - f) p2, which is a^2 (b/a)', that is
+     (1 - w)^2 t^(n+1) (1 - t)^(n+1) ((n + 2) d1 d2 + t (1 - t) w (2 - w))
+       / (D^2 d1^2 d2^2),
+   D = (1 - t)^(n+1) + t^(n+1), d1 = 1 - w + w t, d2 = 1 - w t; by composite
+   Simpson on SM_GN_AREA_N intervals. That sum is the I whose root the equal
+   area thumbweight is: a rational function of w, smooth for w < 1, so its
+   w-derivatives are its terms' (Z a series in w for them; an interval, or
+   a series over one, for enclosures).
+***********************************************************************/
+const int SM_GN_AREA_N = 2048;
+
+template <class Z> Z sm_GnAreaIntegrand(ULONG n, double dT, const Z & w)
+{
+  const Z one(1.0), t(dT);
+  const Z u = one - t;
+  const Z tn = sm_PowN(t, n + 1), un = sm_PowN(u, n + 1);
+  const Z D = un + tn;
+  const Z d1 = one - w + w * t, d2 = one - w * t, v = one - w;
+  const Z num = v * v * tn * un * (Z(static_cast<double>(n + 2)) * d1 * d2 + t * u * w * (Z(2.0) - w));
+  return num / (D * D * d1 * d1 * d2 * d2);
+}
+
+template <class Z> Z sm_GnAreaSum(ULONG n, const Z & w)
+{
+  Z sSum(0.0);
+  for (int i=0; i<=SM_GN_AREA_N; i++)
+    {
+      const double c = (i == 0 || i == SM_GN_AREA_N) ? 1.0 : ((i % 2) ? 4.0 : 2.0);
+      sSum = sSum + Z(c) * sm_GnAreaIntegrand(n, static_cast<double>(i) / SM_GN_AREA_N, w);
+    }
+  return sSum / Z(3.0 * SM_GN_AREA_N);
+}
+
+/*******************************************************************//**
+   The equal area thumbweight along s. x is the cosine of the angle 2u
+   between the ball's radii to its contacts, x = (F1 - V).(F2 - V) / (r1 r2)
+   (V the ball's centre); the wedge's angle is alpha = pi - 2u. The ball's
+   circle takes off what the section does where I(w) equals the target
+   (sin u - u cos u) / sin^3 u (EqualAreaThumbweight), so w(s) solves
+   I(w(s)) = target(u(s)), and its s-derivatives follow from the target's
+   and I's w-derivatives order by order (the implicit function's).
+***********************************************************************/
+// x as a series in s from the feet's and V's (their s-coefficients to lOrder)
+template <class S> sm_Tay<S> sm_GnWedgeCos(const sm_VSer<S> (&crF)[2], const sm_VSer<S> & crV, double dRR, int lOrder)
+{
+  sm_Tay<S> x;
+  for (int c=0; c<3; c++)
+    {
+      sm_Tay<S> a[2];
+      for (int f=0; f<2; f++)
+        for (int i=0; i<=lOrder && i<=SM_GN_TAY; i++)
+          a[f].c[i] = crF[f].a[c].c[i][0] - crV.a[c].c[i][0];
+      x = x + a[0] * a[1];
+    }
+  const S sInv = S(1.0) / S(dRR);
+  for (int i=0; i<=SM_GN_TAY; i++) { x.c[i] = x.c[i] * sInv; }
+  return x;
+}
+
+// u = acos(x) / 2: u' = -x' / (2 sqrt(1 - x^2))
+template <class S> sm_Tay<S> sm_GnHalfAngle(const sm_Tay<S> & x)
+{
+  const sm_Tay<S> q = sm_TaySqrt(sm_Tay<S>(1.0) - x * x);
+  sm_Tay<S> dx;
+  for (int i=0; i<SM_GN_TAY; i++) { dx.c[i] = x.c[i+1] * S(static_cast<double>(i + 1)); }
+  const sm_Tay<S> v = dx / q;
+  sm_Tay<S> u;
+  u.c[0] = sm_Acos(x.c[0]) * S(0.5);
+  for (int i=1; i<=SM_GN_TAY; i++) { u.c[i] = (S(0.0) - v.c[i-1]) / S(2.0 * i); }
+  return u;
+}
+
+template <class S> sm_Tay<S> sm_GnTarget(const sm_Tay<S> & u)
+{
+  sm_Tay<S> s, c;
+  sm_TaySinCos(u, s, c);
+  return (s - u * c) / (s * s * s);
+}
+
+// w(s) from I(w(s)) = Tg(s), w(s) in w0: with dw = w - w(s), Tg_i is the coefficient of sigma^i in
+// sum_m d_m dw^m, d_m = I^(m)(w(s)) / m! (held by crD over w0), in which w_i enters only through
+// d_1 w_i.
+template <class S> sm_Tay<S> sm_GnInvert(const sm_Tay<S> & crTg, const sm_Tay<S> & crD, const S & w0)
+{
+  sm_Tay<S> dw;
+  for (int i=1; i<=SM_GN_TAY; i++)
+    {
+      S sP(0.0);
+      sm_Tay<S> sPow = dw;
+      for (int m=2; m<=i; m++)
+        {
+          sPow = sPow * dw;
+          sP = sP + crD.c[m] * sPow.c[i];
+        }
+      dw.c[i] = (crTg.c[i] - sP) / crD.c[1];
+    }
+  dw.c[0] = w0;
+  return dw;
+}
+
+/*******************************************************************//**
+   Bernstein polynomials: coefficients of degree size() - 1, in any ring Z.
 ***********************************************************************/
 typedef std::vector<double> sm_Bern;
 
-sm_Bern sm_BernMul(const sm_Bern & a, const sm_Bern & b)
+// C(p, i), exact for the degrees here
+inline double sm_Binom(size_t p, size_t i)
+{
+  double c = 1.0;
+  for (size_t m=1; m<=i; m++) { c = c * static_cast<double>(p - i + m) / static_cast<double>(m); }
+  return smos_Floor(c + 0.5);
+}
+
+template <class Z> std::vector<Z> sm_BernMul(const std::vector<Z> & a, const std::vector<Z> & b)
 {
   const size_t p = a.size() - 1, q = b.size() - 1;
-  sm_Bern r(p + q + 1, 0.0);
+  std::vector<Z> r(p + q + 1, Z(0.0));
   for (size_t i=0; i<=p; i++)
     for (size_t j=0; j<=q; j++)
       {
-        double c = 1.0;
         // C(p, i) C(q, j) / C(p + q, i + j)
-        double cp = 1.0, cq = 1.0, cpq = 1.0;
-        for (size_t m=1; m<=i; m++) { cp *= static_cast<double>(p - i + m) / m; }
-        for (size_t m=1; m<=j; m++) { cq *= static_cast<double>(q - j + m) / m; }
-        for (size_t m=1; m<=i+j; m++) { cpq *= static_cast<double>(p + q - i - j + m) / m; }
-        c = cp * cq / cpq;
-        r[i+j] += c * a[i] * b[j];
+        const Z c = Z(sm_Binom(p, i) * sm_Binom(q, j)) / Z(sm_Binom(p + q, i + j));
+        r[i+j] = r[i+j] + c * a[i] * b[j];
       }
   return r;
 }
 
-sm_Bern sm_BernPow(const sm_Bern & a, ULONG n)
+template <class Z> std::vector<Z> sm_BernPow(const std::vector<Z> & a, ULONG n)
 {
-  sm_Bern r(1, 1.0);
+  std::vector<Z> r(1, Z(1.0));
   for (ULONG m=0; m<n; m++) { r = sm_BernMul(r, a); }
   return r;
 }
@@ -768,23 +1019,24 @@ sm_Bern sm_BernPow(const sm_Bern & a, ULONG n)
    its weights W_j and, for each jet c_ik, the coefficient g_ik_j of c_ik in
    W_j P_j (j = 0..3n+1).
 ***********************************************************************/
-struct sm_GnSectionForm
+template <class Z> struct sm_GnSectionFormT
 {
-  sm_Bern                W;
-  std::vector<sm_Bern>   aG[2]; // aG[i][k]
+  std::vector<Z>                W;
+  std::vector< std::vector<Z> > aG[2]; // aG[i][k]
 };
+typedef sm_GnSectionFormT<double> sm_GnSectionForm;
 
-sm_GnSectionForm sm_GnForm(ULONG n, double w)
+template <class Z> sm_GnSectionFormT<Z> sm_GnFormT(ULONG n, const Z & w)
 {
-  sm_GnSectionForm sForm;
-  sm_Bern sA(n + 2, 0.0), sB(n + 2, 0.0);
-  sA[0] = 1.0;           // (1 - t)^(n+1)
-  sB[n + 1] = 1.0;       // t^(n+1)
-  const sm_Bern sOneMinusWt = { 1.0, 1.0 - w };  // 1 - w t
-  const sm_Bern sOneMinusWpWt = { 1.0 - w, 1.0 }; // 1 - w + w t
-  const sm_Bern sMinusT = { 0.0, -1.0 };          // -t
-  const sm_Bern sTMinus1 = { -1.0, 0.0 };         // t - 1
-  sm_Bern sAB(n + 2, 0.0);
+  sm_GnSectionFormT<Z> sForm;
+  std::vector<Z> sA(n + 2, Z(0.0)), sB(n + 2, Z(0.0));
+  sA[0] = Z(1.0);           // (1 - t)^(n+1)
+  sB[n + 1] = Z(1.0);       // t^(n+1)
+  const std::vector<Z> sOneMinusWt = { Z(1.0), Z(1.0) - w };  // 1 - w t
+  const std::vector<Z> sOneMinusWpWt = { Z(1.0) - w, Z(1.0) }; // 1 - w + w t
+  const std::vector<Z> sMinusT = { Z(0.0), Z(-1.0) };          // -t
+  const std::vector<Z> sTMinus1 = { Z(-1.0), Z(0.0) };         // t - 1
+  std::vector<Z> sAB(n + 2, Z(0.0));
   for (size_t j=0; j<sAB.size(); j++) { sAB[j] = sA[j] + sB[j]; }
   sForm.W = sm_BernMul(sm_BernMul(sAB, sm_BernPow(sOneMinusWpWt, n)), sm_BernPow(sOneMinusWt, n));
   for (ULONG k=0; k<=n; k++)
@@ -793,6 +1045,25 @@ sm_GnSectionForm sm_GnForm(ULONG n, double w)
                                        sm_BernMul(sm_BernPow(sMinusT, k), sm_BernPow(sOneMinusWpWt, n - k))));
       sForm.aG[1].push_back(sm_BernMul(sm_BernMul(sB, sm_BernPow(sOneMinusWpWt, n)),
                                        sm_BernMul(sm_BernPow(sTMinus1, k), sm_BernPow(sOneMinusWt, n - k))));
+    }
+  return sForm;
+}
+
+inline sm_GnSectionForm sm_GnForm(ULONG n, double w) { return sm_GnFormT<double>(n, w); }
+
+// The form over W_0 (the weight at the first rail, (1 - w)^n, as at the second): the same section,
+// its rows a common factor apart, with the weight 1 at the first rail whatever w is, so that rows
+// interpolated along s keep that rail the jets' own curve.
+template <class Z> sm_GnSectionFormT<Z> sm_GnFormNormalized(ULONG n, const Z & w)
+{
+  sm_GnSectionFormT<Z> sForm = sm_GnFormT<Z>(n, w);
+  const Z sW0 = sForm.W[0];
+  for (size_t j=0; j<sForm.W.size(); j++)
+    {
+      sForm.W[j] = sForm.W[j] / sW0;
+      for (int i=0; i<2; i++)
+        for (size_t k=0; k<sForm.aG[i].size(); k++)
+          sForm.aG[i][k][j] = sForm.aG[i][k][j] / sW0;
     }
   return sForm;
 }
@@ -1085,12 +1356,12 @@ SmStatus sm_Inverse4(const double (&crA)[4][4], double (&rY)[4][4])
 
 /*******************************************************************//**
    The feet's series over S = [crA.dS, crB.dS] (a point when they are one
-   station), to order lOrderS in s and n in tau, enclosed: rF, with rbProved
-   FALSE where Krawczyk's test fails on S.
+   station), to order lOrderS in s and n in tau, enclosed: rF (and pV, the
+   point V's), with rbProved FALSE where Krawczyk's test fails on S.
 ***********************************************************************/
 SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader, const sm_GnStation & crA, const sm_GnStation & crB,
                       const double (&crR)[2], const double (&crSide)[2], int n, int lOrderS, sm_VSer<sm_Ivl> (&rF)[2], SmBoolean & rbProved,
-                      sm_Ser<sm_Ivl> (*pX)[4] = NULL, double (*pDS)[2] = NULL)
+                      sm_Ser<sm_Ivl> (*pX)[4] = NULL, double (*pDS)[2] = NULL, sm_VSer<sm_Ivl> * pV = NULL)
 {
   rbProved = FALSE;
   const sm_Ivl sS(crA.dS, crB.dS);
@@ -1254,7 +1525,7 @@ SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader
       }
     }
   sm_Ser<sm_Ivl> sG[4];
-  SM_GN_TRY(sm_GnEvaluate(sSys, sX, sTr, sG, rF));
+  SM_GN_TRY(sm_GnEvaluate(sSys, sX, sTr, sG, rF, pV));
   if (pX != NULL)
     { for (int c=0; c<4; c++) { (*pX)[c] = sX[c]; } }
   if (pDS != NULL)
@@ -1273,6 +1544,228 @@ SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader
 }
 
 /*******************************************************************//**
+   Enclosures of I's Taylor coefficients in w (sm_GnAreaSum) over intervals
+   of w, on a grid of cells over an edge's thumbweights, each computed once:
+   cell k's series holds I^(m)(w) / m! for every w in it, and the hull of
+   the cells an interval meets holds them over that interval. An interval
+   off the grid is taken on its own.
+***********************************************************************/
+struct sm_GnAreaCells
+{
+  ULONG                         lOrder;
+  std::vector<double>           sE;    // the cells' ends
+  std::vector<int>              sHave;
+  std::vector< sm_Tay<sm_Ivl> > sI;
+
+  void Init(ULONG n, double dLo, double dHi, int lCells)
+  {
+    lOrder = n;
+    sE.clear();
+    for (int k=0; k<=lCells; k++) { sE.push_back(dLo + (dHi - dLo) * k / lCells); }
+    sHave.assign(static_cast<size_t>(lCells), 0);
+    sI.assign(static_cast<size_t>(lCells), sm_Tay<sm_Ivl>());
+  }
+
+  sm_Tay<sm_Ivl> Over(const sm_Ivl & W)
+  {
+    const int lCells = static_cast<int>(sE.size()) - 1;
+    if (lCells < 1 || !(W.lo >= sE.front() && W.hi <= sE.back()))
+      { return sm_GnAreaSum(lOrder, sm_TayOf(W, sm_Ivl(1.0))); }
+    int k0 = static_cast<int>(std::upper_bound(sE.begin(), sE.end(), W.lo) - sE.begin()) - 1;
+    int k1 = static_cast<int>(std::lower_bound(sE.begin(), sE.end(), W.hi) - sE.begin()) - 1;
+    k0 = std::max(0, std::min(lCells - 1, k0));
+    k1 = std::max(k0, std::min(lCells - 1, k1));
+    sm_Tay<sm_Ivl> sR;
+    for (int k=k0; k<=k1; k++)
+      {
+        const size_t lK = static_cast<size_t>(k);
+        if (!sHave[lK])
+          {
+            sI[lK] = sm_GnAreaSum(lOrder, sm_TayOf(sm_Ivl(sE[lK], sE[lK + 1]), sm_Ivl(1.0)));
+            sHave[lK] = 1;
+          }
+        for (int m=0; m<=SM_GN_TAY; m++) { sR.c[m] = (k == k0) ? sI[lK].c[m] : sm_Hull(sR.c[m], sI[lK].c[m]); }
+      }
+    return sR;
+  }
+};
+
+/*******************************************************************//**
+   The certificate of a section whose thumbweight varies along s (the equal
+   area one, resolved per station). The surface interpolates the section's
+   homogeneous rows H_j(s) = sum_ik g_ikj(w(s)) c_ik(s) and W_j(w(s)) (the
+   form over W_0, sm_GnFormNormalized), each a cubic Hermite curve of its
+   values and s-derivatives at the stations. With E the Hermite remainder
+   (E[q] = Hermite(q) - q, |E[q]| <= K max |q''''| on a span of length h,
+   K = h^4 / 384), a fixed thumbweight wb (the span's first station's) and
+   any fixed point O, the rows relative to O split as
+     H_j - W_j O = sum_ik g_ikj(wb) c'_ik + sum_ik dg_ikj c'_ik,
+   c'_i0 = c_i0 - O (sum_i g_i0j = W_j: the section is affine), c'_ik = c_ik
+   for k > 0, dg = g(w(s)) - g(wb). The surface's point less the section's
+   is sum_j B_j (E[H_j - W_j O] - E[W_j] (S - O)) / sum_j B_j (W_j + E[W_j]),
+   B_j the Bernstein basis in t, and the first part of E[H_j - W_j O],
+   summed with B_j, is W(t; wb) sum_ik phi_ik(t; wb) E[c_ik], phi_ik the
+   section's functions of the jets, so at most W(t; wb) A, A = max_i sum_k
+   |E[c_ik]| (the fixed section's bound). A ratio of sums of positive terms
+   is at most their terms' largest ratio, so the distance is at most
+     max_j (W_j(wb) A + K X_j + K Y_j R) / (min W_j - K Y_j),
+   X_j and Y_j the largest |(sum_ik dg_ikj c'_ik)''''| and |W_j(w(s))''''|
+   over the span, R the largest |S - O| (at most max_i sum_k |c'_ik|: the
+   section's functions are f (-p1)^k and (1 - f) (p2 - 1)^k), min W_j the
+   least W_j(w(s)). A constant thumbweight makes X_j = Y_j = 0 and the
+   bound A.
+   The fourth derivatives come from interval series in s over each piece of
+   the span: x from the enclosed feet and V, the target through acos, sin
+   and cos, w through I(w) = target order by order with I's w-derivatives
+   over w's enclosure, and the rows through the form's ring operations.
+   w's enclosure is the interval Newton operator's: N(W) = g - (I(g) -
+   T) / I'(W) inside W proves, for every T the target takes on the piece,
+   one root of I(w) = T in W, and it lies in N(W).
+***********************************************************************/
+struct sm_GnVarying
+{
+  ULONG            n;
+  double           dRR;    // r1 r2
+  sm_GnAreaCells * pCells;
+};
+
+struct sm_GnRowTerms
+{
+  std::vector<double> X, Y, Wlo;
+  double              R;
+};
+
+// The coefficients 0..SM_GN_TAY of a series over a piece in their Taylor form at its middle m:
+// c_i(s) = sum_{j < K - i} C(i + j, i) c_(i+j)(m) d^j + C(K, i) c_K(xi) d^(K-i), d = s - m, from
+// the middle's coefficients acMid[0..K-1] and the piece's crTop at order K (the remainder's). The
+// form keeps what a quantity's enclosure over the piece loses to its parts' motion along it (the
+// difference of two feet that move together).
+sm_Tay<sm_Ivl> sm_Centred(const sm_Ivl * acMid, const sm_Ivl & crTop, int K, const sm_Ivl & crD)
+{
+  sm_Tay<sm_Ivl> r;
+  for (int i=0; i<=SM_GN_TAY; i++)
+    {
+      sm_Ivl sSum(0.0), sPow(1.0);
+      for (int j=0; i+j<K; j++)
+        {
+          if (j > 0) { sPow = sPow * crD; }
+          sSum = sSum + sm_Ivl(sm_Binom(static_cast<size_t>(i + j), static_cast<size_t>(i))) * acMid[i+j] * sPow;
+        }
+      sPow = sPow * crD;
+      r.c[i] = sSum + sm_Ivl(sm_Binom(static_cast<size_t>(K), static_cast<size_t>(i))) * crTop * sPow;
+    }
+  return r;
+}
+
+// The row terms over one piece, folded into rT (largest X, Y, R; least W): rbProved FALSE where
+// w's enclosure or a term is not proved. crF, crCentre: the feet's and V's series over the piece
+// (to order K = 4 + SM_GN_TAYLOR in s); crFm, crCm: at its middle (to K - 1); crD: s less the
+// middle over the piece.
+SmStatus sm_GnRowTermsOver(const sm_GnVarying & crVary, const sm_VSer<sm_Ivl> (&crF)[2], const sm_VSer<sm_Ivl> & crCentre,
+                           const sm_VSer<sm_Ivl> (&crFm)[2], const sm_VSer<sm_Ivl> & crCm, const sm_Ivl & crD, double dGuess,
+                           const sm_GnSectionFormT<sm_Ivl> & crBar, const double (&crO)[3], sm_GnRowTerms & rT, SmBoolean & rbProved)
+{
+  rbProved = FALSE;
+  const ULONG n = crVary.n;
+  const int K = 4 + SM_GN_TAYLOR;
+  // x = (F1 - V).(F2 - V) / (r1 r2): at the middle to order K - 1, over the piece at order K
+  sm_Ivl axMid[K], sxTop(0.0);
+  for (int i=0; i<K; i++) { axMid[i] = sm_Ivl(0.0); }
+  for (int q=0; q<3; q++)
+    for (int i=0; i<=K; i++)
+      for (int l=0; l<=i; l++)
+        {
+          if (i < K)
+            {
+              axMid[i] = axMid[i] + (crFm[0].a[q].c[l][0] - crCm.a[q].c[l][0]) * (crFm[1].a[q].c[i-l][0] - crCm.a[q].c[i-l][0]);
+            }
+          else
+            {
+              sxTop = sxTop + (crF[0].a[q].c[l][0] - crCentre.a[q].c[l][0]) * (crF[1].a[q].c[i-l][0] - crCentre.a[q].c[i-l][0]);
+            }
+        }
+  const sm_Ivl sInvRR = sm_Ivl(1.0) / sm_Ivl(crVary.dRR);
+  for (int i=0; i<K; i++) { axMid[i] = axMid[i] * sInvRR; }
+  sxTop = sxTop * sInvRR;
+  const sm_Tay<sm_Ivl> u = sm_GnHalfAngle(sm_Centred(axMid, sxTop, K, crD));
+  const sm_Tay<sm_Ivl> sTg = sm_GnTarget(u);
+  const sm_Ivl sPhi = sm_GnAreaSum<sm_Ivl>(n, sm_Ivl(dGuess)) - sTg.c[0];
+  sm_Ivl W0;
+  SmBoolean bRoot = FALSE;
+  double dRho = 1.0e-12 * (1.0 + std::fabs(dGuess));
+  for (int it=0; it<40 && !bRoot; it++, dRho *= 4.0)
+    {
+      const sm_Ivl W(dGuess - dRho, dGuess + dRho);
+      if (!(W.hi < 1.0))
+        { break; }
+      const sm_Ivl d1 = crVary.pCells->Over(W).c[1];
+      if (!(d1.hi < 0.0))
+        { continue; }
+      const sm_Ivl N = sm_Ivl(dGuess) - sPhi / d1;
+      if (N.lo > W.lo && N.hi < W.hi)
+        {
+          W0 = N;
+          bRoot = TRUE;
+        }
+    }
+  if (!bRoot)
+    { return SM_SUCCESS; }
+  const sm_Tay<sm_Ivl> sW = sm_GnInvert(sTg, crVary.pCells->Over(W0), W0);
+  const sm_GnSectionFormT< sm_Tay<sm_Ivl> > sForm = sm_GnFormNormalized(n, sW);
+  // the jets c'_ik as series in s over the piece
+  sm_Tay<sm_Ivl> c[2][SM_GN_MAXE + 1][3];
+  double dR = 0.0;
+  for (int f=0; f<2; f++)
+    {
+      double dSum = 0.0;
+      for (ULONG k=0; k<=n; k++)
+        {
+          double dSq = 0.0;
+          for (int q=0; q<3; q++)
+            {
+              sm_Ivl acMid[K];
+              for (int i=0; i<K; i++) { acMid[i] = crFm[f].a[q].c[i][k]; }
+              c[f][k][q] = sm_Centred(acMid, crF[f].a[q].c[K][k], K, crD);
+              if (k == 0)
+                { c[f][k][q].c[0] = c[f][k][q].c[0] - sm_Ivl(crO[q]); }
+              dSq += sm_Mag(c[f][k][q].c[0]) * sm_Mag(c[f][k][q].c[0]);
+            }
+          dSum += smos_Sqrt(dSq);
+        }
+      dR = std::max(dR, dSum);
+    }
+  const size_t lD = sForm.W.size();
+  for (size_t j=0; j<lD; j++)
+    {
+      double dSq = 0.0;
+      for (int q=0; q<3; q++)
+        {
+          // the coefficient of sigma^4 of sum_ik dg_ikj c'_ik
+          sm_Ivl s4(0.0);
+          for (int f=0; f<2; f++)
+            for (ULONG k=0; k<=n; k++)
+              {
+                sm_Tay<sm_Ivl> dg = sForm.aG[f][k][j];
+                dg.c[0] = dg.c[0] - crBar.aG[f][k][j];
+                for (int i=0; i<=SM_GN_TAY; i++) { s4 = s4 + dg.c[i] * c[f][k][q].c[SM_GN_TAY - i]; }
+              }
+          dSq += sm_Mag(s4) * sm_Mag(s4);
+        }
+      const double dX = 24.0 * smos_Sqrt(dSq), dY = 24.0 * sm_Mag(sForm.W[j].c[SM_GN_TAY]), dWlo = sForm.W[j].c[0].lo;
+          if (!(std::isfinite(dX) && std::isfinite(dY) && dWlo > 0.0))
+        { return SM_SUCCESS; }
+      rT.X[j] = std::max(rT.X[j], dX);
+      rT.Y[j] = std::max(rT.Y[j], dY);
+      rT.Wlo[j] = std::min(rT.Wlo[j], dWlo);
+    }
+  if (!std::isfinite(dR))
+    { return SM_SUCCESS; }
+  rT.R = std::max(rT.R, dR);
+  rbProved = TRUE;
+  return SM_SUCCESS;
+}
+
+/*******************************************************************//**
    The bound on the jets' fourth s-derivatives over [crA.dS, crB.dS], per
    face and jet (rM4[f][k], HUGE_VAL where not proved), in their Taylor form
    at the interval's middle m: c''''(s) is within
@@ -1283,7 +1776,8 @@ SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader
 ***********************************************************************/
 SmStatus sm_GnFourthOver(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader, const SmSurface * apSurf[2], const SmBSplineCurve & crCenter,
                          const sm_GnStation & crA, const sm_GnStation & crB, const double (&crR)[2], const double (&crSide)[2], int n,
-                         double (&rM4)[2][SM_GN_MAXE + 1], double (&rUV4)[2])
+                         double (&rM4)[2][SM_GN_MAXE + 1], double (&rUV4)[2], sm_VSer<sm_Ivl> (*pF)[2] = NULL, sm_VSer<sm_Ivl> * pV = NULL,
+                         sm_VSer<sm_Ivl> (*pFm)[2] = NULL, sm_VSer<sm_Ivl> * pVm = NULL, double * pdMid = NULL)
 {
   for (int f=0; f<2; f++)
     {
@@ -1296,9 +1790,11 @@ SmStatus sm_GnFourthOver(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLea
   sm_Ser<sm_Ivl> asX5[4], asX4[4];
   double adDS[2] = { 0.0, 0.0 }, adDSm[2] = { 0.0, 0.0 };
   SmBoolean bProved = FALSE;
-  SM_GN_TRY(sm_GnEnclose(apFace, crLeader, crA, crB, crR, crSide, n, 4 + SM_GN_TAYLOR, asF5, bProved, &asX5, &adDS));
+  SM_GN_TRY(sm_GnEnclose(apFace, crLeader, crA, crB, crR, crSide, n, 4 + SM_GN_TAYLOR, asF5, bProved, &asX5, &adDS, pV));
   if (!bProved)
     { return SM_SUCCESS; }
+  if (pF != NULL)
+    { for (int f=0; f<2; f++) { (*pF)[f] = asF5[f]; } }
   // the middle's station, and the series there
   const double dMid = 0.5 * (crA.dS + crB.dS);
   double adSeed[4];
@@ -1308,9 +1804,13 @@ SmStatus sm_GnFourthOver(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLea
   const sm_Trunc sPointTr = { 0, 0 };
   sm_GnStation sMid;
   SM_GN_TRY(sm_GnSolveStation(apSurf, crCenter, dMid, adSeed, crR, crSide, sPointTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()), sMid));
-  SM_GN_TRY(sm_GnEnclose(apFace, crLeader, sMid, sMid, crR, crSide, n, 4 + SM_GN_TAYLOR - 1, asF4, bProved, &asX4, &adDSm));
+  SM_GN_TRY(sm_GnEnclose(apFace, crLeader, sMid, sMid, crR, crSide, n, 4 + SM_GN_TAYLOR - 1, asF4, bProved, &asX4, &adDSm, pVm));
   if (!bProved)
     { return SM_SUCCESS; }
+  if (pFm != NULL)
+    { for (int f=0; f<2; f++) { (*pFm)[f] = asF4[f]; } }
+  if (pdMid != NULL)
+    { *pdMid = dMid; }
   // the uv curves' fourth derivatives, in the same Taylor form, times the faces' |S_u| + |S_v| over the span's box
   for (int f=0; f<2; f++)
     {
@@ -1362,15 +1862,26 @@ SmStatus sm_GnFourthOver(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLea
    are Hermite interpolants of the same stations, and the face at a uv
    curve's point is off the face's true foot by at most |S_u, S_v| times
    the uv error, h^4 / 384 |x''''|: that bound counts too (an edge's curve
-   against its face).
+   against its face). pVary: the thumbweight varies along s, and the rows'
+   bound (sm_GnRowTermsOver) takes the place of the jets' sum.
 ***********************************************************************/
 SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader, const SmSurface * apSurf[2], const SmBSplineCurve & crCenter,
                           const sm_GnStation & crA, const sm_GnStation & crB, const double (&crR)[2], const double (&crSide)[2], int n,
-                          double dTarget, double & rdBound)
+                          double dTarget, double & rdBound, const sm_GnVarying * pVary = NULL)
 {
   rdBound = HUGE_VAL;
   const double h = crB.dS - crA.dS;
   double dLast = HUGE_VAL;
+  // the varying thumbweight's fixed one wb and point O: the first station's
+  sm_GnSectionFormT<sm_Ivl> sBar;
+  double adO[3] = { 0.0, 0.0, 0.0 };
+  if (pVary != NULL)
+    {
+      if (!(std::isfinite(crA.dW) && std::isfinite(crB.dW)))
+        { SER(SM_ERR); }
+      sBar = sm_GnFormNormalized(pVary->n, sm_Ivl(crA.dW));
+      for (int q=0; q<3; q++) { adO[q] = crA.asF[0].a[q].c[0][0]; }
+    }
   for (int lLevel=0; lLevel<=6; lLevel++)
     {
       const int lPieces = 1 << lLevel;
@@ -1398,11 +1909,20 @@ SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
         for (int k=0; k<=n; k++)
           adM4[f][k] = 0.0;
       SmBoolean bProved = TRUE;
+      sm_GnRowTerms sRows;
+      sRows.X.assign(sBar.W.size(), 0.0);
+      sRows.Y.assign(sBar.W.size(), 0.0);
+      sRows.Wlo.assign(sBar.W.size(), HUGE_VAL);
+      sRows.R = 0.0;
       for (int i=0; i<lPieces && bProved; i++)
         {
           double adP[2][SM_GN_MAXE + 1], adPUV[2];
-          SM_GN_TRY(sm_GnFourthOver(apFace, crLeader, apSurf, crCenter, sEnds[static_cast<size_t>(i)], sEnds[static_cast<size_t>(i + 1)],
-                                    crR, crSide, n, adP, adPUV));
+          sm_VSer<sm_Ivl> asF[2], sV, asFm[2], sVm;
+          double dMid = 0.0;
+          const sm_GnStation & crPA = sEnds[static_cast<size_t>(i)], & crPB = sEnds[static_cast<size_t>(i + 1)];
+          SM_GN_TRY(sm_GnFourthOver(apFace, crLeader, apSurf, crCenter, crPA, crPB, crR, crSide, n, adP, adPUV,
+                                    (pVary != NULL) ? &asF : NULL, (pVary != NULL) ? &sV : NULL,
+                                    (pVary != NULL) ? &asFm : NULL, (pVary != NULL) ? &sVm : NULL, &dMid));
           for (int f=0; f<2; f++)
             {
               for (int k=0; k<=n; k++)
@@ -1413,15 +1933,35 @@ SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
               if (!(adPUV[f] < HUGE_VAL)) { bProved = FALSE; }
               adUV4[f] = std::max(adUV4[f], adPUV[f]);
             }
+          if (bProved && pVary != NULL)
+            {
+              // the root's guess at the piece's middle: the stations' thumbweights, linearly
+              const double t = (dMid - crA.dS) / h;
+              const sm_Ivl sD = sm_Ivl(crPA.dS, crPB.dS) - sm_Ivl(dMid);
+              SM_GN_TRY(sm_GnRowTermsOver(*pVary, asF, sV, asFm, sVm, sD, (1.0 - t) * crA.dW + t * crB.dW, sBar, adO, sRows, bProved));
+            }
         }
       if (!bProved)
         { continue; }
-      double dBound = 0.0;
+      double dBound = 0.0, dA = 0.0;
       for (int f=0; f<2; f++)
         {
           double dSum = 0.0;
           for (int k=0; k<=n; k++) { dSum += h * h * h * h / 384.0 * adM4[f][k]; }
-          dBound = std::max(dBound, std::max(dSum, h * h * h * h / 384.0 * adUV4[f]));
+          dA = std::max(dA, dSum);
+          dBound = std::max(dBound, std::max((pVary == NULL) ? dSum : 0.0, h * h * h * h / 384.0 * adUV4[f]));
+        }
+      if (pVary != NULL)
+        {
+          const double K = h * h * h * h / 384.0;
+          for (size_t j=0; j<sBar.W.size(); j++)
+            {
+              const double dDen = sRows.Wlo[j] - K * sRows.Y[j];
+              const double dNum = sBar.W[j].hi * dA + K * sRows.X[j] + K * sRows.Y[j] * sRows.R;
+              dBound = (dDen > 0.0) ? std::max(dBound, dNum / dDen) : HUGE_VAL;
+              if (!(dDen > 0.0))
+                { break; }
+            }
         }
       if (!std::isfinite(dBound))
         { continue; }
@@ -1449,67 +1989,17 @@ SmGnSectionFSG::SmGnSectionFSG(ULONG lOrder, double dThumbweight)
 
 namespace
 {
-// The integral of a b' - a' b over [0, 1] for the order-n section between two planes, where
-// S(t) = a(t) e1 + b(t) e2 with e1, e2 the rails' points from the edge: a = f (1 - p1),
-// b = (1 - f) p2 (SmFilletSection.cpp's header). Twice the area the section takes off, over
-// |e1 x e2|; it does not depend on the planes' angle. Composite Simpson on 2048 intervals: the
-// integrand is a rational function smooth on [0, 1].
-double sm_GnSectionAreaIntegral(ULONG n, double w)
-{
-  const double dN1 = static_cast<double>(n + 1);
-  auto ab = [&](double t, double & a, double & b, double & da, double & db)
-  {
-    const double dA = smos_Pow(1.0 - t, dN1), dB = smos_Pow(t, dN1);
-    const double f = dA / (dA + dB);
-    const double dfa = -dN1 * smos_Pow(1.0 - t, dN1 - 1.0), dfb = dN1 * smos_Pow(t, dN1 - 1.0);
-    const double df = (dfa * dB - dA * dfb) / ((dA + dB) * (dA + dB));
-    const double d1 = 1.0 - w + w * t, d2 = 1.0 - w * t;
-    const double p1 = t / d1, dp1 = (1.0 - w) / (d1 * d1);
-    const double p2 = t * (1.0 - w) / d2, dp2 = (1.0 - w) / (d2 * d2);
-    a = f * (1.0 - p1);           da = df * (1.0 - p1) - f * dp1;
-    b = (1.0 - f) * p2;           db = -df * p2 + (1.0 - f) * dp2;
-  };
-  const int N = 2048;
-  double dSum = 0.0;
-  for (int i=0; i<=N; i++)
-    {
-      const double t = static_cast<double>(i) / N;
-      double a, b, da, db;
-      ab(t, a, b, da, db);
-      const double g = a * db - da * b;
-      dSum += (i == 0 || i == N ? 1.0 : (i % 2 ? 4.0 : 2.0)) * g;
-    }
-  return dSum / (3.0 * N);
-}
-}
-
-/*******************************************************************//**
-PURPOSE: The equal area thumbweight: the w at which the order-n section
-    between two planes at the angle alpha takes off what the ball's circle
-    does on the same rails.
-NOTES: With e1, e2 the rails' points from the edge (|e_i| = d = r cot(alpha/2)),
-    the section takes off (1/2) d^2 sin(alpha) I(w), I the integral of
-    a b' - a' b (sm_GnSectionAreaIntegral), and the circle r^2 (cot(alpha/2)
-    - (pi - alpha)/2). So I(w) = (cot(alpha/2) - (pi - alpha)/2) /
-    (cot(alpha/2) cos^2(alpha/2)), a target that depends on alpha only. I
-    falls as w rises (to 0 as w nears 1) and nears the chord's 1 as w falls,
-    so the root is bisected on a bracket whose lower end steps down from -1
-    until it holds it: a sharp wedge's circle takes off nearly the chord's
-    area, and its w is well below -1. A target the bracket does not reach by
-    w = -1000 (a wedge so open or so shut that the circle takes off next to
-    nothing, or all but the chord's area) is an error naming it.
-***********************************************************************/
-SmStatus SmGnSectionFSG::EqualAreaThumbweight(ULONG lOrder, double dAlpha, double & rdW)
+// The thumbweight at which the order-n section takes off what the ball's circle does, for half
+// the angle u between the ball's radii (EqualAreaThumbweight): the root of I(w) = target(u).
+SmStatus sm_GnEqualAreaW(ULONG lOrder, double dU, double & rdW)
 {
   rdW = 0.0;
-  if (lOrder < 2 || lOrder > SM_GN_MAX_ORDER || !(dAlpha > 0.0 && dAlpha < SM_PI))
+  if (lOrder < 2 || lOrder > SM_GN_MAX_ORDER || !(dU > 0.0 && dU < 0.5 * SM_PI))
     { SER(SM_ERR_INVALID_INPUT); }
-  const double dHalf = 0.5 * dAlpha;
-  const double dCot = smos_Cosine(dHalf) / smos_Sine(dHalf);
-  const double dTarget = (dCot - 0.5 * (SM_PI - dAlpha)) / (dCot * smos_Cosine(dHalf) * smos_Cosine(dHalf));
+  const double dTarget = sm_GnTarget(sm_Tay<double>(dU)).c[0];
   double dLo = -1.0, dHi = 1.0 - 1.0e-9;
-  SmBoolean bHeld = (dTarget >= sm_GnSectionAreaIntegral(lOrder, dHi)) ? TRUE : FALSE;
-  while (bHeld && sm_GnSectionAreaIntegral(lOrder, dLo) < dTarget)
+  SmBoolean bHeld = (dTarget >= sm_GnAreaSum<double>(lOrder, dHi)) ? TRUE : FALSE;
+  while (bHeld && sm_GnAreaSum<double>(lOrder, dLo) < dTarget)
     {
       dHi = dLo;
       dLo = 2.0 * dLo - 1.0;
@@ -1520,33 +2010,68 @@ SmStatus SmGnSectionFSG::EqualAreaThumbweight(ULONG lOrder, double dAlpha, doubl
   for (int it=0; it<200 && dHi - dLo > 1.0e-15 * (1.0 - dLo); it++)
     {
       const double dMid = 0.5 * (dLo + dHi);
-      if (sm_GnSectionAreaIntegral(lOrder, dMid) > dTarget) { dLo = dMid; } else { dHi = dMid; }
+      if (sm_GnAreaSum<double>(lOrder, dMid) > dTarget) { dLo = dMid; } else { dHi = dMid; }
     }
   rdW = 0.5 * (dLo + dHi);
   return SM_SUCCESS;
 }
 
-/*******************************************************************//**
-PURPOSE: The thumbweight used, the equal area one resolved once from the
-    wedge at one station: the ball's centre crCentre and its contacts
-    crRail1, crRail2 give the wedge's angle alpha = pi - (the angle between
-    the radii). Exact for two planes; elsewhere the default of the station
-    it is resolved at.
-***********************************************************************/
-SmStatus SmGnSectionFSG::ResolveThumbweight(const SmPoint3d & crCentre, const SmPoint3d & crRail1, const SmPoint3d & crRail2) const
+// A station's equal area thumbweight and its s-derivative: x from the station's feet and V to
+// first order in s, w the root at its u, dw/ds = target' / I'(w).
+SmStatus sm_GnStationThumbweight(ULONG n, double dRR, sm_GnStation & rSt)
 {
+  const sm_Tay<double> u = sm_GnHalfAngle(sm_GnWedgeCos<double>(rSt.asF, rSt.sV, dRR, 1));
+  double dW = 0.0;
+  SER(sm_GnEqualAreaW(n, u.c[0], dW));
+  const sm_Tay<double> sD = sm_GnAreaSum(n, sm_TayOf(dW, 1.0));
+  if (!(sD.c[1] < 0.0))
+    { SER_MSG(SM_ERR, _T("SmGnSectionFSG: the section's area does not fall with its thumbweight")); }
+  const sm_Tay<double> sW = sm_GnInvert(sm_GnTarget(u), sD, dW);
+  rSt.dW = dW;
+  rSt.dWds = sW.c[1];
+  return SM_SUCCESS;
+}
+}
+
+/*******************************************************************//**
+PURPOSE: The equal area thumbweight: the w at which the order-n section
+    between two planes at the angle alpha takes off what the ball's circle
+    does on the same rails.
+NOTES: With e1, e2 the rails' points from the edge (|e_i| = d = r cot(alpha/2)),
+    the section takes off (1/2) d^2 sin(alpha) I(w), I the integral of
+    a b' - a' b (sm_GnAreaSum), and the circle r^2 (cot(alpha/2)
+    - (pi - alpha)/2). So I(w) = (cot(alpha/2) - (pi - alpha)/2) /
+    (cot(alpha/2) cos^2(alpha/2)), a target that depends on alpha only:
+    with u = (pi - alpha)/2, half the angle between the ball's radii to its
+    contacts, (sin u - u cos u) / sin^3 u. I falls as w rises (to 0 as w
+    nears 1) and nears the chord's 1 as w falls, so the root is bisected on
+    a bracket whose lower end steps down from -1 until it holds it: a sharp
+    wedge's circle takes off nearly the chord's area, and its w is well
+    below -1. A target the bracket does not reach by w = -1000 (a wedge so
+    open or so shut that the circle takes off next to nothing, or all but
+    the chord's area) is an error naming it.
+***********************************************************************/
+SmStatus SmGnSectionFSG::EqualAreaThumbweight(ULONG lOrder, double dAlpha, double & rdW)
+{
+  rdW = 0.0;
+  if (!(dAlpha > 0.0 && dAlpha < SM_PI))
+    { SER(SM_ERR_INVALID_INPUT); }
+  SER(sm_GnEqualAreaW(lOrder, 0.5 * (SM_PI - dAlpha), rdW));
+  return SM_SUCCESS;
+}
+
+/*******************************************************************//**
+PURPOSE: The thumbweight at a station whose ball's radii to its contacts
+    meet at the angle whose cosine is dCosRadii: the one given, or the
+    equal area one of the wedge alpha = pi - (that angle). Exact for two
+    planes; elsewhere the section of the station's own wedge.
+***********************************************************************/
+SmStatus SmGnSectionFSG::ThumbweightAt(double dCosRadii, double & rdW) const
+{
+  rdW = m_dThumbweight;
   if (m_dThumbweight != SM_GN_THUMBWEIGHT_EQUAL_AREA)
     { return SM_SUCCESS; }
-  SmVector3d sA = crRail1 - crCentre, sB = crRail2 - crCentre;
-  const double dLa = sA.Length(), dLb = sB.Length();
-  if (!(dLa > 0.0 && dLb > 0.0))
-    { SER(SM_ERR_INVALID_INPUT); }
-  double dCos = sA.Dot(sB) / (dLa * dLb);
-  dCos = smos_Max(-1.0, smos_Min(1.0, dCos));
-  const double dAlpha = SM_PI - smos_ArcCosine(dCos);
-  double dW = 0.0;
-  SER(EqualAreaThumbweight(m_lOrder, dAlpha, dW));
-  m_dThumbweight = dW;
+  SER(sm_GnEqualAreaW(m_lOrder, 0.5 * sm_Acos(dCosRadii), rdW));
   return SM_SUCCESS;
 }
 
@@ -2852,15 +3377,8 @@ SmStatus SmGnSectionFSG::Build
   std::vector<double> sS;
   const SmBSplineCurve * apCurves[3] = { &rCenterLine, &rRail1Curve, &rRail2Curve };
   const SmExtent1d sIvl = rCenterLine.GetNaturalInterval();
-  {
-    // the default thumbweight resolved from the wedge at the middle station
-    const double dMidS = 0.5 * (sIvl.GetMin() + sIvl.GetMax());
-    SmPoint3d sC, sR1, sR2;
-    SER(rCenterLine.EvaluatePoint(dMidS, sC));
-    SER(rRail1Curve.EvaluatePoint(dMidS, sR1));
-    SER(rRail2Curve.EvaluatePoint(dMidS, sR2));
-    SER(ResolveThumbweight(sC, sR1, sR2));
-  }
+  // the equal area thumbweight is resolved per station, from its own wedge
+  const SmBoolean bEqualArea = (m_dThumbweight == SM_GN_THUMBWEIGHT_EQUAL_AREA) ? TRUE : FALSE;
   for (int c=0; c<3; c++)
     {
       const SmExtent1d sCIvl = apCurves[c]->GetNaturalInterval();
@@ -2995,6 +3513,23 @@ SmStatus SmGnSectionFSG::Build
           std::sort(sNext.begin(), sNext.end(), [](const sm_GnStation & a, const sm_GnStation & b) { return a.dS < b.dS; });
           sStations.swap(sNext);
         }
+    // the equal area thumbweight at every station, and I's enclosures on a grid over their range
+    // (a little wider: the stations put in later lie between these)
+    const double dRR = adR[0] * adR[1];
+    sm_GnAreaCells sCells;
+    sm_GnVarying sVary = { n, dRR, &sCells };
+    if (bEqualArea)
+      {
+        double dWLo = HUGE_VAL, dWHi = -HUGE_VAL;
+        for (size_t j=0; j<sStations.size(); j++)
+          {
+            SER(sm_GnStationThumbweight(n, dRR, sStations[j]));
+            dWLo = smos_Min(dWLo, sStations[j].dW);
+            dWHi = smos_Max(dWHi, sStations[j].dW);
+          }
+        const double dPad = 0.05 * (dWHi - dWLo) + 1.0e-6 * (1.0 + smos_Max(smos_Fabs(dWLo), smos_Fabs(dWHi)));
+        sCells.Init(n, dWLo - dPad, smos_Min(dWHi + dPad, 0.5 * (1.0 + dWHi)), 64);
+      }
     std::vector<double> sBounds(sStations.size() - 1, -1.0);
     ULONG lUnproved = 0, lOver = 0; // spans halved: Krawczyk's test failed on them, or their bound was over the target
     for (;;)
@@ -3003,7 +3538,8 @@ SmStatus SmGnSectionFSG::Build
         for (size_t j=0; j+1<sStations.size(); j++)
           {
             if (sBounds[j] < 0.0)
-              { SER(sm_GnCertifySpan(apN, sLeader, apFace, rCenterLine, sStations[j], sStations[j+1], adR, adSide, static_cast<int>(n), dTarget, sBounds[j])); }
+              { SER(sm_GnCertifySpan(apN, sLeader, apFace, rCenterLine, sStations[j], sStations[j+1], adR, adSide, static_cast<int>(n), dTarget, sBounds[j],
+                                     bEqualArea ? &sVary : NULL)); }
             if (!(sBounds[j] <= dTarget))
               { bAll = FALSE; }
           }
@@ -3031,6 +3567,8 @@ SmStatus SmGnSectionFSG::Build
             SER(rCenterLine.EvaluatePoint(dMid, sM));
             sm_GnStation sMid;
             SER(sm_GnSolveStation(apFace, rCenterLine, dMid, adSeed, adR, adSide, sTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()), sMid));
+            if (bEqualArea)
+              { SER(sm_GnStationThumbweight(n, dRR, sMid)); }
             sNext.push_back(sMid);
             sNextBounds.push_back(-1.0);
             sNextBounds.push_back(-1.0);
@@ -3042,30 +3580,31 @@ SmStatus SmGnSectionFSG::Build
     m_dCertifiedBound = 0.0;
     for (size_t j=0; j<sBounds.size(); j++) { m_dCertifiedBound = smos_Max(m_dCertifiedBound, sBounds[j]); }
     m_lCertifiedSpans = static_cast<ULONG>(sBounds.size());
+    double dWLo = m_dThumbweight, dWHi = m_dThumbweight;
+    if (bEqualArea)
+      {
+        dWLo = HUGE_VAL;
+        dWHi = -HUGE_VAL;
+        for (size_t j=0; j<sStations.size(); j++)
+          {
+            dWLo = smos_Min(dWLo, sStations[j].dW);
+            dWHi = smos_Max(dWHi, sStations[j].dW);
+          }
+      }
     TCHAR sMsg[SM_TBLOCK_SIZE];
-    smos_sprintf(sMsg, _T("SmGnSectionFSG: order %lu, thumbweight %.6g: %lu spans, certified within %.3g (target %.3g); halved %lu unproved, %lu over"),
-                 static_cast<unsigned long>(n), m_dThumbweight, static_cast<unsigned long>(m_lCertifiedSpans), m_dCertifiedBound, dTarget,
-                 static_cast<unsigned long>(lUnproved), static_cast<unsigned long>(lOver));
+    smos_sprintf(sMsg, _T("SmGnSectionFSG: order %lu, thumbweight %.6g to %.6g%s: %lu spans, certified within %.3g (target %.3g); halved %lu unproved, %lu over"),
+                 static_cast<unsigned long>(n), dWLo, dWHi, bEqualArea ? _T(" (equal area)") : _T(""), static_cast<unsigned long>(m_lCertifiedSpans),
+                 m_dCertifiedBound, dTarget, static_cast<unsigned long>(lUnproved), static_cast<unsigned long>(lOver));
     smos_ErrorMessage(SM_ERR_MESSAGE, _T(__FILE__), static_cast<ULONG>(__LINE__), sMsg);
   }
   sS.clear();
   for (size_t j=0; j<sStations.size(); j++) { sS.push_back(sStations[j].dS); }
 
-  // the section's form
-  const sm_GnSectionForm sForm = sm_GnForm(n, m_dThumbweight);
-  const size_t lD = sForm.W.size(); // 3n + 2 control points across
-  double dWMin = SM_BIG_DOUBLE, dWMax = 0.0;
-  for (size_t j=0; j<lD; j++) { dWMin = smos_Min(dWMin, sForm.W[j]); dWMax = smos_Max(dWMax, sForm.W[j]); }
-  if (!(dWMin > 0.0))
-    { SER(SM_ERR); }
-  const double dWScale = 1.0 / smos_Sqrt(dWMin * dWMax);
-
+  const size_t lD = 3 * n + 2; // the section's control points across
   SmTArray<double> sUKnots, sVKnots;
   SmTArray<ULONG> sUMult, sVMult;
   sVKnots.Add(0.0); sVKnots.Add(1.0);
   sVMult.Add(static_cast<ULONG>(lD)); sVMult.Add(static_cast<ULONG>(lD));
-  SmTArray<SmPoint3d> sCPs;
-  SmTArray<double> sWts;
 
   // the jets' Hermite curves along s, all on the stations' knots
   sm_HermiteKnots(sS, sUKnots, sUMult);
@@ -3086,16 +3625,77 @@ SmStatus SmGnSectionFSG::Build
         }
     }
   const size_t lNU = asJets[0][0].size();
-  for (size_t i=0; i<lNU; i++)
-    for (size_t j=0; j<lD; j++)
-      {
-        SmVector3d sP(0.0, 0.0, 0.0);
-        for (int f=0; f<2; f++)
-          for (ULONG k=0; k<=n; k++)
-            sP = sP + asJets[f][k][i] * sForm.aG[f][k][j];
-        sCPs.Add(sP * (1.0 / sForm.W[j]));
-        sWts.Add(sForm.W[j] * dWScale);
-      }
+
+  // the homogeneous control points W P and weights W, [i along s][j across]
+  std::vector<SmVector3d> sHomog(lNU * lD);
+  std::vector<double> sW(lNU * lD);
+  if (!bEqualArea)
+    {
+      // one section's form: its rows are linear in the jets, so the jets' curves carry them
+      const sm_GnSectionForm sForm = sm_GnForm(n, m_dThumbweight);
+      for (size_t i=0; i<lNU; i++)
+        for (size_t j=0; j<lD; j++)
+          {
+            SmVector3d sP(0.0, 0.0, 0.0);
+            for (int f=0; f<2; f++)
+              for (ULONG k=0; k<=n; k++)
+                sP = sP + asJets[f][k][i] * sForm.aG[f][k][j];
+            sHomog[i * lD + j] = sP;
+            sW[i * lD + j] = sForm.W[j];
+          }
+    }
+  else
+    {
+      // each station's own form (over W_0): every row W_j P_j and weight W_j a Hermite curve of
+      // its values and s-derivatives there (the form's in w(s) and the jets')
+      std::vector< std::vector<SmVector3d> > sHV(lD), sHD(lD), sWV(lD), sWD(lD);
+      for (size_t m=0; m<sStations.size(); m++)
+        {
+          const sm_GnStation & crSt = sStations[m];
+          const sm_GnSectionFormT< sm_Tay<double> > sF = sm_GnFormNormalized(n, sm_TayOf(crSt.dW, crSt.dWds));
+          for (size_t j=0; j<lD; j++)
+            {
+              SmVector3d sV(0.0, 0.0, 0.0), sD(0.0, 0.0, 0.0);
+              for (int f=0; f<2; f++)
+                for (ULONG k=0; k<=n; k++)
+                  {
+                    const sm_VSer<double> & crF = crSt.asF[f];
+                    const SmVector3d sC(crF.a[0].c[0][k], crF.a[1].c[0][k], crF.a[2].c[0][k]);
+                    const SmVector3d sC1(crF.a[0].c[1][k], crF.a[1].c[1][k], crF.a[2].c[1][k]);
+                    const sm_Tay<double> & crG = sF.aG[f][k][j];
+                    sV = sV + sC * crG.c[0];
+                    sD = sD + sC * crG.c[1] + sC1 * crG.c[0];
+                  }
+              sHV[j].push_back(sV);
+              sHD[j].push_back(sD);
+              sWV[j].push_back(SmVector3d(sF.W[j].c[0], 0.0, 0.0));
+              sWD[j].push_back(SmVector3d(sF.W[j].c[1], 0.0, 0.0));
+            }
+        }
+      for (size_t j=0; j<lD; j++)
+        {
+          std::vector<SmVector3d> sHP, sWP;
+          sm_HermitePoints(sS, sHV[j], sHD[j], sHP);
+          sm_HermitePoints(sS, sWV[j], sWD[j], sWP);
+          for (size_t i=0; i<lNU; i++)
+            {
+              sHomog[i * lD + j] = sHP[i];
+              sW[i * lD + j] = sWP[i].x;
+            }
+        }
+    }
+  double dWMin = SM_BIG_DOUBLE, dWMax = 0.0;
+  for (size_t l=0; l<sW.size(); l++) { dWMin = smos_Min(dWMin, sW[l]); dWMax = smos_Max(dWMax, sW[l]); }
+  if (!(dWMin > 0.0))
+    { SER_MSG(SM_ERR, _T("SmGnSectionFSG: a weight of the section's rows is not positive")); }
+  const double dWScale = 1.0 / smos_Sqrt(dWMin * dWMax);
+  SmTArray<SmPoint3d> sCPs;
+  SmTArray<double> sWts;
+  for (size_t l=0; l<sW.size(); l++)
+    {
+      sCPs.Add(sHomog[l] * (1.0 / sW[l]));
+      sWts.Add(sW[l] * dWScale);
+    }
   SmBSplineSurface * pSurface = NULL;
   SER(SmBSplineSurface::CreateCanonical(crContext, 3, static_cast<ULONG>(lD - 1), sCPs, SM_SF_UNSPECIFIED, sUMult, sVMult, sUKnots,
                                         sVKnots, SM_KT_UNSPECIFIED, &sWts, NULL, pSurface));
@@ -3164,7 +3764,6 @@ SmStatus SmGnSectionFSG::ContactOrderAt
   const int n = static_cast<int>(m_lOrder);
   SmPoint3d sM;
   SER(crCenter.EvaluatePoint(dS, sM));
-  SER(ResolveThumbweight(sM, crRail[0], crRail[1]));
   double adR[2], adSide[2];
   for (int f=0; f<2; f++)
     {
@@ -3179,6 +3778,10 @@ SmStatus SmGnSectionFSG::ContactOrderAt
   sm_GnStation sAt;
   SER(sm_GnSolveStation(apFace, crCenter, dS, crSeed, adR, adSide, sTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()), sAt));
   auto jet = [&](int f, int k) { return SmVector3d(sAt.asF[f].a[0].c[0][k], sAt.asF[f].a[1].c[0][k], sAt.asF[f].a[2].c[0][k]); };
+  // the thumbweight of the station's own wedge: the ball's radii to its contacts from V
+  const SmVector3d sV(sAt.sV.a[0].c[0][0], sAt.sV.a[1].c[0][0], sAt.sV.a[2].c[0][0]);
+  double dW = 0.0;
+  SER(ThumbweightAt((jet(0, 0) - sV).Dot(jet(1, 0) - sV) / (adR[0] * adR[1]), dW));
   const int i = static_cast<int>(lRail), o = 1 - i;
   SmVector3d sTo(0.0, 0.0, 0.0);
   for (int k=0; k<=n; k++) { sTo = sTo + jet(o, k) * ((k % 2 == 0) ? 1.0 : -1.0); }
@@ -3186,7 +3789,7 @@ SmStatus SmGnSectionFSG::ContactOrderAt
   SER(sm_SurfacePartials(*apFace[i], SmPoint2d(sAt.asX[2*i].c[0][0], sAt.asX[2*i+1].c[0][0]), 1, sP));
   SmVector3d sNi = SmVector3d(sP.P[1][0].x, sP.P[1][0].y, sP.P[1][0].z) * SmVector3d(sP.P[0][1].x, sP.P[0][1].y, sP.P[0][1].z);
   SER(sNi.Unitize());
-  const double dScale = smos_Pow(-1.0 / (1.0 - m_dThumbweight), static_cast<double>(n + 1));
+  const double dScale = smos_Pow(-1.0 / (1.0 - dW), static_cast<double>(n + 1));
   const double dCoef = ((sTo - jet(i, 0)) - jet(i, n + 1) * dScale).Dot(sNi);
   const double dSize = jet(0, 0).DistanceBetween(jet(1, 0));
   rlOrder = (smos_Fabs(dCoef) > 1.0e-9 * smos_Max(1.0, dSize)) ? m_lOrder + 1 : m_lOrder + 2;
