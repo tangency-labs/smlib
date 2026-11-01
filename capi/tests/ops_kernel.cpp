@@ -8903,6 +8903,387 @@ void setback_g2_fill_of_uneased_rounds_refused()
     }
 }
 
+// The corner (0, 0, 0) of the box [0, 20]^3, its edges along x, y and z blended together
+// (`kind`, sizes `radii`; SMLIB_BLEND_CURVATURE at thumbweight 0): the body, or null. Its faces at the corner are box_corner_faces().
+// With `setback` > 0, the corner set back that far along each edge with the ease `ease` before
+// it (smlib_blend_setback_eased).
+smlib_brep *setback_corner_body(int32_t kind, const std::array<double, 3> &radii, double setback = 0.0, double ease = 0.0)
+{
+    smlib_brep *part = box(0, 0, 0, 20, 20, 20);
+    const double edges[9] = {10, 0, 0, 0, 10, 0, 0, 0, 10};
+    const double corner[3] = {0, 0, 0};
+    smlib_brep *r = nullptr;
+    int64_t failed = -1;
+    // the curvature-continuous section at thumbweight 0 (as box_corner_gn_round's)
+    const int32_t st = setback > 0.0              ? smlib_blend_setback_eased(part, kind, edges, radii.data(), 3, corner, &setback, &ease, 1, 0.1, &r, &failed, nullptr)
+                       : kind == SMLIB_BLEND_CURVATURE ? smlib_blend_order(part, 2, 0.0, edges, radii.data(), 3, 0.1, &r, &failed)
+                                                       : smlib_blend(part, kind, edges, radii.data(), 3, 0.1, &r, &failed);
+    std::printf("  blend status %d\n", static_cast<int>(st));
+    smlib_brep_free(part);
+    return st == SMLIB_OK ? r : nullptr;
+}
+
+// A setback corner of the box [0, 20]^3 at the origin as SMLib builds it (setback_corner_body),
+// against the owner's rule and the fill (SmBlendSetback): sound, of the box's own bounds (the
+// fill stands past no face: Containment); the box's six faces, the three blends and the fill's
+// six patches (three setback patches, three interior parts), so 15 faces, and 23 vertices (the
+// box's four corners away from the blends, two at each blend's far end, the six ends of the
+// blends' end sections, the three base points, the three middles of the inner curves and the
+// centre), 36 edges by Euler's formula; each blend's end section at its setback from the vertex
+// (Distances, the owner's rule: max(1.5 r, least + 0.25 r)), its ends on the faces r from the
+// edge; every seam of the patches (with the blends, the faces and each other) of order `order`
+// (normals within 1e-9 rad, and for G2 the cross curvature continuous to 1e-6 / mm), and each patch face
+// the fill of the blends' exact sections (box_corner_round / box_corner_gn_round, rebuilt
+// here by FillHole; round_order 1 circles, 3 SmGnSectionFSG's order-2 sections, 0 eased rounds,
+// not compared) to 1e-9. `setback` > 0: the setback asked for in place
+// of the rule's.
+void setback_corner_built(smlib_brep *r, const std::array<double, 3> &radii, int round_order, ULONG order, double setback = 0.0)
+{
+    CHECK(r != nullptr);
+    if (r == nullptr)
+    {
+        return;
+    }
+    CHECK(sound(r));
+    std::vector<double> setbacks;
+    CHECK(SmBlendSetback::Distances(box_corner_faces(), box_corner_edges(radii), setbacks) == SM_SUCCESS && setbacks.size() == 3);
+    if (setback > 0.0)
+    {
+        setbacks.assign(3, setback);
+    }
+    int64_t counts[3] = {0, 0, 0};
+    CHECK(smlib_brep_counts(r, counts) == SMLIB_OK);
+    std::printf("  faces %lld, edges %lld, vertices %lld\n", static_cast<long long>(counts[0]), static_cast<long long>(counts[1]),
+                static_cast<long long>(counts[2]));
+    CHECK(counts[0] == 15 && counts[1] == 36 && counts[2] == 23);
+    double lo[3], hi[3];
+    CHECK(smlib_brep_bounds(r, lo, hi) == SMLIB_OK);
+    std::printf("  bounds (%.17g, %.17g, %.17g) to (%.17g, %.17g, %.17g)\n", lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+    // (the box's own; the curvature-continuous blends' sections, certified to 4e-6, stand up to
+    // 5.8e-7 past the faces along the blends, away from the corner: their patches are held below)
+    for (int k = 0; k < 3; ++k)
+    {
+        CHECK(std::fabs(lo[k]) <= (round_order == 1 ? 1e-9 : 4e-6) && std::fabs(hi[k] - 20.0) <= 1e-9);
+    }
+    // the end sections' ends: along axis a at its setback, r_a from the edge on each face
+    SmTArray<SmVertex *> vs;
+    r->p->GetVertices(vs);
+    double worst_end = 0.0;
+    for (int a = 0; a < 3 && setbacks.size() == 3; a++)
+    {
+        for (int side = 0; side < 2; side++)
+        {
+            double p[3] = {0, 0, 0};
+            p[a] = setbacks[static_cast<size_t>(a)];
+            p[(a + 1 + side) % 3] = radii[static_cast<size_t>(a)];
+            double best = HUGE_VAL;
+            for (ULONG k = 0; k < vs.GetSize(); ++k)
+            {
+                best = std::min(best, (vs[k]->GetPoint() - SmPoint3d(p[0], p[1], p[2])).Length());
+            }
+            worst_end = std::max(worst_end, best);
+        }
+    }
+    std::printf("  end sections' ends off their places by %.3g\n", worst_end);
+    CHECK(worst_end <= 1e-9);
+    // the seams: every non-planar face against its neighbours
+    SmTArray<SmFace *> faces;
+    r->p->GetFaces(faces);
+    double worst_angle = 0.0, worst_curv = 0.0;
+    int n_curved = 0;
+    std::vector<SmFace *> patch_faces;
+    for (ULONG f = 0; f < faces.GetSize(); ++f)
+    {
+        SmSurface *s = faces[f]->GetSurface();
+        if (s == nullptr || SM_CAST_PTR(SmPlane, s) != nullptr || s->IsPlanar(1e-9))
+        {
+            continue;
+        }
+        n_curved++;
+        SmTArray<SmVertex *> fv;
+        faces[f]->GetVertices(fv);
+        bool at_corner = true;
+        for (ULONG k = 0; k < fv.GetSize(); ++k)
+        {
+            at_corner = at_corner && fv[k]->GetPoint().x < 10.0 && fv[k]->GetPoint().y < 10.0 && fv[k]->GetPoint().z < 10.0;
+        }
+        if (!at_corner)
+        {
+            continue; // a blend: its seams at the corner are its patches'
+        }
+        patch_faces.push_back(faces[f]);
+        int seams = 0;
+        worst_angle = std::max(worst_angle, worst_seam_angle(faces[f], seams));
+        if (order < 2)
+        {
+            continue;
+        }
+        // G2: across each edge, at its middle stations, the normal curvature square to the edge
+        // from either side
+        SmTArray<SmEdge *> es;
+        faces[f]->GetEdges(es);
+        for (ULONG k = 0; k < es.GetSize(); ++k)
+        {
+            SmEdgeuse *a = es[k]->GetPrimaryEdgeuse();
+            SmEdgeuse *o = a != nullptr ? a->GetRadial() : nullptr;
+            if (o == nullptr || o == a || es[k]->GetCurve() == nullptr)
+            {
+                continue;
+            }
+            SmExtent1d ivl = es[k]->GetInterval();
+            for (int st = 1; st < 8; ++st)
+            {
+                SmVector3d d[2];
+                if (es[k]->GetCurve()->Evaluate(ivl.Evaluate(st / 8.0), 1, TRUE, d) != SM_SUCCESS || d[1].Unitize(FALSE) != SM_SUCCESS)
+                {
+                    worst_curv = HUGE_VAL;
+                    continue;
+                }
+                double k2[2] = {0, 0};
+                SmEdgeuse *uses[2] = {a, o};
+                for (int u = 0; u < 2; ++u)
+                {
+                    SmSurface *su = uses[u]->GetFace()->GetSurface();
+                    SmSolutionArray sols;
+                    if (su->GlobalPointSolve(su->GetNaturalUVDomain(), SM_SO_MINIMIZE, SmPoint3d(d[0]), 1e-9, nullptr, SM_SR_SINGLE, sols) != SM_SUCCESS ||
+                        sols.GetSize() < 1)
+                    {
+                        k2[u] = HUGE_VAL;
+                        continue;
+                    }
+                    SmVector3d n;
+                    const SmPoint2d uv(sols[0].m_vStart[0], sols[0].m_vStart[1]);
+                    SmVector3d w;
+                    if (su->EvaluateNormal(uv, TRUE, TRUE, n) != SM_SUCCESS)
+                    {
+                        k2[u] = HUGE_VAL;
+                        continue;
+                    }
+                    w = n * d[1];
+                    if (w.Unitize(FALSE) != SM_SUCCESS || !cross_curvature(su, uv, w, k2[u]))
+                    {
+                        k2[u] = HUGE_VAL;
+                    }
+                    // one sign: the curvature towards the material's outward normal
+                    if (uses[u]->GetFace()->GetSurface() != nullptr)
+                    {
+                        SmVector3d ref = n;
+                        if (u == 1)
+                        {
+                            SmVector3d n0;
+                            SmSurface *s0 = uses[0]->GetFace()->GetSurface();
+                            SmSolutionArray s0l;
+                            if (s0->GlobalPointSolve(s0->GetNaturalUVDomain(), SM_SO_MINIMIZE, SmPoint3d(d[0]), 1e-9, nullptr, SM_SR_SINGLE, s0l) == SM_SUCCESS &&
+                                s0l.GetSize() > 0 && s0->EvaluateNormal(SmPoint2d(s0l[0].m_vStart[0], s0l[0].m_vStart[1]), TRUE, TRUE, n0) == SM_SUCCESS &&
+                                n0.Dot(ref) < 0)
+                            {
+                                k2[u] = -k2[u];
+                            }
+                        }
+                    }
+                }
+                worst_curv = std::max(worst_curv, std::fabs(k2[0] - k2[1]));
+            }
+        }
+    }
+    std::printf("  %d curved faces, %lu at the corner; seams meet at up to %.3g rad%s", n_curved, static_cast<unsigned long>(patch_faces.size()),
+                worst_angle, order >= 2 ? "" : "\n");
+    if (order >= 2)
+    {
+        std::printf(", cross curvatures differ by up to %.3g\n", worst_curv);
+    }
+    CHECK(n_curved == 9 && patch_faces.size() == 6);
+    CHECK(worst_angle <= 1e-9);
+    CHECK(order < 2 || worst_curv <= 1e-6);
+    // the patches against the fill rebuilt from the exact rounds
+    SmContext &ctx = *SmApiGetOrCreateContext();
+    std::vector<SmBSplineSurface *> rounds;
+    std::vector<SmBlendSetback::Round> in;
+    for (int a = 0; a < 3 && setbacks.size() == 3; a++)
+    {
+        const double rr = radii[static_cast<size_t>(a)], sb = setbacks[static_cast<size_t>(a)];
+        SmBSplineSurface *own = round_order == 3 ? box_corner_gn_round(a, rr, sb, 10.0) : box_corner_round(a, rr, sb, 10.0, round_order == 0 ? 2 : round_order);
+        rounds.push_back(own);
+        if (own != nullptr)
+        {
+            in.push_back({own, SM_SP_U, own->GetNaturalUVDomain().GetMin().x, FALSE});
+        }
+    }
+    SmBlendSetback::Fill fill;
+    CHECK(in.size() == 3 && SmBlendSetback::FillHole(ctx, box_corner_faces(), in, order, 1e-9, fill) == SM_SUCCESS && fill.m_vPatches.size() == 6);
+    double worst_off = 0.0;
+    for (SmFace *f : patch_faces)
+    {
+        SmSurface *s = f->GetSurface();
+        const SmExtent2d dom = f->GetUVDomain();
+        for (int i = 0; i <= 4; i++)
+        {
+            for (int j = 0; j <= 4; j++)
+            {
+                SmPoint3d p;
+                if (s->EvaluatePoint(dom.Evaluate(i / 4.0, j / 4.0), p) != SM_SUCCESS)
+                {
+                    worst_off = HUGE_VAL;
+                    continue;
+                }
+                double best = HUGE_VAL;
+                for (SmBSplineSurface *q : fill.m_vPatches)
+                {
+                    SmSolutionArray sols;
+                    if (q->GlobalPointSolve(q->GetNaturalUVDomain(), SM_SO_MINIMIZE, p, 1e-12, nullptr, SM_SR_SINGLE, sols) == SM_SUCCESS && sols.GetSize() > 0)
+                    {
+                        SmPoint3d at;
+                        if (q->EvaluatePoint(SmPoint2d(sols[0].m_vStart[0], sols[0].m_vStart[1]), at) == SM_SUCCESS)
+                        {
+                            best = std::min(best, at.DistanceBetween(p));
+                        }
+                    }
+                }
+                worst_off = std::max(worst_off, best);
+            }
+        }
+    }
+    std::printf("  the corner's patches off the fill of the exact rounds by up to %.3g\n", worst_off);
+    // (round_order 0: eased rounds, whose sections at the setback are the order-2 ones exactly
+    // but whose rail parameter there is the executive's: the patches' rows across take the
+    // rounds' derivatives along it, so they are not compared)
+    CHECK(round_order == 0 || worst_off <= 1e-9);
+    // the patches within the box (tight boxes of the faces)
+    double past = 0.0;
+    for (SmFace *f : patch_faces)
+    {
+        SmExtent3d bb;
+        CHECK(f->CalculateTightBoundingBox(bb) == SM_SUCCESS);
+        past = std::max({past, -bb.GetMin().x, -bb.GetMin().y, -bb.GetMin().z});
+    }
+    std::printf("  the corner's patches stand past the faces by up to %.3g\n", past);
+    CHECK(past <= 1e-12);
+    for (SmBSplineSurface *q : rounds)
+    {
+        delete q;
+    }
+    smlib_brep_free(r);
+}
+
+// Rounds r 2, 3 and 4 along x, y and z of the box [0, 20]^3, blended together at the corner
+// (0, 0, 0): no ball touches the three faces and rounds, so the corner is a Setback filled to
+// G1 (owner, 2026-11-01, blend-design.md §16), each round set back by the owner's rule: 4.5,
+// 4.75 and 6.
+void setback_corner_rounds_2_3_4()
+{
+    const std::array<double, 3> radii = {2, 3, 4};
+    setback_corner_built(setback_corner_body(SMLIB_BLEND_ROUND, radii), radii, 1, 1);
+}
+
+// Curvature-continuous blends (smlib_blend_order, the order-2 section at thumbweight 0) r 2
+// along x, y and z of the box [0, 20]^3 at its corner (0, 0, 0): G2 selected, the corner is a
+// Setback filled to G2, each set back max(1.5 r, least + 0.25 r) = 3.
+void setback_corner_curvature_g2()
+{
+    const std::array<double, 3> radii = {2, 2, 2};
+    setback_corner_built(setback_corner_body(SMLIB_BLEND_CURVATURE, radii), radii, 3, 2);
+}
+
+// Rounds r 2 along x, y and z of the box [0, 20]^3, the corner (0, 0, 0) set back 4 along each
+// edge with an ease of 1 before it (smlib_blend_setback_eased, SolidCraft's G2 corner): over
+// the ease each round's section eases into the order-2 one at thumbweight 0, flat to second
+// order where it ends, so at the setback the rounds are box_corner_round's order-2 sections
+// and the hole is filled to G2 (SMLib's fill, in place of SolidCraft's fitted patch).
+void setback_corner_eased_g2()
+{
+    const std::array<double, 3> radii = {2, 2, 2};
+    setback_corner_built(setback_corner_body(SMLIB_BLEND_ROUND, radii, 4.0, 1.0), radii, 0, 2, 4.0);
+}
+
+// The reentrant corner (10, 10, 10) of the box [0, 20]^3 less [10, 20]^3, its three concave edges
+// (along x, y and z from it) rounded r 1, 1.5 and 2 together: a concave Setback filled to G1,
+// each round set back by the owner's rule (its faces square, as at a convex box corner: 2.25,
+// 2.375 and 3). Sound; the 9 faces of the notched box, the 3 rounds and the 6 patches; each
+// round's end section at its setback, r from the edge on each face; every seam of the patches
+// G1 (normals within 1e-9 rad); the patches in the notch, [10, 20]^3, where the material is not
+// (Containment, certified: a concave corner's fill stands past no face into the material).
+void setback_concave_corner_rounds()
+{
+    smlib_brep *part = box(0, 0, 0, 20, 20, 20), *notch = box(10, 10, 10, 10, 10, 10), *notched = nullptr;
+    CHECK(smlib_boolean(part, notch, SMLIB_BOOLEAN_SUBTRACT, &notched) == SMLIB_OK && notched != nullptr);
+    smlib_brep_free(part);
+    smlib_brep_free(notch);
+    if (notched == nullptr)
+    {
+        return;
+    }
+    const double edges[9] = {15, 10, 10, 10, 15, 10, 10, 10, 15};
+    const double radii[3] = {1, 1.5, 2};
+    smlib_brep *r = nullptr;
+    int64_t failed = -1;
+    const int32_t st = smlib_blend(notched, SMLIB_BLEND_ROUND, edges, radii, 3, 0.1, &r, &failed);
+    std::printf("  blend status %d\n", static_cast<int>(st));
+    smlib_brep_free(notched);
+    CHECK(st == SMLIB_OK && r != nullptr && sound(r));
+    if (r == nullptr)
+    {
+        return;
+    }
+    int64_t counts[3] = {0, 0, 0};
+    CHECK(smlib_brep_counts(r, counts) == SMLIB_OK);
+    std::printf("  faces %lld\n", static_cast<long long>(counts[0]));
+    CHECK(counts[0] == 18);
+    const double setbacks[3] = {2.25, 2.375, 3.0};
+    SmTArray<SmVertex *> vs;
+    r->p->GetVertices(vs);
+    double worst_end = 0.0;
+    for (int a = 0; a < 3; a++)
+    {
+        for (int side = 0; side < 2; side++)
+        {
+            double p[3] = {10, 10, 10};
+            p[a] += setbacks[a];
+            p[(a + 1 + side) % 3] += radii[a];
+            double best = HUGE_VAL;
+            for (ULONG k = 0; k < vs.GetSize(); ++k)
+            {
+                best = std::min(best, (vs[k]->GetPoint() - SmPoint3d(p[0], p[1], p[2])).Length());
+            }
+            worst_end = std::max(worst_end, best);
+        }
+    }
+    std::printf("  end sections' ends off their places by %.3g\n", worst_end);
+    CHECK(worst_end <= 1e-9);
+    SmTArray<SmFace *> faces;
+    r->p->GetFaces(faces);
+    double worst_angle = 0.0, below = 0.0;
+    int n_patches = 0;
+    for (ULONG f = 0; f < faces.GetSize(); ++f)
+    {
+        SmSurface *s = faces[f]->GetSurface();
+        if (s == nullptr || SM_CAST_PTR(SmPlane, s) != nullptr || s->IsPlanar(1e-9))
+        {
+            continue;
+        }
+        SmTArray<SmVertex *> fv;
+        faces[f]->GetVertices(fv);
+        bool at_corner = true;
+        for (ULONG k = 0; k < fv.GetSize(); ++k)
+        {
+            const SmPoint3d p = fv[k]->GetPoint();
+            at_corner = at_corner && p.x < 14.0 && p.y < 14.0 && p.z < 14.0;
+        }
+        if (!at_corner)
+        {
+            continue;
+        }
+        n_patches++;
+        int seams = 0;
+        worst_angle = std::max(worst_angle, worst_seam_angle(faces[f], seams));
+        SmExtent3d bb;
+        CHECK(faces[f]->CalculateTightBoundingBox(bb) == SM_SUCCESS);
+        below = std::max({below, 10.0 - bb.GetMin().x, 10.0 - bb.GetMin().y, 10.0 - bb.GetMin().z});
+    }
+    std::printf("  %d patches; seams meet at up to %.3g rad; the patches reach %.3g out of the notch\n", n_patches, worst_angle, below);
+    CHECK(n_patches == 6 && worst_angle <= 1e-9 && below <= 1e-12);
+    smlib_brep_free(r);
+}
+
 // The setback corner's cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--setbacks-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SETBACK_CASES[] = {
@@ -8913,6 +9294,14 @@ const TangentEndCase SETBACK_CASES[] = {
     {"box_corner_g2_gn_section_rounds", setback_box_corner_g2_gn_section_rounds, nullptr},
     {"box_corner_unequal_g1", setback_box_corner_unequal_g1, nullptr},
     {"g2_fill_of_uneased_rounds_refused", setback_g2_fill_of_uneased_rounds_refused, nullptr},
+    {"corner_rounds_2_3_4", setback_corner_rounds_2_3_4,
+     "SmFilletConvexNxNCorner stretches a vertex into a rail-rail edge and fills the four sides with the elliptic-law transition (MakeVariableRadiusFillet): 10 faces, not the setback corner's 15, its seams 0.00251 rad (0.144 degrees) apart"},
+    {"corner_curvature_g2", setback_corner_curvature_g2,
+     "SmFilletConvexNxNCorner fills the corner of the curvature-continuous blends with one three-sided patch (CreateCornerBlend), not set back: 10 faces, not the setback corner's 15; cross curvatures 1.93 apart at its seams, 2.6e-6 past the faces"},
+    {"corner_eased_g2", setback_corner_eased_g2,
+     "SmFilletConvexNxNCorner's patch (CreateCornerBlend over the eased sections and the rail-rail curves) meets its neighbours 0.0393 rad apart, cross curvatures 20.9 apart, and stands 0.00318 past the faces"},
+    {"concave_corner_rounds", setback_concave_corner_rounds,
+     "SmFilletConvexNxNCorner stretches the concave corner's vertex and fills it with one patch: 13 faces, not 18, its seams 0.0493 rad apart"},
 };
 
 int setback_cases(bool known_failing, const char *only)
