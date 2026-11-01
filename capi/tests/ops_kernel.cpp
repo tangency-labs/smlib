@@ -3941,23 +3941,26 @@ const TangentEndCase TANGENT_END_CASES[] = {
 
 // Runs every case, those that fail today (`known_failing`) or the others; a known failure that
 // passes is a failure. One case alone by `only`.
-int tangent_end_cases(bool known_failing, const char *only)
+// Runs the cases of a list (`label` names it in the output): with `only`, that one; else the
+// ones failing today (`known_failing`) or the others. Returns how many disagree with their
+// mark: a case listed as failing that passes, or one not listed that fails.
+template <size_t N> int run_cases(const TangentEndCase (&cases)[N], const char *label, bool known_failing, const char *only)
 {
     int wrong = 0;
-    for (const TangentEndCase &c : TANGENT_END_CASES)
+    for (const TangentEndCase &c : cases)
     {
         if ((only != nullptr && std::strcmp(only, c.name) != 0) || (only == nullptr && known_failing != (c.fails_today != nullptr)))
         {
             continue;
         }
         const int before = failures;
-        std::printf("tangent end %s:\n", c.name);
+        std::printf("%s %s:\n", label, c.name);
         c.run();
         const bool failed = failures != before;
         failures = before;
         if (failed != (c.fails_today != nullptr))
         {
-            std::fprintf(stderr, "tangent end %s: %s\n", c.name, failed ? "FAILS" : "PASSES, though listed as failing today: drop its reason");
+            std::fprintf(stderr, "%s %s: %s\n", label, c.name, failed ? "FAILS" : "PASSES, though listed as failing today: drop its reason");
             wrong++;
         }
         else if (failed)
@@ -3966,6 +3969,11 @@ int tangent_end_cases(bool known_failing, const char *only)
         }
     }
     return wrong;
+}
+
+int tangent_end_cases(bool known_failing, const char *only)
+{
+    return run_cases(TANGENT_END_CASES, "tangent end", known_failing, only);
 }
 
 // Constant rounds whose rolling ball's centre line (the spine, where the faces' offsets by the
@@ -4298,29 +4306,7 @@ const TangentEndCase EXACT_CLASS_CASES[] = {
 
 int exact_class_cases(bool known_failing, const char *only)
 {
-    int wrong = 0;
-    for (const TangentEndCase &c : EXACT_CLASS_CASES)
-    {
-        if ((only != nullptr && std::strcmp(only, c.name) != 0) || (only == nullptr && known_failing != (c.fails_today != nullptr)))
-        {
-            continue;
-        }
-        const int before = failures;
-        std::printf("exact class %s:\n", c.name);
-        c.run();
-        const bool failed = failures != before;
-        failures = before;
-        if (failed != (c.fails_today != nullptr))
-        {
-            std::fprintf(stderr, "exact class %s: %s\n", c.name, failed ? "FAILS" : "PASSES, though listed as failing today: drop its reason");
-            wrong++;
-        }
-        else if (failed)
-        {
-            std::printf("  fails, as known: %s\n", c.fails_today);
-        }
-    }
-    return wrong;
+    return run_cases(EXACT_CLASS_CASES, "exact class", known_failing, only);
 }
 
 // ---- Section orders ----------------------------------------------------------------------------
@@ -4959,6 +4945,71 @@ void section_variable_round_on_its_cone()
         g);
 }
 
+// A 10 x 10 x 5 boss on a 40 x 30 x 10 plate, its four base edges rounded r 1 (concave), the
+// boss's vertical edges sharp: at each corner the chain of rounds turns. A round's spandrel
+// A = (1 - pi/4) r^2 and its first moment about its wall M = r^3 (5/6 - pi/4). Mitre runs each
+// round on to the corner's bisector plane, adding 40 A + 8 M (4 corners) to 12500; Swept revolves
+// the spandrel a quarter turn about the vertical edge at each corner, (pi/2) M (Pappus), adding
+// 40 A + 2 pi M. They differ by 0.0823, graded to 1e-7 (1.3e-3 of a mm^3).
+void turn_boss_base(int32_t turn)
+{
+    smlib_brep *plate = box(0, 0, 0, 40, 30, 10), *boss = box(15, 10, 10, 10, 10, 5), *part = nullptr;
+    CHECK(smlib_boolean(plate, boss, SMLIB_BOOLEAN_UNION, &part) == SMLIB_OK && part != nullptr);
+    const double edges[12] = {20, 10, 10, 25, 15, 10, 20, 20, 10, 15, 15, 10}, sizes[4] = {1, 1, 1, 1};
+    const double a = 1.0 - PI / 4.0, m = 5.0 / 6.0 - PI / 4.0;
+    const double want = turn == SMLIB_TURN_SWEPT ? 12500.0 + 40.0 * a + 2.0 * PI * m : 12500.0 + 40.0 * a + 8.0 * m;
+    smlib_brep *r = nullptr;
+    CHECK(part != nullptr && smlib_blend_turn(part, SMLIB_BLEND_ROUND, turn, edges, sizes, 4, 0.1, &r, nullptr) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        std::printf("  volume %.9f, want %.9f, %lu faces\n", volume_of(r), want, static_cast<unsigned long>(r->p->GetNumFaces()));
+        CHECK(near(volume_of(r), want, 1e-7));
+        CHECK(sound(r));
+        smlib_brep_free(r);
+        r = nullptr;
+    }
+    // Swept is for rounds; a chamfer's corners are bevelled; a turn is one of the two.
+    CHECK(smlib_blend_turn(part, SMLIB_BLEND_CHAMFER, SMLIB_TURN_SWEPT, edges, sizes, 4, 0.1, &r, nullptr) == SMLIB_ERR_UNSUPPORTED && r == nullptr);
+    CHECK(smlib_blend_turn(part, SMLIB_BLEND_ROUND, 2, edges, sizes, 4, 0.1, &r, nullptr) == SMLIB_ERR_ARG && r == nullptr);
+    for (smlib_brep *x : {plate, boss, part})
+    {
+        smlib_brep_free(x);
+    }
+}
+
+void turn_mitre_boss_base()
+{
+    turn_boss_base(SMLIB_TURN_MITRE);
+}
+
+void turn_swept_boss_base()
+{
+    turn_boss_base(SMLIB_TURN_SWEPT);
+}
+
+// A 20 x 10 x 5 pocket in a 40 x 30 x 10 block, its floor edges rounded r 1, its vertical corner
+// edges sharp: a ball of radius 1 cannot turn round a sharp concave corner, so a Swept turn is
+// refused (SMLIB_ERR_NO_ROOM); mitred, the rounds build.
+void turn_swept_sharp_pocket_refused()
+{
+    smlib_brep *block = box(0, 0, 0, 40, 30, 10), *cut = box(10, 10, 5, 20, 10, 6), *part = nullptr;
+    CHECK(smlib_boolean(block, cut, SMLIB_BOOLEAN_SUBTRACT, &part) == SMLIB_OK && part != nullptr);
+    const double edges[12] = {20, 10, 5, 30, 15, 5, 20, 20, 5, 10, 15, 5}, sizes[4] = {1, 1, 1, 1};
+    smlib_brep *r = nullptr;
+    CHECK(part != nullptr && smlib_blend_turn(part, SMLIB_BLEND_ROUND, SMLIB_TURN_SWEPT, edges, sizes, 4, 0.1, &r, nullptr) == SMLIB_ERR_NO_ROOM);
+    CHECK(r == nullptr);
+    CHECK(part != nullptr && smlib_blend_turn(part, SMLIB_BLEND_ROUND, SMLIB_TURN_MITRE, edges, sizes, 4, 0.1, &r, nullptr) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        CHECK(sound(r));
+        smlib_brep_free(r);
+    }
+    for (smlib_brep *x : {block, cut, part})
+    {
+        smlib_brep_free(x);
+    }
+}
+
 // A variable round whose law has a corner (tangency-labs/solidcore#430: SMLib traced it
 // smoothly across, missing the law past it; now the trace stops there and the face is split
 // there). Its round is the union of the balls: in each plane square to the edge, the corner cut
@@ -5037,8 +5088,6 @@ void section_variable_round_law_dips()
     smlib_brep_free(cube);
 }
 
-// The section-order cases, and why each that fails today fails (null: it passes). As
-// TANGENT_END_CASES: `--section-orders-known-failing` runs the failing ones and fails if one passes.
 // A cubic law 2, 2, 40, 3, 2 (knots 0, 0, 0, 0, 0.5, 1, 1, 1, 1; up to 21.25) on the top edge
 // x = 10, z = 30 of a 10 x 20 x 30 box. The balls' envelope folds over itself at the peak: for
 // the balls' family F(x, p) = |p - c(x)|^2 - r(x)^2 the touch arc there has F_xx down to -8.88
@@ -5062,6 +5111,8 @@ void section_variable_round_spline_folds()
     smlib_brep_free(block);
 }
 
+// The section-order cases, and why each that fails today fails (null: it passes). As
+// TANGENT_END_CASES: `--section-orders-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SECTION_CASES[] = {
     {"box_edge_chamfer", section_box_edge_chamfer, nullptr},
     {"box_edge_round", section_box_edge_round, nullptr},
@@ -5088,34 +5139,38 @@ const TangentEndCase SECTION_CASES[] = {
 
 int section_cases(bool known_failing, const char *only)
 {
-    int wrong = 0;
-    for (const TangentEndCase &c : SECTION_CASES)
-    {
-        if ((only != nullptr && std::strcmp(only, c.name) != 0) || (only == nullptr && known_failing != (c.fails_today != nullptr)))
-        {
-            continue;
-        }
-        const int before = failures;
-        std::printf("section %s:\n", c.name);
-        c.run();
-        const bool failed = failures != before;
-        failures = before;
-        if (failed != (c.fails_today != nullptr))
-        {
-            std::fprintf(stderr, "section %s: %s\n", c.name, failed ? "FAILS" : "PASSES, though listed as failing today: drop its reason");
-            wrong++;
-        }
-        else if (failed)
-        {
-            std::printf("  fails, as known: %s\n", c.fails_today);
-        }
-    }
-    return wrong;
+    return run_cases(SECTION_CASES, "section", known_failing, only);
 }
 
+// The turns of a chain of rounds at a sharp side edge (smlib_blend_turn), and why each that
+// fails today fails (null: it passes). As TANGENT_END_CASES.
+const TangentEndCase TURN_CASES[] = {
+    {"mitre_boss_base", turn_mitre_boss_base, nullptr},
+    {"swept_boss_base", turn_swept_boss_base,
+     "status 1001, Fillet Face Creation Error: the two rounds' sections end at two points on the plate, joined by the torus's quarter arc, but the corner gives both rails one face vertex"},
+    {"swept_sharp_pocket_refused", turn_swept_sharp_pocket_refused, nullptr},
+};
+
+int turn_cases(bool known_failing, const char *only)
+{
+    return run_cases(TURN_CASES, "turn", known_failing, only);
+}
 
 int main(int argc, char **argv)
 {
+    if (argc == 2 && std::strcmp(argv[1], "--turns-known-failing") == 0)
+    {
+        return turn_cases(true, nullptr) == 0 ? 0 : 1;
+    }
+    if (argc == 3 && std::strcmp(argv[1], "--turn") == 0)
+    {
+        smlib_set_log([](void *, int32_t level, const char *line) { std::fprintf(stderr, "log %d %s\n", static_cast<int>(level), line); }, nullptr);
+        if (const char *dir = std::getenv("SMLIB_TEST_DUMP_DIR"))
+        {
+            smlib_set_dump_dir(dir);
+        }
+        return turn_cases(false, argv[2]) == 0 ? 0 : 1;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--section-orders-known-failing") == 0)
     {
         return section_cases(true, nullptr) == 0 ? 0 : 1;
@@ -8559,6 +8614,7 @@ int main(int argc, char **argv)
     failures += tangent_end_cases(false, nullptr);
     failures += exact_class_cases(false, nullptr);
     failures += section_cases(false, nullptr);
+    failures += turn_cases(false, nullptr);
 
     // SolidCraft surface.offset of a ball's one face: the face taken off as a sheet is a closed
     // shell whose regions are all voids, which smlib_offset_sheet refused as a solid

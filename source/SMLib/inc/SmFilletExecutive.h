@@ -244,6 +244,9 @@ protected:
   SmBoolean                 m_bOverflowFirst;       // SolidCraft change: TRUE = when blends of several edges overflow across cliffs, stop
                                                     //   before building anything (SM_FILERR_OVERFLOW_FIRST): the caller blends the
                                                     //   edges that overflow on their own first, then what is left of the others
+  SmBoolean                 m_bSweptTurns;          // SolidCraft change: TRUE = where a chain of two rounds turns at a sharp side edge
+                                                    //   (an N x 2 corner), the section is revolved about that edge (Swept);
+                                                    //   FALSE = the rounds are mitred there (Mitre, the default)
   SmBoolean                 m_bClassifyOnly;        // SolidCraft change: TRUE = stop after classifying the rails (SM_FILERR_OVERFLOW_FIRST),
                                                     //   building nothing, m_vOverflowEdges the edges whose blends overflow
   SmTArray<SmEdge*>         m_vOverflowEdges;       // SolidCraft change: the edges of the blends that overflow, when stopped so
@@ -435,6 +438,8 @@ public:
   SmBoolean GetCliffOverflow() const { return m_bCliffOverflow; }
   void      SetOverflowFirst(SmBoolean bFirst) { m_bOverflowFirst = bFirst; }
   void      SetClassifyOnly(SmBoolean bOnly) { m_bClassifyOnly = bOnly; }
+  void      SetSweptTurns(SmBoolean bSwept) { m_bSweptTurns = bSwept; }
+  SmBoolean GetSweptTurns() const { return m_bSweptTurns; }
   const SmTArray<SmEdge*> & GetOverflowEdges() const { return m_vOverflowEdges; }
   const SmTArray<SmEdge*> & GetMitredEdges() const { return m_vMitredEdges; }
   SmStatus  NoteOpenEnd(SmFilletSolver * pSolver, SmVertex * pVertex, SmFace * pEndFace); // an end the Nx1 corner left uncut

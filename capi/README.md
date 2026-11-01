@@ -93,7 +93,10 @@ chord round (circular section at a constant width from contact to contact, SMLib
 constant-distance solver) and the chamfer above. `smlib_blend_order` blends by a section of a
 given order of contact with the faces along the contact lines: 0 the chord (the chamfer), 1 the
 ball's circle (the round), 2 to 4 the G^n section f T1(1 - p1) + (1 - f) T2(p2) between them
-(`SmGnSectionFSG`), its fullness set by a thumbweight. `smlib_fillet_variable` rounds one edge with a
+(`SmGnSectionFSG`), its fullness set by a thumbweight. `smlib_blend_turn` sets how a chain of
+rounds turns where two meet at an unblended side edge: mitred (the default, a crease) or swept
+(the section revolved about the side edge, `SmFilletExecutive::SetSweptTurns`), refused at a
+sharp concave side edge. `smlib_fillet_variable` rounds one edge with a
 radius that follows a clamped B-spline law (degree 1 to 3) over the edge's parameter, 0 at the
 end nearest a given point; it becomes an `SmBSplineFilletLaw` on SMLib's variable-radius solver,
 whose law curve carries the radius as x and, as SMLib's own laws do, the parameter itself as y

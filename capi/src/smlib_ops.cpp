@@ -505,12 +505,14 @@ bool closed_nonmanifold(const SmBrep &r)
 }
 
 // A blend's section: its kind (SMLIB_BLEND_*), and for SMLIB_BLEND_CURVATURE the order and the
-// thumbweight of its G^n section (smlib_blend_order).
+// thumbweight of its G^n section (smlib_blend_order); and how a chain of its rounds turns where
+// it meets a sharp side edge (SMLIB_TURN_*, smlib_blend_turn).
 struct Section
 {
     int32_t kind;
     ULONG order;
     double thumbweight;
+    int32_t turn = SMLIB_TURN_MITRE;
 };
 
 // The section smlib_blend's `kind` names: SMLIB_BLEND_CURVATURE is the G^2 section at the
@@ -600,6 +602,7 @@ int32_t round_edges(SmBrep *b, const std::vector<SmEdge *> &edges, const std::ve
     // faces across cliffs (blend_call's overflow first), or with `classify_only` always, the
     // edges whose blends overflow written there.
     exec.SetOverflowFirst(overflow_first != nullptr ? TRUE : FALSE);
+    exec.SetSweptTurns(section.turn == SMLIB_TURN_SWEPT ? TRUE : FALSE);
     exec.SetClassifyOnly(overflow_first != nullptr && classify_only ? TRUE : FALSE);
     std::vector<SmFilletCorner *> set_back;
     for (size_t j = 0; j < setbacks.size(); ++j)
@@ -1744,6 +1747,7 @@ int32_t blend_call(const char *fn, const smlib_brep *brep, const Section &sectio
     }
     std::string args = handle(brep) + ", kind=" + std::to_string(kind) +
                        (kind == SMLIB_BLEND_CURVATURE ? ", order=" + std::to_string(section.order) + ", thumbweight=" + num(section.thumbweight) : std::string()) +
+                       (section.turn == SMLIB_TURN_SWEPT ? std::string(", turn=swept") : std::string()) +
                        ", points=" + pts(points, n_points) + ", sizes=" +
                        vec(sizes, static_cast<int>(n_sizes)) + ", tolerance=" + num(tolerance);
     if (n_corners > 0)
@@ -2051,6 +2055,23 @@ extern "C" int32_t smlib_blend(const smlib_brep *brep, int32_t kind, const doubl
                                double tolerance, smlib_brep **out, int64_t *out_failed_point)
 {
     return blend_call("smlib_blend", brep, section_of(kind), points, sizes, false, n_points, tolerance, out, out_failed_point);
+}
+
+extern "C" int32_t smlib_blend_turn(const smlib_brep *brep, int32_t kind, int32_t turn, const double *points, const double *sizes,
+                                    int64_t n_points, double tolerance, smlib_brep **out, int64_t *out_failed_point)
+{
+    if (turn != SMLIB_TURN_MITRE && turn != SMLIB_TURN_SWEPT)
+    {
+        return SMLIB_ERR_ARG;
+    }
+    // Rounds turn swept; a chamfer's corners are bevelled, a curvature round's are set back.
+    if (turn == SMLIB_TURN_SWEPT && kind != SMLIB_BLEND_ROUND)
+    {
+        return SMLIB_ERR_UNSUPPORTED;
+    }
+    Section section = section_of(kind);
+    section.turn = turn;
+    return blend_call("smlib_blend_turn", brep, section, points, sizes, false, n_points, tolerance, out, out_failed_point);
 }
 
 extern "C" int32_t smlib_blend_order(const smlib_brep *brep, int32_t order, double thumbweight, const double *points, const double *sizes,

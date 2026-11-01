@@ -701,6 +701,23 @@ int32_t smlib_blend_order(const smlib_brep *brep, int32_t order, double thumbwei
 int32_t smlib_blend(const smlib_brep *brep, int32_t kind, const double *points, const double *sizes, int64_t n_points,
                     double tolerance, smlib_brep **out, int64_t *out_failed_point);
 
+/* How a chain of rounds turns where two of them meet at a vertex whose third edge (the side
+ * edge) is not blended: a pocket's floor or rim at its corner, a boss's base round its corner. */
+/* Each round runs on to where it meets the other and is cut there: a crease (G0) between them. */
+#define SMLIB_TURN_MITRE 0
+/* The rounds' section is revolved about the side edge through the corner's turn (between planes
+ * at a straight side edge, a torus segment), meeting each round tangentially (G1) where it ends
+ * on its section straight across from where its contact lines meet the side edge. A ball cannot
+ * pass a sharp concave side edge: such a corner is SMLIB_ERR_NO_ROOM, the call's log line naming
+ * the radius that edge must be rounded at first (the round's). */
+#define SMLIB_TURN_SWEPT 1
+
+/* As smlib_blend, the corners where a chain of its rounds turns at a side edge turned as `turn`
+ * (SMLIB_TURN_*; smlib_blend turns them SMLIB_TURN_MITRE). SMLIB_TURN_SWEPT is for rounds
+ * (SMLIB_BLEND_ROUND); with another kind it is SMLIB_ERR_UNSUPPORTED. */
+int32_t smlib_blend_turn(const smlib_brep *brep, int32_t kind, int32_t turn, const double *points, const double *sizes, int64_t n_points,
+                         double tolerance, smlib_brep **out, int64_t *out_failed_point);
+
 /* smlib_blend, and where some rounds overflow their faces across cliffs and others fit, the
  * overflowing ones go first: they are built, and the others then round what is left of their
  * edges. An edge such an overflow removes whole is gone and not rounded: `out_dropped` (one

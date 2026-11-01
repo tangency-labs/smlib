@@ -224,6 +224,8 @@ if(SMLIB_CAPI_TESTS)
   add_test(NAME smlib_test_ops_kernel_exact_classes_known_failing COMMAND smlib_test_ops_kernel --exact-classes-known-failing)
   # The section-order blends that fail today (tests/ops_kernel.cpp, SECTION_CASES), held the same way.
   add_test(NAME smlib_test_ops_kernel_section_orders_known_failing COMMAND smlib_test_ops_kernel --section-orders-known-failing)
+  # The turns at a sharp side edge that fail today (tests/ops_kernel.cpp, TURN_CASES), held the same way.
+  add_test(NAME smlib_test_ops_kernel_turns_known_failing COMMAND smlib_test_ops_kernel --turns-known-failing)
 
   # Flat arrays: SmBrep -> arrays -> SmBrep round trips, and hostile arrays. The test builds its
   # solids with SM_API directly and hands them to the C API as native files.

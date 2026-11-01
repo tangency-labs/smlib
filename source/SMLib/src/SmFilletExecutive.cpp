@@ -508,6 +508,7 @@ SmFilletExecutive::SmFilletExecutive
    m_pFilletBrep(NULL),
    m_bCliffOverflow(FALSE),
    m_bOverflowFirst(FALSE),
+   m_bSweptTurns(FALSE),
    m_bClassifyOnly(FALSE),
    m_bDoPiecewiseMerge(FALSE),
    m_bDoTopologyInsertion(TRUE),
@@ -1203,6 +1204,10 @@ SmStatus SmFilletExecutive::GetPreviewFilletSurfaces
 
     if(SM_SUCCESS != pCorner->MakeCornerTopology())
     {
+      // SolidCraft change: a corner refused as one the blends cannot pass (SM_FILERR_NO_ROOM,
+      // noted by the corner) keeps that reason
+      if ( GetFilletErrorInfo()->GetErrorCode() == SM_FILERR_NO_ROOM )
+        { SER( SM_ERR ); }
       // when MakeCornerTopology failed - note the error
       pCorner->GetName( sBuff, SM_TBLOCK_SIZE );
       NoteFilletError( SM_FILERR_VERTEX_PROBLEM, pCorner->GetCornerType(),
@@ -3342,6 +3347,10 @@ SmStatus SmFilletExecutive::CreateFilletBrep
       //    by the FilletSolver.
       if(SM_SUCCESS != pCorner->MakeCornerTopology())
         {
+          // SolidCraft change: a corner refused as one the blends cannot pass (SM_FILERR_NO_ROOM,
+          // noted by the corner) keeps that reason
+          if ( GetFilletErrorInfo()->GetErrorCode() == SM_FILERR_NO_ROOM )
+            { SER( SM_ERR ); }
           // when MakeCornerTopology failed - note the error
           pCorner->GetName( sBuff, SM_TBLOCK_SIZE );
           NoteFilletError( SM_FILERR_VERTEX_PROBLEM, pCorner->GetCornerType(),
@@ -3540,6 +3549,10 @@ SmStatus SmFilletExecutive::CreateFilletBrep
       // Compute untrimmed filletSurface and railCurve geometry
       if(SM_SUCCESS != pFilSolver->CalcFilletGeom())
         {
+          // SolidCraft change: a blend refused as too large for its faces or its law (noted where
+          // that was found, SM_FILERR_NO_ROOM) keeps that reason
+          if ( GetFilletErrorInfo()->GetErrorCode() == SM_FILERR_NO_ROOM )
+            { SER( SM_ERR ); }
           const SmEdge* pE = pFilSolver->GetEdgeuse(0)->GetEdge();
           GetFilletErrorInfo()->NoteError( pE, SM_FS_SURF_TRACING_FAILURE, SM_FILERR_EDGE_PROBLEM,
                                            _T("Fillet Surface Computation Failure") );
@@ -3549,10 +3562,6 @@ SmStatus SmFilletExecutive::CreateFilletBrep
 #ifdef SM_DEBUG_CODE
       if (iDebugLevel > 0 ) 
         {
-          // SolidCraft change: a blend refused as too large for its faces or its law (noted where
-          // that was found, SM_FILERR_NO_ROOM) keeps that reason
-          if ( GetFilletErrorInfo()->GetErrorCode() == SM_FILERR_NO_ROOM )
-            { SER( SM_ERR ); }
           smos_sprintf(sBuff,_T("\nExec: After CalcFilletGeom for FilletSolver # %ld :\n"), solverIdx);
           pFilSolver->DumpLevel( iDebugLevel, sBuff);
 
