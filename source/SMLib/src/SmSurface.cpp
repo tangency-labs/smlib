@@ -55,6 +55,7 @@
 #include <SmSrfInVolume.h>
 #include <SmGap.h>
 #include <SmCurveBoundedSurface.h>
+#include <SmProceduralBlend.h>
 #include <SmTrimmingTools.h>
 
 #include <SmAdvSurfaceIntersector.h>
@@ -34847,6 +34848,7 @@ SmStatus SmSurface::ReadFromDB
       case SmTorus_TYPE               : { return( SmTorus::               ReadFromDB(lType, rDB, crContext, rpNewSurface, lDBVersionNumber) ) ; }
       case SmCurveBoundedSurface_TYPE : { return( SmCurveBoundedSurface:: ReadFromDB(lType, rDB, crContext, rpNewSurface, lDBVersionNumber) ) ; }
       case SmOffsetSurface_TYPE       : { return( SmOffsetSurface::       ReadFromDB(lType, rDB, crContext, rpNewSurface, lDBVersionNumber) ) ; }
+      case SmProceduralBlend_TYPE     : { return( SmProceduralBlend::     ReadFromDB(lType, rDB, crContext, rpNewSurface, lDBVersionNumber) ) ; } // SolidCraft change
       case SmSrfInVolume_TYPE         : { return( SmSrfInVolume::         ReadFromDB(lType, rDB, crContext, rpNewSurface, lDBVersionNumber) ) ; }
       case SmSTEPSurface_TYPE         : { return( SmSTEPSurface::         ReadFromDB(lType, rDB, crContext, rpNewSurface, lDBVersionNumber) ) ; }
       default : SE(SM_ERR) ; return (SM_ERR) ; break ;
@@ -34929,6 +34931,7 @@ void SmSurface::Dump
       case SmTorus_TYPE               : smos_sprintf(sDerivedName,_T("%s"),_T("[SmTorus_TYPE]")) ;               break ;
       case SmCurveBoundedSurface_TYPE : smos_sprintf(sDerivedName,_T("%s"),_T("[SmCurveBoundedSurface_TYPE]")) ; break ;
       case SmOffsetSurface_TYPE       : smos_sprintf(sDerivedName,_T("%s"),_T("[SmOffsetSurface_TYPE]")) ;       break ;
+      case SmProceduralBlend_TYPE     : smos_sprintf(sDerivedName,_T("%s"),_T("[SmProceduralBlend_TYPE]")) ;     break ;
       case SmSTEPSurface_TYPE         : smos_sprintf(sDerivedName,_T("%s"),_T("[SmSTEPSurface_TYPE]")) ;         break ;
       case SmSrfInVolume_TYPE         : smos_sprintf(sDerivedName,_T("%s"),_T("[SmSrfInVolume_TYPE]")) ;         break ;
       default : smos_sprintf(sDerivedName,_T("%s"),_T("[UnKnown Derived Type]")) ; break ;

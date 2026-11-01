@@ -109,6 +109,7 @@ class SmSTEPSurface;
 #define SmSurfOfRevolution_TYPE     (SURF_BASE_TYPE + 20)
 #define SmSurfOfExtrusion_TYPE      (SURF_BASE_TYPE + 30)
 #define SmBlendSurface_TYPE         (SURF_BASE_TYPE + 40)
+#define SmProceduralBlend_TYPE      (SURF_BASE_TYPE + 41)   /* SolidCraft change: a blend by its definition */
 #define SmCurveBoundedSurface_TYPE  (SURF_BASE_TYPE + 45)   /* gwc: moved from (TOPO_BASE_TYPE + 100) in SmTopoTypes.h */
 
 #define SmSurfaceCache_TYPE         (SURF_BASE_TYPE + 100)
@@ -132,6 +133,7 @@ class SmSTEPSurface;
 : (a) == SmSurfOfRevolution_TYPE     ? _T("SmSurfOfRevolution   ") \
 : (a) == SmSurfOfExtrusion_TYPE      ? _T("SmSurfOfExtrusion    ") \
 : (a) == SmBlendSurface_TYPE         ? _T("SmBlendSurface       ") \
+: (a) == SmProceduralBlend_TYPE      ? _T("SmProceduralBlend    ") \
 : (a) == SmCurveBoundedSurface_TYPE  ? _T("SmCurveBoundedSurface") \
 : (a) == SmSurfaceCache_TYPE         ? _T("SmSurfaceCache       ") \
 : (a) == SmTrimSrfCache_TYPE         ? _T("SmTrimSrfCache       ") \

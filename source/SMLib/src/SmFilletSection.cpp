@@ -53,6 +53,7 @@
 #include <SmGraphicsExtern.h>
 #include <SmGeomUtility.h>
 #include <SmBrep.h>
+#include <SmProceduralBlend.h>
 
 #include <algorithm>
 #include <array>
@@ -460,13 +461,14 @@ template <class T> void sm_NurbsPartials(const sm_Nurbs & crN, int ku, int kv, c
 }
 
 // The partials of a face's surface at crUV up to total order lK: a NURBS (every analytic surface is
-// one, evaluated in its net's parameters) by its net, continued past its knots; any other surface
-// by its own evaluator.
+// one, evaluated in its net's parameters) by its net, continued past its knots; any other surface,
+// and a blend by its definition (whose net is only its approximation), by its own evaluator.
 SmStatus sm_SurfacePartials(const SmSurface & crSurface, const SmPoint2d & crUV, int lK, sm_Partials<double> & rP)
 {
   if (lK < 0 || lK > SM_GN_MAXK)
     { SER(SM_ERR); }
-  const SmBSplineSurface * pBS = crSurface.IsKindOf(SmBSplineSurface_TYPE) ? static_cast<const SmBSplineSurface *>(&crSurface) : NULL;
+  const SmBSplineSurface * pBS = (crSurface.IsKindOf(SmBSplineSurface_TYPE) && !crSurface.IsKindOf(SmProceduralBlend_TYPE))
+                                 ? static_cast<const SmBSplineSurface *>(&crSurface) : NULL;
   if (pBS != NULL)
     {
       sm_Nurbs sN;
@@ -496,6 +498,7 @@ template <class T> struct sm_GnSystem
   double                 adR[2];
   double                 adSide[2];
   SmBoolean              bHold;
+  const sm_Ser<T>      * pR; // a ball whose radius varies: r(s) as a series in sigma (adR unused), or NULL
 };
 
 // G and the feet F_i as series, given the feet's parameters as series x[0..3] (u1, v1, u2, v2),
@@ -546,10 +549,14 @@ template <class T> SmStatus sm_GnEvaluate(const sm_GnSystem<T> & crSys, const sm
       const sm_VSer<T> sN = sm_VSerCross(sSu, sSv, tr);
       sm_Ser<T> sInvLen;
       SER(sm_SerInvSqrt(sm_VSerDot(sN, sN, tr), tr, sInvLen));
-      // the offset towards the ball: tau r_i s_i, tau = 1 + eps
+      // the offset towards the ball: tau r_i s_i, tau = 1 + eps (r_i a series in sigma for a law)
       sm_Ser<T> sD = sm_SerConst<T>(T(crSys.adR[f] * crSys.adSide[f]));
+      if (crSys.pR != NULL)
+        for (int i=0; i<=tr.s; i++)
+          sD.c[i][0] = crSys.pR->c[i][0] * T(crSys.adSide[f]);
       if (!crSys.bHold && tr.e >= 1)
-        { sD.c[0][1] = T(crSys.adR[f] * crSys.adSide[f]); }
+        for (int i=0; i<=tr.s; i++)
+          sD.c[i][1] = sD.c[i][0];
       asV[f] = sm_VSerAdd(sS, sm_VSerTimes(sN, sm_SerMul(sInvLen, sD, tr), tr), tr);
       rF[f] = sS;
     }
@@ -631,6 +638,7 @@ struct sm_GnStation
   sm_VSer<double>   sV;      // V, the point at tau r_i from the faces (the ball's centre at tau = 1)
   double            dW;      // the equal area thumbweight there, and its s-derivative (NaN: not resolved)
   double            dWds;
+  int               lSteps;  // the Newton steps the feet took
 };
 
 /*******************************************************************//**
@@ -641,7 +649,13 @@ SmStatus sm_LeaderSeries(const SmBSplineCurve & crLeader, double dS, const sm_Tr
 {
   const sm_Trunc sSigma = { tr.s, 0 };
   SmVector3d asD[SM_GN_MAXS + 2];
-  SER(crLeader.Evaluate(dS, static_cast<ULONG>(tr.s + 1), TRUE, asD, FALSE));
+  // a polynomial leader's derivatives past its degree are zero; a rational one's are evaluated
+  ULONG lDerivs = static_cast<ULONG>(tr.s + 1);
+  if (!crLeader.IsRational())
+    { lDerivs = smos_Min(lDerivs, crLeader.GetDegree()); }
+  for (ULONG j=lDerivs+1; j<=static_cast<ULONG>(tr.s + 1); j++) { asD[j] = SmVector3d(0.0, 0.0, 0.0); }
+  if (crLeader.Evaluate(dS, lDerivs, TRUE, asD, FALSE) != SM_SUCCESS)
+    { SER_MSG(SM_ERR, _T("SmGnSectionFSG: the leader's derivatives of this order are not evaluated")); }
   const sm_V3<double> sZero = { 0.0, 0.0, 0.0 };
   rL = sm_VSerConst<double>(sZero);
   sm_VSer<double> sD1 = rL;
@@ -670,10 +684,11 @@ SmStatus sm_LeaderSeries(const SmBSplineCurve & crLeader, double dS, const sm_Tr
 ***********************************************************************/
 SmStatus sm_GnSolveStation(const SmSurface * apFace[2], const SmBSplineCurve & crLeader, double dS, const double (&crSeed)[4],
                            const double (&crR)[2], const double (&crSide)[2], const sm_Trunc & tr, double dTol,
-                           sm_GnStation & rStation)
+                           sm_GnStation & rStation, const sm_Ser<double> * pR = NULL)
 {
   rStation.dS = dS;
   rStation.dW = rStation.dWds = std::numeric_limits<double>::quiet_NaN();
+  rStation.lSteps = 0;
   const int lK = tr.s + tr.e + 1;
   sm_Partials<double> asP[2];
   sm_GnSystem<double> sSys;
@@ -684,6 +699,7 @@ SmStatus sm_GnSolveStation(const SmSurface * apFace[2], const SmBSplineCurve & c
   sSys.adSide[0] = crSide[0];
   sSys.adSide[1] = crSide[1];
   sSys.bHold = FALSE;
+  sSys.pR = pR;
   SER(sm_LeaderSeries(crLeader, dS, tr, sSys.sLeader, sSys.sTangent));
 
   // the feet at tau = 1, by Newton (the leader at sigma = 0 only)
@@ -692,6 +708,7 @@ SmStatus sm_GnSolveStation(const SmSurface * apFace[2], const SmBSplineCurve & c
   SmBoolean bConverged = FALSE;
   for (int it=0; it<50 && !bConverged; it++)
     {
+      rStation.lSteps++;
       for (int f=0; f<2; f++)
         { SER(sm_SurfacePartials(*apFace[f], SmPoint2d(x[2*f], x[2*f+1]), 2, asP[f])); }
       sm_Ser<double> sX[4];
@@ -1372,6 +1389,7 @@ SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader
   sSys.apP[1] = &asP[1];
   for (int f=0; f<2; f++) { sSys.adR[f] = crR[f]; sSys.adSide[f] = crSide[f]; }
   sSys.bHold = FALSE;
+  sSys.pR = NULL;
   SM_GN_TRY(sm_LeaderSeriesOver(crLeader, sS, sTr, sSys.sLeader, sSys.sTangent));
 
   // each face's polynomial piece over the span: the one its middle lies in. A station stands where a
@@ -1975,6 +1993,111 @@ SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
   return SM_SUCCESS;
 }
 
+
+/*******************************************************************//**
+   Truncated Taylor series in (sigma, delta t) of any orders, for the
+   evaluation of a blend by its definition: c[i (E + 1) + j] the coefficient
+   of sigma^i dt^j.
+***********************************************************************/
+struct sm_T2
+{
+  int S, E;
+  std::vector<double> c;
+  sm_T2(int lS = 0, int lE = 0, double d = 0.0) : S(lS), E(lE), c(static_cast<size_t>((lS + 1) * (lE + 1)), 0.0) { c[0] = d; }
+  double & at(int i, int j) { return c[static_cast<size_t>(i * (E + 1) + j)]; }
+  double   at(int i, int j) const { return c[static_cast<size_t>(i * (E + 1) + j)]; }
+};
+sm_T2 operator+(const sm_T2 & a, const sm_T2 & b) { sm_T2 r(a.S, a.E); for (size_t k=0; k<r.c.size(); k++) { r.c[k] = a.c[k] + b.c[k]; } return r; }
+sm_T2 operator-(const sm_T2 & a, const sm_T2 & b) { sm_T2 r(a.S, a.E); for (size_t k=0; k<r.c.size(); k++) { r.c[k] = a.c[k] - b.c[k]; } return r; }
+sm_T2 operator*(const sm_T2 & a, double d) { sm_T2 r(a.S, a.E); for (size_t k=0; k<r.c.size(); k++) { r.c[k] = a.c[k] * d; } return r; }
+sm_T2 operator*(const sm_T2 & a, const sm_T2 & b)
+{
+  sm_T2 r(a.S, a.E);
+  for (int i=0; i<=a.S; i++)
+    for (int j=0; j<=a.E; j++)
+      {
+        double d = 0.0;
+        for (int i1=0; i1<=i; i1++)
+          for (int j1=0; j1<=j; j1++)
+            d += a.at(i1, j1) * b.at(i - i1, j - j1);
+        r.at(i, j) = d;
+      }
+  return r;
+}
+// x^p for a series whose constant term is positive: x0^p (1 + z)^p, z = x / x0 - 1, summed as the
+// binomial series in z, which has no constant term (so S + E terms are all there are)
+SmStatus sm_T2Pow(const sm_T2 & x, double p, sm_T2 & rY)
+{
+  const double x0 = x.c[0];
+  if (!(x0 > 0.0) || !std::isfinite(x0))
+    { SER_MSG(SM_ERR, _T("SmProceduralBlend: its section degenerates at this point (a weight or a length is zero)")); }
+  sm_T2 z = x * (1.0 / x0);
+  z.c[0] = 0.0;
+  sm_T2 sPow(x.S, x.E, 1.0), sSum(x.S, x.E, 1.0);
+  double dBinom = 1.0;
+  for (int m=1; m<=x.S+x.E; m++)
+    {
+      dBinom *= (p - (m - 1)) / m;
+      sPow = sPow * z;
+      sSum = sSum + sPow * dBinom;
+    }
+  rY = sSum * smos_Pow(x0, p);
+  return SM_SUCCESS;
+}
+struct sm_TV { sm_T2 a[3]; };
+sm_TV sm_TVZero(int lS, int lE) { sm_TV r; for (int k=0; k<3; k++) { r.a[k] = sm_T2(lS, lE); } return r; }
+sm_TV operator+(const sm_TV & p, const sm_TV & q) { sm_TV r; for (int k=0; k<3; k++) { r.a[k] = p.a[k] + q.a[k]; } return r; }
+sm_TV operator-(const sm_TV & p, const sm_TV & q) { sm_TV r; for (int k=0; k<3; k++) { r.a[k] = p.a[k] - q.a[k]; } return r; }
+sm_TV operator*(const sm_TV & p, const sm_T2 & s) { sm_TV r; for (int k=0; k<3; k++) { r.a[k] = p.a[k] * s; } return r; }
+sm_TV operator*(const sm_TV & p, double d) { sm_TV r; for (int k=0; k<3; k++) { r.a[k] = p.a[k] * d; } return r; }
+sm_T2 sm_TVDot(const sm_TV & p, const sm_TV & q) { return p.a[0] * q.a[0] + p.a[1] * q.a[1] + p.a[2] * q.a[2]; }
+// a series in sigma of a station (its eps^k coefficients), up to lS, as an sm_T2 of orders (lS, lE)
+sm_TV sm_TVOf(const sm_VSer<double> & crV, int k, int lS, int lE)
+{
+  sm_TV r = sm_TVZero(lS, lE);
+  for (int c=0; c<3; c++)
+    for (int i=0; i<=lS && i<=SM_GN_MAXS; i++)
+      r.a[c].at(i, 0) = crV.a[c].c[i][k];
+  return r;
+}
+// The stations a thread solved last for blends by their definitions: an evaluation at the same s
+// (another t: a row of a grid, quadrature, an isocurve) takes its station from here. Keyed by the
+// definition's serial (SmProceduralBlend::Renew), never reused, so a station is never another's.
+struct sm_StationMemo
+{
+  unsigned long long lSerial; // 0: empty
+  double             dS;
+  int                ts, te;
+  sm_GnStation       sStation;
+};
+const int SM_STATION_MEMO = 4;
+thread_local sm_StationMemo t_asMemo[SM_STATION_MEMO];
+thread_local int t_lMemoNext = 0;
+
+// p^(j)(t0) / j!, j <= lJ, of the polynomial of Bernstein coefficients crB
+std::vector<double> sm_BernTaylor(const sm_Bern & crB, double t0, int lJ)
+{
+  std::vector<double> sOut(static_cast<size_t>(lJ + 1), 0.0);
+  sm_Bern sD = crB;
+  double dFact = 1.0, dJFact = 1.0;
+  for (int j=0; j<=lJ && !sD.empty(); j++)
+    {
+      if (j > 0) { dJFact *= j; }
+      // de Casteljau at t0
+      std::vector<double> sW = sD;
+      for (size_t r=1; r<sW.size(); r++)
+        for (size_t q=0; q+r<sW.size(); q++)
+          sW[q] = (1.0 - t0) * sW[q] + t0 * sW[q+1];
+      sOut[static_cast<size_t>(j)] = dFact * sW[0] / dJFact;
+      // the derivative's coefficients: deg (b_{q+1} - b_q)
+      const double dDeg = static_cast<double>(sD.size() - 1);
+      sm_Bern sNext;
+      for (size_t q=0; q+1<sD.size(); q++) { sNext.push_back(sD[q+1] - sD[q]); }
+      dFact *= dDeg;
+      sD.swap(sNext);
+    }
+  return sOut;
+}
 } // namespace
 
 /*******************************************************************//**
@@ -3795,3 +3918,162 @@ SmStatus SmGnSectionFSG::ContactOrderAt
   rlOrder = (smos_Fabs(dCoef) > 1.0e-9 * smos_Max(1.0, dSize)) ? m_lOrder + 1 : m_lOrder + 2;
   return SM_SUCCESS;
 } // end SmGnSectionFSG::ContactOrderAt
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. The blend's definition at (dS, dT) and its
+    partials to lHighestS in s and lHighestT in t: aDerivs[i (lHighestT +
+    1) + j] = d^(i+j) S / ds^i dt^j (SmProceduralBlend.h).
+
+NOTES: One station solve: the feet by Newton from the seeds, then their
+    series in s (and in tau for the G^n jets) order by order, as the G^n
+    section's stations are built (sm_GnSolveStation). The section is then
+    exact in t: n >= 2, sum_ik c_ik(s) phi_ik(t), phi_ik the section's
+    rational functions (sm_GnForm) over its common weight; n = 1, the
+    rational quadratic arc from the first rail to the second on the circle
+    the balls' envelope touches the ball along: about m + ((rho - m) . m' /
+    m' . m') m', in the plane square to the spine's tangent m' (the great
+    circle where the radius is constant), weights 1, cos(theta / 2), 1. All
+    of it as truncated series in (sigma, dt), so the partials are exact to
+    rounding.
+***********************************************************************/
+SmStatus SmProceduralBlend::EvaluateDefinition(double dS, double dT, ULONG lHighestS, ULONG lHighestT, SmVector3d * aDerivs) const
+{
+  NER(aDerivs); NER(m_apSupport[0]); NER(m_apSupport[1]); NER(m_pLeader); NER(m_apSeed[0]); NER(m_apSeed[1]);
+  CountEvaluation();
+  const int lS = static_cast<int>(lHighestS), lT = static_cast<int>(lHighestT);
+  const int n = static_cast<int>(m_lOrder);
+  // the station: the jets to order n in tau (G^n), or the rails and the centre one order more in s (the circle's m')
+  sm_Trunc sTr;
+  sTr.s = (n >= 2) ? lS : lS + 1;
+  sTr.e = (n >= 2) ? n : 0;
+  if (lHighestS > 64 || lHighestT > 64 || sTr.s > SM_GN_MAXS || sTr.e > SM_GN_MAXE || sTr.s + sTr.e + 1 > SM_GN_MAXK)
+    { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmProceduralBlend: partials of this order are past what its definition's series hold")); }
+  double adSeed[4];
+  for (int f=0; f<2; f++)
+    {
+      SmPoint3d sW;
+      SER(m_apSeed[f]->EvaluatePoint(dS, sW));
+      adSeed[2*f] = sW.x;
+      adSeed[2*f+1] = sW.y;
+    }
+  double adR[2] = { m_adR[0], m_adR[1] };
+  sm_Ser<double> sR = sm_SerConst<double>(0.0);
+  const sm_Ser<double> * pR = NULL;
+  if (m_pLaw != NULL)
+    {
+      SmVector3d asD[SM_GN_MAXS + 1];
+      SER(m_pLaw->Evaluate(dS, static_cast<ULONG>(sTr.s), TRUE, asD, FALSE));
+      double dFact = 1.0;
+      for (int i=0; i<=sTr.s; i++)
+        {
+          if (i > 0) { dFact *= i; }
+          sR.c[i][0] = asD[i].x / dFact;
+        }
+      if (!(asD[0].x > 0.0))
+        { SER_MSG(SM_ERR, _T("SmProceduralBlend: its radius law is not positive here")); }
+      adR[0] = adR[1] = asD[0].x;
+      pR = &sR;
+    }
+  sm_GnStation sAt;
+  SmBoolean bMemo = FALSE;
+  for (int m=0; m<SM_STATION_MEMO && !bMemo; m++)
+    {
+      const sm_StationMemo & crMemo = t_asMemo[m];
+      if (crMemo.lSerial == m_lSerial && crMemo.dS == dS && crMemo.ts == sTr.s && crMemo.te == sTr.e)
+        {
+          sAt = crMemo.sStation;
+          bMemo = TRUE;
+        }
+    }
+  if (!bMemo)
+    {
+      SmPoint3d sL;
+      SER(m_pLeader->EvaluatePoint(dS, sL));
+      const SmSurface * apFace[2] = { m_apSupport[0], m_apSupport[1] };
+      // (a nested support's own evaluations use the memo meanwhile: the station is kept only once solved)
+      const SmStatus eSolved = sm_GnSolveStation(apFace, *m_pLeader, dS, adSeed, adR, m_adSide, sTr,
+                                                 1.0e-9 * smos_Max(1.0, SmVector3d(sL).Length()), sAt, pR);
+      CountSolve(static_cast<ULONG>(sAt.lSteps));
+      SER(eSolved);
+      sm_StationMemo & rMemo = t_asMemo[t_lMemoNext];
+      t_lMemoNext = (t_lMemoNext + 1) % SM_STATION_MEMO;
+      rMemo.lSerial = m_lSerial;
+      rMemo.dS = dS;
+      rMemo.ts = sTr.s;
+      rMemo.te = sTr.e;
+      rMemo.sStation = sAt;
+    }
+
+  sm_TV sSum = sm_TVZero(lS, lT);
+  if (n >= 2)
+    {
+      const sm_GnSectionForm sForm = sm_GnForm(m_lOrder, m_dThumbweight);
+      sm_T2 sW(0, lT);
+      const std::vector<double> sWt = sm_BernTaylor(sForm.W, dT, lT);
+      for (int j=0; j<=lT; j++) { sW.at(0, j) = sWt[static_cast<size_t>(j)]; }
+      sm_T2 sInvW;
+      SER(sm_T2Pow(sW, -1.0, sInvW));
+      for (int f=0; f<2; f++)
+        for (int k=0; k<=n; k++)
+          {
+            sm_T2 sN(0, lT);
+            const std::vector<double> sNt = sm_BernTaylor(sForm.aG[f][static_cast<size_t>(k)], dT, lT);
+            for (int j=0; j<=lT; j++) { sN.at(0, j) = sNt[static_cast<size_t>(j)]; }
+            const sm_T2 sPhi1 = sN * sInvW;
+            sm_T2 sPhi(lS, lT);
+            for (int j=0; j<=lT; j++) { sPhi.at(0, j) = sPhi1.at(0, j); }
+            sSum = sSum + sm_TVOf(sAt.asF[f], k, lS, lT) * sPhi;
+          }
+    }
+  else
+    {
+      // the centre to one order more, for its tangent m'
+      const sm_TV sM1 = sm_TVOf(sAt.sV, 0, lS + 1, lT);
+      sm_TV sD = sm_TVZero(lS, lT), sM = sm_TVZero(lS, lT);
+      for (int c=0; c<3; c++)
+        for (int i=0; i<=lS; i++)
+          {
+            sD.a[c].at(i, 0) = (i + 1) * sM1.a[c].at(i + 1, 0);
+            sM.a[c].at(i, 0) = sM1.a[c].at(i, 0);
+          }
+      const sm_TV sRho1 = sm_TVOf(sAt.asF[0], 0, lS, lT), sRho2 = sm_TVOf(sAt.asF[1], 0, lS, lT);
+      sm_T2 sInvDD;
+      SER(sm_T2Pow(sm_TVDot(sD, sD), -1.0, sInvDD));
+      // the touch circle's centre: the ball's moved along m' by (rho - m) . m' / m' . m' (zero where r is constant)
+      const sm_TV sMc = sM + sD * (sm_TVDot(sRho1 - sM, sD) * sInvDD);
+      const sm_TV sB1 = sRho1 - sMc, sB2 = sRho2 - sMc;
+      sm_T2 sI1, sI2;
+      SER(sm_T2Pow(sm_TVDot(sB1, sB1), -0.5, sI1));
+      SER(sm_T2Pow(sm_TVDot(sB2, sB2), -0.5, sI2));
+      const sm_T2 sHalf = (sm_TVDot(sB1, sB2) * sI1 * sI2 + sm_T2(lS, lT, 1.0)) * 0.5; // cos^2(theta / 2)
+      sm_T2 sW, sInvW2;
+      SER(sm_T2Pow(sHalf, 0.5, sW));
+      SER(sm_T2Pow(sHalf, -1.0, sInvW2));
+      // the middle control point, where the tangents at the rails meet
+      const sm_TV sP1 = sMc + ((sRho1 + sRho2) * 0.5 - sMc) * sInvW2;
+      sm_T2 asB[3] = { sm_T2(lS, lT), sm_T2(lS, lT), sm_T2(lS, lT) };
+      const double t0 = dT;
+      const double adB[3][3] = { { (1.0 - t0) * (1.0 - t0), -2.0 * (1.0 - t0), 1.0 },
+                                 { 2.0 * t0 * (1.0 - t0), 2.0 - 4.0 * t0, -2.0 },
+                                 { t0 * t0, 2.0 * t0, 1.0 } };
+      for (int b=0; b<3; b++)
+        for (int j=0; j<=lT && j<3; j++)
+          asB[b].at(0, j) = adB[b][j];
+      const sm_T2 sWB1 = sW * asB[1];
+      sm_T2 sInvDen;
+      SER(sm_T2Pow(asB[0] + sWB1 + asB[2], -1.0, sInvDen));
+      sSum = (sRho1 * asB[0] + sP1 * sWB1 + sRho2 * asB[2]) * sInvDen;
+    }
+  double dFi = 1.0;
+  for (int i=0; i<=lS; i++)
+    {
+      if (i > 0) { dFi *= i; }
+      double dFj = 1.0;
+      for (int j=0; j<=lT; j++)
+        {
+          if (j > 0) { dFj *= j; }
+          aDerivs[i * (lT + 1) + j] = SmVector3d(sSum.a[0].at(i, j), sSum.a[1].at(i, j), sSum.a[2].at(i, j)) * (dFi * dFj);
+        }
+    }
+  return SM_SUCCESS;
+} // end SmProceduralBlend::EvaluateDefinition
