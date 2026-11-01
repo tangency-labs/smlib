@@ -8796,6 +8796,126 @@ void scenario_constant_law_ending_at_the_r5_corner()
     smlib_brep_free(rounded);
 }
 
+// SolidCraft ladder 07-fillets/012: a variable round, r0 at x = 0 to 5 at x = 55, on the top
+// back edge of a 60 x 40 x 20 box whose vertical edge at (60, 40) is rounded R5. At x = 55 the
+// edge runs on tangentially, along the top face, into the R5 round's top arc, not selected (a
+// variable round is never chain-expanded by its caller): a partial selection, so the round ends
+// at that smooth vertex, cut by the plane x = 55, and at x = 0 on the end face. Its surface is
+// the envelope of the balls of radius r(s) = r0 + (5 - r0) s / 55 centred at
+// (s, 40 - r(s), 20 - r(s)), s in [0, 55]. In the plane x the round removes the corner cut off
+// by the union of those balls' sections: by rays from the corner (40, 20), at angle phi into the
+// face, each to its first entry t(phi) into the union (the least over s of its entry into the
+// section disc of radius sqrt(r(s)^2 - (x - s)^2) about (40 - r(s), 20 - r(s))): area
+// A(x) = Int_0^(pi/2) t(phi)^2 / 2 dphi; removed Int_0^55 A(x) dx, the end face's area A(55).
+// Both graded to the round's certified bound (a variable round is a certified B-spline): the
+// fillet's tolerance times the round's ruled area (its section's arc, at most pi r1 / 2, along 55)
+// for the volume, times the end's perimeter (2 r1 + pi r1 / 2) for the area.
+double variable_round_corner_section(double x, double r0)
+{
+    const auto radius = [r0](double s) { return r0 + (5.0 - r0) * s / 55.0; };
+    const auto entry = [&](double s, double phi) {
+        const double r = radius(s), half = r * r - (x - s) * (x - s);
+        if (half <= 0.0)
+        {
+            return HUGE_VAL;
+        }
+        const double wd = -r * (std::cos(phi) + std::sin(phi)), disc = wd * wd - 2.0 * r * r + half;
+        if (disc < 0.0)
+        {
+            return HUGE_VAL;
+        }
+        const double t = -wd - std::sqrt(disc);
+        return t >= 0.0 ? t : HUGE_VAL;
+    };
+    const int n_phi = 400, n_s = 400;
+    double area = 0.0;
+    for (int i = 0; i <= n_phi; ++i)
+    {
+        const double phi = 0.5 * PI * i / n_phi;
+        // the least entry over s: a scan of [0, 55], then a golden-section refinement of the best
+        double best = HUGE_VAL, at = 0.0;
+        for (int k = 0; k <= n_s; ++k)
+        {
+            const double s = 55.0 * k / n_s, t = entry(s, phi);
+            if (t < best)
+            {
+                best = t;
+                at = s;
+            }
+        }
+        double lo = std::max(0.0, at - 55.0 / n_s), hi = std::min(55.0, at + 55.0 / n_s);
+        for (int g = 0; g < 60; ++g)
+        {
+            const double a = hi - 0.6180339887498949 * (hi - lo), b = lo + 0.6180339887498949 * (hi - lo);
+            if (entry(a, phi) < entry(b, phi))
+            {
+                hi = b;
+            }
+            else
+            {
+                lo = a;
+            }
+        }
+        best = std::min(best, entry(0.5 * (lo + hi), phi));
+        area += (i == 0 || i == n_phi ? 1.0 : (i % 2 ? 4.0 : 2.0)) * 0.5 * best * best;
+    }
+    return area * (0.5 * PI / n_phi) / 3.0;
+}
+
+void scenario_variable_round_ending_at_the_r5_corner()
+{
+    smlib_brep *block = box(0, 0, 0, 60, 40, 20);
+    const double corner_edge[3] = {60, 40, 10};
+    smlib_brep *rounded = nullptr;
+    CHECK(smlib_fillet(block, corner_edge, 1, 0.1, 5.0, &rounded, nullptr) == SMLIB_OK);
+    smlib_brep_free(block);
+    const double back_top[3] = {27.5, 40, 20};
+    const double from[3] = {0, 40, 20};
+    const double knots[4] = {0, 0, 1, 1};
+    for (double r0 : {1.0, 2.0})
+    {
+        const double law[2] = {r0, 5.0};
+        smlib_brep *r = nullptr;
+        const int32_t s = rounded == nullptr ? SMLIB_ERR_ARG : smlib_fillet_variable(rounded, back_top, 0.1, from, 1, knots, 4, law, 2, &r);
+        std::printf("  r0 %g: status %d\n", r0, static_cast<int>(s));
+        CHECK(s == SMLIB_OK && r != nullptr);
+        if (r == nullptr)
+        {
+            continue;
+        }
+        const int n_x = 100;
+        double want = 0.0;
+        for (int i = 0; i <= n_x; ++i)
+        {
+            want += (i == 0 || i == n_x ? 1.0 : (i % 2 ? 4.0 : 2.0)) * variable_round_corner_section(55.0 * i / n_x, r0);
+        }
+        want *= (55.0 / n_x) / 3.0;
+        const double want_area = variable_round_corner_section(55.0, r0), removed = volume_of(rounded) - volume_of(r);
+        int ends = 0;
+        double area = 0.0;
+        SmTArray<SmFace *> faces;
+        r->p->GetFaces(faces);
+        for (ULONG i = 0; i < faces.GetSize(); i++)
+        {
+            SmExtent3d bx;
+            CHECK(faces[i]->CalculateTightBoundingBox(bx) == SM_SUCCESS);
+            if (SM_CAST_PTR(SmPlane, faces[i]->GetSurface()) != nullptr && bx.GetMin().x == 55.0 && bx.GetMax().x == 55.0)
+            {
+                ends++;
+                CHECK(SmApiFaceComputeArea(faces[i], 1e-10, area) == SM_SUCCESS);
+            }
+        }
+        const double tol = 100.0 * static_cast<double>(rounded->p->GetTolerance());
+        std::printf("  r0 %g: removed %.9f, want %.9f; %d end face(s) at x = 55, area %.9f, want %.9f\n", r0, removed, want, ends, area, want_area);
+        CHECK(std::fabs(removed - want) <= tol * 55.0 * PI * 5.0 / 2.0);
+        CHECK(ends == 1);
+        CHECK(std::fabs(area - want_area) <= tol * (2.0 * 5.0 + PI * 5.0 / 2.0));
+        CHECK(sound(r));
+        done(r);
+    }
+    smlib_brep_free(rounded);
+}
+
 // A 20 x 4 x 10 block with a slot 4 wide (x 8 to 12) cut through it from below to 1 under its
 // top: two pillars joined by a bridge 1 thick (656). Its top front edge (y = 0, z = 10, the whole
 // 20) is blended. In the section square to the edge, coordinates y (in from the front) and z,
@@ -9089,9 +9209,32 @@ void scenario_middle_edge_of_an_arc_tangent_chain(double r)
     }
 }
 
+// At r 0.25 the middle edge's round is refused, SMLIB_ERR_NO_ROOM, no size building it
+// (smlib_blend_fit_size 0). Its top end is a smooth vertex, V on the arc wall at y = -19, z = 10,
+// where the edge runs on tangentially into the arc's top edge: the round ends there, cut by the
+// plane through V square to the edge. Its rail on the R2 front round stays on that round only
+// below the round's tangent edge with the top face (y = -19, z = 10), and that edge passes
+// through V: a ball of radius r touching the front round on it, at x, has its centre at
+// (x, -19, 10 + r), 21 + r from the arc wall's axis (62 1/6, -21), so
+// (x - 62 1/6)^2 + 4 = (21 + r)^2; the plane through V meets that edge at V only, where
+// (x_V - 62 1/6)^2 + 4 = 21^2: r = 0. For every r > 0 the rail crosses the tangent edge onto the
+// top face before the plane (at r 0.25, 0.024 past it): it rolls over into the End, which is not
+// built (smlib#98), so no radius builds.
 void scenario_middle_edge_of_an_arc_tangent_chain_r0_25()
 {
-    scenario_middle_edge_of_an_arc_tangent_chain(0.25);
+    smlib_brep *part = arc_wall_plate(), *front = nullptr, *out = nullptr;
+    const double tol = 3.3197702709152845, at_front[3] = {20.583333333333332, -21, 10}, two = 2.0, r = 0.25;
+    CHECK(part != nullptr && smlib_blend(part, SMLIB_BLEND_ROUND, at_front, &two, 1, tol, &front, nullptr) == SMLIB_OK);
+    const double middle[3] = {41.17486688363082, -20.413218067968561, 9.415188112149071};
+    const int32_t s = front != nullptr ? smlib_blend(front, SMLIB_BLEND_ROUND, middle, &r, 1, tol, &out, nullptr) : -1;
+    const std::string why = last_blend_reason();
+    std::printf("  r %g: status %d%s%s\n", r, static_cast<int>(s), why.empty() ? "" : ": ", why.c_str());
+    CHECK(s == SMLIB_ERR_NO_ROOM && out == nullptr && !why.empty());
+    CHECK(blend_fit() == 0.0);
+    for (smlib_brep *b : {part, front, out})
+    {
+        smlib_brep_free(b);
+    }
 }
 
 void scenario_middle_edge_of_an_arc_tangent_chain_r2()
@@ -9388,6 +9531,8 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"chamfers_of_an_arc_wall_and_the_top_front", scenario_chamfers_of_an_arc_wall_and_the_top_front, nullptr},
     {"chamfers_taking_a_square_top_refused", scenario_chamfers_taking_a_square_top_refused,
      "SMLib fails with \"Fillet Surface Computation Failure\" before it judges the top taken whole, so the refusal is not SMLIB_ERR_NO_ROOM and names no size"},
+    {"variable_round_ending_at_the_r5_corner", scenario_variable_round_ending_at_the_r5_corner,
+     "status 0, but the round runs on past x = 55 into the R5 round, no End at the smooth vertex"},
     {"constant_law_ending_at_the_r5_corner", scenario_constant_law_ending_at_the_r5_corner,
      "status 0, but the round runs on past x = 55 into the R5 round, no End at the smooth vertex"},
     {"chord_on_a_60_degree_edge", scenario_chord_on_a_60_degree_edge, nullptr},
@@ -9398,7 +9543,7 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"hole_in_band_taken", scenario_hole_in_band_taken, nullptr},
     {"hole_short_of_band", scenario_hole_short_of_band, nullptr},
     {"middle_edge_of_an_arc_tangent_chain_r0_25", scenario_middle_edge_of_an_arc_tangent_chain_r0_25,
-     "status -1100 (not a solid), no reason: the round leaves a cut in the arc wall whose radial pairing runs the face's two sides, the arc wall on both sides of it"},
+     "status -1100 (not a solid), no reason, not SMLIB_ERR_NO_ROOM with no size building it: the round leaves a cut in the arc wall"},
     {"middle_edge_of_an_arc_tangent_chain_r2", scenario_middle_edge_of_an_arc_tangent_chain_r2,
      "status 1001, Fillet Surface Computation Failure (SmFilletSolver::CalcFilletGeom): a ball of the front round's own radius, its offset of that round the round's axis; not refused naming a smaller radius"},
     {"round_at_a_pin_on_a_slope_folds_refused", scenario_round_at_a_pin_on_a_slope_folds_refused, nullptr},
@@ -13436,45 +13581,6 @@ int main(int argc, char **argv)
         smlib_brep_free(notched);
     }
 
-    // SolidCraft ladder 07-fillets/012: a variable round, r0 at x = 0 to r1 at x = 55, on the top
-    // back edge of a 60 x 40 x 20 box whose vertical edge at (60, 40) is rounded R5. With r1 = 5
-    // the rail on the top meets the R5 corner's arc only at its end (60, 35), where the law,
-    // extended past the edge's end, is larger: there it leaves the top across the right face's
-    // edge. The second search for that rail's end held the radius at r1 even though the corner
-    // is not calculated as constant radius (the first search holds it only then), found the
-    // arc's end, and the variable round's trace could not pass through it (1001). The linear
-    // law's balls envelop a cone, going on past x = 55; its removal region in each plane
-    // x = const (the corner cut off by the cone's section, by rays from the corner, each meeting
-    // the union of the balls first at the least entry over them, and past x = 55, s along it,
-    // only as far as the R5 cylinder reaches, y - 35 < sqrt(25 - s^2)), integrated over x,
-    // takes 137.573156 for r0 = 1 and 168.865031 for r0 = 2 (the balls' great circles would
-    // take 137.819 and 169.034).
-    {
-        smlib_brep *block = box(0, 0, 0, 60, 40, 20);
-        const double corner_edge[3] = {60, 40, 10};
-        smlib_brep *rounded = nullptr;
-        CHECK(smlib_fillet(block, corner_edge, 1, 0.1, 5.0, &rounded, nullptr) == SMLIB_OK);
-        const double back_top[3] = {27.5, 40, 20};
-        const double from[3] = {0, 40, 20};
-        const double knots[4] = {0, 0, 1, 1};
-        const std::array<std::array<double, 2>, 2> starts = {{{1.0, 137.573156}, {2.0, 168.865031}}};
-        for (const auto &[r0, removed] : starts)
-        {
-            const double r1 = 5.0;
-            const double law[2] = {r0, r1};
-            if (rounded != nullptr && smlib_fillet_variable(rounded, back_top, 0.1, from, 1, knots, 4, law, 2, &r) == SMLIB_OK)
-            {
-                CHECK(near(volume_of(r), volume_of(rounded) - removed, 1e-6));
-                done(r);
-            }
-            else
-            {
-                CHECK(!"a variable round reaching R5 at the R5 corner");
-            }
-        }
-        smlib_brep_free(rounded);
-        smlib_brep_free(block);
-    }
 
     // Booleans that split, vanish or touch.
     smlib_brep *cut = box(8, -1, -1, 4, 22, 22);
