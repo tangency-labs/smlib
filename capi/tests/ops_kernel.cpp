@@ -8204,6 +8204,60 @@ void scenario_three_edges_at_the_knife_edge_arc_corner()
     done(r);
 }
 
+// A constant radius law (r -> r) on the top back edge of a 60 x 40 x 20 box whose vertical
+// edge at (60, 40) is rounded R5. The top back edge runs on at x = 55 tangentially, along the
+// top face, into the R5 round's top arc, which is not selected (a variable round is not chain
+// expanded): with tangent propagation off the round ends at that smooth vertex, cut by the plane
+// x = 55 square to its edge, and at x = 0 on the end face. Removed: (1 - pi/4) r^2 along 55,
+// for r 1, 2, 3; the end at x = 55 a plane face of area (1 - pi/4) r^2. (Built with no slope,
+// the shim's law curve could not be extended past the edge's end and the round failed, 1001.)
+void scenario_constant_law_ending_at_the_r5_corner()
+{
+    smlib_brep *block = box(0, 0, 0, 60, 40, 20);
+    const double corner_edge[3] = {60, 40, 10};
+    smlib_brep *rounded = nullptr;
+    CHECK(smlib_fillet(block, corner_edge, 1, 0.1, 5.0, &rounded, nullptr) == SMLIB_OK);
+    smlib_brep_free(block);
+    const double back_top[3] = {27.5, 40, 20};
+    const double from[3] = {0, 40, 20};
+    const double knots[4] = {0, 0, 1, 1};
+    for (double radius : {1.0, 2.0, 3.0})
+    {
+        const double law[2] = {radius, radius};
+        smlib_brep *r = nullptr;
+        const int32_t s = rounded == nullptr ? SMLIB_ERR_ARG : smlib_fillet_variable(rounded, back_top, 0.1, from, 1, knots, 4, law, 2, &r);
+        std::printf("  r %g: status %d\n", radius, static_cast<int>(s));
+        CHECK(s == SMLIB_OK && r != nullptr);
+        if (r == nullptr)
+        {
+            continue;
+        }
+        const double quarter = 1.0 - PI / 4.0, removed = volume_of(rounded) - volume_of(r);
+        int ends = 0;
+        double area = 0.0;
+        SmTArray<SmFace *> faces;
+        r->p->GetFaces(faces);
+        for (ULONG i = 0; i < faces.GetSize(); i++)
+        {
+            SmExtent3d bx;
+            CHECK(faces[i]->CalculateTightBoundingBox(bx) == SM_SUCCESS);
+            if (SM_CAST_PTR(SmPlane, faces[i]->GetSurface()) != nullptr && bx.GetMin().x == 55.0 && bx.GetMax().x == 55.0)
+            {
+                ends++;
+                CHECK(SmApiFaceComputeArea(faces[i], 1e-10, area) == SM_SUCCESS);
+            }
+        }
+        std::printf("  r %g: removed %.9f, want %.9f; %d end face(s) at x = 55, area %.12f, want %.12f\n", radius, removed, 55.0 * radius * radius * quarter,
+                    ends, area, radius * radius * quarter);
+        CHECK(near(removed, 55.0 * radius * radius * quarter, 1e-8));
+        CHECK(ends == 1);
+        CHECK(near(area, radius * radius * quarter, 1e-8));
+        CHECK(sound(r));
+        done(r);
+    }
+    smlib_brep_free(rounded);
+}
+
 // A 20 x 4 x 10 block with a slot 4 wide (x 8 to 12) cut through it from below to 1 under its
 // top: two pillars joined by a bridge 1 thick (656). Its top front edge (y = 0, z = 10, the whole
 // 20) is blended. In the section square to the edge, coordinates y (in from the front) and z,
@@ -8747,6 +8801,8 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"chamfers_of_an_arc_wall_and_the_top_front", scenario_chamfers_of_an_arc_wall_and_the_top_front, nullptr},
     {"chamfers_taking_a_square_top_refused", scenario_chamfers_taking_a_square_top_refused,
      "SMLib fails with \"Fillet Surface Computation Failure\" before it judges the top taken whole, so the refusal is not SMLIB_ERR_NO_ROOM and names no size"},
+    {"constant_law_ending_at_the_r5_corner", scenario_constant_law_ending_at_the_r5_corner,
+     "status 0, but the round runs on past x = 55 into the R5 round, no End at the smooth vertex"},
     {"chord_on_a_60_degree_edge", scenario_chord_on_a_60_degree_edge, nullptr},
     {"chord_past_a_wall_refused", scenario_chord_past_a_wall_refused, nullptr},
     {"cube_corner_rounds_as_wide_as_faces_refused", scenario_cube_corner_rounds_as_wide_as_faces_refused, nullptr},
@@ -11656,45 +11712,6 @@ int main(int argc, char **argv)
     }
 
 
-    // A constant radius law (r -> r) on the top back edge of a 60 x 40 x 20 box whose vertical
-    // edge at (60, 40) is rounded R5. The round runs on past the edge's end until it meets the R5
-    // cylinder, so the law is evaluated past its end; built with no slope (the shim's law curve
-    // had radius in x and 0 in y), it could not be extended there, and the round failed (1001).
-    // Removed: (1 - pi/4) r^2 along 55, and past x = 55 the square r x r less the quarter disc,
-    // as far as the cylinder reaches: the integral of (r - sqrt(r^2 - u^2)) sqrt(25 - (5 - r +
-    // u)^2) over 0 < u < r.
-    {
-        smlib_brep *block = box(0, 0, 0, 60, 40, 20);
-        const double corner_edge[3] = {60, 40, 10};
-        smlib_brep *rounded = nullptr;
-        CHECK(smlib_fillet(block, corner_edge, 1, 0.1, 5.0, &rounded, nullptr) == SMLIB_OK);
-        const double back_top[3] = {27.5, 40, 20};
-        const double from[3] = {0, 40, 20};
-        const double knots[4] = {0, 0, 1, 1};
-        for (double radius : {1.0, 2.0, 3.0})
-        {
-            const double law[2] = {radius, radius};
-            if (rounded != nullptr && smlib_fillet_variable(rounded, back_top, 0.1, from, 1, knots, 4, law, 2, &r) == SMLIB_OK)
-            {
-                double past = 0.0;
-                const int steps = 200000;
-                for (int i = 0; i < steps; ++i)
-                {
-                    double u = (i + 0.5) * radius / steps;
-                    double w = 5.0 - radius + u;
-                    past += (radius - std::sqrt(radius * radius - u * u)) * std::sqrt(std::max(0.0, 25.0 - w * w)) * radius / steps;
-                }
-                CHECK(near(volume_of(r), volume_of(rounded) - 55.0 * radius * radius * (1.0 - PI / 4.0) - past, 1e-6));
-                done(r);
-            }
-            else
-            {
-                CHECK(!"a constant law into the R5 corner");
-            }
-        }
-        smlib_brep_free(rounded);
-        smlib_brep_free(block);
-    }
 
     // tangency-labs/solidcore#458: a variable round whose law SMLib cannot evaluate past the edge's
     // ends (a constant law curve laid out with no slope, radius 2 as x and 0 as y, as the shim
