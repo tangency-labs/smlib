@@ -3992,11 +3992,13 @@ struct ExactFace
         PLANE,
         CYLINDER,
         CONE,
-        SPHERE
+        SPHERE,
+        FREEFORM
     } kind;
     std::array<double, 3> p; // plane: a point; cylinder: an axis point; cone: the apex; sphere: the centre
     std::array<double, 3> d; // plane: unit normal; cylinder: unit axis; cone: unit axis into its nappe
     double size;             // cylinder, sphere: radius; cone: half-angle (radians)
+    std::function<double(const SmPoint3d &)> off = nullptr; // freeform: a point's distance from it (zero on it)
 
     double distance(const SmPoint3d &c) const
     {
@@ -4013,6 +4015,8 @@ struct ExactFace
             return std::fabs(across * std::cos(size) - along * std::sin(size));
         case SPHERE:
             return std::fabs(std::sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]) - size);
+        case FREEFORM:
+            return off != nullptr ? off(c) : HUGE_VAL;
         }
         return HUGE_VAL;
     }
@@ -4477,8 +4481,8 @@ int seam_order(const double diff[4], const double tol[4])
 struct SectionGrade
 {
     double volume;                                // the body's, worked out
-    double volume_rel;                            // its tolerance
-    std::function<double(const SmPoint3d &)> off; // a point's distance from the exact blend
+    double volume_rel;                            // its tolerance (negative: no closed form, not graded)
+    std::function<double(const SmPoint3d &)> off; // a point's distance from the exact blend (null: not graded)
     double off_tol;                               // the most any point of the blend's surfaces may be off it
     std::vector<ExactFace> faces;                 // the body's faces before the blend, as their surfaces
     std::array<int, 2> rails;                     // the two of them the blend meets along its contact lines
@@ -4487,6 +4491,7 @@ struct SectionGrade
     bool fitted;                                  // a fitted blend: within 1 degree, 0.01 / mm, 0.001 / mm^2, 0.0001 / mm^3
     double size;                                  // the blend's size, for the seam's steps
     int spans = -1;                               // a certified blend: its surface's spans in all, exactly (-1: not graded)
+    std::function<void(const SmSurface *)> also;  // further checks on each blend face's surface (null: none)
 };
 
 // Builds a blend by `build` and grades it by `g`: status, SMLib's check, volume, every point of
@@ -4506,7 +4511,7 @@ void section_blend(const std::function<int32_t(smlib_brep **)> &build, const Sec
     }
     const double v = volume_of(b);
     std::printf("  volume %.9f, want %.9f\n", v, g.volume);
-    CHECK(near(v, g.volume, g.volume_rel));
+    CHECK(g.volume_rel < 0 || near(v, g.volume, g.volume_rel));
     CHECK(sound(b));
     auto on_face = [&](const SmSurface *srf, int k)
     {
@@ -4534,19 +4539,26 @@ void section_blend(const std::function<int32_t(smlib_brep **)> &build, const Sec
         }
         blends++;
         const SmExtent2d dom = srf->GetNaturalUVDomain();
-        double worst = 0.0;
-        for (int a = 0; a <= 16; a++)
+        if (g.off != nullptr)
         {
-            for (int c = 0; c <= 16; c++)
+            double worst = 0.0;
+            for (int a = 0; a <= 16; a++)
             {
-                SmPoint3d x;
-                const SmPoint2d uv(dom.GetMin().x + (dom.GetMax().x - dom.GetMin().x) * a / 16.0,
-                                   dom.GetMin().y + (dom.GetMax().y - dom.GetMin().y) * c / 16.0);
-                worst = std::max(worst, srf->EvaluatePoint(uv, x) == SM_SUCCESS ? g.off(x) : HUGE_VAL);
+                for (int c = 0; c <= 16; c++)
+                {
+                    SmPoint3d x;
+                    const SmPoint2d uv(dom.GetMin().x + (dom.GetMax().x - dom.GetMin().x) * a / 16.0,
+                                       dom.GetMin().y + (dom.GetMax().y - dom.GetMin().y) * c / 16.0);
+                    worst = std::max(worst, srf->EvaluatePoint(uv, x) == SM_SUCCESS ? g.off(x) : HUGE_VAL);
+                }
             }
+            std::printf("  blend face %lu: off the exact blend by %.3g (allowed %.3g)\n", static_cast<unsigned long>(i), worst, g.off_tol);
+            CHECK(worst <= g.off_tol);
         }
-        std::printf("  blend face %lu: off the exact blend by %.3g (allowed %.3g)\n", static_cast<unsigned long>(i), worst, g.off_tol);
-        CHECK(worst <= g.off_tol);
+        if (g.also != nullptr)
+        {
+            g.also(srf);
+        }
         // the surface's spans: a count, not a time, that a looser certificate or a finer fit changes
         const SmBSplineSurface *bs = dynamic_cast<const SmBSplineSurface *>(srf);
         SmTArray<double> uk, vk;
@@ -4779,6 +4791,126 @@ void section_sharp_wedge_g2_equal_area()
         smlib_brep_free(r);
     }
     smlib_brep_free(prism);
+}
+
+// A block 60 x 30 x 50 cut by the surface z = 25 + a(x) y, a a cubic spline in x on the knots -4,
+// 0, 4, ..., 64 (end knots four times) whose control values are -tan 30 (the first seven), 0 (the
+// next six) and tan 30 (the last seven), each at its knots' Greville abscissa, so that the surface
+// is bilinear in (a, y) and a is -tan 30 on x <= 12, 0 on 24..36 and tan 30 on x >= 48, a twist
+// between. Its front edge y = 0, z = 25 is straight, and the wedge there, alpha = 90 degrees + atan
+// a(x), opens from 60 to 120 degrees along it. The order-2 section at the equal area thumbweight,
+// size 3: where a is constant the top is a plane, the section at x lies in the plane x = const
+// between two lines at alpha, and at that station's own thumbweight it takes off the ball's
+// circle's area r^2 (cot(alpha/2) - (pi - alpha)/2): 6.163679 at 60 degrees, 1.931417 at 90 and
+// 0.483764 at 120 (one thumbweight for the edge takes off one of them, and misses the others by up
+// to a fifth). In the twist the jets are curved: the section is G2 there and G3 on the planes.
+const double TWIST_TAN = 0.57735026918962576; // tan 30 degrees
+
+smlib_surface *twisted_top()
+{
+    std::vector<double> ku = {-4, -4, -4, -4};
+    for (int x = 0; x <= 60; x += 4)
+    {
+        ku.push_back(x);
+    }
+    ku.insert(ku.end(), {64, 64, 64, 64});
+    const int nu = static_cast<int>(ku.size()) - 4;
+    const double kv[4] = {0, 0, 1, 1}, ys[2] = {-1, 31};
+    std::vector<double> pts;
+    for (int i = 0; i < nu; i++)
+    {
+        const double x = (ku[i + 1] + ku[i + 2] + ku[i + 3]) / 3.0;
+        const double a = i < 7 ? -TWIST_TAN : (i < 13 ? 0.0 : TWIST_TAN);
+        for (double y : ys)
+        {
+            pts.insert(pts.end(), {x, y, 25.0 + a * y});
+        }
+    }
+    smlib_surface *s = nullptr;
+    CHECK(smlib_surface_nurbs(3, 1, nu, 2, ku.data(), static_cast<int64_t>(ku.size()), kv, 4, pts.data(), nullptr, &s) == SMLIB_OK);
+    return s;
+}
+
+void section_twisted_wedge_g2_equal_area()
+{
+    smlib_surface *top = twisted_top();
+    smlib_brep *below = nullptr, *above = nullptr;
+    smlib_brep *block = box(0, 0, 0, 60, 30, 50);
+    CHECK(top != nullptr && block != nullptr && smlib_split_body(block, top, &below, &above) == SMLIB_OK);
+    smlib_brep_free(block);
+    smlib_brep_free(above);
+    SectionGrade g;
+    g.volume = 0.0;
+    g.volume_rel = -1.0; // the twist's sections have no closed form: the areas below grade the planes'
+    g.off = nullptr;
+    // the top: its height off the cutting surface's at (x, y)
+    auto off_top = [top](const SmPoint3d &x)
+    {
+        double q[3];
+        return smlib_surface_evaluate(top, x.x, (x.y + 1.0) / 32.0, q) == SMLIB_OK ? std::fabs(x.z - q[2]) : HUGE_VAL;
+    };
+    g.faces = {{ExactFace::PLANE, {0, 0, 0}, {1, 0, 0}, 0},  {ExactFace::PLANE, {60, 0, 0}, {1, 0, 0}, 0},
+               {ExactFace::PLANE, {0, 0, 0}, {0, 1, 0}, 0},  {ExactFace::PLANE, {0, 30, 0}, {0, 1, 0}, 0},
+               {ExactFace::PLANE, {0, 0, 0}, {0, 0, 1}, 0},  {ExactFace::FREEFORM, {0, 0, 0}, {0, 0, 0}, 0, off_top}};
+    g.rails = {2, 5};
+    // G2 everywhere within Continuity Analysis's tolerances (a certified fit); G3 on the planes, which
+    // the fitted measure's steps read as G2 at w down to -1.13 (box_edge_g2_equal_area's note)
+    g.order = 2;
+    g.order_max = 3;
+    g.fitted = true;
+    g.size = 3.0;
+    // certified span by span at a tenth of the tolerance, the rows' remainder with the jets' (one
+    // thumbweight for the edge, -0.5, takes 197)
+    g.spans = 288;
+    int stations = 0;
+    g.also = [&stations](const SmSurface *srf)
+    {
+        const SmExtent2d dom = srf->GetNaturalUVDomain();
+        const double u0 = dom.GetMin().x, u1 = dom.GetMax().x, v0 = dom.GetMin().y, v1 = dom.GetMax().y;
+        auto at = [&](double u, double v)
+        {
+            SmPoint3d p(0, 0, 0);
+            CHECK(srf->EvaluatePoint(SmPoint2d(u, v), p) == SM_SUCCESS);
+            return p;
+        };
+        for (const double a : {-TWIST_TAN, 0.0, TWIST_TAN})
+        {
+            // the middle of the plane where a is constant, and its section: u where the rail is at x
+            const double x0 = a < 0 ? 6.0 : (a > 0 ? 54.0 : 30.0);
+            double lo = u0, hi = u1;
+            const bool rising = at(u1, v0).x > at(u0, v0).x;
+            for (int it = 0; it < 200; it++)
+            {
+                const double mid = 0.5 * (lo + hi);
+                if ((at(mid, v0).x < x0) == rising) { lo = mid; } else { hi = mid; }
+            }
+            const double u = 0.5 * (lo + hi);
+            // the area it takes off the wedge: Green's theorem about the edge (x0, 0, 25), by Simpson's
+            // rule on 20000 intervals with central differences; and how far the section is off x = x0
+            const int N = 20000;
+            const double h = 1e-6 * (v1 - v0);
+            double sum = 0.0, plane = 0.0;
+            for (int i = 0; i <= N; i++)
+            {
+                const double v = v0 + (v1 - v0) * i / N, va = std::max(v0, v - h), vb = std::min(v1, v + h);
+                const SmPoint3d p = at(u, v), pa = at(u, va), pb = at(u, vb);
+                const double dy = (pb.y - pa.y) / (vb - va), dz = (pb.z - pa.z) / (vb - va);
+                sum += (i == 0 || i == N ? 1.0 : (i % 2 ? 4.0 : 2.0)) * (p.y * dz - (p.z - 25.0) * dy);
+                plane = std::max(plane, std::fabs(p.x - x0));
+            }
+            const double area = std::fabs(0.5 * sum * (v1 - v0) / (3.0 * N));
+            const double alpha = 0.5 * PI + std::atan(a);
+            const double want = 9.0 * (1.0 / std::tan(0.5 * alpha) - 0.5 * (PI - alpha));
+            std::printf("  wedge %.1f degrees at x = %g: the section off x by %.3g, takes off %.9f, the circle %.9f\n", alpha * 180.0 / PI, x0, plane,
+                        area, want);
+            CHECK(plane <= 1e-9);
+            CHECK(near(area, want, 1e-6));
+            stations++;
+        }
+    };
+    section_blend(by_order(below, {30, 0, 25}, 2, SMLIB_BLEND_THUMBWEIGHT, 3.0), g);
+    CHECK(stations == 3);
+    smlib_surface_free(top);
 }
 
 // The thumbweight at which the order-2 section between square planes, set back s, cuts 113/756 s^2
@@ -5188,6 +5320,7 @@ const TangentEndCase SECTION_CASES[] = {
     {"pipe_on_plate_g2", section_pipe_on_plate_g2, nullptr},
     {"pipe_on_plate_g2_thumbweight_half", section_pipe_on_plate_g2_thumbweight_half, nullptr},
     {"sharp_wedge_g2_equal_area", section_sharp_wedge_g2_equal_area, nullptr},
+    {"twisted_wedge_g2_equal_area", section_twisted_wedge_g2_equal_area, nullptr},
     {"variable_round_law_dip", section_variable_round_law_dip, nullptr},
     {"variable_round_law_dips", section_variable_round_law_dips, nullptr},
     {"variable_round_law_peak", section_variable_round_law_peak, nullptr},
