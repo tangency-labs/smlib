@@ -6721,6 +6721,57 @@ void scenario_chamfer_two_distances_past_the_top_refused()
     smlib_brep_free(can);
 }
 
+// A pin of radius R = 2 (axis z) standing on a plate whose top is the plane z = x tan(a), a = 60
+// degrees, its foot an ellipse rounded r. The ball's centre runs on the ellipse of the offset
+// cylinder (radius R + r) and the offset plane: c(f) = ((R + r) cos f, (R + r) sin f, z(f)), its
+// contacts the plane's (direction -n, n = (-sin a, 0, cos a)) and the pin's (direction -e(f)).
+// The touch arc is progressive where f_ff = |c'|^2 - r <u, c''> > 0 for its unit directions u;
+// at f = 0, on the side where the plate rises into the pin (the acute wedge), c' = (0, R + r, 0)
+// and c'' = -(R + r) (1, 0, tan a), square to n, inside the arc: the least f_ff is (R + r)^2 -
+// r (R + r) / cos a, zero at r = R cos a / (1 - cos a) = 2, the least over f (checked over
+// the whole ellipse). Each face encloses the ball (the plane is flat, the pin curves away), so
+// past r = 2 only the progressive check refuses, naming 2; r = 1.8 builds.
+smlib_brep *pin_on_a_slope()
+{
+    const double a = PI / 3.0, ca = std::cos(a), sa = std::sin(a);
+    smlib_brep *slab = box(-20, -20, -20, 40, 40, 20), *plate = nullptr;
+    const double m[4][4] = {{ca, 0, sa, 0}, {0, 1, 0, 0}, {-sa, 0, ca, 0}, {0, 0, 0, 1}};
+    CHECK(slab != nullptr && smlib_brep_transform(slab, m, &plate) == SMLIB_OK);
+    smlib_brep_free(slab);
+    return combined(plate, cylinder(0, 0, -30, 2, 60), SMLIB_BOOLEAN_UNION);
+}
+
+void scenario_round_at_a_pin_on_a_slope_folds_refused()
+{
+    smlib_brep *body = pin_on_a_slope(), *r = nullptr;
+    const double foot[3] = {0, 2, 0}, size = 2.2;
+    const int32_t s = body == nullptr ? SMLIB_ERR_ARG : smlib_blend(body, SMLIB_BLEND_ROUND, foot, &size, 1, 0.1, &r, nullptr);
+    const std::string why = last_blend_reason();
+    std::printf("  status %d: %s\n", static_cast<int>(s), why.c_str());
+    CHECK(s == SMLIB_ERR_NO_ROOM && r == nullptr);
+    CHECK(why.find("folds over itself") != std::string::npos);
+    CHECK(near(blend_reason_number("a radius below "), 2.0, 1e-6));
+    smlib_brep_free(r);
+    smlib_brep_free(body);
+}
+
+void scenario_round_at_a_pin_on_a_slope_just_inside()
+{
+    smlib_brep *body = pin_on_a_slope(), *r = nullptr;
+    const double foot[3] = {0, 2, 0}, size = 1.8;
+    const int32_t s = body == nullptr ? SMLIB_ERR_ARG : smlib_blend(body, SMLIB_BLEND_ROUND, foot, &size, 1, 0.1, &r, nullptr);
+    std::printf("  status %d%s%s\n", static_cast<int>(s), s == SMLIB_OK ? "" : ": ", s == SMLIB_OK ? "" : last_blend_reason().c_str());
+    CHECK(s == SMLIB_OK && r != nullptr);
+    if (r != nullptr)
+    {
+        int64_t solids = 0;
+        CHECK(smlib_brep_solid_count(r, &solids) == SMLIB_OK && solids == 1);
+        CHECK(sound(r));
+        smlib_brep_free(r);
+    }
+    smlib_brep_free(body);
+}
+
 // The scenario cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--scenarios-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SCENARIO_CASES[] = {
@@ -6736,6 +6787,8 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"hole_in_band_kept", scenario_hole_in_band_kept, nullptr},
     {"hole_in_band_taken", scenario_hole_in_band_taken, nullptr},
     {"hole_short_of_band", scenario_hole_short_of_band, nullptr},
+    {"round_at_a_pin_on_a_slope_folds_refused", scenario_round_at_a_pin_on_a_slope_folds_refused, nullptr},
+    {"round_at_a_pin_on_a_slope_just_inside", scenario_round_at_a_pin_on_a_slope_just_inside, nullptr},
     {"round_cutting_a_bridge_refused", scenario_round_cutting_a_bridge_refused, nullptr},
     {"round_of_an_arc_wall_into_its_tip", scenario_round_of_an_arc_wall_into_its_tip, nullptr},
     {"round_over_a_thin_rib_not_a_cut", scenario_round_over_a_thin_rib_not_a_cut, nullptr},
