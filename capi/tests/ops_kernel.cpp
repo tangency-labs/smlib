@@ -6482,6 +6482,43 @@ void scenario_chamfer_cutting_a_bridge_refused()
     scenario_refused(bridged_block(), SMLIB_BLEND_CHAMFER, {2, 0, 10}, 6.0, 5.0);
 }
 
+// The bridged block with a thin rib 0.05 thick across the slot (x 8 to 12, joining the pillars)
+// along the chord of the round r 9's section arc between its angles 22.5 and 33.75 degrees, run
+// on 1 past each (in the section, y in from the front and z, the arc is (9 - 9 cos t, 1 + 9 sin t)
+// from the front contact). The arc crosses the rib twice and leaves it between (the sagitta 9
+// (1 - cos 5.625 deg) = 0.043 is more than its half thickness), the rib's edges lie outside the
+// ball (9.15 from its centre), and the arc runs inside the rib only within 1.62 degrees of each
+// crossing: sixteen points at the middles of 16 equal steps of the 90 degree arc all miss it.
+// The part keeps the rib behind the section, so the round does not cut it in two: not refused
+// as a cut (with the rib the pillars stay joined).
+void scenario_round_over_a_thin_rib_not_a_cut()
+{
+    const double deg = PI / 180.0;
+    auto arc = [](double t, double &y, double &z) { y = 9.0 - 9.0 * std::cos(t); z = 1.0 + 9.0 * std::sin(t); };
+    double y1, z1, y2, z2;
+    arc(22.5 * deg, y1, z1);
+    arc(33.75 * deg, y2, z2);
+    const double len = std::hypot(y2 - y1, z2 - z1), dy = (y2 - y1) / len, dz = (z2 - z1) / len, h = 0.05;
+    smlib_brep *plate = box(0, 0, 0, 4, len + 2.0, h), *rib = nullptr;
+    const double m[4][4] = {{1, 0, 0, 0}, {0, dy, dz, 0}, {0, -dz, dy, 0}, {8, y1 - dy + 0.5 * h * dz, z1 - dz - 0.5 * h * dy, 1}};
+    CHECK(plate != nullptr && smlib_brep_transform(plate, m, &rib) == SMLIB_OK);
+    smlib_brep_free(plate);
+    smlib_brep *body = combined(bridged_block(), rib, SMLIB_BOOLEAN_UNION);
+    const double point[3] = {2, 0, 10}, size = 9.0;
+    smlib_brep *r = nullptr;
+    const int32_t s = body == nullptr ? SMLIB_ERR_ARG : smlib_blend(body, SMLIB_BLEND_ROUND, point, &size, 1, 0.1, &r, nullptr);
+    const std::string why = last_blend_reason();
+    std::printf("  status %d: %s\n", static_cast<int>(s), why.c_str());
+    CHECK(why.find("cut it into pieces") == std::string::npos);
+    if (r != nullptr)
+    {
+        int64_t solids = 0;
+        CHECK(smlib_brep_solid_count(r, &solids) == SMLIB_OK && solids == 1);
+        smlib_brep_free(r);
+    }
+    smlib_brep_free(body);
+}
+
 // Keep features: a boss or a hole standing inside a round's band. The 40 x 30 x 20 block's top
 // front edge (y = 0, z = 20) is rounded; the feature, a cylinder of radius 2 about the upright
 // x = 20, y = 4, stands 2 to 6 in from the front on the top. A round of radius r takes the band
@@ -6701,6 +6738,7 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"hole_short_of_band", scenario_hole_short_of_band, nullptr},
     {"round_cutting_a_bridge_refused", scenario_round_cutting_a_bridge_refused, nullptr},
     {"round_of_an_arc_wall_into_its_tip", scenario_round_of_an_arc_wall_into_its_tip, nullptr},
+    {"round_over_a_thin_rib_not_a_cut", scenario_round_over_a_thin_rib_not_a_cut, nullptr},
     {"round_past_the_rim_over_an_opening", scenario_round_past_the_rim_over_an_opening, nullptr},
     {"square_bar_rounded_to_a_rod", scenario_square_bar_rounded_to_a_rod,
      "status 0, but one of the four rounds is left out: 268.4956 (320 less three rounds of 20 A(2)) and 7 faces, not the rod's 80 pi and 6"},
