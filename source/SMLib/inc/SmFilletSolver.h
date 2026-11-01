@@ -627,7 +627,8 @@ protected:
                  SmSurface         * pFace2,
                  SmBSplineCurve    * pUV2,
                  SmBoolean           bReplaceRails,
-                 SmBSplineSurface *& rpFilletSurface);
+                 SmBSplineSurface *& rpFilletSurface,
+                 double              dRadius = 0.0);
 
 } ; // end class SmGnSectionFSG
 

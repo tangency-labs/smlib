@@ -58,6 +58,7 @@
 #include <SmGeomUtility.h>
 #include <SmBrep.h>
 #include <SmProceduralBlend.h>
+#include <SmFilletStandardSolver.h>
 
 #include <algorithm>
 #include <array>
@@ -717,6 +718,7 @@ struct sm_GnStation
   SmBoolean         bSided;
   sm_Ser<double>    asXL[4];
   sm_VSer<double>   asFL[2];
+  sm_VSer<double>   sVL;
   double            dWdsL;
 };
 
@@ -1630,7 +1632,7 @@ SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader
     for (int i=0; i<=sTr.s && i<=lTot; i++)
       {
         const int k = lTot - i;
-        if (k > sTr.e || k >= n)
+        if (k > sTr.e || (n >= 1 && k >= n))
           { continue; } // the section's jets of order n are the face curve's (sm_GnTopJets)
         sm_Ivl yr[4];
         double dRho = 0.0;
@@ -1896,6 +1898,96 @@ SmStatus sm_GnRowTermsOver(const sm_GnVarying & crVary, const sm_VSer<sm_Ivl> (&
 }
 
 /*******************************************************************//**
+   The ball's circle as rows: the rational quadratic arc from the rail rho1
+   to rho2 about the ball's centre m, its control points rho1, P1, rho2 and
+   weights 1, w, 1, w = cos(theta / 2) (theta the angle between the radii
+   b_i = rho_i - m), P1 = m + (mid - m) / w^2 where the rails' tangents meet;
+   as homogeneous rows H_j = W_j (P_j - O) about a fixed point O. The
+   series are in s (to SM_GN_TAY), over a ring S (double, or intervals).
+***********************************************************************/
+template <class S> SmBoolean sm_ArcRows(const sm_Tay<S> (&crRho1)[3], const sm_Tay<S> (&crRho2)[3], const sm_Tay<S> (&crM)[3],
+                                        const double (&crO)[3], sm_Tay<S> (&rH)[3][3], sm_Tay<S> (&rW)[3])
+{
+  sm_Tay<S> b11, b22, b12;
+  for (int q=0; q<3; q++)
+    {
+      const sm_Tay<S> b1 = crRho1[q] - crM[q], b2 = crRho2[q] - crM[q];
+      b11 = b11 + b1 * b1;
+      b22 = b22 + b2 * b2;
+      b12 = b12 + b1 * b2;
+    }
+  if (!sm_Positive(b11.c[0]) || !sm_Positive(b22.c[0]))
+    { return FALSE; }
+  // cos^2(theta / 2) = (1 + cos theta) / 2
+  const sm_Tay<S> sHalf = (sm_Tay<S>(1.0) + b12 / sm_TaySqrt(b11 * b22)) * sm_Tay<S>(0.5);
+  if (!sm_Positive(sHalf.c[0]))
+    { return FALSE; } // a half turn or more: no single arc
+  const sm_Tay<S> w = sm_TaySqrt(sHalf), sInv = sm_Tay<S>(1.0) / sHalf;
+  rW[0] = sm_Tay<S>(1.0);
+  rW[1] = w;
+  rW[2] = sm_Tay<S>(1.0);
+  for (int q=0; q<3; q++)
+    {
+      const sm_Tay<S> sO(crO[q]);
+      const sm_Tay<S> sP1 = crM[q] + ((crRho1[q] + crRho2[q]) * sm_Tay<S>(0.5) - crM[q]) * sInv;
+      rH[0][q] = crRho1[q] - sO;
+      rH[1][q] = w * (sP1 - sO);
+      rH[2][q] = crRho2[q] - sO;
+    }
+  return TRUE;
+}
+
+// The arc's row terms over one piece (sm_GnRowTermsOver's, every row varying): the rails' and the
+// centre's series over the piece (crF, crCentre to order K) and at its middle (crFm, crCm, to K - 1).
+SmStatus sm_ArcRowTermsOver(const sm_VSer<sm_Ivl> (&crF)[2], const sm_VSer<sm_Ivl> & crCentre, const sm_VSer<sm_Ivl> (&crFm)[2],
+                            const sm_VSer<sm_Ivl> & crCm, const sm_Ivl & crD, const double (&crO)[3], sm_GnRowTerms & rT, SmBoolean & rbProved)
+{
+  rbProved = FALSE;
+  const int K = 4 + SM_GN_TAYLOR;
+  sm_Tay<sm_Ivl> asRho[2][3], asM[3];
+  for (int q=0; q<3; q++)
+    {
+      sm_Ivl acMid[K];
+      for (int f=0; f<2; f++)
+        {
+          for (int i=0; i<K; i++) { acMid[i] = crFm[f].a[q].c[i][0]; }
+          asRho[f][q] = sm_Centred(acMid, crF[f].a[q].c[K][0], K, crD);
+        }
+      for (int i=0; i<K; i++) { acMid[i] = crCm.a[q].c[i][0]; }
+      asM[q] = sm_Centred(acMid, crCentre.a[q].c[K][0], K, crD);
+    }
+  sm_Tay<sm_Ivl> asH[3][3], asW[3];
+  if (!sm_ArcRows(asRho[0], asRho[1], asM, crO, asH, asW))
+    { return SM_SUCCESS; }
+  // |S - O| <= |m - O| + the ball's radius over the piece
+  double dMO = 0.0, dRad = 0.0;
+  for (int q=0; q<3; q++)
+    {
+      const double d = sm_Mag(asM[q].c[0] - sm_Ivl(crO[q]));
+      dMO += d * d;
+      const double b = sm_Mag(asRho[0][q].c[0] - asM[q].c[0]);
+      dRad += b * b;
+    }
+  const double dR = smos_Sqrt(dMO) + smos_Sqrt(dRad);
+  for (size_t j=0; j<3; j++)
+    {
+      double dSq = 0.0;
+      for (int q=0; q<3; q++) { dSq += sm_Mag(asH[j][q].c[SM_GN_TAY]) * sm_Mag(asH[j][q].c[SM_GN_TAY]); }
+      const double dX = 24.0 * smos_Sqrt(dSq), dY = 24.0 * sm_Mag(asW[j].c[SM_GN_TAY]), dWlo = asW[j].c[0].lo;
+      if (!(std::isfinite(dX) && std::isfinite(dY) && dWlo > 0.0))
+        { return SM_SUCCESS; }
+      rT.X[j] = std::max(rT.X[j], dX);
+      rT.Y[j] = std::max(rT.Y[j], dY);
+      rT.Wlo[j] = std::min(rT.Wlo[j], dWlo);
+    }
+  if (!std::isfinite(dR))
+    { return SM_SUCCESS; }
+  rT.R = std::max(rT.R, dR);
+  rbProved = TRUE;
+  return SM_SUCCESS;
+}
+
+/*******************************************************************//**
    The bound on the jets' fourth s-derivatives over [crA.dS, crB.dS], per
    face and jet (rM4[f][k], HUGE_VAL where not proved), in their Taylor form
    at the interval's middle m: c''''(s) is within
@@ -2002,6 +2094,10 @@ SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
   rdBound = HUGE_VAL;
   const double h = crB.dS - crA.dS;
   double dLast = HUGE_VAL;
+  // the ball's circle (n = 1): its arc's rows all vary along s, about the first station's centre
+  const SmBoolean bArc = (n == 1) ? TRUE : FALSE;
+  const SmBoolean bRows = (pVary != NULL || bArc) ? TRUE : FALSE;
+  const int lJets = bArc ? 0 : n; // the jets graded on their own: the arc's rails only
   // the varying thumbweight's fixed one wb and point O: the first station's
   sm_GnSectionFormT<sm_Ivl> sBar;
   double adO[3] = { 0.0, 0.0, 0.0 };
@@ -2011,6 +2107,11 @@ SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
         { SER(SM_ERR); }
       sBar = sm_GnFormNormalized(pVary->n, sm_Ivl(crA.dW));
       for (int q=0; q<3; q++) { adO[q] = crA.asF[0].a[q].c[0][0]; }
+    }
+  if (bArc)
+    {
+      sBar.W.assign(3, sm_Ivl(0.0));
+      for (int q=0; q<3; q++) { adO[q] = crA.sV.a[q].c[0][0]; }
     }
   for (int lLevel=0; lLevel<=6; lLevel++)
     {
@@ -2036,7 +2137,7 @@ SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
         { continue; }
       double adM4[2][SM_GN_MAXE + 1], adUV4[2] = { 0.0, 0.0 };
       for (int f=0; f<2; f++)
-        for (int k=0; k<=n; k++)
+        for (int k=0; k<=lJets; k++)
           adM4[f][k] = 0.0;
       SmBoolean bProved = TRUE;
       sm_GnRowTerms sRows;
@@ -2050,12 +2151,11 @@ SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
           sm_VSer<sm_Ivl> asF[2], sV, asFm[2], sVm;
           double dMid = 0.0;
           const sm_GnStation & crPA = sEnds[static_cast<size_t>(i)], & crPB = sEnds[static_cast<size_t>(i + 1)];
-          SM_GN_TRY(sm_GnFourthOver(apFace, crLeader, apSurf, crCenter, crPA, crPB, crR, crSide, n, adP, adPUV,
-                                    (pVary != NULL) ? &asF : NULL, (pVary != NULL) ? &sV : NULL,
-                                    (pVary != NULL) ? &asFm : NULL, (pVary != NULL) ? &sVm : NULL, &dMid));
+          SM_GN_TRY(sm_GnFourthOver(apFace, crLeader, apSurf, crCenter, crPA, crPB, crR, crSide, lJets, adP, adPUV,
+                                    bRows ? &asF : NULL, bRows ? &sV : NULL, bRows ? &asFm : NULL, bRows ? &sVm : NULL, &dMid));
           for (int f=0; f<2; f++)
             {
-              for (int k=0; k<=n; k++)
+              for (int k=0; k<=lJets; k++)
                 {
                   if (!(adP[f][k] < HUGE_VAL)) { bProved = FALSE; }
                   adM4[f][k] = std::max(adM4[f][k], adP[f][k]);
@@ -2070,6 +2170,11 @@ SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
               const sm_Ivl sD = sm_Ivl(crPA.dS, crPB.dS) - sm_Ivl(dMid);
               SM_GN_TRY(sm_GnRowTermsOver(*pVary, asF, sV, asFm, sVm, sD, (1.0 - t) * crA.dW + t * crB.dW, sBar, adO, sRows, bProved));
             }
+          if (bProved && bArc)
+            {
+              const sm_Ivl sD = sm_Ivl(crPA.dS, crPB.dS) - sm_Ivl(dMid);
+              SM_GN_TRY(sm_ArcRowTermsOver(asF, sV, asFm, sVm, sD, adO, sRows, bProved));
+            }
         }
       if (!bProved)
         { continue; }
@@ -2077,11 +2182,14 @@ SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
       for (int f=0; f<2; f++)
         {
           double dSum = 0.0;
-          for (int k=0; k<=n; k++) { dSum += h * h * h * h / 384.0 * adM4[f][k]; }
+          for (int k=0; k<=lJets; k++) { dSum += h * h * h * h / 384.0 * adM4[f][k]; }
           dA = std::max(dA, dSum);
-          dBound = std::max(dBound, std::max((pVary == NULL) ? dSum : 0.0, h * h * h * h / 384.0 * adUV4[f]));
+          dBound = std::max(dBound, std::max(bRows ? 0.0 : dSum, h * h * h * h / 384.0 * adUV4[f]));
         }
-      if (pVary != NULL)
+      // the arc: no fixed section, every row's remainder (sm_GnRowTermsOver's bound with A = 0)
+      if (bArc)
+        { dA = 0.0; }
+      if (bRows)
         {
           const double K = h * h * h * h / 384.0;
           for (size_t j=0; j<sBar.W.size(); j++)
@@ -2373,6 +2481,91 @@ static SmStatus sm_FilletCurveCorners
 
 
 /*******************************************************************//**
+PURPOSE: Whether the ball's circles along a centre line and its rails sweep a
+    cylinder (all three parallel lines) or revolve a torus (coaxial arcs):
+    the exact surfaces of order 1 the circle's surface is built as.
+***********************************************************************/
+static SmStatus sm_CircleSweptOrRevolved(const SmBSplineCurve & crCenterLine, const SmBSplineCurve & crRail1Curve,
+                                         const SmBSplineCurve & crRail2Curve, double dThisApproxTol3d,
+                                         SmBoolean & rbSweep, SmBoolean & rbRevolve, SmAxis2Placement & sRefFrame, double & dEndAng)
+{
+  rbSweep = FALSE;
+  rbRevolve = FALSE;
+  // see if newSurf == RuledSurface
+  double    dAnalyticTol = 1.0e-8;
+  SmPoint3d  sLinePoint;
+  SmVector3d sLineVector;
+  SmBoolean bIsDeg1Line =    crCenterLine.GetDegree() == 1
+                          && crCenterLine.IsLine(11,dAnalyticTol,sLinePoint,sLineVector);
+  if (bIsDeg1Line)
+    {
+      rbSweep = TRUE;
+      SmPoint3d  sLinePoint2;
+      SmVector3d sLineVector2;
+      SmBoolean bIsLineR1 = crRail1Curve.IsLine(11,dAnalyticTol,sLinePoint2,sLineVector2);
+      double dAngle;
+      if ( bIsLineR1 )
+        {
+          SER(sLineVector2.AngleBetween(sLineVector,dAngle));
+          if (dAngle > SM_EFF_ZERO_SQRT)
+            {
+              rbSweep = FALSE;
+            }
+        }
+      SmBoolean bIsLineR2 = crRail2Curve.IsLine(11,dAnalyticTol,sLinePoint2,sLineVector2);
+      if ( bIsLineR2 )
+        {
+          SER(sLineVector2.AngleBetween(sLineVector,dAngle));
+          if (dAngle > SM_EFF_ZERO_SQRT)
+            {
+              rbSweep = FALSE;
+            }
+        }
+    } // end NewSurf == SurfaceOfRevolution check
+
+  // see if NewSurf == SurfaceOfRevolution
+  double dArcRadius, dStartAng;
+  SmBoolean bIsArc = crCenterLine.IsArc(11, dAnalyticTol,
+                                       sRefFrame, dArcRadius,
+                                       dStartAng, dEndAng);
+  if (bIsArc)
+    {
+      //cbi this is never hit in prog_test.
+      rbRevolve = TRUE;
+      double dRadius2, dStartAng2, dEndAng2;
+      double dRadius3, dStartAng3, dEndAng3;
+      SmAxis2Placement sRefFrame2, sRefFrame3;
+      SmBoolean bIsArc2 = crRail1Curve.IsArc(11, dAnalyticTol, sRefFrame2,
+                                             dRadius2, dStartAng2, dEndAng2);
+      if ( !bIsArc2 )
+        { rbRevolve = FALSE; }
+      else if ( smos_Fabs( dEndAng2 - dEndAng ) * dRadius2 > dThisApproxTol3d )
+        { rbRevolve = FALSE; }
+      else if ( ! sRefFrame2.AreCoaxial( sRefFrame, dThisApproxTol3d, dRadius2 ) )
+        { rbRevolve = FALSE; }
+
+      if ( rbRevolve )
+      {
+          SmBoolean bIsArc3 = crRail2Curve.IsArc(11, dAnalyticTol, sRefFrame3,
+                                                 dRadius3, dStartAng3, dEndAng3);
+          if ( !bIsArc3 )
+            { rbRevolve = FALSE; }
+          else if ( smos_Fabs( dEndAng3 - dEndAng ) * dRadius3 > dThisApproxTol3d )
+            { rbRevolve = FALSE; }
+          else if ( ! sRefFrame3.AreCoaxial( sRefFrame, dThisApproxTol3d, dRadius3 ) )
+            { rbRevolve = FALSE; }
+          // Also check against 1s Rail curve.
+          else if ( smos_Fabs( dEndAng3 - dEndAng2 ) * dRadius3 > dThisApproxTol3d )
+            { rbRevolve = FALSE; }
+          else if ( ! sRefFrame3.AreCoaxial( sRefFrame2, dThisApproxTol3d, dRadius3 ) )
+            { rbRevolve = FALSE; }
+      }
+    }
+
+  return SM_SUCCESS;
+} // end sm_CircleSweptOrRevolved
+
+/*******************************************************************//**
 PURPOSE: Create a fillet surface with a circular cross section.  This
     is a lofted surface or in some special cases a cylinder or a torus.
 
@@ -2414,6 +2607,61 @@ SmStatus SmGnSectionFSG::CircleSurface
 
     if (sCorners.GetSize() == 0)
     {
+        // SolidCraft change: a ball of one radius between faces that are NURBS surfaces is the
+        // round by its definition (Build: stations solved on the faces, the arc's rows certified
+        // span by span), unless the circles sweep a cylinder or revolve a torus, which stay those
+        // exact surfaces, or the rails meet at an end (the section fades to a point there, which
+        // the definition does not take yet).
+        SmBoolean bDefinition = FALSE;
+        double dRadius = 0.0;
+        SmSurface * apBase[2] = { NULL, NULL };
+        {
+            const SmOffsetSurface * apOff[2] = { SM_CAST_PTR(SmOffsetSurface, pSurf1), SM_CAST_PTR(SmOffsetSurface, pSurf2) };
+            bDefinition = (!bBallRadiusVaries && apOff[0] != NULL && apOff[1] != NULL && pUV1 != NULL && pUV2 != NULL
+                           && !m_sArcs.bApproximateArcs && !m_sArcs.bMirror && !m_sArcs.bComplement) ? TRUE : FALSE;
+            for (int f=0; f<2 && bDefinition; f++)
+            {
+                apBase[f] = apOff[f]->GetBaseSurface();
+                if (   apBase[f] == NULL || !apBase[f]->IsKindOf(SmBSplineSurface_TYPE) || apBase[f]->IsKindOf(SmProceduralBlend_TYPE))
+                    { bDefinition = FALSE; }
+            }
+            // the ball's radius: the constant radius solver's, the same for both faces
+            SmConstantRadiusFS * pConstant = (rFilletSolver.GetSolverType() == SM_FS_CONST_RADIUS)
+                                             ? static_cast<SmConstantRadiusFS *>(&rFilletSolver) : NULL;
+            if (bDefinition && pConstant != NULL)
+            {
+                dRadius = pConstant->GetFilletRadius(0);
+                if (!(dRadius > dThisApproxTol3d) || pConstant->GetFilletRadius(1) != dRadius)
+                    { bDefinition = FALSE; }
+            }
+            else
+                { bDefinition = FALSE; }
+            if (bDefinition)
+            {
+                SmBoolean bSweep = FALSE, bRevolve = FALSE;
+                SmAxis2Placement sFrame;
+                double dEnd = 0.0;
+                SER(sm_CircleSweptOrRevolved(*pCenterLine, *pRail1Curve, *pRail2Curve, dThisApproxTol3d, bSweep, bRevolve, sFrame, dEnd));
+                const SmExtent1d sIvl = pRail1Curve->GetNaturalInterval();
+                for (int lEnd=0; lEnd<2 && bDefinition; lEnd++)
+                {
+                    SmPoint3d sEnd1, sEnd2;
+                    const double dT = (lEnd == 0) ? sIvl.GetMin() : sIvl.GetMax();
+                    SER(pRail1Curve->EvaluatePoint(dT, sEnd1));
+                    SER(pRail2Curve->EvaluatePoint(dT, sEnd2));
+                    if (sEnd1.DistanceBetween(sEnd2) < dThisApproxTol3d)
+                        { bDefinition = FALSE; }
+                }
+                if (bSweep || bRevolve)
+                    { bDefinition = FALSE; }
+            }
+        }
+        if (bDefinition)
+        {
+            SER(Build(rFilletSolver.GetCreationContext(), *pCenterLine, *pRail1Curve, *pRail2Curve, dThisApproxTol3d,
+                      apBase[0], pUV1, apBase[1], pUV2, TRUE, rpFilletSurface, dRadius));
+            return SM_SUCCESS;
+        }
         SER(CircleSurfaceFromCurves(rFilletSolver.GetCreationContext(),
             *pCenterLine,*pRail1Curve,*pRail2Curve,dThisApproxTol3d,
             bNeedG1Continuity,bBallRadiusVaries,pSurf1,pUV1,pSurf2,pUV2,rpFilletSurface));
@@ -2707,77 +2955,9 @@ SmBoolean bDebugMe=FALSE;
   SmBoolean bSweep   = FALSE;
   SmBoolean bRevolve = FALSE;
 
-  // see if newSurf == RuledSurface
-  double    dAnalyticTol = 1.0e-8;
-  SmPoint3d  sLinePoint;
-  SmVector3d sLineVector;
-  SmBoolean bIsDeg1Line =    rCenterLine.GetDegree() == 1
-                          && rCenterLine.IsLine(11,dAnalyticTol,sLinePoint,sLineVector);
-  if (bIsDeg1Line)
-    {
-      bSweep = TRUE;
-      SmPoint3d  sLinePoint2;
-      SmVector3d sLineVector2;
-      SmBoolean bIsLineR1 = rRail1Curve.IsLine(11,dAnalyticTol,sLinePoint2,sLineVector2);
-      double dAngle;
-      if ( bIsLineR1 )
-        {
-          SER(sLineVector2.AngleBetween(sLineVector,dAngle));
-          if (dAngle > SM_EFF_ZERO_SQRT)
-            {
-              bSweep = FALSE;
-            }
-        }
-      SmBoolean bIsLineR2 = rRail2Curve.IsLine(11,dAnalyticTol,sLinePoint2,sLineVector2);
-      if ( bIsLineR2 )
-        {
-          SER(sLineVector2.AngleBetween(sLineVector,dAngle));
-          if (dAngle > SM_EFF_ZERO_SQRT)
-            {
-              bSweep = FALSE;
-            }
-        }
-    } // end NewSurf == SurfaceOfRevolution check
-
-  // see if NewSurf == SurfaceOfRevolution
-  double dArcRadius, dStartAng, dEndAng;
   SmAxis2Placement sRefFrame;
-  SmBoolean bIsArc = rCenterLine.IsArc(11, dAnalyticTol,
-                                       sRefFrame, dArcRadius,
-                                       dStartAng, dEndAng);
-  if (bIsArc)
-    {
-      //cbi this is never hit in prog_test.
-      bRevolve = TRUE;
-      double dRadius2, dStartAng2, dEndAng2;
-      double dRadius3, dStartAng3, dEndAng3;
-      SmAxis2Placement sRefFrame2, sRefFrame3;
-      SmBoolean bIsArc2 = rRail1Curve.IsArc(11, dAnalyticTol, sRefFrame2,
-                                             dRadius2, dStartAng2, dEndAng2);
-      if ( !bIsArc2 )
-        { bRevolve = FALSE; }
-      else if ( smos_Fabs( dEndAng2 - dEndAng ) * dRadius2 > dThisApproxTol3d )
-        { bRevolve = FALSE; }
-      else if ( ! sRefFrame2.AreCoaxial( sRefFrame, dThisApproxTol3d, dRadius2 ) )
-        { bRevolve = FALSE; }
-
-      if ( bRevolve )
-      {
-          SmBoolean bIsArc3 = rRail2Curve.IsArc(11, dAnalyticTol, sRefFrame3,
-                                                 dRadius3, dStartAng3, dEndAng3);
-          if ( !bIsArc3 )
-            { bRevolve = FALSE; }
-          else if ( smos_Fabs( dEndAng3 - dEndAng ) * dRadius3 > dThisApproxTol3d )
-            { bRevolve = FALSE; }
-          else if ( ! sRefFrame3.AreCoaxial( sRefFrame, dThisApproxTol3d, dRadius3 ) )
-            { bRevolve = FALSE; }
-          // Also check against 1s Rail curve.
-          else if ( smos_Fabs( dEndAng3 - dEndAng2 ) * dRadius3 > dThisApproxTol3d )
-            { bRevolve = FALSE; }
-          else if ( ! sRefFrame3.AreCoaxial( sRefFrame2, dThisApproxTol3d, dRadius3 ) )
-            { bRevolve = FALSE; }
-      }
-    }
+  double dEndAng = 0.0;
+  SER(sm_CircleSweptOrRevolved(rCenterLine, rRail1Curve, rRail2Curve, dThisApproxTol3d, bSweep, bRevolve, sRefFrame, dEndAng));
 
   // track max/min number of knots in cross-section curves
   ULONG lMaxNumUniqueKnots = 0;
@@ -3461,13 +3641,14 @@ SmStatus SmGnSectionFSG::Build
    SmSurface         * pFace2,
    SmBSplineCurve    * pUV2,
    SmBoolean           bReplaceRails,
-   SmBSplineSurface *& rpFilletSurface)
+   SmBSplineSurface *& rpFilletSurface,
+   double              dRadius)
 {
   rpFilletSurface = NULL;
   NER(pFace1); NER(pFace2); NER(pUV1); NER(pUV2);
   const ULONG n = m_lOrder;
-  if (!IsValid(n, m_dThumbweight))
-    { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmGnSectionFSG: the order must be 2 to 4 and the thumbweight below 1")); }
+  if (!(n == 1 && !m_sArcs.bApproximateArcs && !m_sArcs.bMirror && !m_sArcs.bComplement) && !IsValid(n, m_dThumbweight))
+    { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmGnSectionFSG: the order must be 1 (the ball's circle) or 2 to 4 with a thumbweight below 1")); }
   const SmSurface * apFace[2] = { pFace1, pFace2 };
   SmBSplineCurve * apRail[2] = { &rRail1Curve, &rRail2Curve };
   SmBSplineCurve * apUV[2] = { pUV1, pUV2 };
@@ -3517,7 +3698,8 @@ SmStatus SmGnSectionFSG::Build
         SER(apFace[f]->EvaluateNormal(sUV, TRUE, TRUE, sN));
         SER(sN.Unitize());
         const SmVector3d sOff = sM - sRho;
-        adR[f] = sOff.Length();
+        // the ball's radius where the solver gives it (its offsets'), else as the rails stand off
+        adR[f] = (dRadius > 0.0) ? dRadius : sOff.Length();
         adSide[f] = (sOff.Dot(sN) >= 0.0) ? 1.0 : -1.0;
         if (!(adR[f] > dTol))
           { SER_MSG(SM_ERR, _T("SmGnSectionFSG: the ball has no radius at the rails' start")); }
@@ -3525,7 +3707,8 @@ SmStatus SmGnSectionFSG::Build
   }
 
   // every station's feet and their series: values and s-derivatives (sigma order 1), jets to order n
-  const sm_Trunc sTr = { 1, static_cast<int>(n) };
+  // (the ball's circle takes the rails and the centre only)
+  const sm_Trunc sTr = { 1, (n >= 2) ? static_cast<int>(n) : 0 };
   std::vector<sm_GnStation> sStations(sS.size());
   for (size_t j=0; j<sS.size(); j++)
     {
@@ -3742,10 +3925,11 @@ SmStatus SmGnSectionFSG::Build
         }
       for (int q=0; q<4; q++) { rSt.asXL[q] = sBefore.asX[q]; }
       for (int f=0; f<2; f++) { rSt.asFL[f] = sBefore.asF[f]; }
+      rSt.sVL = sBefore.sV;
       rSt.bSided = TRUE;
     }
 
-  const size_t lD = 3 * n + 2; // the section's control points across
+  const size_t lD = (n >= 2) ? 3 * n + 2 : 3; // the section's control points across
   SmTArray<double> sUKnots, sVKnots;
   SmTArray<ULONG> sUMult, sVMult;
   sVKnots.Add(0.0); sVKnots.Add(1.0);
@@ -3775,7 +3959,59 @@ SmStatus SmGnSectionFSG::Build
   // the homogeneous control points W P and weights W, [i along s][j across]
   std::vector<SmVector3d> sHomog(lNU * lD);
   std::vector<double> sW(lNU * lD);
-  if (!bEqualArea)
+  if (n == 1)
+    {
+      // the ball's circle: each station's arc rows (sm_ArcRows) and their s-derivatives, as the span
+      // starting there and the one ending there take them, each a Hermite curve along s
+      std::vector< std::vector<SmVector3d> > sHV(lD), sHD(lD), sHDIn(lD), sWV(lD), sWD(lD), sWDIn(lD);
+      const double adO[3] = { 0.0, 0.0, 0.0 };
+      for (size_t m=0; m<sStations.size(); m++)
+        for (int lIn=0; lIn<2; lIn++)
+          {
+            const sm_GnStation & crSt = sStations[m];
+            sm_Tay<double> asRho[2][3], asM[3];
+            for (int q=0; q<3; q++)
+              {
+                for (int f=0; f<2; f++)
+                  {
+                    const sm_VSer<double> & crFD = lIn ? sm_InF(crSt, f) : crSt.asF[f];
+                    asRho[f][q] = sm_TayOf(crSt.asF[f].a[q].c[0][0], crFD.a[q].c[1][0]);
+                  }
+                // the centre's s-derivative: the incoming one is the rail's less the ball's turn,
+                // the same as the station's where the leader and faces are smooth
+                asM[q] = sm_TayOf(crSt.sV.a[q].c[0][0], (lIn && crSt.bSided) ? crSt.sVL.a[q].c[1][0] : crSt.sV.a[q].c[1][0]);
+              }
+            sm_Tay<double> asH[3][3], asW[3];
+            if (!sm_ArcRows(asRho[0], asRho[1], asM, adO, asH, asW))
+              { SER_MSG(SM_ERR, _T("SmGnSectionFSG: a section of the ball's circle is a half turn or more")); }
+            for (size_t j=0; j<lD; j++)
+              {
+                const SmVector3d sD(asH[j][0].c[1], asH[j][1].c[1], asH[j][2].c[1]);
+                if (lIn)
+                  {
+                    sHDIn[j].push_back(sD);
+                    sWDIn[j].push_back(SmVector3d(asW[j].c[1], 0.0, 0.0));
+                    continue;
+                  }
+                sHV[j].push_back(SmVector3d(asH[j][0].c[0], asH[j][1].c[0], asH[j][2].c[0]));
+                sHD[j].push_back(sD);
+                sWV[j].push_back(SmVector3d(asW[j].c[0], 0.0, 0.0));
+                sWD[j].push_back(SmVector3d(asW[j].c[1], 0.0, 0.0));
+              }
+          }
+      for (size_t j=0; j<lD; j++)
+        {
+          std::vector<SmVector3d> sHP, sWP;
+          sm_HermitePoints(sS, sHV[j], sHD[j], sHDIn[j], sHP);
+          sm_HermitePoints(sS, sWV[j], sWD[j], sWDIn[j], sWP);
+          for (size_t i=0; i<lNU; i++)
+            {
+              sHomog[i * lD + j] = sHP[i];
+              sW[i * lD + j] = sWP[i].x;
+            }
+        }
+    }
+  else if (!bEqualArea)
     {
       // one section's form: its rows are linear in the jets, so the jets' curves carry them
       const sm_GnSectionForm sForm = sm_GnForm(n, m_dThumbweight);
