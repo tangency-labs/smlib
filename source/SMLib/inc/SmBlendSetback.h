@@ -94,11 +94,12 @@ public:
   // crosses the rail of the other edge on that face: a round between planes whose normals are
   // psi apart has its rails r tan(psi / 2) from its edge, and on a face where edges i, j meet at
   // the angle alpha, rails d_i, d_j from them cross (d_j + d_i cos alpha) / sin alpha along
-  // edge i. pvLeast (optional) gets the least setbacks. Refused (SM_ERR_INVALID_INPUT): an edge
+  // edge i. pvLeast (optional) gets the least setbacks, ppReason (optional) a refusal's reason.
+  // Refused (SM_ERR_INVALID_INPUT): an edge
   // whose faces are not two of the faces given, a face not shared by exactly two of the edges,
   // edges along one line on a face, a radius not positive.
   static SmStatus Distances(const std::vector<Face> & crFaces, const std::vector<Edge> & crEdges, std::vector<double> & rvSetbacks,
-                            std::vector<double> * pvLeast = NULL);
+                            std::vector<double> * pvLeast = NULL, const TCHAR ** ppReason = NULL);
 
   // The surface whose sections ease from crFrom's to crTo's over the ramps along eAlong, the
   // rails' direction, in which both run over the same interval with the same rail parameter:
@@ -136,7 +137,8 @@ public:
   //   base point; t = 0 the spoke to the middle of inner curve q, which interior part q + 1 has
   //   as its side s = 0 (its t the same as part q's s).
   // m_vRound[m]: the caller's index of the cycle's round m; m_vFace[m]: of face m.
-  // m_lDegree: the interior map's degree. The patches are owned by the fill.
+  // m_lDegree: the interior map's degree. m_pReason: why FillHole refused, NULL when it did not.
+  // The patches are owned by the fill.
   struct Fill
   {
     std::vector<SmBSplineSurface *> m_vPatches;
@@ -144,6 +146,7 @@ public:
     std::vector<ULONG>              m_vFace;
     std::vector<SmBoolean>          m_vReversed;
     ULONG                           m_lDegree = 0;
+    const TCHAR *                   m_pReason = NULL;
 
     Fill() {}
     ~Fill();

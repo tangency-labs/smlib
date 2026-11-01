@@ -20,6 +20,10 @@
 #include <utility>
 #include <vector>
 
+// A refusal: its reason kept where the caller reads it (SER_MSG's text is dropped in release
+// builds), and its status returned.
+#define SM_SB_FAIL(rpWhy, eStatus, pText) { (rpWhy) = (pText); return (eStatus); }
+
 /*******************************************************************//**
     The ease of a round into another section before its setback.
 ***********************************************************************/
@@ -378,8 +382,11 @@ SmStatus SmBlendSetback::EaseSurface(const SmContext & crContext, const SmBSplin
 ***********************************************************************/
 
 SmStatus SmBlendSetback::Distances(const std::vector<Face> & crFaces, const std::vector<Edge> & crEdges, std::vector<double> & rvSetbacks,
-                                   std::vector<double> * pvLeast)
+                                   std::vector<double> * pvLeast, const TCHAR ** ppReason)
 {
+  const TCHAR * pDummy = NULL;
+  const TCHAR *& pWhy = (ppReason != NULL) ? *ppReason : pDummy;
+  pWhy = NULL;
   rvSetbacks.clear();
   if (pvLeast != NULL)
     { pvLeast->clear(); }
@@ -391,7 +398,7 @@ SmStatus SmBlendSetback::Distances(const std::vector<Face> & crFaces, const std:
       const Edge & crE = crEdges[i];
       if (!(crE.m_dRadius > 0.0) || !std::isfinite(crE.m_dRadius) || crE.m_alFaces[0] >= lF || crE.m_alFaces[1] >= lF
           || crE.m_alFaces[0] == crE.m_alFaces[1])
-        { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmBlendSetback: an edge needs a positive radius and two of the faces given")); }
+        { SM_SB_FAIL(pWhy, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: an edge needs a positive radius and two of the faces given")); }
       const double dCos = smos_Max(-1.0, smos_Min(1.0, crFaces[crE.m_alFaces[0]].m_sNormal.Dot(crFaces[crE.m_alFaces[1]].m_sNormal)));
       sRail[i] = crE.m_dRadius * std::tan(0.5 * std::acos(dCos));
     }
@@ -403,12 +410,12 @@ SmStatus SmBlendSetback::Distances(const std::vector<Face> & crFaces, const std:
         if (crEdges[i].m_alFaces[0] == f || crEdges[i].m_alFaces[1] == f)
           { sBeside.push_back(i); }
       if (sBeside.size() != 2)
-        { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a face at the corner must lie between exactly two of its rounded edges")); }
+        { SM_SB_FAIL(pWhy, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a face at the corner must lie between exactly two of its rounded edges")); }
       const size_t i = sBeside[0], j = sBeside[1];
       const double dCos = smos_Max(-1.0, smos_Min(1.0, crEdges[i].m_sAway.Dot(crEdges[j].m_sAway)));
       const double dSin = smos_Sqrt(smos_Max(0.0, 1.0 - dCos * dCos));
       if (!(dSin > 1.0e-9))
-        { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmBlendSetback: two edges on a face run along one line")); }
+        { SM_SB_FAIL(pWhy, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: two edges on a face run along one line")); }
       sLeast[i] = smos_Max(sLeast[i], (sRail[j] + sRail[i] * dCos) / dSin);
       sLeast[j] = smos_Max(sLeast[j], (sRail[i] + sRail[j] * dCos) / dSin);
     }
@@ -632,13 +639,13 @@ void sm_SbFirst(const sm_SbNet & crN, double u, double v, SmVector3d & rP, SmVec
 // across Bezier curve of the j-th derivative by the rail parameter, columns from its across
 // start; and its across degree.
 SmStatus sm_SbRoundJets(const SmContext & crContext, const SmBlendSetback::Round & crRound, ULONG k,
-                        std::vector< std::vector<sm_SbH> > & rH, size_t & rlQ)
+                        std::vector< std::vector<sm_SbH> > & rH, size_t & rlQ, const TCHAR *& rpReason)
 {
   rH.clear();
   NER(crRound.m_pSurface);
   const SmSurfParamType eAlong = crRound.m_eAlong;
   if (eAlong != SM_SP_U && eAlong != SM_SP_V)
-    { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's rails run along u or v")); }
+    { SM_SB_FAIL(rpReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's rails run along u or v")); }
   const SmSurfParamType eAcross = (eAlong == SM_SP_U) ? SM_SP_V : SM_SP_U;
   SmSurface * pCopy = NULL;
   SER(crRound.m_pSurface->Copy(crContext, pCopy));
@@ -652,7 +659,7 @@ SmStatus sm_SbRoundJets(const SmContext & crContext, const SmBlendSetback::Round
   // the round lies below its end when the corner lies above it
   if (crRound.m_bCornerAbove ? !(dEnd > sAlong.GetMin() + dParamTol && dEnd <= sAlong.GetMax() + dParamTol)
                              : !(dEnd >= sAlong.GetMin() - dParamTol && dEnd < sAlong.GetMax() - dParamTol))
-    { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's end section lies outside its rails' interval")); }
+    { SM_SB_FAIL(rpReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's end section lies outside its rails' interval")); }
   SER(sm_RaiseKnot(*pS, eAlong, dEnd, p, dParamTol));
 
   ULONG lUDeg, lVDeg;
@@ -677,7 +684,7 @@ SmStatus sm_SbRoundJets(const SmContext & crContext, const SmBlendSetback::Round
   SER(pS->GetCanonical(lUDeg, lVDeg, sPts, eForm, sUMult, sVMult, sUKnots, sVKnots, eKnotType, sWeights));
   const SmTArray<double> & crAcrossK = (eAlong == SM_SP_U) ? sVKnots : sUKnots;
   if (crAcrossK.GetSize() != 2)
-    { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round must be one Bezier span across its rails")); }
+    { SM_SB_FAIL(rpReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round must be one Bezier span across its rails")); }
   const SmTArray<double> & crK = (eAlong == SM_SP_U) ? sUKnots : sVKnots;
   const SmTArray<ULONG> & crM = (eAlong == SM_SP_U) ? sUMult : sVMult;
   ULONG ia = 0;
@@ -914,10 +921,11 @@ SmStatus SmBlendSetback::FillHole(const SmContext & crContext, const std::vector
   rFill.m_vFace.clear();
   rFill.m_vReversed.clear();
   rFill.m_lDegree = 0;
+  rFill.m_pReason = NULL;
   if (lOrder != 1 && lOrder != 2)
-    { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a setback fill is of order 1 (G1) or 2 (G2)")); }
+    { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a setback fill is of order 1 (G1) or 2 (G2)")); }
   if (!(dTol > 0.0) || crRounds.size() < 3 || crFaces.size() != crRounds.size())
-    { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a setback fill needs three or more rounds, as many faces, and a positive tolerance")); }
+    { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a setback fill needs three or more rounds, as many faces, and a positive tolerance")); }
   const size_t n = crRounds.size();
   const ULONG k = lOrder;
   const size_t N = 2 * k + 1; // the setback patches' degree across the hole
@@ -930,7 +938,7 @@ SmStatus SmBlendSetback::FillHole(const SmContext & crContext, const std::vector
   sFaceAt[1].assign(n, n);
   for (size_t r=0; r<n; r++)
     {
-      SER(sm_SbRoundJets(crContext, crRounds[r], k, sJets[r], sQ[r]));
+      SER(sm_SbRoundJets(crContext, crRounds[r], k, sJets[r], sQ[r], rFill.m_pReason));
       for (int e=0; e<2; e++)
         {
           const sm_SbH & crH = sJets[r][0][e == 0 ? 0 : sQ[r]];
@@ -939,11 +947,11 @@ SmStatus SmBlendSetback::FillHole(const SmContext & crContext, const std::vector
             if (smos_Fabs((sP - crFaces[f].m_sPoint).Dot(crFaces[f].m_sNormal)) <= dTol)
               {
                 if (sFaceAt[e][r] != n)
-                  { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's rail lies on two of the faces")); }
+                  { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's rail lies on two of the faces")); }
                 sFaceAt[e][r] = f;
               }
           if (sFaceAt[e][r] == n)
-            { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's rail lies on none of the faces")); }
+            { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's rail lies on none of the faces")); }
         }
     }
   // the cycle, face to face
@@ -963,7 +971,7 @@ SmStatus SmBlendSetback::FillHole(const SmContext & crContext, const std::vector
         if (m + 1 == n)
           {
             if (lNext != sFace[0])
-              { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmBlendSetback: the rounds do not close round the vertex face to face")); }
+              { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: the rounds do not close round the vertex face to face")); }
             break;
           }
         sFace.push_back(static_cast<ULONG>(lNext));
@@ -972,11 +980,11 @@ SmStatus SmBlendSetback::FillHole(const SmContext & crContext, const std::vector
           if (!sUsed[o] && (sFaceAt[0][o] == lNext || sFaceAt[1][o] == lNext))
             {
               if (lFound != n)
-                { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a face lies between more than two of the rounds")); }
+                { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a face lies between more than two of the rounds")); }
               lFound = o;
             }
         if (lFound == n)
-          { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmBlendSetback: the rounds do not close round the vertex face to face")); }
+          { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: the rounds do not close round the vertex face to face")); }
         bRev = (sFaceAt[1][lFound] == lNext);
         r = lFound;
       }
@@ -984,7 +992,7 @@ SmStatus SmBlendSetback::FillHole(const SmContext & crContext, const std::vector
     for (size_t m=0; m<n; m++)
       {
         if (sFaceUsed[sFace[m]])
-          { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmBlendSetback: the rounds do not close round the vertex face to face")); }
+          { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: the rounds do not close round the vertex face to face")); }
         sFaceUsed[sFace[m]] = true;
       }
   }
@@ -1027,7 +1035,7 @@ SmStatus SmBlendSetback::FillHole(const SmContext & crContext, const std::vector
         const size_t r = sRound[m];
         const Round & crR = crRounds[r];
         if (!(sSpeed[m] > 0.0))
-          { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round does not move along its rails at its end")); }
+          { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round does not move along its rails at its end")); }
         double dLambda = 0.5 * SmVector3d(sMid[m] - SmPoint3d(sCentre)).Length() / sSpeed[m];
         if (!crR.m_bCornerAbove) { dLambda = -dLambda; }
         const size_t q = sQ[r];
@@ -1063,10 +1071,10 @@ SmStatus SmBlendSetback::FillHole(const SmContext & crContext, const std::vector
                 const sm_SbH & crH = sRows[i][e == 0 ? c : q - c];
                 const Face & crF = crFaces[sFace[(m + static_cast<size_t>(e)) % n]];
                 if (!(crH.a[3] > 0.0))
-                  { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's weights must be positive")); }
+                  { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's weights must be positive")); }
                 const SmPoint3d sP(crH.a[0] / crH.a[3], crH.a[1] / crH.a[3], crH.a[2] / crH.a[3]);
                 if (smos_Fabs((sP - crF.m_sPoint).Dot(crF.m_sNormal)) > dTol)
-                  { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round does not meet its faces to the fill's order at its end (a G1 round is eased first for a G2 fill)")); }
+                  { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round does not meet its faces to the fill's order at its end (a G1 round is eased first for a G2 fill)")); }
               }
         sRoundRows[m] = sRows;
       }
@@ -1319,7 +1327,7 @@ SmStatus SmBlendSetback::FillHole(const SmContext & crContext, const std::vector
                 sm_SbFirst(sNets[pIdx], a / 8.0, b / 8.0, sP, sU, sV);
                 const SmVector3d sNrm = sU * sV;
                 if (!(sNrm.Dot(sMidNormal[pIdx]) > 0.0))
-                  { SER_MSG(SM_ERR, _T("SmBlendSetback: the fill folds")); }
+                  { SM_SB_FAIL(rFill.m_pReason, SM_ERR, _T("SmBlendSetback: the fill folds")); }
               }
         }
       for (size_t m=0; m<n; m++)
@@ -1328,7 +1336,7 @@ SmStatus SmBlendSetback::FillHole(const SmContext & crContext, const std::vector
           sm_SbFirst(sNets[m], 1.0, 0.25, sP, sU, sV);
           sm_SbFirst(sNets[n + m], 1.0, 0.5, sQP, sQU, sQV);
           if (!((sU * sV).Dot(sQU * sQV) > 0.0) || !(SmVector3d(sP - sQP).Length() <= dTol))
-            { SER_MSG(SM_ERR, _T("SmBlendSetback: the fill folds where a setback patch meets the interior")); }
+            { SM_SB_FAIL(rFill.m_pReason, SM_ERR, _T("SmBlendSetback: the fill folds where a setback patch meets the interior")); }
         }
 
       // the surfaces
@@ -1375,7 +1383,7 @@ SmStatus SmBlendSetback::FillHole(const SmContext & crContext, const std::vector
       rFill.m_lDegree = static_cast<ULONG>(d);
       return SM_SUCCESS;
     }
-  SER_MSG(SM_ERR, _T("SmBlendSetback: no interior map up to degree 9 meets the setback patches' conditions"));
+  SM_SB_FAIL(rFill.m_pReason, SM_ERR, _T("SmBlendSetback: no interior map up to degree 9 meets the setback patches' conditions"));
   return SM_ERR;
 }
 
