@@ -5295,13 +5295,25 @@ SmBoolean bDebugMe = FALSE ;
   sWeights.Transpose(lNumVCpts);
   
   // Transpose Surface definition; on failure, restore the bit
-  SmStatus eStatus = SetCanonical(lVDegree,lUDegree,sCPts,eBSForm,sVMult,sUMult,
-                                  sVKnots,sUKnots,eKnotType,&sWeights);
-  if (eStatus != SM_SUCCESS)
+  // SolidCraft change: the transposed net, then the definition by the surface's own rule
+  // (SwapUVDefinition), not always re-derived from the net
+  SmBSplineSurface * pTmp = NULL;
+  const SmContext * cpContext = GetContext();
+  NER(cpContext);
+  SmStatus eStatus = SmBSplineSurface::CreateCanonical(*cpContext, lVDegree, lUDegree, sCPts, eBSForm, sVMult, sUMult,
+                                                       sVKnots, sUKnots, eKnotType, &sWeights, NULL, pTmp);
+  if (eStatus != SM_SUCCESS || pTmp == NULL)
     {
       ToggleSwapUVBit() ;
-      SER(eStatus);
+      SER(eStatus != SM_SUCCESS ? eStatus : SM_ERR);
     }
+  SmObjDelete sCleanup(pTmp);
+  Notify(SM_NO_PRE_EDIT, this, SM_NO_GET_OWNER(this), NULL);
+  gw_SURFACE *pTmpNurb = pTmp->m_pNurb;
+  pTmp->m_pNurb        = m_pNurb;
+  m_pNurb              = pTmpNurb;
+  Notify(SM_NO_POST_EDIT, this, SM_NO_GET_OWNER(this), NULL);
+  SER(SwapUVDefinition());
 
 #ifdef SM_DEBUG_CODE
   if(bDebugMe)

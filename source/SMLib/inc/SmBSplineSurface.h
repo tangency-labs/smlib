@@ -1263,6 +1263,12 @@ public:
     ) const;
 
     SmStatus SwapUV();
+    // SolidCraft change: after SwapUV has transposed the net and toggled the swap bit, bring the
+    // surface's own definition in line with it. The default rebuilds it from the net
+    // (RebuildSTEPFromNURBParameters); the analytics whose definition SwapUV leaves unchanged but
+    // for that bit (SmSurfOfRevolution's kinds) or swaps in ToggleSwapUVBit (SmPlane) keep it,
+    // exact as made, rather than re-derive it from the net.
+    virtual SmStatus SwapUVDefinition() { return RebuildSTEPFromNURBParameters(); }
     virtual void      ToggleSwapUVBit()  { }  // only called by SwapUV(). Every Surf with a m_bSwapUV member (the analytics) must implement.
     virtual SmBoolean GetSwapUVBit()     { return FALSE ; }
 

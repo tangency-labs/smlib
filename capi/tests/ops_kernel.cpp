@@ -7074,7 +7074,7 @@ const TangentEndCase BALL_CASES[] = {
     {"pocket_corner", ball_pocket_corner, nullptr},
     {"prism_corner", ball_prism_corner, nullptr},
     {"oblique_corner", ball_oblique_corner,
-     "one round's end circle 1.05e-12 off the sphere: its SmCone's frame is re-derived from its net (CopyAndAddAnalytics in CalcLineSpineFilletGeom, then SmCone::RebuildSTEPFromNURBParameters when the orienter turns its face), its axis 1.06e-12 off the ball's centre"},
+     "one round's end circle 1.05e-12 off the sphere: CopyAndAddAnalytics (CalcLineSpineFilletGeom) re-derives the round's SmCone frame from its net, its axis 1.06e-12 off the ball's centre"},
     {"sphere_turned_round", ball_sphere_turned_round, nullptr},
 };
 
@@ -8305,6 +8305,95 @@ void ball_faces_on_concentric_spheres(const smlib_brep *r, double a, double b, d
     CHECK(found[0] == 8 && found[1] == 8 && worst <= 1e-12);
 }
 
+// SmBSplineSurface::SwapUV turns an analytic surface's NURB parameters round (as
+// SmBrep::OrientTrimmedSurfaces turns a face): the surface is the same, so its analytic
+// definition is too. A cone, a cylinder, a sphere, a torus and a plane on one oblique frame 45 from
+// the origin, the cone and cylinder 25 long, each
+// turned once and back: its frame (origin, axes; a plane's two axes swapped on each turn) and its
+// radii exactly as made, to 1e-15, and every point of its net where it was (u and v swapped; to
+// 1e-13, the transposed net's sums taken in another order at coordinates near 45).
+// Rebuilt from the net instead, the frame came back fitted to the iso-circles (a cone's axis
+// 1e-12 off at a 25 long round in the oblique Ball corner).
+double frame_off(const SmAxis2Placement &a, const SmAxis2Placement &b, bool swapped_xy)
+{
+    const SmVector3d ax = a.GetXAxis(), ay = a.GetYAxis(), bx = swapped_xy ? b.GetYAxis() : b.GetXAxis(), by = swapped_xy ? b.GetXAxis() : b.GetYAxis();
+    return std::max({(a.GetOrigin() - b.GetOrigin()).Length(), (ax - bx).Length(), (ay - by).Length()});
+}
+
+void analytic_frames_survive_swap_uv()
+{
+    SmApiGetOrCreateContext();
+    const SmContext &ctx = *SmApiGetOrCreateContext();
+    SmAxis2Placement frame;
+    CHECK(frame.SetCanonical(SmPoint3d(31.3, -24.7, 18.4), SmVector3d(1.0 / 3, 2.0 / 3, 2.0 / 3), SmVector3d(2.0 / 3, 1.0 / 3, -2.0 / 3)) == SM_SUCCESS);
+    // each surface: its frame and radii now, after one turn, after two
+    auto net_off = [](const SmSurface *before, const SmSurface *after)
+    {
+        const SmExtent2d d0 = before->GetNaturalUVDomain(), d1 = after->GetNaturalUVDomain();
+        double off = 0.0;
+        for (int i = 0; i <= 8; ++i)
+        {
+            for (int j = 0; j <= 8; ++j)
+            {
+                SmPoint3d p, q;
+                if (before->EvaluatePoint(d0.Evaluate(i / 8.0, j / 8.0), p) != SM_SUCCESS || after->EvaluatePoint(d1.Evaluate(j / 8.0, i / 8.0), q) != SM_SUCCESS)
+                {
+                    return HUGE_VAL;
+                }
+                off = std::max(off, (p - q).Length());
+            }
+        }
+        return off;
+    };
+    auto turn = [&](const char *what, SmBSplineSurface *s, auto canonical, bool plane)
+    {
+        SmSurface *copy = nullptr;
+        CHECK(s != nullptr && s->Copy(ctx, copy) == SM_SUCCESS && copy != nullptr);
+        if (s == nullptr || copy == nullptr)
+        {
+            return;
+        }
+        SmAxis2Placement f0, f1, f2;
+        double r0[2] = {0, 0}, r1[2] = {0, 0}, r2[2] = {0, 0};
+        CHECK(canonical(s, f0, r0) == SM_SUCCESS);
+        CHECK(s->SwapUV() == SM_SUCCESS);
+        CHECK(canonical(s, f1, r1) == SM_SUCCESS);
+        const double net = net_off(copy, s);
+        CHECK(s->SwapUV() == SM_SUCCESS);
+        CHECK(canonical(s, f2, r2) == SM_SUCCESS);
+        const double once = std::max({frame_off(f0, f1, plane), std::fabs(r0[0] - r1[0]), std::fabs(r0[1] - r1[1])});
+        const double twice = std::max({frame_off(f0, f2, false), std::fabs(r0[0] - r2[0]), std::fabs(r0[1] - r2[1])});
+        std::printf("%s turned round: frame and radii off by %.3g, back by %.3g; net off by %.3g\n", what, once, twice, net);
+        CHECK(once <= 1e-15 && twice <= 1e-15 && net <= 1e-13);
+        delete copy;
+        delete s;
+    };
+    SmCone *cone = nullptr;
+    CHECK(SmCone::CreateCanonical(ctx, frame, 2.0, 2.4, 25.0, cone) == SM_SUCCESS);
+    turn("cone", cone, [](SmBSplineSurface *s, SmAxis2Placement &f, double *r) {
+        double semi = 0.0;
+        r[1] = 0.0;
+        SmStatus st = SM_CAST_PTR(SmCone, s)->GetCanonical(f, r[0], semi);
+        r[1] = semi;
+        return st; }, false);
+    SmCylinder *cyl = nullptr;
+    CHECK(SmCylinder::CreateCanonical(ctx, frame, 2.5, cyl) == SM_SUCCESS);
+    CHECK(cyl != nullptr && cyl->AdjustSTEPUVDomain(SmExtent2d(SmPoint2d(0.0, 0.0), SmPoint2d(90.0, 25.0))) == SM_SUCCESS);
+    turn("cylinder", cyl, [](SmBSplineSurface *s, SmAxis2Placement &f, double *r) { r[1] = 0.0; return SM_CAST_PTR(SmCylinder, s)->GetCanonical(f, r[0]); }, false);
+    SmSphere *sphere = nullptr;
+    CHECK(SmSphere::CreateCanonical(ctx, frame, 2.5, sphere) == SM_SUCCESS);
+    CHECK(sphere != nullptr && sphere->AdjustSTEPUVDomain(SmExtent2d(SmPoint2d(0.0, 0.0), SmPoint2d(70.0, 90.0))) == SM_SUCCESS);
+    turn("sphere", sphere, [](SmBSplineSurface *s, SmAxis2Placement &f, double *r) { r[1] = 0.0; return SM_CAST_PTR(SmSphere, s)->GetCanonical(f, r[0]); }, false);
+    SmTorus *torus = nullptr;
+    const SmExtent2d tdom(SmPoint2d(0.0, 0.0), SmPoint2d(80.0, 120.0));
+    CHECK(SmTorus::CreateCanonical(ctx, frame, 4.0, 1.5, torus, FALSE, FALSE, NULL, &tdom) == SM_SUCCESS);
+    turn("torus", torus, [](SmBSplineSurface *s, SmAxis2Placement &f, double *r) { return SM_CAST_PTR(SmTorus, s)->GetCanonical(f, r[0], r[1]); }, false);
+    SmPlane *plane = nullptr;
+    CHECK(SmPlane::CreateCanonical(ctx, frame, plane) == SM_SUCCESS);
+    CHECK(plane != nullptr && plane->AdjustSTEPUVDomain(SmExtent2d(SmPoint2d(-3.0, -2.0), SmPoint2d(5.0, 7.0))) == SM_SUCCESS);
+    turn("plane", plane, [](SmBSplineSurface *s, SmAxis2Placement &f, double *r) { r[0] = r[1] = 0.0; return SM_CAST_PTR(SmPlane, s)->GetCanonical(f); }, true);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 2 && std::strcmp(argv[1], "--scenarios-known-failing") == 0)
@@ -8389,6 +8478,7 @@ int main(int argc, char **argv)
 
     loops_touching_at_a_vertex_in_any_order();
     four_faces_meeting_at_a_vertex_shell();
+    analytic_frames_survive_swap_uv();
     shell_open_beside_a_step_keeps_the_floor_under_the_opening();
     hole_whose_offset_leaves_the_round_side_shell();
     floor_thinner_than_two_walls_shell();

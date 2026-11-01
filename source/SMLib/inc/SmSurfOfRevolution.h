@@ -441,6 +441,9 @@ public:
 
   // gwc: can use SmBSplineSurface version:  virtual SmStatus SwapUV();
   virtual void      ToggleSwapUVBit()  { m_bSwapUV = m_bSwapUV ? FALSE : TRUE ; }
+  // SolidCraft change: SwapUV leaves the definition (frame, generator, domains) as made, the swap
+  // bit toggled; only the polar converter is made again on the transposed net
+  virtual SmStatus  SwapUVDefinition() { return RebuildPolarConverter(); }
   virtual SmBoolean GetSwapUVBit()     { return m_bSwapUV ; }
 
   virtual SmStatus Reparameterize(const SmExtent2d & crNewDomain);
