@@ -242,6 +242,8 @@ if(SMLIB_CAPI_TESTS)
   add_test(NAME smlib_test_ops_kernel_scenarios_known_failing COMMAND smlib_test_ops_kernel --scenarios-known-failing)
   # The setback corner's fills that fail today (tests/ops_kernel.cpp, SETBACK_CASES), held the same way.
   add_test(NAME smlib_test_ops_kernel_setbacks_known_failing COMMAND smlib_test_ops_kernel --setbacks-known-failing)
+  # The mixed-convexity corners that fail today (tests/ops_kernel.cpp, MIXED_CORNER_CASES), held the same way.
+  add_test(NAME smlib_test_ops_kernel_mixed_corners_known_failing COMMAND smlib_test_ops_kernel --mixed-corners-known-failing)
 
   # Flat arrays: SmBrep -> arrays -> SmBrep round trips, and hostile arrays. The test builds its
   # solids with SM_API directly and hands them to the C API as native files.
