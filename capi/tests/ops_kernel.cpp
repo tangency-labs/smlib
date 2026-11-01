@@ -5680,11 +5680,34 @@ void scenario_variable_round_from_zero_at_a_corner()
         g);
 }
 
+// The three edges at the corner (40, 30, 20) of a 40 x 30 x 20 box chamfered 2 (along x), 3
+// (along y) and 4 (upright) in one call. Inward from the corner (u, v, w >= 0) they take
+// v + w < 2, u + w < 3 and u + v < 4; each runs on until it meets the others, so the body is the
+// box cut by the three planes, which meet at (2.5, 1.5, 0.5), inside it: nine faces. At depth w
+// the two top strips p = 2 - w, q = 3 - w (where positive) and the triangle u + v < 4 take
+// 40 p + 30 q - p q + max(4 - p - q, 0)^2 / 2; over w in [0, 20]: 80 + 135 - 14/3 + 9/4 + 37/6
+// + 136 = 354.75.
+void scenario_unequal_chamfers_at_a_corner()
+{
+    scenario_blend(box(0, 0, 0, 40, 30, 20), SMLIB_BLEND_CHAMFER, {20, 30, 20, 40, 15, 20, 40, 30, 10}, {2, 3, 4}, 24000.0 - 354.75, 1e-9, 9);
+}
+
+// A 20 x 4 x 4 bar, its four long edges rounded r 2 in one call: each side face is used up by
+// the rounds on its two edges, whose contact lines meet on its middle; the bar becomes the rod
+// of radius 2, 80 pi, its two ends discs: six faces.
+void scenario_square_bar_rounded_to_a_rod()
+{
+    scenario_blend(box(0, 0, 0, 20, 4, 4), SMLIB_BLEND_ROUND, {10, 0, 0, 10, 4, 0, 10, 0, 4, 10, 4, 4}, {2, 2, 2, 2}, 80.0 * PI, 1e-9, 6);
+}
+
 // The scenario cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--scenarios-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SCENARIO_CASES[] = {
     {"chord_on_a_60_degree_edge", scenario_chord_on_a_60_degree_edge, nullptr},
+    {"square_bar_rounded_to_a_rod", scenario_square_bar_rounded_to_a_rod,
+     "status 0, but one of the four rounds is left out: 268.4956 (320 less three rounds of 20 A(2)) and 7 faces, not the rod's 80 pi and 6"},
     {"three_unequal_rounds_at_a_corner", scenario_three_unequal_rounds_at_a_corner, nullptr},
+    {"unequal_chamfers_at_a_corner", scenario_unequal_chamfers_at_a_corner, nullptr},
     {"unequal_rounds_at_a_concave_turn", scenario_unequal_rounds_at_a_concave_turn, nullptr},
     {"unequal_rounds_at_a_convex_turn", scenario_unequal_rounds_at_a_convex_turn, nullptr},
     {"variable_round_from_zero_at_a_corner", scenario_variable_round_from_zero_at_a_corner, nullptr},
