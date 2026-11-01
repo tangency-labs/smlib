@@ -1194,7 +1194,25 @@ SmStatus SmFilletExecutive::TrimAtCreases()
   for (ULONG f=0; f<sTargetFaces.GetSize(); f++)
     { SER( sTargetFaces[f]->CalculateBoundingBox( vTargetBoxes[f] )); }
 
-  // 1, 2: each sheet face split along its creases, the pieces beyond the cliffs deleted
+  // each blended edge's own fillet faces (not its corners')
+  std::map<SmFace*, ULONG> sRoundOf;
+  std::set<ULONG>          sKeptRounds;
+  for (ULONG i=0; i<m_vFilletSolvers.GetSize(); i++)
+    {
+      SmTArray<SmFilletGeom*> sFGs;
+      m_vFilletSolvers[i]->GetFilletGeoms( sFGs );
+      for (ULONG k=0; k<sFGs.GetSize(); k++)
+        {
+          if ( sFGs[k] == NULL || sFGs[k]->GetFilletSurface() == NULL )
+            { continue; }
+          SmFace * pFace = SM_CAST_PTR( SmFace, sFGs[k]->GetFilletSurface()->GetOwner() );
+          if ( pFace != NULL && pFace->GetBrep() == m_pFilletBrep )
+            { sRoundOf[pFace] = i; }
+        }
+    }
+
+  // 1, 2: each sheet face split along its creases, the pieces outside the body (beyond the
+  // cliffs, or past an end) deleted, whether a crease split it or not
   SmTArray<SmFace*> sSheetFaces;
   m_pFilletBrep->GetFaces( sSheetFaces );
   for (ULONG s=0; s<sSheetFaces.GetSize(); s++)
@@ -1267,12 +1285,13 @@ SmStatus SmFilletExecutive::TrimAtCreases()
               pOnly = pFace->GetSurface();
             }
         }
-      if ( sPieces.GetSize() == 0 )
-        { continue; }
       SmTArray<SmFace*> sNewFaces;
       SmTArray<SmEdge*> sOnEdges;
-      SER( m_pFilletBrep->MergeCurvesOnSurface( *pSheet->GetSurface(), dTol, sPieces, NULL, sNewFaces, sOnEdges, FALSE,
-                                                ( lFaces == 1 ) ? pOnly : NULL ));
+      if ( sPieces.GetSize() > 0 )
+        {
+          SER( m_pFilletBrep->MergeCurvesOnSurface( *pSheet->GetSurface(), dTol, sPieces, NULL, sNewFaces, sOnEdges, FALSE,
+                                                    ( lFaces == 1 ) ? pOnly : NULL ));
+        }
       // keep the pieces inside the target
       SmTArray<SmFace*> sAll;
       sAll.Add( pSheet );
@@ -1297,12 +1316,30 @@ SmStatus SmFilletExecutive::TrimAtCreases()
               SER( m_pFilletBrep->DeleteFace( sAll[p], TRUE ));
               sAll[p] = NULL;
             }
+          else if ( sRoundOf.count( pSheet ))
+            { sKeptRounds.insert( sRoundOf[pSheet] ); }
+        }
+    }
+
+  // A blended edge whose blend keeps no face in the body has no length left: its corners take the
+  // whole of it (a 20 cube's corner rounded R20: the corner's ball reaches the far faces, the
+  // rounds lie past them). Larger than the faces allow, so a fit can reduce it.
+  for (ULONG i=0; i<m_vFilletSolvers.GetSize(); i++)
+    {
+      SmBoolean bHas = FALSE;
+      for (const std::pair<SmFace* const, ULONG> & rOf : sRoundOf)
+        { bHas = ( bHas || rOf.second == i ) ? TRUE : FALSE; }
+      if ( bHas && !sKeptRounds.count( i ))
+        {
+          GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, _T("Fillet Error: a blend past its faces keeps no length of its edge: its corners take the whole of it (the blend is larger than the faces allow)") );
+          return SM_ERR;
         }
     }
 
   // the support faces continued to the kept rails that run past them into the material
   SmTArray<SmEdge*> sSheetEdges;
   m_pFilletBrep->GetEdges( sSheetEdges );
+
   std::set<SmEdge*> sBlendedEdges;
   for (ULONG i=0; i<m_vFilletSolvers.GetSize(); i++)
     { sBlendedEdges.insert( m_vFilletSolvers[i]->GetEdgeuse(0)->GetEdge() ); }
@@ -1457,12 +1494,9 @@ SmStatus SmFilletExecutive::TrimAtCreases()
       GetFilletErrorInfo()->NoteError( SM_FILERR_BAD_MERGE, _T("Fillet Error: a blend past its faces takes off nothing round its blended edges") );
       return SM_ERR;
     }
-  // Every face of the body reached: no face is left that the blends do not take (the rounds of a
-  // cube's corner as wide as its faces leave only their corner's ball, the rounds themselves of
-  // no length). Larger than the body allows.
   if ( sGone.size() >= m_pTargetBrep->GetNumFaces() )
     {
-      GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, _T("Fillet Error: a blend past its faces takes every face of the body round it (the blend is larger than the body allows)") );
+      GetFilletErrorInfo()->NoteError( SM_FILERR_BAD_MERGE, _T("Fillet Error: a blend past its faces reaches every face of the body (its creases and rails enclose no part of it)") );
       return SM_ERR;
     }
   for (SmFace * pFace : sGone)
