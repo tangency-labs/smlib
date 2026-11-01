@@ -1505,17 +1505,20 @@ bool size_ok(double x)
 
 // Whether each setback with its ease fits on the edges of its corner: the two together
 // shorter than every edge there, and where an edge's other end is a setback corner too, the
-// four together shorter than the edge. Where one does not, `longest` (if given) is the largest
-// setback that does, for the setback of the corner that does not fit with its ease and the
-// other end's as they are: the shortest such edge less the rest, less the fit margin
-// (SmFilletExecutive::FitMargin: the bound is open, a setback as long as the edge leaves none of
-// it); 0 when none does.
-bool setbacks_fit(const std::vector<SetBack> &setbacks, double *longest = nullptr)
+// four together shorter than the edge. Where one does not, `why` (if given) says so naming the
+// largest setback that fits at that corner, and `longest` (if given) is the largest setback that
+// does, for the setback of the corner that does not fit with its ease and the other end's as they
+// are: the shortest such edge less the rest, less the fit margin (SmFilletExecutive::FitMargin:
+// the bound is open, a setback as long as the edge leaves none of it); 0 when none does.
+bool setbacks_fit(const std::vector<SetBack> &setbacks, std::string *why = nullptr, double *longest = nullptr)
 {
     bool fit = true;
     double least = std::numeric_limits<double>::max();
     for (const auto &sb : setbacks)
     {
+        // the largest setback that fits at this corner: its edges' least room less the ease
+        double largest = HUGE_VAL;
+        bool fits = true;
         SmTArray<SmEdge *> edges;
         sb.vertex->GetEdges(edges);
         for (ULONG k = 0; k < edges.GetSize(); ++k)
@@ -1534,11 +1537,27 @@ bool setbacks_fit(const std::vector<SetBack> &setbacks, double *longest = nullpt
                     other = o.distance + o.ease;
                 }
             }
+            largest = std::min(largest, length - other - sb.ease);
             if (sb.distance + sb.ease + other >= length)
             {
+                fits = false;
                 fit = false;
             }
             least = std::min(least, length - sb.ease - other - SmFilletExecutive::FitMargin(*edges[k]));
+        }
+        if (!fits)
+        {
+            if (why != nullptr)
+            {
+                char text[256];
+                std::snprintf(text, sizeof text,
+                              "Fillet Error: a setback of %.9g (with its ease, %.9g) does not fit on the corner's edges: a setback below %.9g fits",
+                              sb.distance, sb.distance + sb.ease, largest);
+                if (why->empty())
+                {
+                    *why = text;
+                }
+            }
         }
     }
     if (!fit && longest != nullptr)
@@ -1916,10 +1935,12 @@ int32_t blend_call(const char *fn, const smlib_brep *brep, const Section &sectio
                 int64_t j = first_corner[k];
                 back.push_back({at[k], setbacks[j], eases != nullptr ? eases[j] : 0.0});
             }
+            std::string misfit;
             double longest = 0.0;
-            if (!setbacks_fit(back, &longest))
+            if (!setbacks_fit(back, &misfit, &longest))
             {
-                g_blend_reason = "Fillet Error: a setback with its ease is as long as an edge at its corner, or two on one edge together are";
+                g_blend_reason = misfit;
+                g_blend_why = misfit + "\n";
                 note_fit(longest, SMLIB_FIT_SETBACK);
                 return SMLIB_ERR_NO_ROOM;
             }

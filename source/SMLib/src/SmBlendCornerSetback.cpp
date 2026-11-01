@@ -120,6 +120,85 @@ SmStatus sm_SbCornerPlanes(const SmVertex * cpVertex, const SmTArray<SmEdgeuse*>
   return SM_SUCCESS;
 }
 
+// Whether pEdge is blended by the executive (any of its edgeuses has a solver).
+SmBoolean sm_SbEdgeBlended(SmFilletExecutive * pExec, const SmEdge * pEdge)
+{
+  SmEdgeuse * pEU = pEdge->GetPrimaryEdgeuse();
+  for (int i=0; i<2 && pEU != NULL; i++, pEU = pEU->GetRadial())
+    {
+      if ( pExec->GetFilletSolverOfEdgeuse( pEU ) != NULL || pExec->GetFilletSolverOfEdgeuse( pEU->GetMate() ) != NULL )
+        { return TRUE; }
+    }
+  return FALSE;
+}
+
+// The corner's setbacks (owner, 2026-11-01). Each edge's room: its length, less the far end's
+// claim: an asked-for setback with its ease there, or, where the far end is itself a vertex
+// whose three or more edges are all blended (a corner that may set back too), half the edge.
+// Asked for (bAsked): dAsked on every edge, refused (rbFits FALSE) unless it and dEase lie below
+// every room, rdLargest then the largest that fits (the least room less the ease); and below
+// an edge's contact-line minimum (rbShort). Else the rule's (Distances), each shrunk to its
+// room less a quarter of its radius where longer, as long as that is at or above its minimum
+// (rbFits FALSE where not: the rounds beside an edge cross past its room, an overflow).
+SmStatus sm_SbSetBacks(const SmVertex * cpVertex, const SmTArray<SmEdgeuse*> & crAllEUs, SmFilletExecutive * pExec,
+                       const std::vector<SmBlendSetback::Face> & crPlanes, const std::vector<SmBlendSetback::Edge> & crEdges, double dTol,
+                       std::vector<double> & rvSetBacks, std::vector<double> & rvLeast, std::vector<double> & rvRoom,
+                       SmBoolean & rbFits, SmBoolean & rbShort, double & rdLargest, const TCHAR *& rpWhy)
+{
+  rbFits = TRUE;
+  rbShort = FALSE;
+  rdLargest = SM_BIG_DOUBLE;
+  const ULONG n = crAllEUs.GetSize();
+  SER( SmBlendSetback::Distances( crPlanes, crEdges, rvSetBacks, &rvLeast, &rpWhy ));
+  double dAsked = 0.0, dEase = 0.0;
+  SmBoolean bOpen = FALSE;
+  const SmBoolean bAsked = pExec->GetSetBackFill( cpVertex, dAsked, dEase, bOpen );
+  rvRoom.assign( n, 0.0 );
+  for (ULONG i=0; i<n; i++)
+    {
+      const SmEdge * pEdge = crAllEUs[i]->GetEdge();
+      NER( pEdge );
+      NER( pEdge->GetStartVertex() );
+      NER( pEdge->GetEndVertex() );
+      const double dLength = pEdge->GetStartVertex()->GetPoint().DistanceBetween( pEdge->GetEndVertex()->GetPoint() );
+      const SmVertex * pFar = pEdge->GetOtherVertex( cpVertex );
+      double dFarSetBack = 0.0, dFarEase = 0.0;
+      SmBoolean bFarOpen = FALSE;
+      double dClaim = 0.0;
+      if ( pFar != NULL && pFar != cpVertex && pExec->GetSetBackFill( pFar, dFarSetBack, dFarEase, bFarOpen ))
+        { dClaim = dFarSetBack + dFarEase; }
+      else if ( pFar != NULL && pFar != cpVertex && !bAsked )
+        {
+          SmTArray<SmEdge*> sFarEdges;
+          ((SmVertex*)pFar)->GetEdges( sFarEdges );
+          SmBoolean bAll = ( sFarEdges.GetSize() >= 3 ) ? TRUE : FALSE;
+          for (ULONG j=0; j<sFarEdges.GetSize() && bAll; j++)
+            { bAll = sm_SbEdgeBlended( pExec, sFarEdges[j] ); }
+          if ( bAll )
+            { dClaim = 0.5 * dLength; }
+        }
+      rvRoom[i] = dLength - dClaim;
+      if ( bAsked )
+        {
+          rdLargest = smos_Min( rdLargest, rvRoom[i] - dEase );
+          if ( dAsked + dEase >= rvRoom[i] - dTol )
+            { rbFits = FALSE; }
+          if ( dAsked < rvLeast[i] - dTol )
+            { rbShort = TRUE; }
+          rvSetBacks[i] = dAsked;
+        }
+      else
+        {
+          const double dFit = rvRoom[i] - 0.25 * crEdges[i].m_dRadius;
+          if ( rvSetBacks[i] > dFit )
+            { rvSetBacks[i] = dFit; }
+          if ( rvSetBacks[i] < rvLeast[i] )
+            { rbFits = FALSE; }
+        }
+    }
+  return SM_SUCCESS;
+}
+
 } // namespace
 
 /*******************************************************************//**
@@ -212,21 +291,7 @@ SmStatus SmBlendCorner::ClassifySetBack
   // rounds of one radius meet a common ball where three faces meet: not a setback unless asked
   if ( !bAsked && !bG2 && dMaxR - dMinR <= dTol )
     { return SM_SUCCESS; }
-  // the setbacks must fit on their edges (a blend that overflows is the executive's first)
-  if ( !bAsked )
-    {
-      std::vector<double> sSetBacks;
-      if ( SmBlendSetback::Distances( sPlanes, sEdges, sSetBacks ) != SM_SUCCESS )
-        { return SM_SUCCESS; }
-      for (ULONG i=0; i<n; i++)
-        {
-          SmEdge * pEdge = crAllEUs[i]->GetEdge();
-          NER( pEdge->GetStartVertex() );
-          NER( pEdge->GetEndVertex() );
-          if ( sSetBacks[i] >= pEdge->GetStartVertex()->GetPoint().DistanceBetween( pEdge->GetEndVertex()->GetPoint() ) - dTol )
-            { return SM_SUCCESS; }
-        }
-    }
+  // (setbacks that do not fit are the Setback's to refuse, or the overflow's: MakeSetBackTopology)
   rlOrder = ( bG2 || ( bAsked && dEase > 0.0 )) ? 2 : 1;
   reEvent = SM_BCE_SETBACK;
   return SM_SUCCESS;
@@ -289,46 +354,47 @@ SmStatus SmBlendCorner::MakeSetBackTopology()
   if ( !bPlanes )
     { SER( SM_ERR ); } // ClassifySetBack found them
 
-  // the setbacks
-  std::vector<double> sLeast;
+  // the setbacks (sm_SbSetBacks). Where the rule's do not fit (the rounds beside an edge cross
+  // past its room) the blends overflow their faces: the executive's overflow comes first, and
+  // the corner, made meanwhile with each setback at half its room (only so that its vertices
+  // can be placed), refuses in BuildSetBackFill if it is ever built.
+  std::vector<double> sLeast, sRoom;
   const TCHAR * pWhy = NULL;
-  if ( SmBlendSetback::Distances( sPlanes, sEdges, m_vSetBacks, &sLeast, &pWhy ) != SM_SUCCESS )
+  SmBoolean bFits = TRUE, bShort = FALSE;
+  double dLargest = 0.0;
+  if ( sm_SbSetBacks( m_cpVertex, *m_pAllEUs, pExec, sPlanes, sEdges, dTol, m_vSetBacks, sLeast, sRoom, bFits, bShort, dLargest, pWhy ) != SM_SUCCESS )
     { return SetBackNotBuilt( pWhy != NULL ? pWhy : _T("Fillet Error: the corner's setbacks cannot be found") ); }
   double dAsked = 0.0, dEase = 0.0;
   SmBoolean bOpen = FALSE;
-  if ( pExec->GetSetBackFill( m_cpVertex, dAsked, dEase, bOpen ))
+  const SmBoolean bAsked = pExec->GetSetBackFill( m_cpVertex, dAsked, dEase, bOpen );
+  if ( bAsked )
     {
-      for (ULONG i=0; i<n; i++)
+      TCHAR cWhy[SM_TBLOCK_SIZE];
+      if ( !bFits )
         {
-          if ( dAsked < sLeast[i] - dTol )
-            {
-              TCHAR cWhy[SM_TBLOCK_SIZE];
-              smos_sprintf( cWhy, _T("Fillet Error: a setback of %g stops short of where the rails of the rounds beside an edge cross it, %g from the vertex"),
-                            dAsked, sLeast[i] );
-              return SetBackNotBuilt( cWhy );
-            }
-          m_vSetBacks[i] = dAsked;
-        }
-      m_dEaseDist = dEase;
-    }
-  m_dSetBackDist = 0.0;
-  for (ULONG i=0; i<n; i++)
-    {
-      SmEdge * pEdge = (*m_pAllEUs)[i]->GetEdge();
-      NER( pEdge );
-      NER( pEdge->GetStartVertex() );
-      NER( pEdge->GetEndVertex() );
-      const double dLength = pEdge->GetStartVertex()->GetPoint().DistanceBetween( pEdge->GetEndVertex()->GetPoint() );
-      if ( m_vSetBacks[i] + m_dEaseDist >= dLength - dTol )
-        {
-          TCHAR cWhy[SM_TBLOCK_SIZE];
-          smos_sprintf( cWhy, _T("Fillet Error: a setback of %g (with its ease, %g) does not fit on its edge, %g long"),
-                        m_vSetBacks[i], m_vSetBacks[i] + m_dEaseDist, dLength );
+          smos_sprintf( cWhy, _T("Fillet Error: a setback of %g (with its ease, %g) does not fit on the corner's edges: a setback below %g fits"),
+                        dAsked, dAsked + dEase, dLargest );
           pExec->GetFilletErrorInfo()->NoteError( m_cpVertex, SM_FIL_FAILURE, SM_FILERR_NO_ROOM, cWhy );
           return SM_ERR;
         }
-      m_dSetBackDist = smos_Max( m_dSetBackDist, m_vSetBacks[i] );
+      if ( bShort )
+        {
+          double dMost = 0.0;
+          for (ULONG i=0; i<n; i++) { dMost = smos_Max( dMost, sLeast[i] ); }
+          smos_sprintf( cWhy, _T("Fillet Error: a setback of %g stops short of where the rails of the rounds beside an edge cross it, %g from the vertex"),
+                        dAsked, dMost );
+          return SetBackNotBuilt( cWhy );
+        }
+      m_dEaseDist = dEase;
     }
+  m_bSetBackOverflows = bFits ? FALSE : TRUE;
+  if ( m_bSetBackOverflows )
+    {
+      for (ULONG i=0; i<n; i++) { m_vSetBacks[i] = 0.5 * sRoom[i]; }
+    }
+  m_dSetBackDist = 0.0;
+  for (ULONG i=0; i<n; i++)
+    { m_dSetBackDist = smos_Max( m_dSetBackDist, m_vSetBacks[i] ); }
 
   // the vertices: per face, M (the blend before's rail end), B (the base point), S (the blend after's)
   std::vector<SmFilletGeom*> sGeoms( n );
@@ -413,6 +479,12 @@ NOTES: Refused, its reason noted, where the fill is (SmBlendSetback's
 SmStatus SmBlendCorner::BuildSetBackFill()
 {
   NER( m_pAllEUs );
+  if ( m_bSetBackOverflows )
+    {
+      GetFilletExecutive()->GetFilletErrorInfo()->NoteError( m_cpVertex, SM_FIL_FAILURE, SM_FILERR_NO_ROOM,
+          _T("Fillet Error: the rounds beside an edge at a setback corner cross past the room on that edge: the blends are larger than their faces allow") );
+      return SM_ERR;
+    }
   const ULONG n = m_pAllEUs->GetSize();
   if ( m_vVertices.GetSize() != 3 * n || m_vEdges.GetSize() != 3 * n )
     { SER( SM_ERR ); }
