@@ -271,6 +271,9 @@ protected:
   SmEdge                  * m_pFitEdge = NULL;      // SolidCraft change: the blended edge m_dFitRadius is for
   ULONG                     m_lFitKind = 0;         // SolidCraft change: what m_dFitRadius sizes: SM_FIT_RADIUS (a constant ball's
                                                     //   radius), SM_FIT_SCALE (the factor on two unequal offsets), SM_FIT_CHORD (a width)
+  double                    m_dFitSetBack = -1.0;   // SolidCraft change: with a setback corner refused as too short for a convex
+                                                    //   fill (SM_FILERR_NO_ROOM), the least setback that builds one: > 0, 0 = none
+                                                    //   does, < 0 = not that cause
 
   // gwc: Only one of m_bDoPiecewiseMerge, m_bDoTopologyInsertion, and m_bDoGlobalMerge should be TRUE in any SmFilletExecutive.
   //      They are 3 different ways to do the same thing; move m_pFilletBrep Topology and Geometry into m_pTargetBrep. 
@@ -471,6 +474,9 @@ public:
   // SolidCraft change: the fit of blends taking the whole of a planar face bounded by straight blended edges
   SmStatus  NoteFitOfPolygonsTakenWhole();
   double    GetFitRadius() const { return m_dFitRadius; }
+  // SolidCraft change: a setback corner's refusal: the setback that builds (m_dFitSetBack)
+  void      NoteFitSetBack(double dSetBack) { m_dFitSetBack = dSetBack; }
+  double    GetFitSetBack() const { return m_dFitSetBack; }
   // SolidCraft change: how far under an open bound (a size at which the blend leaves a face, an
   // edge or a part's bridge of no extent) the largest size that builds lies: a thousand of the
   // blended edge's tolerances (0.01 mm at 1e-5), so that the sliver the size leaves (a strip of

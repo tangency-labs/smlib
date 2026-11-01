@@ -973,8 +973,9 @@ SmBoolean sm_SbLeastSquares(std::vector<double> M, std::vector<double> c, size_t
 // SM_ERR_INVALID_INPUT: G is not positive definite; SM_ERR: no y meets the constraints (or no
 // progress within the step limit).
 SmStatus sm_SbDualQP(const std::vector<double> & crG, const std::vector<double> & crg, const std::vector<double> & crC,
-                     const std::vector<double> & crb, size_t n, size_t m, double dTol, std::vector<double> & rY)
+                     const std::vector<double> & crb, size_t n, size_t m, double dTol, std::vector<double> & rY, bool * pbProven = NULL)
 {
+  if (pbProven != NULL) { *pbProven = false; }
   // G = L L', J = L^-T (J' G J = I), J[r n + c] its column c
   std::vector<double> L(n * n, 0.0);
   for (size_t j=0; j<n; j++)
@@ -1068,7 +1069,27 @@ SmStatus sm_SbDualQP(const std::vector<double> & crG, const std::vector<double> 
           const double t2 = (dZ > 1.0e-14 && zn > 0.0) ? -slack(p) / zn : HUGE_VAL;
           const double t = smos_Min(t1, t2);
           if (t == HUGE_VAL)
-            { return SM_ERR; }
+            {
+              // no step: n_p = N_A r (z = 0) with every r_k <= 0. For any feasible y,
+              // n_p . y = sum r_k n_k . y <= sum r_k b_k: proven infeasible when b_p exceeds that
+              // (checked here on the rows themselves, not trusted from the factors)
+              if (!(dZ <= 1.0e-14))
+                { return SM_ERR; }
+              double dResid = 0.0, dScale = 1.0, dBound = 0.0;
+              for (size_t k=0; k<n; k++)
+                {
+                  double s = crC[p * n + k];
+                  for (size_t a=0; a<q; a++) { s -= r[a] * crC[sActive[a] * n + k]; }
+                  dResid = smos_Max(dResid, smos_Fabs(s));
+                }
+              for (size_t a=0; a<q; a++)
+                {
+                  dBound += r[a] * crb[sActive[a]];
+                  dScale = smos_Max(dScale, smos_Fabs(r[a]));
+                }
+              if (pbProven != NULL) { *pbProven = dResid <= 1.0e-9 * dScale && crb[p] - dBound > 1.0e-9 * (dScale + smos_Fabs(crb[p])); }
+              return SM_ERR;
+            }
           if (t2 != HUGE_VAL)
             { for (size_t k=0; k<n; k++) { rY[k] += t * z[k]; } }
           for (size_t k=0; k<q; k++) { sU[k] -= t * r[k]; }
@@ -1124,6 +1145,51 @@ SmStatus sm_SbDualQP(const std::vector<double> & crG, const std::vector<double> 
                 }
             }
         }
+    }
+  return SM_ERR;
+}
+
+// sm_SbDualQP over many rows, few of which bind: solved on a working set of rows, those violated
+// at its solution added (the most violated first, up to a block at a time) until none is. Its
+// answer is the full programme's: a solution meets every row; a set of rows with no solution is
+// one the full set has none of either (*pbProven as sm_SbDualQP's).
+SmStatus sm_SbDualQPRows(const std::vector<double> & crG, const std::vector<double> & crg, const std::vector<double> & crC,
+                         const std::vector<double> & crb, size_t n, size_t m, double dTol, std::vector<double> & rY, bool * pbProven = NULL)
+{
+  if (pbProven != NULL) { *pbProven = false; }
+  const size_t lBlock = 2000;
+  std::vector<char> sIn(m, 0);
+  std::vector<size_t> sSet;
+  // y at the unconstrained minimum: the empty set's solution
+  SER(sm_SbDualQP(crG, crg, std::vector<double>(), std::vector<double>(), n, 0, dTol, rY));
+  for (int iRound=0; iRound<200; iRound++)
+    {
+      std::vector< std::pair<double, size_t> > sViolated;
+      for (size_t i=0; i<m; i++)
+        {
+          if (sIn[i]) { continue; }
+          double s = -crb[i];
+          for (size_t k=0; k<n; k++) { s += crC[i * n + k] * rY[k]; }
+          if (s < -dTol) { sViolated.push_back(std::make_pair(s, i)); }
+        }
+      if (sViolated.empty())
+        { return SM_SUCCESS; }
+      const size_t lTake = smos_Min(lBlock, sViolated.size());
+      std::partial_sort(sViolated.begin(), sViolated.begin() + static_cast<long>(lTake), sViolated.end());
+      for (size_t t=0; t<lTake; t++)
+        {
+          sIn[sViolated[t].second] = 1;
+          sSet.push_back(sViolated[t].second);
+        }
+      std::vector<double> sC(sSet.size() * n), sb(sSet.size());
+      for (size_t t=0; t<sSet.size(); t++)
+        {
+          for (size_t k=0; k<n; k++) { sC[t * n + k] = crC[sSet[t] * n + k]; }
+          sb[t] = crb[sSet[t]];
+        }
+      const SmStatus eStatus = sm_SbDualQP(crG, crg, sC, sb, n, sSet.size(), dTol, rY, pbProven);
+      if (eStatus != SM_SUCCESS)
+        { return eStatus; }
     }
   return SM_ERR;
 }
@@ -1505,13 +1571,13 @@ NOTES: The fill keeps the setback split's layout (SmBlendSetback.h) and its
     include sigma's at its base point, along which F's Hessian is forced
     singular by the faces' conditions. The heights are the least thin-plate
     energy meeting the faces' conditions (equalities) and these
-    (inequalities), by the dual active-set method, from the least degree
-    whose conditions can be met up to 9, each result certified from the
+    (inequalities), by the dual active-set method, at degree 9 first (proven
+    infeasible there, the conditions are at every lower degree: the search
+    stops), then up from the least degree, each result certified from the
     patches' own Bernstein coefficients (o one-signed, s l, s n and
-    l n - m^2 >= 0, subdividing) before it is taken. Where none is, the fill
-    is the least energy alone at the least degree, not certified convex
-    (rounds 2, 3, 4 and the notch's 1, 1.5, 2 at the rule's setbacks; both
-    certify from 1.06 times them: the owner rules what then).
+    l n - m^2 >= 0, subdividing) before it is taken. Where none is the
+    corner is refused (m_bUncertified): its setbacks are too short for a
+    convex fill (CertifiedScale finds the scale that is not).
 
     The spring curves (geometry only): on face m, with P and Q its two rails'
     ends and X where the rails cross, the spring curve is the parabola
@@ -1528,7 +1594,7 @@ namespace
 {
 
 const size_t SM_SB_GRAPH_DEPTH = 6;       // the certificate's halvings
-const size_t SM_SB_GRAPH_LEVELS = 1;      // the sector conditions' halvings, at most
+const size_t SM_SB_GRAPH_LEVELS = 1;      // the sector conditions' halvings
 const size_t SM_SB_GRAPH_DIRECTIONS = 16; // their directions over a half turn
 
 // The fill's surfaces from its nets.
@@ -1555,13 +1621,92 @@ SmStatus sm_SbFillFrom(const SmContext & crContext, const std::vector<sm_SbNet> 
   return SM_SUCCESS;
 }
 
-SmStatus sm_SbGraphG1(const SmContext & crContext, const std::vector<SmBlendSetback::Face> & crFaces,
-                       const std::vector<SmBlendSetback::Round> & crRounds, const std::vector< std::vector< std::vector<sm_SbH> > > & crJets,
+SmStatus sm_SbGraphG1(const SmContext & crContext, const std::vector<SmBlendSetback::Face> & crWorldFaces,
+                       const std::vector<SmBlendSetback::Round> & crRounds, const std::vector< std::vector< std::vector<sm_SbH> > > & crWorldJets,
                        const std::vector<size_t> & crQ, const std::vector<ULONG> & crRound, const std::vector<ULONG> & crFace,
-                       const std::vector<SmBoolean> & crRev, double dTol, SmBlendSetback::Fill & rFill)
+                       const std::vector<SmBoolean> & crRev, double dTol, SmBlendSetback::Fill & rFill,
+                       SmBlendSetback::Probe * pProbe = NULL)
 {
   const size_t n = crRound.size();
   const size_t Nc = 3;                    // the cubic across: rows 0, 1 the round's, 2, 3 F's
+  // the fill is built and certified about the corner's vertex O, the faces' common point (least
+  // squares): its rounding that of the corner's size, not of its place, and a face through O an
+  // axis plane exactly where it is one in the world
+  SmVector3d sO(0.0, 0.0, 0.0);
+  {
+    double A[3][3] = {{0.0}}, b[3] = {0.0, 0.0, 0.0};
+    for (size_t f=0; f<crWorldFaces.size(); f++)
+      {
+        const SmVector3d & crN = crWorldFaces[f].m_sNormal;
+        const double c[3] = { crN.x, crN.y, crN.z }, d = crN.Dot(SmVector3d(crWorldFaces[f].m_sPoint));
+        for (int i=0; i<3; i++)
+          {
+            for (int j=0; j<3; j++) { A[i][j] += c[i] * c[j]; }
+            b[i] += c[i] * d;
+          }
+      }
+    const double dDet = A[0][0] * (A[1][1] * A[2][2] - A[1][2] * A[2][1]) - A[0][1] * (A[1][0] * A[2][2] - A[1][2] * A[2][0])
+                        + A[0][2] * (A[1][0] * A[2][1] - A[1][1] * A[2][0]);
+    if (!(smos_Fabs(dDet) > 1.0e-12))
+      { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: the corner's faces meet in no one point")); }
+    double x[3];
+    for (int k=0; k<3; k++)
+      {
+        double M[3][3];
+        for (int i=0; i<3; i++)
+          for (int j=0; j<3; j++) { M[i][j] = (j == k) ? b[i] : A[i][j]; }
+        x[k] = (M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1]) - M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0])
+                + M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0])) / dDet;
+      }
+    sO = SmVector3d(x[0], x[1], x[2]);
+  }
+  std::vector< std::vector< std::vector<sm_SbH> > > crJets(crWorldJets);
+  for (size_t r=0; r<crJets.size(); r++)
+    for (size_t k=0; k<crJets[r].size(); k++)
+      for (size_t c=0; c<crJets[r][k].size(); c++)
+        {
+          sm_SbH & rH = crJets[r][k][c];
+          rH.a[0] -= rH.a[3] * sO.x;
+          rH.a[1] -= rH.a[3] * sO.y;
+          rH.a[2] -= rH.a[3] * sO.z;
+        }
+  std::vector<SmBlendSetback::Face> crFaces(crWorldFaces);
+  for (size_t f=0; f<crFaces.size(); f++) { crFaces[f].m_sPoint = SmPoint3d(SmVector3d(crFaces[f].m_sPoint) - sO); }
+  // the nets moved back, the faces' points snapped onto their planes there
+  auto toWorld = [&](std::vector<sm_SbNet> & rNets)
+    {
+      for (size_t p=0; p<rNets.size(); p++)
+        for (size_t i=0; i<rNets[p].P.size(); i++)
+          {
+            sm_SbH & rH = rNets[p].P[i];
+            rH.a[0] += rH.a[3] * sO.x;
+            rH.a[1] += rH.a[3] * sO.y;
+            rH.a[2] += rH.a[3] * sO.z;
+          }
+      for (size_t m=0; m<n; m++)
+        {
+          sm_SbNet & rN = rNets[m];
+          const size_t qv = rN.q;
+          for (size_t i=2; i<=Nc; i++)
+            for (size_t c=0; c<2; c++)
+              for (int e=0; e<2; e++)
+                {
+                  sm_SbH & rH = rN.P[i * (qv + 1) + ((e == 0) ? c : qv - c)];
+                  const SmBlendSetback::Face & crF = crWorldFaces[crFace[(m + static_cast<size_t>(e)) % n]];
+                  const SmVector3d & crN = crF.m_sNormal;
+                  const double dOff = crN.x * rH.a[0] + crN.y * rH.a[1] + crN.z * rH.a[2] - crN.Dot(SmVector3d(crF.m_sPoint)) * rH.a[3];
+                  rH.a[0] -= dOff * crN.x;
+                  rH.a[1] -= dOff * crN.y;
+                  rH.a[2] -= dOff * crN.z;
+                  for (int x=0; x<3; x++)
+                    {
+                      const double dNx = (x == 0) ? crN.x : (x == 1) ? crN.y : crN.z;
+                      const double dPx = (x == 0) ? crF.m_sPoint.x : (x == 1) ? crF.m_sPoint.y : crF.m_sPoint.z;
+                      if (smos_Fabs(dNx) == 1.0) { rH.a[x] = dPx * rH.a[3]; }
+                    }
+                }
+        }
+    };
   // each cycle patch's round rows (columns from face m to face m + 1), the rails' ends and
   // their directions toward the corner
   std::vector< std::vector<sm_SbH> > sH0(n), sH1(n);
@@ -1579,6 +1724,30 @@ SmStatus sm_SbGraphG1(const SmContext & crContext, const std::vector<SmBlendSetb
           const size_t cc = crRev[m] ? q - c : c;
           sH0[m][c] = crJets[r][0][cc];
           sH1[m][c] = sm_SbAxpy(sm_SbZero(), dSign, crJets[r][1][cc]);
+        }
+      // the round's end columns exactly on their faces (within dTol): its rail end on the face
+      // (row 0) and its derivative along it (row 1), as the fill's own face columns are
+      for (int e=0; e<2; e++)
+        {
+          const SmBlendSetback::Face & crF = crFaces[crFace[(m + static_cast<size_t>(e)) % n]];
+          const SmVector3d & crN = crF.m_sNormal;
+          sm_SbH * pH[2] = { &sH0[m][e == 0 ? 0 : q], &sH1[m][e == 0 ? 0 : q] };
+          for (int k=0; k<2; k++)
+            {
+              sm_SbH & rH = *pH[k];
+              const double dOff = crN.x * rH.a[0] + crN.y * rH.a[1] + crN.z * rH.a[2] - crN.Dot(SmVector3d(crF.m_sPoint)) * rH.a[3];
+              if (smos_Fabs(dOff) > dTol * smos_Max(1.0, smos_Fabs(sH0[m][e == 0 ? 0 : q].a[3])))
+                { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round does not meet its faces at its end")); }
+              rH.a[0] -= dOff * crN.x;
+              rH.a[1] -= dOff * crN.y;
+              rH.a[2] -= dOff * crN.z;
+              for (int x=0; x<3; x++)
+                {
+                  const double dNx = (x == 0) ? crN.x : (x == 1) ? crN.y : crN.z;
+                  const double dPx = (x == 0) ? crF.m_sPoint.x : (x == 1) ? crF.m_sPoint.y : crF.m_sPoint.z;
+                  if (smos_Fabs(dNx) == 1.0) { rH.a[x] = dPx * rH.a[3]; }
+                }
+            }
         }
       for (int e=0; e<2; e++)
         {
@@ -1664,10 +1833,21 @@ SmStatus sm_SbGraphG1(const SmContext & crContext, const std::vector<SmBlendSetb
   std::vector<SmPoint2d> sB(n);
   for (size_t m=0; m<n; m++) { sB[m] = SmPoint2d((sXi[m].x - sCentre.x) / dRho, (sXi[m].y - sCentre.y) / dRho); }
 
-  std::vector<sm_SbNet> sPlain;
-  size_t lPlainDegree = 0;
-  for (size_t d=Nc; d<=9; d++)
+  // The degrees: 9 first, then up from the least. A map of degree d is one of degree d + 1, and
+  // its pieces' coefficient matrices at d + 1 are convex combinations of those at d (degree
+  // raising), so the sector conditions met at d are met at d + 1: proven unmet at 9 (the QP's
+  // certificate), they are unmet at every degree, and the search stops. Else the least degree
+  // whose fill is certified, or 9's.
+  std::vector<sm_SbNet> sTop;
+  size_t lTopDegree = 0;
+  const bool bProbe = (pProbe != NULL && !pProbe->m_bFill);
+  std::vector<size_t> sDegrees;
+  if (pProbe == NULL || bProbe) { sDegrees.push_back(9); }
+  for (size_t d=Nc; d<=9 && !bProbe; d++)
+    if (d < 9 || (pProbe != NULL && pProbe->m_bFill)) { sDegrees.push_back(d); }
+  for (size_t lD=0; lD<sDegrees.size(); lD++)
     {
+      const size_t d = sDegrees[lD];
       const std::vector< std::pair<int, int> > sMono = sm_SbMonomials(static_cast<int>(d));
       const size_t M = sMono.size();
       // the unknowns: h's coefficients, then each setback patch's free heights
@@ -1924,16 +2104,6 @@ SmStatus sm_SbGraphG1(const SmContext & crContext, const std::vector<SmBlendSetb
             { SM_SB_FAIL(rFill.m_pReason, SM_ERR, _T("SmBlendSetback: the fill folds (a patch's normal turns across the corner's axis)")); }
           for (int k=0; k<3; k++) { sQ0[p][k] = sQ0p[k]; sQj[p][k] = sQjp[k]; }
         }
-      // the least energy alone, kept at the least degree for a corner no degree holds convex
-      if (sPlain.empty())
-        {
-          std::vector<double> sT, sMinusC(sCv);
-          for (size_t i=0; i<lE; i++) { sMinusC[i] = -sCv[i]; }
-          if (!sm_SbLeastSquares(sBm, sMinusC, lE, lFree, 1.0e-12, sT))
-            { continue; }
-          SER(netsAt(sT, sPlain));
-          lPlainDegree = d;
-        }
       // the energy as a quadratic programme: G = 2 B'B (a least nudge where it leaves a direction
       // free: the energy only chooses), g = 2 B'c
       std::vector<double> sG(lFree * lFree, 0.0), sg(lFree, 0.0);
@@ -1969,7 +2139,8 @@ SmStatus sm_SbGraphG1(const SmContext & crContext, const std::vector<SmBlendSetb
           sKernel[n + q] = th;
         }
 
-      for (size_t lLevels=0; lLevels<=SM_SB_GRAPH_LEVELS; lLevels++)
+      {
+        const size_t lLevels = SM_SB_GRAPH_LEVELS;
         {
           // the sector conditions on every piece's coefficient matrices, in t: C t >= b
           std::vector<double> sC, sb;
@@ -2032,23 +2203,67 @@ SmStatus sm_SbGraphG1(const SmContext & crContext, const std::vector<SmBlendSetb
                       }
             }
           std::vector<double> sT;
-          if (sm_SbDualQP(sG, sg, sC, sb, lFree, sb.size(), 1.0e-13, sT) != SM_SUCCESS)
+          rFill.m_lSolves++;
+          if (bProbe && pProbe->m_bMargin)
+            {
+              // the least tau with C t + tau >= b (tau >= -1): min tau + eps (|t|^2 + tau^2)
+              const size_t lN = lFree + 1, lM = sb.size();
+              std::vector<double> sGm(lN * lN, 0.0), sgm(lN, 0.0), sCm(lM * lN + lN, 0.0), sbm(sb);
+              double dG = 0.0;
+              for (size_t a=0; a<lFree; a++) { dG = smos_Max(dG, sG[a * lFree + a]); }
+              for (size_t a=0; a<lN; a++) { sGm[a * lN + a] = 1.0e-9; }
+              sgm[lFree] = 1.0;
+              for (size_t i=0; i<lM; i++)
+                {
+                  for (size_t f=0; f<lFree; f++) { sCm[i * lN + f] = sC[i * lFree + f]; }
+                  sCm[i * lN + lFree] = 1.0;
+                }
+              for (size_t f=0; f<lN; f++) { sCm[lM * lN + f] = (f == lFree) ? 1.0 : 0.0; }
+              sbm.push_back(-1.0);
+              std::vector<double> sTm;
+              const SmStatus eM = sm_SbDualQPRows(sGm, sgm, sCm, sbm, lN, lM + 1, 1.0e-13, sTm);
+              if (eM != SM_SUCCESS)
+                { SER(eM); }
+              pProbe->m_dMargin = sTm[lFree];
+              (void)dG;
+              return SM_SUCCESS;
+            }
+          bool bProven = false;
+          const SmStatus eQP = sm_SbDualQPRows(sG, sg, sC, sb, lFree, sb.size(), 1.0e-13, sT, &bProven);
+          if (bProbe)
+            {
+              pProbe->m_bFeasible = (eQP == SM_SUCCESS);
+              return SM_SUCCESS;
+            }
+          if (eQP != SM_SUCCESS && bProven && d == 9)
+            { break; }
+          if (eQP != SM_SUCCESS)
             { continue; }
           std::vector<sm_SbNet> sNets;
           SER(netsAt(sT, sNets));
           size_t lBad = 0;
           if (!sm_SbCertifiedConvex(sNets, sE, SM_SB_GRAPH_DEPTH, lBad))
             { continue; }
+          if (d == 9 && pProbe == NULL)
+            {
+              sTop = sNets;
+              lTopDegree = d;
+              continue;
+            }
+          toWorld(sNets);
           SER(sm_SbFillFrom(crContext, sNets, crRound, crFace, crRev, d, rFill));
           return SM_SUCCESS;
         }
+      }
     }
-  if (!sPlain.empty())
+  if (!sTop.empty())
     {
-      SER(sm_SbFillFrom(crContext, sPlain, crRound, crFace, crRev, lPlainDegree, rFill));
+      toWorld(sTop);
+      SER(sm_SbFillFrom(crContext, sTop, crRound, crFace, crRev, lTopDegree, rFill));
       return SM_SUCCESS;
     }
-  SM_SB_FAIL(rFill.m_pReason, SM_ERR, _T("SmBlendSetback: no interior map up to degree 9 meets the setback patches' conditions"));
+  rFill.m_bUncertified = true;
+  SM_SB_FAIL(rFill.m_pReason, SM_ERR, _T("SmBlendSetback: no G1 fill up to degree 9 is certified convex at these setbacks"));
 }
 
 } // namespace
@@ -2065,15 +2280,34 @@ NOTES: The cycle: round m between faces m (its setback patch's v = 0) and
     and that of edge m - 1 ends as -sigma_m, so the two setback patches leave
     face m's base point along one line (the spring curve is tangent there).
 ***********************************************************************/
+SmStatus sm_SbFillHole(const SmContext & crContext, const std::vector<SmBlendSetback::Face> & crFaces, const std::vector<SmBlendSetback::Round> & crRounds,
+                       ULONG lOrder, double dTol, SmBlendSetback::Fill & rFill, SmBlendSetback::Probe * pProbe);
+
+SmStatus SmBlendSetback::FillHoleProbe(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Round> & crRounds, double dTol,
+                                       Fill & rFill, Probe & rProbe)
+{
+  return sm_SbFillHole(crContext, crFaces, crRounds, 1, dTol, rFill, &rProbe);
+}
+
 SmStatus SmBlendSetback::FillHole(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Round> & crRounds, ULONG lOrder,
                                   double dTol, Fill & rFill)
 {
+  return sm_SbFillHole(crContext, crFaces, crRounds, lOrder, dTol, rFill, NULL);
+}
+
+SmStatus sm_SbFillHole(const SmContext & crContext, const std::vector<SmBlendSetback::Face> & crFaces, const std::vector<SmBlendSetback::Round> & crRounds,
+                       ULONG lOrder, double dTol, SmBlendSetback::Fill & rFill, SmBlendSetback::Probe * pProbe)
+{
+  typedef SmBlendSetback::Round Round;
+  typedef SmBlendSetback::Face Face;
   for (size_t i=0; i<rFill.m_vPatches.size(); i++) { delete rFill.m_vPatches[i]; }
   rFill.m_vPatches.clear();
   rFill.m_vRound.clear();
   rFill.m_vFace.clear();
   rFill.m_vReversed.clear();
   rFill.m_lDegree = 0;
+  rFill.m_lSolves = 0;
+  rFill.m_bUncertified = false;
   rFill.m_pReason = NULL;
   if (lOrder != 1 && lOrder != 2)
     { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a setback fill is of order 1 (G1) or 2 (G2)")); }
@@ -2152,7 +2386,7 @@ SmStatus SmBlendSetback::FillHole(const SmContext & crContext, const std::vector
   }
 
   if (k == 1)
-    { return sm_SbGraphG1(crContext, crFaces, crRounds, sJets, sQ, sRound, sFace, sRev, dTol, rFill); }
+    { return sm_SbGraphG1(crContext, crFaces, crRounds, sJets, sQ, sRound, sFace, sRev, dTol, rFill, pProbe); }
   // the domain
   std::vector<SmPoint2d> sB(n);
   for (size_t m=0; m<n; m++)
@@ -2545,6 +2779,289 @@ SmStatus SmBlendSetback::FillHole(const SmContext & crContext, const std::vector
   return SM_ERR;
 }
 
+/*******************************************************************//**
+PURPOSE: The least scale of a corner's setbacks at which its G1 fill is
+    certified convex (SmBlendSetback.h).
+
+NOTES: The corner's rounds are made from its geometry: edge i's round, of
+    radius r between its faces f and g (normals n out of the material), has
+    its ball's centre C at V + t a + s r (n_f + n_g) / (1 + n_f . n_g) at t
+    along the edge from the vertex V (s = -1 at a convex edge, the ball in
+    the material; +1 at a concave one), its section the arc from C - s r n_f
+    to C - s r n_g about C, the rational quadratic through the edge's point
+    with the weight cos of half the arc, (1 + n_f . n_g) / 2 under the root.
+    A round runs from its end section away from the vertex, linear along.
+***********************************************************************/
+namespace
+{
+
+SmStatus sm_SbModelRounds(const SmContext & crContext, const std::vector<SmBlendSetback::Face> & crFaces, const std::vector<SmBlendSetback::Edge> & crEdges,
+                          const std::vector<double> & crSetBacks, std::vector<SmBSplineSurface *> & rvSurfaces, std::vector<SmBlendSetback::Round> & rvRounds,
+                          const TCHAR *& rpWhy)
+{
+  rvSurfaces.clear();
+  rvRounds.clear();
+  const size_t n = crEdges.size();
+  if (n < 3 || crFaces.size() != n || crSetBacks.size() != n)
+    { SM_SB_FAIL(rpWhy, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a corner needs three or more edges, as many faces and setbacks")); }
+  // the vertex: the faces' planes' common point (least squares)
+  double A[3][3] = {{0.0}}, b[3] = {0.0, 0.0, 0.0};
+  for (size_t f=0; f<n; f++)
+    {
+      const SmVector3d & crN = crFaces[f].m_sNormal;
+      const double c[3] = { crN.x, crN.y, crN.z }, d = crN.Dot(SmVector3d(crFaces[f].m_sPoint));
+      for (int i=0; i<3; i++)
+        {
+          for (int j=0; j<3; j++) { A[i][j] += c[i] * c[j]; }
+          b[i] += c[i] * d;
+        }
+    }
+  const double dDet = A[0][0] * (A[1][1] * A[2][2] - A[1][2] * A[2][1]) - A[0][1] * (A[1][0] * A[2][2] - A[1][2] * A[2][0])
+                      + A[0][2] * (A[1][0] * A[2][1] - A[1][1] * A[2][0]);
+  if (!(smos_Fabs(dDet) > 1.0e-12))
+    { SM_SB_FAIL(rpWhy, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: the corner's faces meet in no one point")); }
+  double x[3];
+  for (int k=0; k<3; k++)
+    {
+      double M[3][3];
+      for (int i=0; i<3; i++)
+        for (int j=0; j<3; j++) { M[i][j] = (j == k) ? b[i] : A[i][j]; }
+      x[k] = (M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1]) - M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0])
+              + M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0])) / dDet;
+    }
+  const SmVector3d sV(x[0], x[1], x[2]);
+  for (size_t i=0; i<n; i++)
+    {
+      const SmBlendSetback::Edge & crE = crEdges[i];
+      const ULONG f = crE.m_alFaces[0], g = crE.m_alFaces[1];
+      if (f >= n || g >= n || !(crE.m_dRadius > 0.0) || !(crSetBacks[i] > 0.0))
+        { SM_SB_FAIL(rpWhy, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: an edge needs a positive radius, a positive setback and two of the faces given")); }
+      const SmVector3d & crNf = crFaces[f].m_sNormal, & crNg = crFaces[g].m_sNormal;
+      // convex where the other edge on face g runs into face f's material
+      double dSide = 0.0;
+      for (size_t j=0; j<n; j++)
+        if (j != i && (crEdges[j].m_alFaces[0] == g || crEdges[j].m_alFaces[1] == g))
+          { dSide = crEdges[j].m_sAway.Dot(crNf); }
+      if (dSide == 0.0)
+        { SM_SB_FAIL(rpWhy, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: an edge's face holds no other edge of the corner")); }
+      const double s = (dSide < 0.0) ? -1.0 : 1.0, r = crE.m_dRadius, c = crNf.Dot(crNg);
+      if (!(1.0 + c > 1.0e-9))
+        { SM_SB_FAIL(rpWhy, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: an edge's faces fold onto each other")); }
+      const SmVector3d sW = (crNf + crNg) * (s * r / (1.0 + c));
+      const double w = smos_Sqrt(0.5 * (1.0 + c));
+      const double dLen = 2.0 * r;
+      SmTArray<SmPoint3d> sPts;
+      SmTArray<double> sWts;
+      for (int k=0; k<2; k++)
+        {
+          const SmVector3d sE = sV + crE.m_sAway * (crSetBacks[i] + k * dLen);
+          const SmVector3d sC = sE + sW;
+          sPts.Add(SmPoint3d(sC - crNf * (s * r)));
+          sPts.Add(SmPoint3d(sE));
+          sPts.Add(SmPoint3d(sC - crNg * (s * r)));
+          sWts.Add(1.0);
+          sWts.Add(w);
+          sWts.Add(1.0);
+        }
+      SmTArray<ULONG> sUM, sVM;
+      SmTArray<double> sUK, sVK;
+      sUM.Add(2); sUM.Add(2);
+      sVM.Add(3); sVM.Add(3);
+      sUK.Add(crSetBacks[i]); sUK.Add(crSetBacks[i] + dLen);
+      sVK.Add(0.0); sVK.Add(1.0);
+      SmBSplineSurface * pSurface = NULL;
+      const SmStatus eStatus = SmBSplineSurface::CreateCanonical(crContext, 1, 2, sPts, SM_SF_UNSPECIFIED, sUM, sVM, sUK, sVK, SM_KT_UNSPECIFIED, &sWts, NULL,
+                                                                 pSurface);
+      if (eStatus != SM_SUCCESS || pSurface == NULL)
+        {
+          for (size_t o=0; o<rvSurfaces.size(); o++) { delete rvSurfaces[o]; }
+          rvSurfaces.clear();
+          rvRounds.clear();
+          SER(eStatus != SM_SUCCESS ? eStatus : SM_ERR);
+        }
+      rvSurfaces.push_back(pSurface);
+      SmBlendSetback::Round sRound = { pSurface, SM_SP_U, crSetBacks[i], FALSE };
+      rvRounds.push_back(sRound);
+    }
+  return SM_SUCCESS;
+}
+
+} // namespace
+
+SmStatus SmBlendSetback::CertifiedScale(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Edge> & crEdges,
+                                        const std::vector<double> & crSetBacks, double & rdScale, ULONG * plSolves, const TCHAR ** ppReason,
+                                        const std::vector<double> * pvMost)
+{
+  rdScale = 0.0;
+  if (plSolves != NULL) { *plSolves = 0; }
+  const TCHAR * pWhy = NULL;
+  if (ppReason != NULL) { *ppReason = NULL; }
+  double dSize = 0.0;
+  for (size_t i=0; i<crSetBacks.size(); i++) { dSize = smos_Max(dSize, smos_Fabs(crSetBacks[i])); }
+  if (pvMost != NULL && pvMost->size() != crSetBacks.size())
+    { SM_SB_FAIL(*(ppReason != NULL ? ppReason : &pWhy), SM_ERR_INVALID_INPUT, _T("SmBlendSetback: one most setback per edge")); }
+  // the setbacks at scale k: each k times its own, held at its most
+  auto at = [&](double k)
+    {
+      std::vector<double> sAt(crSetBacks);
+      for (size_t i=0; i<sAt.size(); i++)
+        {
+          sAt[i] *= k;
+          if (pvMost != NULL) { sAt[i] = smos_Min(sAt[i], (*pvMost)[i]); }
+        }
+      return sAt;
+    };
+  // the model's fill at scale k: its probe at degree 9 (pProbe), or the fill itself (taken certified)
+  auto model = [&](double k, Probe * pProbe, bool & rbCertified) -> SmStatus
+    {
+      rbCertified = false;
+      std::vector<SmBSplineSurface *> sSurfaces;
+      std::vector<Round> sRounds;
+      SmStatus eStatus = sm_SbModelRounds(crContext, crFaces, crEdges, at(k), sSurfaces, sRounds, pWhy);
+      if (eStatus != SM_SUCCESS)
+        { return eStatus; }
+      Fill sFill;
+      const double dTol = 1.0e-9 * (1.0 + k * dSize);
+      Probe sAsFill;
+      sAsFill.m_bFill = true;
+      eStatus = FillHoleProbe(crContext, crFaces, sRounds, dTol, sFill, (pProbe != NULL) ? *pProbe : sAsFill);
+      if (plSolves != NULL) { *plSolves += sFill.m_lSolves; }
+      for (size_t o=0; o<sSurfaces.size(); o++) { delete sSurfaces[o]; }
+      if (pProbe == NULL && eStatus != SM_SUCCESS && sFill.m_bUncertified)
+        { return SM_SUCCESS; }
+      if (eStatus != SM_SUCCESS)
+        {
+          pWhy = sFill.m_pReason;
+          return eStatus;
+        }
+      rbCertified = (pProbe == NULL);
+      return SM_SUCCESS;
+    };
+  auto margin = [&](double k, double & rdMargin) -> SmStatus
+    {
+      Probe sProbe;
+      sProbe.m_bMargin = true;
+      bool bUnused = false;
+      SER(model(k, &sProbe, bUnused));
+      rdMargin = sProbe.m_dMargin;
+      return SM_SUCCESS;
+    };
+  auto fail = [&](SmStatus eStatus) -> SmStatus
+    {
+      if (ppReason != NULL) { *ppReason = pWhy; }
+      return eStatus;
+    };
+  // The search, from the margin m(k) by which the fill's sector conditions fail at degree 9 (m <= 0:
+  // met, and the conditions only grow easier with k): m at 1 and 1.02, then at their secant's root,
+  // then the root of the parabola through the three; the certifying end checked a half percent
+  // above it, the failing end the bracket's 1e-2 below.
+  double m1 = 0.0;
+  SmStatus eStatus = margin(1.0, m1);
+  if (eStatus != SM_SUCCESS) { return fail(eStatus); }
+  bool bCertified = false;
+  if (m1 <= 0.0)
+    {
+      eStatus = model(1.0, NULL, bCertified);
+      if (eStatus != SM_SUCCESS) { return fail(eStatus); }
+      if (bCertified)
+        {
+          rdScale = 1.0;
+          return SM_SUCCESS;
+        }
+    }
+  std::vector<double> sK(1, 1.0), sM(1, m1);
+  double dLo = 1.0; // the largest scale known to fail
+  double dPredict = 0.0;
+  for (int iStep=0; iStep<3; iStep++)
+    {
+      double k = 0.0;
+      if (iStep == 0)
+        { k = 1.02; }
+      else if (iStep == 1)
+        {
+          const double dSlope = (sM[1] - sM[0]) / (sK[1] - sK[0]);
+          k = (dSlope < 0.0) ? sK[1] - sM[1] / dSlope : 2.0;
+        }
+      else
+        {
+          // the parabola through the three points, its root past the last
+          const double k0 = sK[0], k1 = sK[1], k2 = sK[2], m0 = sM[0], mm1 = sM[1], m2 = sM[2];
+          const double d01 = (mm1 - m0) / (k1 - k0), d12 = (m2 - mm1) / (k2 - k1), a = (d12 - d01) / (k2 - k0);
+          const double b = d12 - a * (k1 + k2), c = m2 - k2 * (a * k2 + b);
+          double dRoot = 0.0;
+          if (smos_Fabs(a) > 1.0e-12)
+            {
+              const double dDisc = b * b - 4.0 * a * c;
+              if (dDisc >= 0.0)
+                {
+                  const double r1 = (-b - smos_Sqrt(dDisc)) / (2.0 * a), r2 = (-b + smos_Sqrt(dDisc)) / (2.0 * a);
+                  // the root nearest past the last scale that fails
+                  const double dA = smos_Min(r1, r2), dB = smos_Max(r1, r2);
+                  dRoot = (dA > dLo) ? dA : dB;
+                }
+            }
+          if (!(dRoot > dLo))
+            { dRoot = (d12 < 0.0) ? k2 - m2 / d12 : 2.0; }
+          dPredict = dRoot;
+          break;
+        }
+      k = smos_Min(smos_Max(k, dLo * 1.001), 2.0);
+      double m = 0.0;
+      eStatus = margin(k, m);
+      if (eStatus != SM_SUCCESS) { return fail(eStatus); }
+      sK.push_back(k);
+      sM.push_back(m);
+      if (m > 0.0) { dLo = smos_Max(dLo, k); }
+      if (iStep == 1) { dPredict = k; }
+    }
+  // the certifying end: a half percent past the prediction (and past the last failing scale),
+  // stepping up by 1e-2 while it does not certify, up to 2
+  double dHi = smos_Max(dPredict * 1.005, dLo * 1.01);
+  for (;;)
+    {
+      if (dHi > 2.0)
+        {
+          dHi = 2.0;
+        }
+      eStatus = model(dHi, NULL, bCertified);
+      if (eStatus != SM_SUCCESS) { return fail(eStatus); }
+      if (bCertified)
+        { break; }
+      dLo = dHi;
+      if (dHi >= 2.0)
+        {
+          if (ppReason != NULL) { *ppReason = _T("SmBlendSetback: no G1 fill is certified convex at the corner's setbacks up to twice them"); }
+          return SM_SUCCESS;
+        }
+      dHi *= 1.01;
+    }
+  // the failing end within 1e-2 below it
+  while (dHi > dLo * 1.01)
+    {
+      const double k = dHi / 1.01;
+      double m = 0.0;
+      eStatus = margin(k, m);
+      if (eStatus != SM_SUCCESS) { return fail(eStatus); }
+      if (m > 0.0)
+        {
+          dLo = k;
+          break;
+        }
+      eStatus = model(k, NULL, bCertified);
+      if (eStatus != SM_SUCCESS) { return fail(eStatus); }
+      if (!bCertified)
+        {
+          dLo = k;
+          break;
+        }
+      dHi = k;
+    }
+  // on a grid of 1e-3, up (certifying still: the conditions only grow easier with k), so that
+  // one corner described two ways (its faces and edges in another order) gets one scale
+  rdScale = std::ceil(dHi * 1000.0) / 1000.0;
+  return SM_SUCCESS;
+}
+
 SmStatus SmBlendSetback::Containment(const Fill & crFill, const std::vector<Face> & crFaces, SmBoolean bConvex, double & rdWorst)
 {
   rdWorst = -HUGE_VAL;
@@ -2569,25 +3086,4 @@ SmStatus SmBlendSetback::Containment(const Fill & crFill, const std::vector<Face
           { rdWorst = smos_Max(rdWorst, dSide * (sPts[j] - crFaces[f].m_sPoint).Dot(crFaces[f].m_sNormal)); }
     }
   return SM_SUCCESS;
-}
-
-// Not built yet (the tests that need them come first): the G1 fill's probe and its certified
-// scale.
-SmStatus SmBlendSetback::FillHoleProbe(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Round> & crRounds, double dTol,
-                                       Fill & rFill, Probe & rProbe)
-{
-  (void)crContext; (void)crFaces; (void)crRounds; (void)dTol; (void)rProbe;
-  rFill.m_pReason = _T("SmBlendSetback: the G1 fill's probe is not built yet");
-  return SM_ERR;
-}
-
-SmStatus SmBlendSetback::CertifiedScale(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Edge> & crEdges,
-                                        const std::vector<double> & crSetBacks, double & rdScale, ULONG * plSolves, const TCHAR ** ppReason,
-                                        const std::vector<double> * pvMost)
-{
-  (void)crContext; (void)crFaces; (void)crEdges; (void)crSetBacks; (void)pvMost;
-  rdScale = 0.0;
-  if (plSolves != NULL) { *plSolves = 0; }
-  if (ppReason != NULL) { *ppReason = _T("SmBlendSetback: the certified scale is not built yet"); }
-  return SM_ERR;
 }

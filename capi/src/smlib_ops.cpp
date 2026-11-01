@@ -359,6 +359,12 @@ int32_t blend_failure(SmFilletExecutive &exec, int32_t s)
     {
     case SM_FILERR_NO_ROOM:
     {
+        // a setback corner's: the setback that builds its convex fill
+        if (exec.GetFitSetBack() >= 0.0)
+        {
+            note_fit(exec.GetFitSetBack(), SMLIB_FIT_SETBACK);
+            return SMLIB_ERR_NO_ROOM;
+        }
         // the cause's largest radius that builds, as the call's size
         const double radius = exec.GetFitRadius();
         SmEdge *edge = exec.GetFitEdge();

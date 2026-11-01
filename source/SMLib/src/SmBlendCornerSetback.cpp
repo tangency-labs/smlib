@@ -390,6 +390,55 @@ SmStatus SmBlendCorner::MakeSetBackTopology()
       m_dEaseDist = dEase;
     }
   m_bSetBackOverflows = bFits ? FALSE : TRUE;
+  // a G1 fill is taken only certified convex (SmBlendSetback::FillHole): the least scale of the
+  // setbacks at which it is (CertifiedScale, from the corner's planes, edges and radii; owner,
+  // 2026-11-01). The rule's grow to it, each held at its room less the rule's quarter radius (the
+  // others growing on); refused, naming them, where none within the rooms certifies. One asked
+  // for that is too short is refused, naming the setback that builds (or that none does, where
+  // that one does not fit with its ease).
+  if ( m_lFillOrder == 1 && !m_bSetBackOverflows )
+    {
+      std::vector<double> sMost( n );
+      for (ULONG i=0; i<n; i++)
+        { sMost[i] = bAsked ? SM_BIG_DOUBLE : smos_Max( m_vSetBacks[i], sRoom[i] - 0.25 * sEdges[i].m_dRadius ); }
+      double dScale = 0.0;
+      const TCHAR * pScaleWhy = NULL;
+      const SmStatus eScale = SmBlendSetback::CertifiedScale( m_crContext, sPlanes, sEdges, m_vSetBacks, dScale, NULL, &pScaleWhy, &sMost );
+      if ( eScale != SM_SUCCESS )
+        { return SetBackNotBuilt( pScaleWhy != NULL ? pScaleWhy : _T("Fillet Error: the setback corner's convex fill cannot be sized") ); }
+      TCHAR cWhy[SM_TBLOCK_SIZE];
+      if ( dScale == 0.0 )
+        {
+          if ( bAsked )
+            { smos_sprintf( cWhy, _T("Fillet Error: no setback up to twice %g keeps the setback corner's fill convex"), dAsked ); }
+          else
+            {
+              smos_sprintf( cWhy, _T("Fillet Error: no setbacks within the corner's edges keep its fill convex (the most that fit: %g"), sMost[0] );
+              for (ULONG i=1; i<n; i++) { TCHAR cMore[64]; smos_sprintf( cMore, _T(", %g"), sMost[i] ); smos_WStrCat( cWhy, cMore ); }
+              smos_WStrCat( cWhy, _T(")") );
+            }
+          pExec->NoteFitSetBack( 0.0 );
+          pExec->GetFilletErrorInfo()->NoteError( m_cpVertex, SM_FIL_FAILURE, SM_FILERR_NO_ROOM, cWhy );
+          return SM_ERR;
+        }
+      if ( dScale > 1.0 && bAsked )
+        {
+          SmBoolean bRoom = TRUE;
+          for (ULONG i=0; i<n; i++)
+            if ( dScale * dAsked + m_dEaseDist >= sRoom[i] )
+              { bRoom = FALSE; }
+          const double dBuilds = bRoom ? dScale * dAsked : 0.0;
+          if ( bRoom )
+            { smos_sprintf( cWhy, _T("Fillet Error: a setback of %g is too short for the setback corner's fill to stay convex: a setback of %g builds it"), dAsked, dBuilds ); }
+          else
+            { smos_sprintf( cWhy, _T("Fillet Error: a setback of %g is too short for the setback corner's fill to stay convex, and the %g that would be does not fit on its edges"),
+                            dAsked, dScale * dAsked ); }
+          pExec->NoteFitSetBack( dBuilds );
+          pExec->GetFilletErrorInfo()->NoteError( m_cpVertex, SM_FIL_FAILURE, SM_FILERR_NO_ROOM, cWhy );
+          return SM_ERR;
+        }
+      for (ULONG i=0; i<n; i++) { m_vSetBacks[i] = smos_Min( dScale * m_vSetBacks[i], sMost[i] ); }
+    }
   if ( m_bSetBackOverflows )
     {
       for (ULONG i=0; i<n; i++) { m_vSetBacks[i] = 0.5 * sRoom[i]; }
