@@ -3729,7 +3729,17 @@ SmStatus SmGnSectionFSG::Build
       SmPoint3d sM;
       SER(rCenterLine.EvaluatePoint(sS[j], sM));
       const double dSolveTol = 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length());
-      SER(sm_GnSolveStation(apFace, rCenterLine, sS[j], adSeed, adR, adSide, sTr, dSolveTol, sStations[j], NULL, static_cast<int>(n)));
+      // with a ball of a given radius (pbNotTheFeet), a station that does not solve from the solver's
+      // rails (Newton from within the tolerance of a regular root converges) says the rails are not
+      // that ball's feet there
+      if (pbNotTheFeet != NULL
+          && sm_GnSolveStation(apFace, rCenterLine, sS[j], adSeed, adR, adSide, sTr, dSolveTol, sStations[j], NULL, static_cast<int>(n)) != SM_SUCCESS)
+        {
+          *pbNotTheFeet = TRUE;
+          return SM_SUCCESS;
+        }
+      if (pbNotTheFeet == NULL)
+        { SER(sm_GnSolveStation(apFace, rCenterLine, sS[j], adSeed, adR, adSide, sTr, dSolveTol, sStations[j], NULL, static_cast<int>(n))); }
       for (int f=0; f<2; f++)
         {
           const SmPoint3d sRho(sStations[j].asF[f].a[0].c[0][0], sStations[j].asF[f].a[1].c[0][0], sStations[j].asF[f].a[2].c[0][0]);
