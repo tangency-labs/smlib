@@ -6343,13 +6343,15 @@ double column_under_footprint()
 }
 
 // How far round the feature's axis the edges of `b` that lie on both its wall (radius 2 about
-// x = 20, y = 4) and the round r 8's surface (radius 8 about y = 8, z = 12) run, in radians:
-// 2 pi where the wall comes down to the round all round its footprint.
+// x = 20, y = 4) and the round r 8's surface (radius 8 about y = 8, z = 12), within 1e-5, run, in
+// radians: 2 pi where the wall comes down to the round all round its footprint. The curve where
+// the two cylinders cross is a quartic with no rational form: SMLib fits it, certified within a
+// tenth of the fillet's tolerance (4e-6 here).
 double wall_on_round(const smlib_brep *b)
 {
     SmTArray<SmEdge *> edges;
     b->p->GetEdges(edges);
-    const double tol = 100.0 * static_cast<double>(b->p->GetTolerance());
+    const double tol = 1e-5;
     double turned = 0.0;
     for (ULONG i = 0; i < edges.GetSize(); ++i)
     {
@@ -6378,9 +6380,9 @@ double wall_on_round(const smlib_brep *b)
 
 // The block with its feature (`boss` or a hole), the top front edge rounded `r` keeping the
 // feature (`keep`: smlib_blend, keep features on by default) or taking it (smlib_blend_features,
-// keep off): one sound solid of volume `want`, with `faces` faces; with `reach`, the feature's
-// wall coming down to the round all round its footprint.
-void scenario_feature_in_band(bool boss, bool keep, double r, double want, int faces, bool reach)
+// keep off): one sound solid of volume `want` (to `rel`), with `faces` faces; with `reach`, the
+// feature's wall coming down to the round all round its footprint.
+void scenario_feature_in_band(bool boss, bool keep, double r, double want, double rel, int faces, bool reach)
 {
     smlib_brep *body = featured_block(boss), *out = nullptr;
     const double at[3] = {20, 0, 20};
@@ -6396,7 +6398,7 @@ void scenario_feature_in_band(bool boss, bool keep, double r, double want, int f
         const double v = volume_of(out), turned = wall_on_round(out);
         const int n = static_cast<int>(out->p->GetNumFaces());
         std::printf("  volume %.9f, want %.9f; %d faces, want %d; wall on the round through %.9f rad\n", v, want, n, faces, turned);
-        CHECK(near(v, want, 1e-9));
+        CHECK(near(v, want, rel));
         CHECK(n == faces);
         CHECK(reach ? std::fabs(turned - 2.0 * PI) < 1e-9 : turned == 0.0);
         if (keep)
@@ -6420,59 +6422,60 @@ double featured_rounded(bool boss, double r)
 
 // The boss kept: the round runs the whole edge and the boss's wall comes down to it, standing on
 // the round's surface: the boss's column under the old top, column_under_footprint(), stays.
-// The block's 6 faces, the round, the boss's wall and top.
+// The block's 6 faces, the round, the boss's wall and top. The crease, fitted within 4e-6, moves
+// the column's volume by about 10 times that (3.7e-4 at the fillet's 4e-5, 1.3e-5 at 1e-6): to
+// 1e-7, the volume's own accuracy.
 void scenario_boss_in_band_kept()
 {
-    scenario_feature_in_band(true, true, 8.0, featured_rounded(true, 8.0) + column_under_footprint(), 9, true);
+    scenario_feature_in_band(true, true, 8.0, featured_rounded(true, 8.0) + column_under_footprint(), 1e-7, 9, true);
 }
 
 // Keep off: the round takes the boss as if it were not there, the block less its round.
 void scenario_boss_in_band_taken()
 {
-    scenario_feature_in_band(true, false, 8.0, 24000.0 - 40.0 * spandrel(8.0), 7, false);
+    scenario_feature_in_band(true, false, 8.0, 24000.0 - 40.0 * spandrel(8.0), 1e-9, 7, false);
 }
 
 // The hole kept: its wall comes up to the round, open through the round's surface, its floor
 // at 15 as before; of its 20 pi only what lies under the round, 20 pi less the column, is taken
-// beside the round's. The block's 6 faces, the round, the hole's wall and floor.
+// beside the round's. The block's 6 faces, the round, the hole's wall and floor. To 1e-7, as the
+// boss.
 void scenario_hole_in_band_kept()
 {
-    scenario_feature_in_band(false, true, 8.0, featured_rounded(false, 8.0) + column_under_footprint(), 9, true);
+    scenario_feature_in_band(false, true, 8.0, featured_rounded(false, 8.0) + column_under_footprint(), 1e-7, 9, true);
 }
 
 // Keep off: the round takes the hole as if it were not there, the block less its round.
 void scenario_hole_in_band_taken()
 {
-    scenario_feature_in_band(false, false, 8.0, 24000.0 - 40.0 * spandrel(8.0), 7, false);
+    scenario_feature_in_band(false, false, 8.0, 24000.0 - 40.0 * spandrel(8.0), 1e-9, 7, false);
 }
 
 // r 1.9: the band stops 0.1 short of the footprint, which nothing reaches; keep on or off, the
 // feature stands as before. The block's 6 faces, the round, the feature's wall and end.
 void scenario_boss_short_of_band()
 {
-    scenario_feature_in_band(true, true, 1.9, featured_rounded(true, 1.9), 9, false);
-    scenario_feature_in_band(true, false, 1.9, featured_rounded(true, 1.9), 9, false);
+    scenario_feature_in_band(true, true, 1.9, featured_rounded(true, 1.9), 1e-9, 9, false);
+    scenario_feature_in_band(true, false, 1.9, featured_rounded(true, 1.9), 1e-9, 9, false);
 }
 
 void scenario_hole_short_of_band()
 {
-    scenario_feature_in_band(false, true, 1.9, featured_rounded(false, 1.9), 9, false);
-    scenario_feature_in_band(false, false, 1.9, featured_rounded(false, 1.9), 9, false);
+    scenario_feature_in_band(false, true, 1.9, featured_rounded(false, 1.9), 1e-9, 9, false);
+    scenario_feature_in_band(false, false, 1.9, featured_rounded(false, 1.9), 1e-9, 9, false);
 }
 
 // The scenario cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--scenarios-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SCENARIO_CASES[] = {
-    {"boss_in_band_kept", scenario_boss_in_band_kept,
-     "status 0, but the round takes the boss: 23450.6193 (the block less its round) and 7 faces, not 23528.1655 and 9, the wall on the round through 0 rad"},
+    {"boss_in_band_kept", scenario_boss_in_band_kept, nullptr},
     {"boss_in_band_taken", scenario_boss_in_band_taken, nullptr},
     {"boss_short_of_band", scenario_boss_short_of_band, nullptr},
     {"chamfer_cutting_a_bridge_refused", scenario_chamfer_cutting_a_bridge_refused,
      "status 0, no refusal naming 5: the chamfer is built through the bridge, two solids (384, the pillars less their chamfers)"},
     {"chamfer_past_the_rim_over_an_opening", scenario_chamfer_past_the_rim_over_an_opening, nullptr},
     {"chord_on_a_60_degree_edge", scenario_chord_on_a_60_degree_edge, nullptr},
-    {"hole_in_band_kept", scenario_hole_in_band_kept,
-     "status 0, but the round takes the hole: 23450.6193 (the block less its round) and 7 faces, not 23402.5018 and 9, the wall on the round through 0 rad"},
+    {"hole_in_band_kept", scenario_hole_in_band_kept, nullptr},
     {"hole_in_band_taken", scenario_hole_in_band_taken, nullptr},
     {"hole_short_of_band", scenario_hole_short_of_band, nullptr},
     {"round_cutting_a_bridge_refused", scenario_round_cutting_a_bridge_refused,
