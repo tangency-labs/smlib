@@ -19,6 +19,7 @@
 #include <SmTrimSrfCache.h>
 #include <SmRelation.h>
 #include <SmPoly.h>
+#include <SmBlendNetScope.h>
 #include <SmFace.h>
 // Remove Composites
 // #include <SmCEdge.h>
@@ -514,6 +515,7 @@ class SM_EXPORT SmTess
 {
 private:
   const SmContext & m_crContext ;        // context for new object construction
+  SmBlendNetScope   m_sNetScope ;        // SolidCraft change: a mesh is made on the blends' nets (SmBlendNetScope.h)
 
   SmBoolean         m_bAdvancingFront ;  // TRUE = in AddQuadBoundaries calls TriangulateFaceAF(), many subdivision side effects
                                          // FALSE= in AddQuadBoundaries calls TriangulateFace(), many subdivision side effects

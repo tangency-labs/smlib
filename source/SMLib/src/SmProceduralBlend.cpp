@@ -12,6 +12,7 @@
 #include "StdAfx.h"
 
 #include <SmProceduralBlend.h>
+#include <SmBlendNetScope.h>
 #include <SmBSplineCurve.h>
 #include <SmDatabaseIO.h>
 #include <SmFilletSolver.h>
@@ -75,6 +76,26 @@ SmBoolean sm_SameCurve(const SmBSplineCurve * a, const SmBSplineCurve * b)
   return (a == b || (a != NULL && b != NULL && *a == *b)) ? TRUE : FALSE;
 }
 } // namespace
+
+namespace
+{
+thread_local int t_lNetScopes = 0;
+}
+
+SmBlendNetScope::SmBlendNetScope()
+{
+  t_lNetScopes++;
+}
+
+SmBlendNetScope::~SmBlendNetScope()
+{
+  t_lNetScopes--;
+}
+
+SmBoolean SmBlendNetScope::IsActive()
+{
+  return (t_lNetScopes > 0) ? TRUE : FALSE;
+}
 
 SmBlendCounts SmProceduralBlend::GetCounts()
 {
@@ -356,6 +377,12 @@ SmStatus SmProceduralBlend::Evaluate
   const
 {
   NER(aDerivatives);
+  // meshing and display (SmBlendNetScope) take the net, the approximation made for them
+  if (SmBlendNetScope::IsActive())
+    {
+      return SmBSplineSurface::Evaluate(crUV, lHighestUDeriv, lHighestVDeriv, bUFromLeft, bVFromLeft, bOnlyUpperHalf, aDerivatives,
+                                        bNonZeroTangents, bDoZeroSampling);
+    }
   if (bOnlyUpperHalf && lHighestUDeriv != lHighestVDeriv)
     { SER(SM_ERR_INVALID_INPUT); }
   SmPoint2d sUV(crUV);
@@ -383,13 +410,15 @@ SmStatus SmProceduralBlend::EvaluateSimple
   (const SmPoint2d & crUV,
    ULONG             lHighestUDeriv,
    ULONG             lHighestVDeriv,
-   SmBoolean         /*bUFromLeft*/,
-   SmBoolean         /*bVFromLeft*/,
+   SmBoolean         bUFromLeft,
+   SmBoolean         bVFromLeft,
    SmBoolean         bOnlyUpperHalf,
    SmVector3d      * aDerivatives)
   const
 {
   NER(aDerivatives);
+  if (SmBlendNetScope::IsActive())
+    { return SmBSplineSurface::EvaluateSimple(crUV, lHighestUDeriv, lHighestVDeriv, bUFromLeft, bVFromLeft, bOnlyUpperHalf, aDerivatives); }
   if (bOnlyUpperHalf && lHighestUDeriv != lHighestVDeriv)
     { SER(SM_ERR_INVALID_INPUT); }
   SmPoint2d sUV(crUV);
@@ -413,6 +442,8 @@ SmStatus SmProceduralBlend::EvaluateSimple
 
 SmStatus SmProceduralBlend::EvaluatePoint(const SmPoint2d & crUV, SmPoint3d & rPoint) const
 {
+  if (SmBlendNetScope::IsActive())
+    { return SmBSplineSurface::EvaluatePoint(crUV, rPoint); }
   const SmPoint2d sST = DefinitionParameters(crUV);
   SmVector3d sD;
   SER(EvaluateDefinition(sST.x, sST.y, 0, 0, &sD));
