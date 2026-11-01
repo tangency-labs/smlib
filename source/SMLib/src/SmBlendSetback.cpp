@@ -1012,7 +1012,9 @@ SmStatus SmBlendSetback::FillHole(const SmContext & crContext, const std::vector
 
   // the setback patches' first k + 1 rows, from the rounds: homogeneous Hermite data at u = 0,
   // the rail parameter run toward the corner at a speed lambda giving the patch a speed across
-  // of half its spoke (from its end section's middle to the middle of the end sections' middles)
+  // of its spoke (from its end section's middle to the middle of the end sections' middles).
+  // Half that left saddles in the box corner's setback patches (Gaussian curvature down to
+  // -0.82 at r 2, against the corner ball's 0.25); the whole spoke, -0.25
   std::vector< std::vector< std::vector<sm_SbH> > > sRoundRows(n); // [m][i][j], i = 0 .. k, degree sQ across
   {
     std::vector<SmPoint3d> sMid(n);
@@ -1036,7 +1038,7 @@ SmStatus SmBlendSetback::FillHole(const SmContext & crContext, const std::vector
         const Round & crR = crRounds[r];
         if (!(sSpeed[m] > 0.0))
           { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round does not move along its rails at its end")); }
-        double dLambda = 0.5 * SmVector3d(sMid[m] - SmPoint3d(sCentre)).Length() / sSpeed[m];
+        double dLambda = SmVector3d(sMid[m] - SmPoint3d(sCentre)).Length() / sSpeed[m];
         if (!crR.m_bCornerAbove) { dLambda = -dLambda; }
         const size_t q = sQ[r];
         std::vector< std::vector<sm_SbH> > sH(k + 1, std::vector<sm_SbH>(q + 1));
