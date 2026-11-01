@@ -325,13 +325,15 @@ SmBlendCorner::SmBlendCorner
    m_bG1Case(FALSE),
    m_bMitre(FALSE),
    m_pSideEU(NULL),
-   m_pTurnSurface(NULL)
+   m_pTurnSurface(NULL),
+   m_pBallSurface(NULL)
 {
 }
 
 SmBlendCorner::~SmBlendCorner()
 {
   DeleteSweptSurface();
+  DeleteBallSurface();
 }
 
 void SmBlendCorner::DeleteSweptSurface()
@@ -717,6 +719,11 @@ SmStatus SmBlendCorner::CalcCornerEdgeGeom()
           SmBoolean bExact = FALSE;
           SER( ExactMitreCurve( pEdge, bExact ));
         }
+      return SmFilletCorner::CalcCornerEdgeGeom();
+    }
+  if ( IsBall() )
+    {
+      SER( BuildBallSurface() );
       return SmFilletCorner::CalcCornerEdgeGeom();
     }
   if ( !IsSwept() )
@@ -1400,21 +1407,27 @@ PURPOSE: The executive's corner phases, by the corner's event: the Swept
 ***********************************************************************/
 SmStatus SmBlendCorner::MakeCornerTopology()
 {
+  if ( IsBall() )
+    { return MakeBallTopology(); }
   return IsSwept() ? MakeSweptTopology() : IsMitreTurn() ? MakeMitreTopology() : MakeTwoBlendTopology();
 }
 
 SmStatus SmBlendCorner::AdjustTopology()
 {
+  if ( IsBall() )
+    { return SM_SUCCESS; }
   return IsSwept() ? SM_SUCCESS : IsMitreTurn() ? AdjustMitreTopology() : AdjustTwoBlendTopology();
 }
 
 SmStatus SmBlendCorner::AdjustTangentCorner()
 {
-  return ( IsSwept() || IsMitreTurn() ) ? SM_SUCCESS : AdjustTwoBlendTangentCorner();
+  return ( IsBall() || IsSwept() || IsMitreTurn() ) ? SM_SUCCESS : AdjustTwoBlendTangentCorner();
 }
 
 SmStatus SmBlendCorner::CreateCornerPatch()
 {
+  if ( IsBall() )
+    { return CreateBallPatch(); }
   return IsSwept() ? CreateSweptPatch() : IsMitreTurn() ? CreateMitrePatch() : CreateTwoBlendPatch();
 }
 

@@ -29,7 +29,8 @@ enum SmBlendCornerEvent
 {
   SM_BCE_NONE, // not an event of the blend corner (yet): the corner hierarchy builds it
   SM_BCE_TURN, // two blends turn at the unblended side edge(s) between their faces
-  SM_BCE_JOIN  // two blends whose edges continue each other (G1) at the vertex
+  SM_BCE_JOIN, // two blends whose edges continue each other (G1) at the vertex
+  SM_BCE_BALL  // three rounds of one radius and convexity, the common ball's sphere between them (SmBlendCornerBall.cpp)
 };
 
 enum SmBlendTurn
@@ -69,6 +70,18 @@ protected:
   SmTArray<SmCurve*>        m_vTurn3d;      // Swept: its loop's 3D curves (natural iso-curves, the pole at S left out)
   SmTArray<SmBSplineCurve*> m_vTurnUV;      // and their uv lines
   SmTArray<SmOrientType>    m_vTurnOrients; // and their orientations in the loop
+
+  // the Ball (SmBlendCornerBall.cpp)
+  SmSurface               * m_pBallSurface; // the corner's face's sphere, from CalcCornerEdgeGeom until CreateCornerPatch hands it to its face
+  SmTArray<SmCurve*>        m_vBall3d;      // its loop's 3D curves (natural iso-curves, the pole left out)
+  SmTArray<SmBSplineCurve*> m_vBallUV;      // and their uv lines
+  SmTArray<SmOrientType>    m_vBallOrients; // and their orientations in the loop
+
+  SmBoolean IsBall() const { return ( m_eEvent == SM_BCE_BALL ) ? TRUE : FALSE; }
+  SmStatus  MakeBallTopology();
+  SmStatus  BuildBallSurface();  // m_pBallSurface and its loop, from the planes and the processed contacts
+  void      DeleteBallSurface();
+  SmStatus  CreateBallPatch();
 
   SmBoolean IsSwept() const { return ( m_eEvent == SM_BCE_TURN && m_eTurn == SM_BT_SWEPT ) ? TRUE : FALSE; }
   SmBoolean IsMitreTurn() const { return ( m_eEvent == SM_BCE_TURN && m_eTurn == SM_BT_MITRE && m_pAllEUs != NULL && m_pAllEUs->GetSize() == 3 ) ? TRUE : FALSE; }
@@ -126,6 +139,16 @@ public:
                            double                       dTangencyTolDeg,
                            SmBlendCornerEvent         & reEvent,
                            SmBlendTurn                & reTurn);
+
+  // The Ball at a filleted vertex where all three edges are blended (pAllEUs, the corner's ring):
+  // constant circular rounds of one radius, all convex or all concave, between three planes one of
+  // which is square to the other two, the vertex not set back (SmFilletExecutive::IsSetBackVertex).
+  // reEvent SM_BCE_BALL, else SM_BCE_NONE (the corner hierarchy builds it).
+  static SmStatus ClassifyBall(const SmVertex             * cpVertex,
+                               const SmTArray<SmEdgeuse*> & crSolverEUs,
+                               const SmTArray<SmEdgeuse*> & crAllEUs,
+                               SmFilletExecutive          * pExec,
+                               SmBlendCornerEvent         & reEvent);
 
   virtual SmStatus MakeCornerTopology();
   virtual SmStatus AdjustTopology();

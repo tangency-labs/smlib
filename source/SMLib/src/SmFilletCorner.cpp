@@ -1344,6 +1344,27 @@ static int iDebugLevel = 0; // Note: Can't call DebugLevel() from a static metho
 
       case 3: // three SolverEUs
           {
+              // SolidCraft change: three equal rounds of one convexity, every edge there blended,
+              // are the blend corner's Ball (SmBlendCorner::ClassifyBall).
+              if (lTotalEUs == 3 && !bIsChamferCorner) {
+                  SmBlendCornerEvent eEvent = SM_BCE_NONE;
+                  SmStatus eBall = SmBlendCorner::ClassifyBall( cpVertex, *pSolverEUs, *pAllEUs, pExec, eEvent );
+                  if ( eBall != SM_SUCCESS ) {
+                      break;
+                  }
+                  if ( eEvent == SM_BCE_BALL ) {
+                      pNewCorner = new(crContext) SmBlendCorner(crContext,
+                                                                cpVertex,
+                                                                pSolverEUs,
+                                                                pAllEUs,
+                                                                pExec,
+                                                                dApproxTol3d,
+                                                                dTangencyTolRadians,
+                                                                eEvent,
+                                                                SM_BT_MITRE);
+                      break;
+                  }
+              }
               if (lTotalEUs == 4) {
                   pNewCorner = new(crContext) SmFillet4x3Corner(crContext,
                                                                 cpVertex,

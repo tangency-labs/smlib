@@ -6974,7 +6974,7 @@ void ball_sphere_turned_round()
 const TangentEndCase BALL_CASES[] = {
     {"box_corner", ball_box_corner, nullptr},
     {"pocket_corner", ball_pocket_corner, nullptr},
-    {"prism_corner", ball_prism_corner, "SmFilletConvexNxNCorner's sphere (CreateSphereFromArcs) is trimmed by fitted curves: its seams with the rounds 7.4e-6 rad off G1, the volume 8.5e-11 off"},
+    {"prism_corner", ball_prism_corner, nullptr},
     {"sphere_turned_round", ball_sphere_turned_round, nullptr},
 };
 

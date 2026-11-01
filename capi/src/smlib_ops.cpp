@@ -605,6 +605,11 @@ int32_t round_edges(SmBrep *b, const std::vector<SmEdge *> &edges, const std::ve
     exec.SetSweptTurns(section.turn == SMLIB_TURN_SWEPT ? TRUE : FALSE);
     // A feature (a boss, a cut) standing inside a round's band stays, or the round takes it.
     exec.SetKeepFeatures(section.keep_features ? TRUE : FALSE);
+    // A corner set back is classified as one: never the Ball.
+    for (const auto &sb : setbacks)
+    {
+        exec.AddSetBackVertex(sb.vertex);
+    }
     s = status(exec.CreateFilletCorners());
     if (s != SMLIB_OK)
     {

@@ -249,6 +249,8 @@ protected:
   SmBoolean                 m_bSweptTurns;          // SolidCraft change: TRUE = where a chain of two rounds turns at a sharp side edge
                                                     //   (an N x 2 corner), the section is revolved about that edge (Swept);
                                                     //   FALSE = the rounds are mitred there (Mitre, the default)
+  SmTArray<const SmVertex*> m_vSetBackVertices;     // SolidCraft change: the vertices the caller sets back (SmFilletCorner::SetSetBackDist,
+                                                    //   after CreateFilletCorners): no Ball corner there (SmBlendCorner::ClassifyBall)
   SmBoolean                 m_bClassifyOnly;        // SolidCraft change: TRUE = stop after classifying the rails (SM_FILERR_OVERFLOW_FIRST),
                                                     //   building nothing, m_vOverflowEdges the edges whose blends overflow
   SmTArray<SmEdge*>         m_vOverflowEdges;       // SolidCraft change: the edges of the blends that overflow, when stopped so
@@ -448,6 +450,8 @@ public:
   void      SetKeepFeatures(SmBoolean bKeep) { m_bKeepFeatures = bKeep; } // SolidCraft change: keep features (SmFilletKeepFeatures.cpp)
   SmStatus  KeepFeaturesInBands(SmBoolean & rbKept); // SolidCraft change: trim the rounds in place round the features their bands reach, sew them in
   SmBoolean GetSweptTurns() const { return m_bSweptTurns; }
+  void      AddSetBackVertex(const SmVertex * cpVertex) { m_vSetBackVertices.Add( cpVertex ); } // SolidCraft change: before CreateFilletCorners
+  SmBoolean IsSetBackVertex(const SmVertex * cpVertex) const { return m_vSetBackVertices.IsIn( cpVertex ); }
   const SmTArray<SmEdge*> & GetOverflowEdges() const { return m_vOverflowEdges; }
   const SmTArray<SmEdge*> & GetMitredEdges() const { return m_vMitredEdges; }
   SmStatus  NoteOpenEnd(SmFilletSolver * pSolver, SmVertex * pVertex, SmFace * pEndFace); // an end the Nx1 corner left uncut

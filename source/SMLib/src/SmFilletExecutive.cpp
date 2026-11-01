@@ -6252,6 +6252,8 @@ SmStatus SmFilletExecutive::TestAndConvertBigRadFillet
         }
         if (  pStartCorner->GetCornerType() != SM_FCR_BLEND
              || pEndCorner->GetCornerType() != SM_FCR_BLEND
+             || ((SmBlendCorner*)pStartCorner)->GetEvent() == SM_BCE_BALL // SolidCraft change: two-blend corners only
+             || ((SmBlendCorner*)pEndCorner)->GetEvent() == SM_BCE_BALL
              || pStartV[ii]->IsProcessed() == FALSE
              ||   pEndV[ii]->IsProcessed() == FALSE
            )
