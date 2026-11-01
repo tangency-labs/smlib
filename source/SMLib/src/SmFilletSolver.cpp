@@ -35,6 +35,9 @@
 #include <SmPlane.h>
 #include <SmFilletExact.h>
 #include <SmRegion.h>
+#include <SmCircle.h>
+#include <SmSolutionArray.h>
+#include <SmFace.h>
 #include <SmTol.h>
 #include <vector>
 
@@ -6265,60 +6268,47 @@ SmStatus SmFilletSolver::BallIsRegular
 
 /*******************************************************************//**
 PURPOSE: SolidCraft change. The points where the body's edges cross the
-    plane through crOrigin square to crNormal: each edge's curve, its sign
-    changes of <C(t) - origin, normal> over 32 equal steps of its interval,
-    each bisected to the curve's precision.
+    plane through crOrigin square to crNormal: each edge's curve intersected
+    with the plane (SmSurface::GlobalCurveIntersect); an edge lying in the
+    plane gives its ends there.
 ***********************************************************************/
 static SmStatus sm_EdgesCrossingPlane
-  (const SmBrep      & crBody,    // in : the body
-   const SmPoint3d   & crOrigin,  // in : a point of the plane
-   const SmVector3d  & crNormal,  // in : its unit normal
+  (const SmContext     & crContext,  // in : for the plane
+   const SmBrep        & crBody,     // in : the body
+   const SmPoint3d     & crOrigin,   // in : a point of the plane
+   const SmVector3d    & crNormal,   // in : its unit normal
    SmTArray<SmPoint3d> & rCrossings) // out: the crossings
 {
   rCrossings.RemoveAll();
+  SmVector3d sX = (smos_Fabs(crNormal.x) < 0.9) ? SmVector3d(1.0, 0.0, 0.0) * crNormal : SmVector3d(0.0, 1.0, 0.0) * crNormal;
+  SER(sX.Unitize());
+  const SmVector3d sY = crNormal * sX;
+  SmPlane * pPlane = NULL;
+  SER(SmPlane::CreateCanonical(crContext, SmAxis2Placement(crOrigin, sX, sY), pPlane));
+  NER(pPlane);
+  SmObjDelete sDeletePlane(pPlane);
+  const double dTol = crBody.GetTolerance().val;
   SmTArray<SmEdge*> sEdges;
   crBody.GetEdges(sEdges);
-  const ULONG lSteps = 32;
   for (ULONG i=0; i<sEdges.GetSize(); i++)
     {
       const SmEdge  * pEdge  = sEdges[i];
       const SmCurve * pCurve = (pEdge != NULL) ? pEdge->GetCurve() : NULL;
       if (pCurve == NULL)
         { continue; }
-      const SmExtent1d sIvl = pEdge->GetInterval();
-      auto Side = [&](double dT, double & rdSide) -> SmStatus
-      {
-        SmPoint3d sAt;
-        SER(pCurve->EvaluatePoint(dT, sAt));
-        rdSide = (sAt - crOrigin).Dot(crNormal);
-        return SM_SUCCESS;
-      };
-      double dT0 = sIvl.GetMin(), dS0 = 0.0;
-      SER(Side(dT0, dS0));
-      for (ULONG j=1; j<=lSteps; j++)
+      SmSolution aData[4];
+      SmSolutionArray sSolutions(4, aData);
+      SER(pPlane->GlobalCurveIntersect(pPlane->GetNaturalUVDomain(), *pCurve, pEdge->GetInterval(), dTol, sSolutions));
+      for (ULONG j=0; j<sSolutions.GetSize(); j++)
         {
-          const double dT1 = sIvl.Evaluate(double(j) / lSteps);
-          double dS1 = 0.0;
-          SER(Side(dT1, dS1));
-          if (dS0 == 0.0 || (dS0 < 0.0) != (dS1 < 0.0))
+          SmPoint3d sAt;
+          SER(pCurve->EvaluatePoint(sSolutions[j].m_vStart[0], sAt));
+          rCrossings.Add(sAt);
+          if (sSolutions[j].m_eSolutionType == SM_ST_RANGE_OF_VALUES)
             {
-              double dLo = dT0, dHi = dT1, dSLo = dS0;
-              for (ULONG k=0; k<60 && dSLo != 0.0; k++)
-                {
-                  const double dMid = 0.5 * (dLo + dHi);
-                  double dSMid = 0.0;
-                  SER(Side(dMid, dSMid));
-                  if ((dSMid < 0.0) == (dSLo < 0.0) && dSMid != 0.0)
-                    { dLo = dMid; dSLo = dSMid; }
-                  else
-                    { dHi = dMid; }
-                }
-              SmPoint3d sAt;
-              SER(pCurve->EvaluatePoint(dSLo == 0.0 ? dLo : 0.5 * (dLo + dHi), sAt));
+              SER(pCurve->EvaluatePoint(sSolutions[j].m_vEnd[0], sAt));
               rCrossings.Add(sAt);
             }
-          dT0 = dT1;
-          dS0 = dS1;
         }
     }
   return SM_SUCCESS;
@@ -6331,13 +6321,22 @@ PURPOSE: SolidCraft change. Whether the part keeps material behind the
     round, the triangle c, s1, s2 for a chamfer's chord).
 
 NOTES: Kept where a body edge crosses the station's plane inside that region
-    (the part's boundary reaches behind the section), or a point of the
-    section lies in the part (inside it or on its boundary). Otherwise the
-    blend takes all of the part between its rails there: the slice is
-    removed whole and the part falls apart along the edge.
+    (the part's boundary reaches behind the section), or the section meets
+    the part between its rails. The latter is decided exactly: the section
+    (the ball's circular arc, or the chord, as an exact curve) is
+    intersected with every face's surface (SmSurface::GlobalCurveIntersect)
+    and each crossing classified on its face; a crossing inside a face is
+    the section meeting the part's boundary (one on a face's edge, within
+    the intersection's tolerance of it, decides nothing: where the section
+    passes a body edge the edge's crossing of the plane decides, exactly,
+    above). With none, the
+    section between its rails lies wholly inside or wholly outside the part,
+    and one point of it, classified, says which. Otherwise the blend takes
+    all of the part between its rails there: the slice is removed whole.
 ***********************************************************************/
 static SmStatus sm_KeepsMaterialBehind
-  (const SmBrep              & crBody,      // in : the body
+  (const SmContext           & crContext,   // in : for the section's curve
+   const SmBrep              & crBody,      // in : the body
    const SmPoint3d           & crCentre,    // in : the ball's centre
    const SmPoint3d           & crRail1,     // in : the section's ends
    const SmPoint3d           & crRail2,
@@ -6364,30 +6363,67 @@ static SmStatus sm_KeepsMaterialBehind
       if (bChord ? (dAlpha + dBeta <= 1.0 + 1.0e-12) : (sX.Length() <= std::sqrt(dR2) + dTol))
         { return SM_SUCCESS; }
     }
-  // the section's points: the chord, or the arc from the first rail to the second the short way
-  const ULONG lPoints = 16;
-  SmVector3d sE2 = sB - sA * (dAB / dAA);
-  const double dE2 = sE2.Length();
-  const double dPhi = std::atan2(dE2 / std::sqrt(dBB), dAB / std::sqrt(dAA * dBB));
-  for (ULONG k=0; k<lPoints; k++)
+
+  // the section as an exact curve: the chord, or the circle's arc from the first rail to the
+  // second the short way
+  SmCurve * pSection = NULL;
+  SmPoint3d sMiddle;
+  if (bChord)
     {
-      const double dF = (k + 0.5) / lPoints;
-      SmPoint3d sAt;
-      if (bChord)
-        { sAt = crRail1 + (crRail2 - crRail1) * dF; }
-      else
-        {
-          const double dRho = std::sqrt(dAA);
-          sAt = crCentre + sA * std::cos(dF * dPhi) + (sE2 / dE2) * (dRho * std::sin(dF * dPhi));
-        }
-      SmPointClassification sClass;
-      SER(crBody.Point3DClassify(sAt, SmTol::GetZoneTol3d(&crBody), TRUE, sClass));
-      if (sClass.GetPointClass() != SM_PC_REGION)
-        { return SM_SUCCESS; } // on the part's boundary
-      const SmRegion * pRegion = static_cast<const SmRegion *>(sClass.GetObject());
-      if (pRegion != NULL && !pRegion->IsVoid())
-        { return SM_SUCCESS; }
+      SmLine * pLine = NULL;
+      SER(SmLine::CreateLineSegment(crContext, 3, crRail1, crRail2, pLine));
+      pSection = pLine;
+      sMiddle = (crRail1 + crRail2) * 0.5;
     }
+  else
+    {
+      const double dRho = std::sqrt(dAA);
+      SmVector3d sE1 = sA / dRho;
+      SmVector3d sE2 = sB - sA * (dAB / dAA);
+      SER(sE2.Unitize());
+      const double dPhi = std::atan2(sB.Dot(sE2), sB.Dot(sE1));
+      pSection = new (crContext) SmCircle(crCentre, sE1, sE2, SmExtent1d(0.0, SM_RAD2DEG(dPhi)), dRho, 3, &crContext);
+      sMiddle = crCentre + sE1 * (dRho * std::cos(0.5 * dPhi)) + sE2 * (dRho * std::sin(0.5 * dPhi));
+    }
+  NER(pSection);
+  SmObjDelete sDeleteSection(pSection);
+  const SmExtent1d sIvl = pSection->GetNaturalInterval();
+  const double dEnds = crBody.GetTolerance().val;
+  SmTArray<SmFace*> sFaces;
+  crBody.GetFaces(sFaces);
+  for (ULONG i=0; i<sFaces.GetSize(); i++)
+    {
+      const SmFace    * pFace = sFaces[i];
+      const SmSurface * pSurf = (pFace != NULL) ? pFace->GetSurface() : NULL;
+      if (pSurf == NULL)
+        { continue; }
+      SmSolution aData[4];
+      SmSolutionArray sSolutions(4, aData);
+      SER(pSurf->GlobalCurveIntersect(pSurf->GetNaturalUVDomain(), *pSection, sIvl, dEnds, sSolutions));
+      for (ULONG j=0; j<sSolutions.GetSize(); j++)
+        {
+          const SmSolution & crSol = sSolutions[j];
+          if (crSol.m_eSolutionType == SM_ST_RANGE_OF_VALUES)
+            { return SM_SUCCESS; } // the section runs along the face's surface
+          SmPoint3d sAt;
+          SER(pSection->EvaluatePoint(crSol.m_vStart[0], sAt));
+          if (sAt.DistanceBetween(crRail1) <= dEnds || sAt.DistanceBetween(crRail2) <= dEnds)
+            { continue; } // the section's own ends, on the blended faces
+          SmPointClassification sOnFace;
+          SER(pFace->PointClassify(SmPoint2d(crSol.m_vStart[1], crSol.m_vStart[2]), SmTol::GetZoneTol3d(&crBody),
+                                   TRUE, TRUE, sOnFace));
+          if (sOnFace.GetPointClass() == SM_PC_FACE)
+            { return SM_SUCCESS; } // the section crosses the part's boundary inside a face
+        }
+    }
+  // no crossing: the section between its rails is wholly in the part or wholly outside it
+  SmPointClassification sClass;
+  SER(crBody.Point3DClassify(sMiddle, SmTol::GetZoneTol3d(&crBody), TRUE, sClass));
+  if (sClass.GetPointClass() != SM_PC_REGION)
+    { return SM_SUCCESS; }
+  const SmRegion * pRegion = static_cast<const SmRegion *>(sClass.GetObject());
+  if (pRegion != NULL && !pRegion->IsVoid())
+    { return SM_SUCCESS; }
   rbKeeps = FALSE;
   return SM_SUCCESS;
 } // end sm_KeepsMaterialBehind
@@ -6471,7 +6507,7 @@ SmStatus SmFilletSolver::BandCutsThePart
     SmPoint3d sP;
     SER(pCurve->EvaluatePoint(dT, sP));
     rdSetbackHere = sP.DistanceBetween(asAt[1]);
-    SER(sm_KeepsMaterialBehind(crBody, asAt[0], asAt[1], asAt[2], bChord, crCrossings, rbKeeps));
+    SER(sm_KeepsMaterialBehind(m_crContext, crBody, asAt[0], asAt[1], asAt[2], bChord, crCrossings, rbKeeps));
     return SM_SUCCESS;
   };
 
@@ -6494,7 +6530,7 @@ SmStatus SmFilletSolver::BandCutsThePart
       if (!(sPV[1].Length() > SM_EFF_ZERO))
         { continue; }
       SER(sPV[1].Unitize());
-      SER(sm_EdgesCrossingPlane(crBody, sPV[0], sPV[1], vCrossings[j]));
+      SER(sm_EdgesCrossingPlane(m_crContext, crBody, sPV[0], sPV[1], vCrossings[j]));
       SmBoolean bJudged = FALSE, bKeeps = TRUE;
       double dSetback = 0.0;
       SER(Keeps(dT, 0.0, vCrossings[j], sNear, bNear, bJudged, bKeeps, dSetback));
