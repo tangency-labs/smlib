@@ -969,7 +969,7 @@ static SmStatus sm_HoldsItsLaw
 
 /*******************************************************************//**
 PURPOSE: SolidCraft change. Note an end of a fillet that its Nx1 corner left
-    uncut in a cliff overflow (SmFilletNx1Corner::CalcCornerEdgeGeom).
+    uncut in a cliff overflow (SmBlendCorner::CalcEndEdgeGeom).
 
 NOTES: pEndFace's surface, continued, cuts the fillet off there
     (CutFilletAtOpenEnd).

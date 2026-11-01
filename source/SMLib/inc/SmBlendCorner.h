@@ -30,7 +30,16 @@ enum SmBlendCornerEvent
   SM_BCE_NONE, // not an event of the blend corner (yet): the corner hierarchy builds it
   SM_BCE_TURN, // two blends turn at the unblended side edge(s) between their faces
   SM_BCE_JOIN, // two blends whose edges continue each other (G1) at the vertex
-  SM_BCE_BALL  // three rounds of one radius and convexity, the common ball's sphere between them (SmBlendCornerBall.cpp)
+  SM_BCE_BALL, // three rounds of one radius and convexity, the common ball's sphere between them (SmBlendCornerBall.cpp)
+  SM_BCE_END   // one blend ends at the vertex, its side faces there not blended
+};
+
+// How an End ends (SmBlendCornerEnd.cpp).
+enum SmBlendEnd
+{
+  SM_BEND_ON_END_FACE, // on the end face(s) between its side edges (an end rib), capped at a mixed convexity
+  SM_BEND_OPEN,        // at a lamina edge (a sheet): its end section
+  SM_BEND_RUNS_OUT     // its side faces continue each other through the vertex: its rails meet there
 };
 
 enum SmBlendTurn
@@ -63,6 +72,7 @@ class SM_EXPORT SmBlendCorner : public SmFilletCorner
 protected:
   SmBlendCornerEvent        m_eEvent;       // the corner's event (Classify)
   SmBlendTurn               m_eTurn;        // a Turn's mode
+  SmBlendEnd                m_eEnd;         // an End's kind
   SmBoolean                 m_bG1Case;      // the two blended edges meet G1 (MakeTwoBlendTopology)
   SmBoolean                 m_bMitre;       // the two blends are mitred at the common face's concave corner
   SmEdgeuse               * m_pSideEU;      // Swept: the side edge E's edgeuse the rails of the first round meet
@@ -110,6 +120,13 @@ protected:
 
   // the Join: the blends end on one shared section (SmBlendCornerJoin.cpp)
   SmStatus  MakeJoinTopology();
+
+  // the End (SmBlendCornerEnd.cpp)
+  SmStatus  MakeEndOnEndFace();
+  SmStatus  MakeEndOpen();
+  SmStatus  MakeEndRunningOut();
+  SmStatus  CalcEndEdgeGeom();
+  SmStatus  CreateEndPatchOfEnd();
 
   // the Join, and a corner of four edges: the two blends end on one common section (blending), or
   // run on to their intersection (bevel); moved from SmFilletNx2Corner.
@@ -165,6 +182,12 @@ public:
   virtual SmFilletSolver * GetTangentFilletSolver( const SmFilletSolver *pFS );
   virtual SmBoolean        IsTangentCorner() const { return m_bG1Case; }
   virtual SmBoolean        IsClosedJoin() const;
+  virtual SmBoolean        IsEndOnEndFace() const { return ( m_eEvent == SM_BCE_END && m_eEnd == SM_BEND_ON_END_FACE ) ? TRUE : FALSE; }
+
+  // the End at a vertex where one blended edgeuse ends: its kind
+  void SetEnd( SmBlendEnd eEnd ) { m_eEnd = eEnd; }
+  // whether a round ending at cpCornerVert runs out there: its side faces continue each other
+  static SmBoolean EndRunsOut( const SmVertex * pCornerVert, SmEdgeuse * pFilEdgeuse );
 
   SmBlendCornerEvent GetEvent() const { return m_eEvent; }
   SmBlendTurn        GetTurn()  const { return m_eTurn; }
@@ -198,6 +221,13 @@ SmFace * sm_GetFaceByTwoEdgeuses(SmEdgeuse * pEU1, SmEdgeuse * pEU2, SmEdgeuse *
 
 // Whether the face corner at pCornerVert between two edgeuses (through the tangent edge pOptRefEU
 // when not NULL) has the convexity opposite to theirs (SmFilletCorner.cpp).
+// The corner helpers of the End (SmFilletCorner.cpp).
+SmEdgeuse * sm_FindClosedSideEdgeuse(ULONG lRailIndex, SmFilletSolver * pFilSolver, SmEdgeuse * pEU, int iDebugLevel);
+SmBoolean   sm_IsTangentSeamAtVertex(SmEdgeuse * pFilEdgeuse, SmEdgeuse * pSideEU, const SmVertex * pVertex, double dTanTolDeg);
+SmBoolean   same_convexity_edges(SmEdgeuse * pEU1, SmEdgeuse * pEU2, const SmVertex * pVertex, int iDebugLevel);
+SmBoolean   same_convexity_edges_round_vertex(SmEdgeuse * pFilEdgeuse, SmEdge * pEdge);
+double      sm_FindSurfaceExtensionDistAtCorner(SmEdgeuse * pFilEdgeuse, SmFilletSolver * pFilSolver, const SmVertex * pVertex);
+
 SmBoolean sm_CheckFaceComplimentaryCornerConcavity(const SmVertex * pCornerVert, SmEdgeuse * pTestEU1, SmEdgeuse * pTestEU2,
                                                    SmEdgeuse * pOptRefEU, int iDebugLevel);
 

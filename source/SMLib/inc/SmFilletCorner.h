@@ -222,6 +222,8 @@ public:
   virtual SmBoolean IsTangentCorner()          const { return FALSE; }
   // SolidCraft change: a Join of one closed blended edge meeting itself (SmBlendCorner)
   virtual SmBoolean IsClosedJoin()             const { return FALSE; }
+  // SolidCraft change: an End on its end face(s) (SmBlendCorner)
+  virtual SmBoolean IsEndOnEndFace()           const { return FALSE; }
 
   // utilities
   void RecordFilletError(SmFilletErrorType  eErrorType,
@@ -275,94 +277,6 @@ public:
     virtual SmStatus MakeCornerTopology();
 
 } ; // end SmFilletNx1ClosedCorner
-
-/*******************************************************************//**
-PURPOSE: Create Nx1 corner by specifying the boundary of the incoming
-    fillet. If the filleted edge is a concave edge, an 'end' surface will
-    be created to fill the hole of the side face. When a convex edge of
-    a concave corner is filleted, a new side surface will also be created
-
-NOTES: Corners with N > 3 are not yet implemented.
-
-***********************************************************************/
-class SM_EXPORT SmFilletNx1Corner : public SmFilletCorner
-{
-public:
-    SmFilletNx1Corner(const SmContext      & crContext,
-                      const SmVertex       * cpVertex,
-                      SmTArray<SmEdgeuse*> * pSolverEUs,
-                      SmTArray<SmEdgeuse*> * pAllEUs,
-                      SmFilletExecutive    * pExec,
-                      double                 dApproxTol3d,
-                      double                 dTangencyTolRadians);
-
-    static SmBoolean CheckNx1Degeneracy(const SmVertex * pCornerVert,
-                                        SmEdgeuse * pFilEdgeuse);
-
-    virtual SmStatus CreateCornerPatch();
-
-    virtual SmStatus CalcCornerEdgeGeom();
-
-    virtual SmFilletCornerType GetCornerType() const { return SM_FCR_N_x_1; }
-
-    virtual void GetName(TCHAR * pcMyName, size_t lMyNameAllocLen) const { smos_WStrCpy(pcMyName, lMyNameAllocLen, _T("SmFilletNx1Corner")); }
-
-    virtual SmStatus MakeCornerTopology();
-
-} ; // end class SmFilletNx1Corner
-
-/*******************************************************************//**
-PURPOSE: Create an open-end corner (i.e. corner with lamina edge) to
-    determine the trimming boundary of fillet at this corner.
-    Typically, this will be needed when we do shell-filleting.
-
-NOTES: For now, it will only handle 3x1 case.
-***********************************************************************/
-class SM_EXPORT SmFilletDegenerateCorner : public SmFilletCorner
-{
-public:
-    SmFilletDegenerateCorner(const SmContext      & crContext,
-                             const SmVertex       * cpVertex,
-                             SmTArray<SmEdgeuse*> * pSolverEUs,
-                             SmTArray<SmEdgeuse*> * pAllEUs,
-                             SmFilletExecutive    * pExec,
-                             double                 dApproxTol3d,
-                             double                 dTangencyTolRadians);
-
-    virtual SmFilletCornerType GetCornerType() const { return SM_FCR_DEGENERATE; }
-
-    virtual void GetName(TCHAR * pcMyName, size_t lMyNameAllocLen) const { smos_WStrCpy(pcMyName, lMyNameAllocLen, _T("SmFilletDegenerateCorner")); }
-
-    virtual SmStatus MakeCornerTopology();
-
-} ; // end class SmFilletDegenerateCorner
-
-/*******************************************************************//**
-PURPOSE: Create an open-end corner (i.e. corner with lamina edge) to
-    determine the trimming boundary of fillet at this corner.
-    Typically, this will be needed when we do shell-filleting.
-
-NOTES: For now, it will only handle 3x1 case.
-***********************************************************************/
-class SM_EXPORT
-SmFilletOpenCorner : public SmFilletNx1Corner
-{
-public:
-    SmFilletOpenCorner(const SmContext      & crContext,
-                       const SmVertex       * cpVertex,
-                       SmTArray<SmEdgeuse*> * pSolverEUs,
-                       SmTArray<SmEdgeuse*> * pAllEUs,
-                       SmFilletExecutive    * pExec,
-                       double                 dApproxTol3d,
-                       double                 dTangencyTolRadians);
-
-    virtual SmFilletCornerType GetCornerType() const { return SM_FCR_OPEN; }
-
-    virtual void GetName(TCHAR * pcMyName, size_t lMyNameAllocLen) const { smos_WStrCpy(pcMyName, lMyNameAllocLen, _T("SmFilletOpenCorner")); }
-
-    virtual SmStatus MakeCornerTopology();
-
-} ; // end SmFilletOpenCorner
 
 /*******************************************************************//**
 PURPOSE: A 3x2 corner whose two filleted edges has different edge convexity

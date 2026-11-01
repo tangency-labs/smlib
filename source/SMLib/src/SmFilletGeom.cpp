@@ -2337,7 +2337,7 @@ SmBoolean bDebugFVUs=FALSE;
         // to the surface's own domain, a rail meeting a side edge's line just past the edge's
         // end (a cliff overflow) was placed on the edge's end vertex instead, off the rail by
         // only the square of that distance over twice the radius, and taken as meeting the
-        // side edge (SmFilletNx1Corner::CalcCornerEdgeGeom).
+        // side edge (SmBlendCorner::CalcEndEdgeGeom).
         SmBoolean          bTmp = FALSE;
         SmBSplineSurface * pBSplineSurf1 = SM_CAST_PTR( SmBSplineSurface, pSurf1 );
         SmTemporaryChangeValue<SmBoolean> sUnclamped( pBSplineSurf1 ? pBSplineSurf1->GetOutOfBoundsEnabled() : bTmp, TRUE );
@@ -6646,7 +6646,7 @@ iDebugLevel = DebugLevel();
 
         } // end not building extendedSurface endFace patch branch
 
-      // SolidCraft change: at a tangent end (SmFilletNx1Corner::MakeCornerTopology) the fillet
+      // SolidCraft change: at a tangent end (SmBlendCorner::MakeEndOnEndFace) the fillet
       // surface and the end face touch where the rail crosses the seam, and the end rib is built
       // from that end outward (sm_TangentEndRib), never intersected into it.
       double     dAngTol = pFilSolver1->GetThisAngTolRad();
@@ -8096,7 +8096,7 @@ SmStatus SmFilletEdge::CalcEdgeOnExtendedEdge
     if (sFaces.GetSize() < 2) SER(SM_ERR);
 
     // SolidCraft change: a tangent seam T, the edge whose faces meet tangentially, where a
-    // tangent end's rail crosses it (SmFilletNx1Corner::MakeCornerTopology). The cap edge from
+    // tangent end's rail crosses it (SmBlendCorner::MakeEndOnEndFace). The cap edge from
     // that end to the corner's vertex is a piece of T, on the edge or on its continuation past
     // the vertex: the edge's own curve, continued as itself. Its faces' surfaces touch along T,
     // so it is never their intersection.
@@ -8107,7 +8107,7 @@ SmStatus SmFilletEdge::CalcEdgeOnExtendedEdge
                                               SM_RAD2DEG( pOptCorner->GetTangencyTolRadians() )))
       { return CalcEdgeOnTangentSeam( crContext, pOptCorner ); }
 
-    // Past a tangent side edge (SmFilletNx1Corner::MakeCornerTopology), the
+    // Past a tangent side edge (SmBlendCorner::MakeEndOnEndFace), the
     // extended edge bounds the end face and a face that is not the side face
     // this edge runs in. Its extension is where that side face meets the end
     // face's extension (the one of the edge's faces the corner extended).

@@ -826,7 +826,7 @@ static int sbDumpFVUs=0;
       // SolidCraft change: a rail that ends on an extended edge (SM_FV_RAIL_X_EXTENDED_EDGEUSE)
       // has its end found on the fillet surface once that is made, so it gives the trace no point
       // (see the rail ends below). The corner's cap edges meet at the filleted edge's end there
-      // (SmFilletNx1Corner::MakeCornerTopology), and that rail ends where the cap edge on its face
+      // (SmBlendCorner::MakeEndOnEndFace), and that rail ends where the cap edge on its face
       // leaves that end: the fillet runs at least to the edge's end, its cross-section there is a
       // through point, and the end's extension runs on past it. The other rail can end well
       // short of the edge's end (a round along a boss's base ending at a wall the boss overhangs).
@@ -5262,7 +5262,7 @@ NOTES: At a vertex of three edges where only this edge is filleted (an
     Nx1 corner) the fillet ends on the third face E, the end face: its end
     section is where the fillet's surface meets E's, from rail 0's crossing
     of its side edge (the edge of its face and E at the vertex) to rail 1's
-    (SmFilletNx1Corner::CalcCornerEdgeGeom builds it as the end rib). The
+    (the End corner builds it as the end rib, SmBlendCorner::CalcEndEdgeGeom). The
     end face must hold all of it. Where E is narrower than the fillet and
     something stands on it next to the vertex (a lip on a shelled box's rim,
     the section running under the lip's foot: off E across a concave edge of
@@ -5301,7 +5301,7 @@ SmStatus SmFilletSolver::EndSectionsFitTheirFaces
           SmFilletCorner * pCorner = GetFilletExecutive()->GetFilletCornerOfVertex( pV );
           SmTArray<SmEdge*> sVertexEdges;
           pV->GetEdges( sVertexEdges );
-          if ( pCorner == NULL || pCorner->GetCornerType() != SM_FCR_N_x_1 || sVertexEdges.GetSize() != 3 )
+          if ( pCorner == NULL || !pCorner->IsEndOnEndFace() || sVertexEdges.GetSize() != 3 )
             { continue; }
           // each rail's side edge at pV, the end face they share, and where the rail crosses it
           SmFace    * pEndFace = NULL;
@@ -5332,7 +5332,7 @@ SmStatus SmFilletSolver::EndSectionsFitTheirFaces
                 { bBoth = FALSE; continue; }
               // An end face the corner takes as it is: a side edge of the filleted edge's
               // convexity, and not tangent (where one is of the other convexity the corner
-              // continues the end face past its boundary, SmFilletNx1Corner::MakeCornerTopology)
+              // continues the end face past its boundary, SmBlendCorner::MakeEndOnEndFace)
               SmBoolean bSideConcave = FALSE, bOpposite = FALSE;
               SER( IsConcaveEdge( *pSide, bSideConcave ));
               if ( bSideConcave != bConcave || sm_TestManifoldTangentRollover( pSide, bOpposite, m_dTangencyTolerance, 0 ))

@@ -322,6 +322,7 @@ SmBlendCorner::SmBlendCorner
  : SmFilletCorner(crContext, cpVertex, pSolverEUs, pAllEUs, pExec, dApproxTol3d, dTangencyTolRadians),
    m_eEvent(eEvent),
    m_eTurn(eTurn),
+   m_eEnd(SM_BEND_ON_END_FACE),
    m_bG1Case(FALSE),
    m_bMitre(FALSE),
    m_pSideEU(NULL),
@@ -716,6 +717,8 @@ SmStatus SmBlendCorner::CalcCornerVertGeom()
 
 SmStatus SmBlendCorner::CalcCornerEdgeGeom()
 {
+  if ( m_eEvent == SM_BCE_END )
+    { return CalcEndEdgeGeom(); }
   if ( IsMitreTurn() )
     {
       // the mitre between the rails' crossing and the side vertex, exact where the class allows;
@@ -1420,25 +1423,29 @@ SmStatus SmBlendCorner::MakeCornerTopology()
     { return MakeBallTopology(); }
   if ( m_eEvent == SM_BCE_JOIN )
     { return MakeJoinTopology(); }
+  if ( m_eEvent == SM_BCE_END )
+    { return ( m_eEnd == SM_BEND_OPEN ) ? MakeEndOpen() : ( m_eEnd == SM_BEND_RUNS_OUT ) ? MakeEndRunningOut() : MakeEndOnEndFace(); }
   return IsSwept() ? MakeSweptTopology() : IsMitreTurn() ? MakeMitreTopology() : MakeTwoBlendTopology();
 }
 
 SmStatus SmBlendCorner::AdjustTopology()
 {
-  if ( IsBall() || m_eEvent == SM_BCE_JOIN )
+  if ( IsBall() || m_eEvent == SM_BCE_JOIN || m_eEvent == SM_BCE_END )
     { return SM_SUCCESS; }
   return IsSwept() ? SM_SUCCESS : IsMitreTurn() ? AdjustMitreTopology() : AdjustTwoBlendTopology();
 }
 
 SmStatus SmBlendCorner::AdjustTangentCorner()
 {
-  return ( IsBall() || m_eEvent == SM_BCE_JOIN || IsSwept() || IsMitreTurn() ) ? SM_SUCCESS : AdjustTwoBlendTangentCorner();
+  return ( IsBall() || m_eEvent == SM_BCE_JOIN || m_eEvent == SM_BCE_END || IsSwept() || IsMitreTurn() ) ? SM_SUCCESS : AdjustTwoBlendTangentCorner();
 }
 
 SmStatus SmBlendCorner::CreateCornerPatch()
 {
   if ( IsBall() )
     { return CreateBallPatch(); }
+  if ( m_eEvent == SM_BCE_END )
+    { return CreateEndPatchOfEnd(); }
   if ( m_eEvent == SM_BCE_JOIN )
     { return SM_SUCCESS; }
   return IsSwept() ? CreateSweptPatch() : IsMitreTurn() ? CreateMitrePatch() : CreateTwoBlendPatch();

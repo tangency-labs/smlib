@@ -7921,7 +7921,7 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"round_at_a_pin_on_a_slope_just_inside", scenario_round_at_a_pin_on_a_slope_just_inside, nullptr},
     {"round_ending_on_a_cylinder", scenario_round_ending_on_a_cylinder, nullptr},
     {"round_ending_where_its_edge_runs_on", scenario_round_ending_where_its_edge_runs_on,
-     "status 0, but no End at the smooth vertex (SmFilletNx1Corner takes the tangent side edge): 2373.945975411, 1.585 below the closed form, and no end face at x = 20"},
+     "status 0, but no End at the smooth vertex (the End on the end face takes the tangent side edge): 2373.945975411, 1.585 below the closed form, and no end face at x = 20"},
     {"round_cutting_a_bridge_refused", scenario_round_cutting_a_bridge_refused, nullptr},
     {"round_of_an_arc_wall_into_its_tip", scenario_round_of_an_arc_wall_into_its_tip, nullptr},
     {"round_over_a_thin_rib_not_a_cut", scenario_round_over_a_thin_rib_not_a_cut, nullptr},
