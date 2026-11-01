@@ -16,6 +16,7 @@
 #include <SmMath.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <utility>
 #include <vector>
@@ -965,13 +966,630 @@ SmBoolean sm_SbLeastSquares(std::vector<double> M, std::vector<double> c, size_t
   return TRUE;
 }
 
+// Bivariate Bernstein polynomials (sm_SbT) on [0, 1]^2: sums, derivatives, halves.
+sm_SbT sm_SbTMake(size_t p, size_t q)
+{
+  sm_SbT s;
+  s.p = p;
+  s.q = q;
+  s.c.assign((p + 1) * (q + 1), 0.0);
+  return s;
+}
+
+// crA + s crB, both raised to the larger degrees
+sm_SbT sm_SbTAxpy(const sm_SbT & crA, double s, const sm_SbT & crB)
+{
+  const size_t p = smos_Max(crA.p, crB.p), q = smos_Max(crA.q, crB.q);
+  sm_SbT sA = (crA.p == p && crA.q == q) ? crA : sm_SbTElevate(crA, p, q);
+  const sm_SbT sB = (crB.p == p && crB.q == q) ? crB : sm_SbTElevate(crB, p, q);
+  for (size_t i=0; i<sA.c.size(); i++) { sA.c[i] += s * sB.c[i]; }
+  return sA;
+}
+
+sm_SbT sm_SbTDu(const sm_SbT & crA)
+{
+  if (crA.p == 0) { return sm_SbTMake(0, crA.q); }
+  sm_SbT s = sm_SbTMake(crA.p - 1, crA.q);
+  for (size_t i=0; i<crA.p; i++)
+    for (size_t j=0; j<=crA.q; j++)
+      { s.c[i * (crA.q + 1) + j] = static_cast<double>(crA.p) * (crA.c[(i + 1) * (crA.q + 1) + j] - crA.c[i * (crA.q + 1) + j]); }
+  return s;
+}
+
+sm_SbT sm_SbTDv(const sm_SbT & crA)
+{
+  if (crA.q == 0) { return sm_SbTMake(crA.p, 0); }
+  sm_SbT s = sm_SbTMake(crA.p, crA.q - 1);
+  for (size_t i=0; i<=crA.p; i++)
+    for (size_t j=0; j<crA.q; j++)
+      { s.c[i * crA.q + j] = static_cast<double>(crA.q) * (crA.c[i * (crA.q + 1) + j + 1] - crA.c[i * (crA.q + 1) + j]); }
+  return s;
+}
+
+// crA's halves at u = 1/2 (iDir 0) or v = 1/2 (iDir 1), by de Casteljau.
+void sm_SbTSplit(const sm_SbT & crA, int iDir, sm_SbT & rLo, sm_SbT & rHi)
+{
+  rLo = crA;
+  rHi = crA;
+  const size_t n = (iDir == 0) ? crA.p : crA.q, lOther = (iDir == 0) ? crA.q : crA.p;
+  std::vector<double> w(n + 1);
+  for (size_t k=0; k<=lOther; k++)
+    {
+      auto idx = [&](size_t i) { return (iDir == 0) ? i * (crA.q + 1) + k : k * (crA.q + 1) + i; };
+      for (size_t i=0; i<=n; i++) { w[i] = crA.c[idx(i)]; }
+      for (size_t r=0; r<=n; r++)
+        {
+          rLo.c[idx(r)] = w[0];
+          rHi.c[idx(n - r)] = w[n - r];
+          for (size_t i=0; i+r<n; i++) { w[i] = 0.5 * (w[i] + w[i + 1]); }
+        }
+    }
+}
+
+// The determinant of a 3 x 3 matrix of polynomials.
+sm_SbT sm_SbTDet3(const sm_SbT * const (&crM)[3][3])
+{
+  sm_SbT s = sm_SbTMake(0, 0);
+  for (int j=0; j<3; j++)
+    {
+      const int j1 = (j + 1) % 3, j2 = (j + 2) % 3;
+      const sm_SbT sMinor = sm_SbTAxpy(sm_SbTMul(*crM[1][j1], *crM[2][j2]), -1.0, sm_SbTMul(*crM[1][j2], *crM[2][j1]));
+      s = sm_SbTAxpy(s, 1.0, sm_SbTMul(*crM[0][j], sMinor));
+    }
+  return s;
+}
+
+// Whether crA >= -dEps on the whole square, certified: 1 (every coefficient of each piece >= -dEps,
+// halving each way up to lDepth times), 0 (a corner of a piece, a value of crA, below -dEps), -1
+// (undecided at that depth).
+int sm_SbTNonneg(const sm_SbT & crA, double dEps, size_t lDepth)
+{
+  const double dCorner[4] = { crA.c[0], crA.c[crA.q], crA.c[crA.p * (crA.q + 1)], crA.c.back() };
+  for (int k=0; k<4; k++)
+    if (dCorner[k] < -dEps) { return 0; }
+  if (*std::min_element(crA.c.begin(), crA.c.end()) >= -dEps)
+    { return 1; }
+  if (lDepth == 0)
+    { return -1; }
+  sm_SbT a, b, a0, a1, b0, b1;
+  sm_SbTSplit(crA, 0, a, b);
+  sm_SbTSplit(a, 1, a0, a1);
+  sm_SbTSplit(b, 1, b0, b1);
+  int iResult = 1;
+  const sm_SbT * pPieces[4] = { &a0, &a1, &b0, &b1 };
+  for (int k=0; k<4; k++)
+    {
+      const int r = sm_SbTNonneg(*pPieces[k], dEps, lDepth - 1);
+      if (r == 0) { return 0; }
+      iResult = smos_Min(iResult, r);
+    }
+  return iResult;
+}
+
+double sm_SbTScale(const sm_SbT & crA)
+{
+  double d = 0.0;
+  for (size_t i=0; i<crA.c.size(); i++) { d = smos_Max(d, smos_Fabs(crA.c[i])); }
+  return d;
+}
+
+// A homogeneous net's (x w, y w, z w, w) curvature determinants: l = det(H, Hu, Hv, Huu),
+// m = det(H, Hu, Hv, Huv), n = det(H, Hu, Hv, Hvv) (each -w^4 (Pu x Pv) . P.. for P = H / w) and
+// o = det(H, Hu, Hv, (e, 0)) (-w^3 (Pu x Pv) . e).
+void sm_SbFundamentals(const sm_SbNet & crN, const SmVector3d & crE, sm_SbT (&rLMNO)[4])
+{
+  sm_SbT h[4], hu[4], hv[4], huu[4], huv[4], hvv[4], one[4];
+  for (int c=0; c<4; c++)
+    {
+      h[c] = sm_SbTMake(crN.p, crN.q);
+      for (size_t i=0; i<crN.P.size(); i++) { h[c].c[i] = crN.P[i].a[c]; }
+      hu[c] = sm_SbTDu(h[c]);
+      hv[c] = sm_SbTDv(h[c]);
+      huu[c] = sm_SbTDu(hu[c]);
+      huv[c] = sm_SbTDv(hu[c]);
+      hvv[c] = sm_SbTDv(hv[c]);
+      one[c] = sm_SbTMake(0, 0);
+      one[c].c[0] = (c == 0) ? crE.x : (c == 1) ? crE.y : (c == 2) ? crE.z : 0.0;
+    }
+  const sm_SbT * pLast[4] = { huu, huv, hvv, one };
+  const sm_SbT * pRows[3] = { h, hu, hv };
+  for (int k=0; k<4; k++)
+    {
+      // along the last row: det = sum_c (-1)^(3 + c) last[c] minor(3, c)
+      sm_SbT s = sm_SbTMake(0, 0);
+      for (int c=0; c<4; c++)
+        {
+          const sm_SbT * pM[3][3];
+          for (int r=0; r<3; r++)
+            {
+              int cc = 0;
+              for (int col=0; col<4; col++)
+                if (col != c) { pM[r][cc++] = &pRows[r][col]; }
+            }
+          const sm_SbT sMinor = sm_SbTDet3(pM);
+          s = sm_SbTAxpy(s, ((3 + c) % 2 == 0) ? 1.0 : -1.0, sm_SbTMul(pLast[k][c], sMinor));
+        }
+      rLMNO[k] = s;
+    }
+}
+
+// A patch whose control points move only along one direction e, linearly in the unknowns: its
+// net is m_sBase + sum_j y_j Z_j (e, 0), Z_j (m_vZ, of the net's degrees) for the unknowns
+// m_vIndex. Its projection along e (and its weights) never moves.
+struct sm_SbAffinePatch
+{
+  sm_SbNet              m_sBase;
+  std::vector<size_t>   m_vIndex;
+  std::vector<sm_SbT>   m_vZ;
+};
+
+sm_SbNet sm_SbAffineNet(const sm_SbAffinePatch & crP, const std::vector<double> & crY, const SmVector3d & crE)
+{
+  sm_SbNet sN = crP.m_sBase;
+  for (size_t k=0; k<crP.m_vIndex.size(); k++)
+    {
+      const double y = crY[crP.m_vIndex[k]];
+      if (y == 0.0) { continue; }
+      for (size_t i=0; i<sN.P.size(); i++)
+        {
+          const double z = y * crP.m_vZ[k].c[i];
+          sN.P[i].a[0] += z * crE.x;
+          sN.P[i].a[1] += z * crE.y;
+          sN.P[i].a[2] += z * crE.z;
+        }
+    }
+  return sN;
+}
+
+// A net's patch as a rational (or polynomial, all weights 1) Bezier surface over [0, 1]^2.
+SmStatus sm_SbSurface(const SmContext & crContext, const sm_SbNet & crN, SmBSplineSurface *& rpSurface)
+{
+  rpSurface = NULL;
+  SmTArray<SmPoint3d> sPts;
+  SmTArray<double> sW;
+  bool bRational = false;
+  for (size_t i=0; i<crN.P.size(); i++)
+    {
+      const sm_SbH & crH = crN.P[i];
+      if (!(crH.a[3] > 0.0))
+        { return SM_ERR; }
+      sPts.Add(SmPoint3d(crH.a[0] / crH.a[3], crH.a[1] / crH.a[3], crH.a[2] / crH.a[3]));
+      sW.Add(crH.a[3]);
+      if (crH.a[3] != 1.0) { bRational = true; }
+    }
+  SmTArray<ULONG> sUM, sVM;
+  SmTArray<double> sUK, sVK;
+  sUM.Add(static_cast<ULONG>(crN.p + 1)); sUM.Add(static_cast<ULONG>(crN.p + 1));
+  sVM.Add(static_cast<ULONG>(crN.q + 1)); sVM.Add(static_cast<ULONG>(crN.q + 1));
+  sUK.Add(0.0); sUK.Add(1.0);
+  sVK.Add(0.0); sVK.Add(1.0);
+  return SmBSplineSurface::CreateCanonical(crContext, static_cast<ULONG>(crN.p), static_cast<ULONG>(crN.q), sPts, SM_SF_UNSPECIFIED, sUM, sVM, sUK, sVK,
+                                           SM_KT_UNSPECIFIED, bRational ? &sW : NULL, NULL, rpSurface);
+}
+
+} // namespace
+
+/*******************************************************************//**
+PURPOSE: The G1 fill of a corner as a graph over the corner's axis.
+
+NOTES: The fill keeps the setback split's layout (SmBlendSetback.h) and its
+    G1 by construction (the rounds' rows, Hahn's connecting map, the faces'
+    columns), but every patch is a graph over the plane square to the corner's
+    axis e (into the material at a convex corner, into the void at a concave
+    one): the interior map is F = xi_1 a_1 + xi_2 a_2 + h(xi) e over the
+    projection of the base points (a_1, a_2, e orthonormal, h a polynomial in
+    xi), and each setback patch's projection along e is fixed by its round's
+    rows, its speed off the round and F's projection (the spring curves fix
+    them, below); only heights along e
+    are free. h is the least thin-plate energy among those meeting the faces'
+    conditions, at the least degree whose conditions can be met. The side a
+    patch's normal faces, o = det(H, Hu, Hv, (e, 0)), depends on the
+    projection only: certified of one sign, or the fill folds and is refused.
+
+    The spring curves (geometry only): on face m, with P and Q its two rails'
+    ends and X where the rails cross, the spring curve is the parabola
+    (P, X, Q), tangent to both rails at their ends (the spring conic of
+    weight 1: polynomial whatever the angle between the rails, and inside the
+    face's flat corner region, which a convex body's face is). Its middle
+    (P + 2 X + Q) / 4 is the base point; the two setback patches' sides on the
+    face are its halves as cubics: the round's speed off its end at P is a
+    third of |X - P| (the halves' second control points), linear across the
+    round from one rail to the other, and the cross field at the base point is
+    (P - Q) / 2, the parabola's tangent there.
+***********************************************************************/
+namespace
+{
+
+const size_t SM_SB_GRAPH_DEPTH = 6;      // halvings to certify o's sign
+
+SmStatus sm_SbGraphG1(const SmContext & crContext, const std::vector<SmBlendSetback::Face> & crFaces,
+                       const std::vector<SmBlendSetback::Round> & crRounds, const std::vector< std::vector< std::vector<sm_SbH> > > & crJets,
+                       const std::vector<size_t> & crQ, const std::vector<ULONG> & crRound, const std::vector<ULONG> & crFace,
+                       const std::vector<SmBoolean> & crRev, double dTol, SmBlendSetback::Fill & rFill)
+{
+  const size_t n = crRound.size();
+  const size_t Nc = 3;                    // the cubic across: rows 0, 1 the round's, 2, 3 F's
+  // each cycle patch's round rows (columns from face m to face m + 1), the rails' ends and
+  // their directions toward the corner
+  std::vector< std::vector<sm_SbH> > sH0(n), sH1(n);
+  std::vector<SmPoint3d> sEnd0(n), sEnd1(n), sMid(n);
+  std::vector<SmVector3d> sDir0(n), sDir1(n);
+  std::vector<double> sSpeed0(n), sSpeed1(n);
+  for (size_t m=0; m<n; m++)
+    {
+      const size_t r = crRound[m], q = crQ[r];
+      const double dSign = crRounds[r].m_bCornerAbove ? 1.0 : -1.0;
+      sH0[m].resize(q + 1);
+      sH1[m].resize(q + 1);
+      for (size_t c=0; c<=q; c++)
+        {
+          const size_t cc = crRev[m] ? q - c : c;
+          sH0[m][c] = crJets[r][0][cc];
+          sH1[m][c] = sm_SbAxpy(sm_SbZero(), dSign, crJets[r][1][cc]);
+        }
+      for (int e=0; e<2; e++)
+        {
+          const sm_SbH & crA = sH0[m][e == 0 ? 0 : q];
+          const sm_SbH & crB = sH1[m][e == 0 ? 0 : q];
+          const SmPoint3d sP(crA.a[0] / crA.a[3], crA.a[1] / crA.a[3], crA.a[2] / crA.a[3]);
+          SmVector3d sT((crB.a[0] - sP.x * crB.a[3]) / crA.a[3], (crB.a[1] - sP.y * crB.a[3]) / crA.a[3], (crB.a[2] - sP.z * crB.a[3]) / crA.a[3]);
+          (e == 0 ? sSpeed0[m] : sSpeed1[m]) = sT.Length();
+          SER(sT.Unitize());
+          (e == 0 ? sEnd0[m] : sEnd1[m]) = sP;
+          (e == 0 ? sDir0[m] : sDir1[m]) = sT;
+        }
+      // the section's middle
+      sm_SbB sB(q + 1);
+      sm_SbH sMh = sm_SbZero();
+      for (size_t c=0; c<=q; c++)
+        { sMh = sm_SbAxpy(sMh, sm_Binomial(static_cast<ULONG>(q), static_cast<ULONG>(c)) / std::pow(2.0, static_cast<double>(q)), sH0[m][c]); }
+      sMid[m] = SmPoint3d(sMh.a[0] / sMh.a[3], sMh.a[1] / sMh.a[3], sMh.a[2] / sMh.a[3]);
+    }
+  // convex (the rounds take material away) or concave (they add it), and the axis e into the
+  // convex side
+  SmVector3d sSum(0.0, 0.0, 0.0);
+  int iConvex = 0;
+  for (size_t m=0; m<n; m++)
+    {
+      const SmBlendSetback::Face & crF = crFaces[crFace[m]];
+      sSum = sSum + crF.m_sNormal;
+      const int iSide = ((sMid[m] - crF.m_sPoint).Dot(crF.m_sNormal) < 0.0) ? 1 : -1;
+      if (iConvex != 0 && iSide != iConvex)
+        { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a convex G1 fill needs rounds all convex or all concave")); }
+      iConvex = iSide;
+    }
+  SmVector3d sE = sSum * (iConvex > 0 ? -1.0 : 1.0);
+  SER(sE.Unitize());
+  SmVector3d sA1(1.0, 0.0, 0.0);
+  if (smos_Fabs(sE.y) < smos_Fabs(sE.x) && smos_Fabs(sE.y) <= smos_Fabs(sE.z)) { sA1 = SmVector3d(0.0, 1.0, 0.0); }
+  else if (smos_Fabs(sE.z) < smos_Fabs(sE.x) && smos_Fabs(sE.z) < smos_Fabs(sE.y)) { sA1 = SmVector3d(0.0, 0.0, 1.0); }
+  sA1 = sA1 - sE * sA1.Dot(sE);
+  SER(sA1.Unitize());
+  const SmVector3d sA2 = sE * sA1;
+  auto inPlane = [&](const SmVector3d & crV) { return SmVector2d(crV.Dot(sA1), crV.Dot(sA2)); };
+
+  // the base points, the domain (their projections), the cross fields and the speeds
+  std::vector<SmPoint2d> sXi(n);
+  std::vector<SmVector2d> sSigma(n);
+  std::vector<double> sToX0(n), sToX1(n);
+  for (size_t m=0; m<n; m++)
+    {
+      const size_t mp = (m + n - 1) % n;
+      const SmPoint3d & crPa = sEnd0[m];   // patch m's rail on face m
+      const SmPoint3d & crPb = sEnd1[mp];  // patch m - 1's rail on face m
+      const SmVector3d & crTa = sDir0[m], & crTb = sDir1[mp];
+      // the rails' crossing: Pa + s Ta = Pb + t Tb, least squares
+      const double a11 = crTa.Dot(crTa), a12 = -crTa.Dot(crTb), a22 = crTb.Dot(crTb);
+      const SmVector3d sD = crPb - crPa;
+      const double b1 = crTa.Dot(sD), b2 = -crTb.Dot(sD);
+      const double dDet = a11 * a22 - a12 * a12;
+      if (!(smos_Fabs(dDet) > 1.0e-12))
+        { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: two rails on a face run parallel (no corner region between them)")); }
+      const double s = (b1 * a22 - a12 * b2) / dDet, t = (a11 * b2 - a12 * b1) / dDet;
+      const SmVector3d sX = (SmVector3d(crPa) + crTa * s + SmVector3d(crPb) + crTb * t) * 0.5;
+      const SmVector3d sMidC = (SmVector3d(crPa) + SmVector3d(crPb)) * 0.5;
+      if (!(s > 0.0) || !(t > 0.0))
+        { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: two rounds' rails on a face cross behind their ends (no corner region between them)")); }
+      // the spring curve on face m: the parabola (Pa, X, Pb), as two cubic halves meeting at
+      // its middle B = (Pa + 2 X + Pb) / 4, its tangent there (Pa - Pb) / 2 (sigma_m), each
+      // half's second control point on its rail a third of the way to X (lambda)
+      const SmVector3d sBase = sMidC + (sX - sMidC) * 0.5;
+      const SmVector2d sXi2 = inPlane(sBase);
+      sXi[m] = SmPoint2d(sXi2.x, sXi2.y);
+      sSigma[m] = inPlane(crPa - crPb) * 0.5;
+      sToX0[m] = s / sSpeed0[m];
+      sToX1[mp] = t / sSpeed1[mp];
+    }
+  SmPoint2d sCentre(0.0, 0.0);
+  double dRho = 0.0;
+  for (size_t m=0; m<n; m++) { sCentre = SmPoint2d(sCentre.x + sXi[m].x / static_cast<double>(n), sCentre.y + sXi[m].y / static_cast<double>(n)); }
+  for (size_t m=0; m<n; m++) { dRho = smos_Max(dRho, SmVector2d(sXi[m] - sCentre).Length()); }
+  if (!(dRho > 0.0))
+    { SER(SM_ERR); }
+
+  // the domain scaled: x = (xi - centre) / rho
+  std::vector<SmPoint2d> sB(n);
+  for (size_t m=0; m<n; m++) { sB[m] = SmPoint2d((sXi[m].x - sCentre.x) / dRho, (sXi[m].y - sCentre.y) / dRho); }
+
+  for (size_t d=Nc; d<=9; d++)
+    {
+      const std::vector< std::pair<int, int> > sMono = sm_SbMonomials(static_cast<int>(d));
+      const size_t M = sMono.size();
+      // the unknowns: h's coefficients, then each setback patch's free heights
+      std::vector<size_t> sQv(n);
+      const size_t lUnknowns = M;
+      for (size_t m=0; m<n; m++) { sQv[m] = smos_Max(crQ[crRound[m]] + 1, d); }
+      std::vector<sm_SbAffinePatch> sPatches(2 * n);
+      for (size_t m=0; m<n; m++)
+        {
+          const size_t qv = sQv[m];
+          // the cubic across: rows 0, 1 the round's, at the speed lambda(v) off it (linear across,
+          // from each rail's distance to its rails' crossing: the spring curves' first legs), 2, 3 F's
+          std::vector< std::vector<sm_SbH> > sRows(Nc + 1, std::vector<sm_SbH>(qv + 1, sm_SbZero()));
+          const sm_SbB sLam = { sToX0[m] / static_cast<double>(Nc), sToX1[m] / static_cast<double>(Nc) };
+          for (int c=0; c<4; c++)
+            {
+              sm_SbB s0(sH0[m].size()), s1(sH0[m].size());
+              for (size_t j=0; j<s0.size(); j++) { s0[j] = sH0[m][j].a[c]; s1[j] = sH1[m][j].a[c]; }
+              s1 = sm_SbMul(sLam, s1);
+              s0 = sm_SbElevate(s0, qv);
+              s1 = sm_SbElevate(s1, qv);
+              for (size_t j=0; j<=qv; j++) { sRows[0][j].a[c] = s0[j]; sRows[1][j].a[c] = s0[j] + s1[j]; }
+            }
+          // F's projection along edge m and its derivative along the field d (linear in v)
+          const SmPoint2d & crX0 = sXi[m];
+          const SmPoint2d & crX1 = sXi[(m + 1) % n];
+          const SmVector2d sD0 = sSigma[m], sD1 = sSigma[(m + 1) % n] * -1.0;
+          for (int c=0; c<3; c++)
+            {
+              const double dA1 = (c == 0) ? sA1.x : (c == 1) ? sA1.y : sA1.z;
+              const double dA2 = (c == 0) ? sA2.x : (c == 1) ? sA2.y : sA2.z;
+              const sm_SbB sP = { crX0.x * dA1 + crX0.y * dA2, crX1.x * dA1 + crX1.y * dA2 };
+              const sm_SbB sDP = { sD0.x * dA1 + sD0.y * dA2, sD1.x * dA1 + sD1.y * dA2 };
+              const sm_SbB s3 = sm_SbElevate(sP, qv);
+              const sm_SbB sDe = sm_SbElevate(sDP, qv);
+              for (size_t j=0; j<=qv; j++)
+                {
+                  sRows[3][j].a[c] = s3[j];
+                  sRows[2][j].a[c] = s3[j] + sDe[j] / static_cast<double>(Nc);
+                }
+            }
+          for (size_t j=0; j<=qv; j++) { sRows[2][j].a[3] = 1.0; sRows[3][j].a[3] = 1.0; }
+          // h's monomials along the edge (scaled coordinates) and along the field (d / rho)
+          const sm_SbB sX = { sB[m].x, sB[(m + 1) % n].x }, sY = { sB[m].y, sB[(m + 1) % n].y };
+          const sm_SbB sDX = { sD0.x / dRho, sD1.x / dRho }, sDY = { sD0.y / dRho, sD1.y / dRho };
+          std::vector< std::vector<double> > sZ2(M), sZ3(M);
+          for (size_t j=0; j<M; j++)
+            {
+              const int a = sMono[j].first, b = sMono[j].second;
+              sm_SbB s1(d + 1, 0.0);
+              if (a >= 1)
+                {
+                  const sm_SbB t = sm_SbElevate(sm_SbMul(sm_SbAlong(a - 1, b, sX, sY, d - 1), sDX), d);
+                  for (size_t i=0; i<=d; i++) { s1[i] += a * t[i]; }
+                }
+              if (b >= 1)
+                {
+                  const sm_SbB t = sm_SbElevate(sm_SbMul(sm_SbAlong(a, b - 1, sX, sY, d - 1), sDY), d);
+                  for (size_t i=0; i<=d; i++) { s1[i] += b * t[i]; }
+                }
+              const sm_SbB v0 = sm_SbElevate(sm_SbAlong(a, b, sX, sY, d), qv), v1 = sm_SbElevate(s1, qv);
+              sZ3[j] = v0;
+              sZ2[j].resize(qv + 1);
+              for (size_t i=0; i<=qv; i++) { sZ2[j][i] = v0[i] + v1[i] / static_cast<double>(Nc); }
+            }
+          // the net
+          sm_SbAffinePatch & rP = sPatches[m];
+          rP.m_sBase.p = Nc;
+          rP.m_sBase.q = qv;
+          rP.m_sBase.P.assign((Nc + 1) * (qv + 1), sm_SbZero());
+          for (size_t j=0; j<=qv; j++)
+            for (int c=0; c<4; c++)
+              {
+                for (size_t i=0; i<=Nc; i++) { rP.m_sBase.P[i * (qv + 1) + j].a[c] = sRows[i][j].a[c]; }
+              }
+          for (size_t jm=0; jm<M; jm++)
+            {
+              sm_SbT sZ = sm_SbTMake(Nc, qv);
+              for (size_t j=0; j<=qv; j++)
+                {
+                  sZ.c[2 * (qv + 1) + j] = sZ2[jm][j];
+                  sZ.c[3 * (qv + 1) + j] = sZ3[jm][j];
+                }
+              rP.m_vIndex.push_back(jm);
+              rP.m_vZ.push_back(sZ);
+            }
+        }
+      for (size_t q=0; q<n; q++)
+        {
+          // interior part q: corners (0, 0) the centre, (0, 1) the middle of edge q - 1, (1, 0)
+          // the middle of edge q, (1, 1) B_q
+          const SmPoint2d sC(0.0, 0.0);
+          const SmPoint2d sMq((sB[q].x + sB[(q + 1) % n].x) * 0.5, (sB[q].y + sB[(q + 1) % n].y) * 0.5);
+          const SmPoint2d sMp((sB[q].x + sB[(q + n - 1) % n].x) * 0.5, (sB[q].y + sB[(q + n - 1) % n].y) * 0.5);
+          sm_SbT sX, sY;
+          sX.p = sX.q = sY.p = sY.q = 1;
+          sX.c = { sC.x, sMp.x, sMq.x, sB[q].x };
+          sY.c = { sC.y, sMp.y, sMq.y, sB[q].y };
+          sm_SbAffinePatch & rP = sPatches[n + q];
+          rP.m_sBase.p = rP.m_sBase.q = d;
+          rP.m_sBase.P.assign((d + 1) * (d + 1), sm_SbZero());
+          const sm_SbT sXd = sm_SbTElevate(sX, d, d), sYd = sm_SbTElevate(sY, d, d);
+          for (size_t i=0; i<(d + 1) * (d + 1); i++)
+            {
+              const double xi1 = sCentre.x + dRho * sXd.c[i], xi2 = sCentre.y + dRho * sYd.c[i];
+              rP.m_sBase.P[i].a[0] = xi1 * sA1.x + xi2 * sA2.x;
+              rP.m_sBase.P[i].a[1] = xi1 * sA1.y + xi2 * sA2.y;
+              rP.m_sBase.P[i].a[2] = xi1 * sA1.z + xi2 * sA2.z;
+              rP.m_sBase.P[i].a[3] = 1.0;
+            }
+          for (size_t j=0; j<M; j++)
+            {
+              rP.m_vIndex.push_back(j);
+              rP.m_vZ.push_back(sm_SbOver(sMono[j].first, sMono[j].second, sX, sY, d));
+            }
+        }
+      // the equalities: each setback patch's rows 2, 3, its first two columns on face m's
+      // plane and its last two on face m + 1's
+      std::vector<double> sAeq, sBeq;
+      for (size_t m=0; m<n; m++)
+        {
+          const sm_SbAffinePatch & crP = sPatches[m];
+          const size_t qv = crP.m_sBase.q;
+          for (size_t i=2; i<=Nc; i++)
+            for (size_t c=0; c<2; c++)
+              for (int e=0; e<2; e++)
+                {
+                  const size_t col = (e == 0) ? c : qv - c, idx = i * (qv + 1) + col;
+                  const SmBlendSetback::Face & crF = crFaces[crFace[(m + static_cast<size_t>(e)) % n]];
+                  const sm_SbH & crH = crP.m_sBase.P[idx];
+                  const SmVector3d & crN = crF.m_sNormal;
+                  std::vector<double> sRow(lUnknowns, 0.0);
+                  for (size_t k=0; k<crP.m_vIndex.size(); k++) { sRow[crP.m_vIndex[k]] += crP.m_vZ[k].c[idx] * crN.Dot(sE); }
+                  sAeq.insert(sAeq.end(), sRow.begin(), sRow.end());
+                  sBeq.push_back(-(crN.x * crH.a[0] + crN.y * crH.a[1] + crN.z * crH.a[2] - crN.Dot(SmVector3d(crF.m_sPoint)) * crH.a[3]));
+                }
+        }
+      std::vector<double> sYp;
+      std::vector< std::vector<double> > sZn;
+      double dSize = 0.0;
+      for (size_t i=0; i<sBeq.size(); i++) { dSize = smos_Max(dSize, smos_Fabs(sBeq[i])); }
+      if (!sm_SbAffineSolutions(sAeq, sBeq, sBeq.size(), lUnknowns, 1.0e-9 * (1.0 + dSize), sYp, sZn) || sZn.empty())
+        { continue; }
+      const size_t lFree = sZn.size();
+
+
+      // the energy, affine in y: its rows at y = 0 (sE0) and their change per unknown (sAE,
+      // lE x lUnknowns)
+      auto energyRows = [&](const sm_SbNet & crN, std::vector<double> & rRows)
+        {
+          rRows.clear();
+          for (int g1=0; g1<8; g1++)
+            for (int g2=0; g2<8; g2++)
+              {
+                double R[3][3];
+                sm_SbSecond(crN, SM_SB_GX[g1], SM_SB_GX[g2], R);
+                const double w = smos_Sqrt(SM_SB_GW[g1] * SM_SB_GW[g2]);
+                for (int c=0; c<3; c++)
+                  {
+                    rRows.push_back(w * R[0][c]);
+                    rRows.push_back(w * smos_Sqrt(2.0) * R[1][c]);
+                    rRows.push_back(w * R[2][c]);
+                  }
+              }
+        };
+      std::vector<double> sE0;
+      std::vector<size_t> sEStart;
+      std::vector< std::vector<double> > sPatchE0(2 * n);
+      for (size_t p=0; p<2*n; p++)
+        {
+          energyRows(sPatches[p].m_sBase, sPatchE0[p]);
+          sEStart.push_back(sE0.size());
+          sE0.insert(sE0.end(), sPatchE0[p].begin(), sPatchE0[p].end());
+        }
+      const size_t lE = sE0.size();
+      std::vector<double> sAE(lE * lUnknowns, 0.0);
+      {
+        std::vector<double> sUnit(lUnknowns, 0.0), sRows;
+        for (size_t p=0; p<2*n; p++)
+          for (size_t t=0; t<sPatches[p].m_vIndex.size(); t++)
+            {
+              const size_t u = sPatches[p].m_vIndex[t];
+              sUnit[u] = 1.0;
+              energyRows(sm_SbAffineNet(sPatches[p], sUnit, sE), sRows);
+              sUnit[u] = 0.0;
+              for (size_t i=0; i<sRows.size(); i++) { sAE[(sEStart[p] + i) * lUnknowns + u] += sRows[i] - sPatchE0[p][i]; }
+            }
+      }
+      // over y = yp + Zn t: the least |AE (yp + Zn t) + E0|
+      std::vector<double> sBm(lE * lFree, 0.0), sCv(lE, 0.0);
+      for (size_t i=0; i<lE; i++)
+        {
+          double s = sE0[i];
+          for (size_t u=0; u<lUnknowns; u++) { s += sAE[i * lUnknowns + u] * sYp[u]; }
+          sCv[i] = -s;
+          for (size_t f=0; f<lFree; f++)
+            {
+              double t = 0.0;
+              for (size_t u=0; u<lUnknowns; u++) { t += sAE[i * lUnknowns + u] * sZn[f][u]; }
+              sBm[i * lFree + f] = t;
+            }
+        }
+      std::vector<double> sT;
+      if (!sm_SbLeastSquares(sBm, sCv, lE, lFree, 1.0e-12, sT))
+        { continue; }
+      std::vector<double> sY(sYp);
+      for (size_t f=0; f<lFree; f++)
+        for (size_t u=0; u<lUnknowns; u++) { sY[u] += sZn[f][u] * sT[f]; }
+      std::vector<sm_SbNet> sNets(2 * n);
+      for (size_t p=0; p<2*n; p++) { sNets[p] = sm_SbAffineNet(sPatches[p], sY, sE); }
+      // the faces' points exactly on their planes (an axis plane's coordinate exactly its own)
+      for (size_t m=0; m<n; m++)
+        {
+          sm_SbNet & rN = sNets[m];
+          const size_t qv = rN.q;
+          for (size_t i=2; i<=Nc; i++)
+            for (size_t c=0; c<2; c++)
+              for (int e=0; e<2; e++)
+                {
+                  sm_SbH & rH = rN.P[i * (qv + 1) + ((e == 0) ? c : qv - c)];
+                  const SmBlendSetback::Face & crF = crFaces[crFace[(m + static_cast<size_t>(e)) % n]];
+                  const SmVector3d & crN = crF.m_sNormal;
+                  const double dOff = crN.x * rH.a[0] + crN.y * rH.a[1] + crN.z * rH.a[2] - crN.Dot(SmVector3d(crF.m_sPoint)) * rH.a[3];
+                  if (smos_Fabs(dOff) > dTol * rH.a[3])
+                    { SER(SM_ERR); }
+                  rH.a[0] -= dOff * crN.x;
+                  rH.a[1] -= dOff * crN.y;
+                  rH.a[2] -= dOff * crN.z;
+                  for (int x=0; x<3; x++)
+                    {
+                      const double dNx = (x == 0) ? crN.x : (x == 1) ? crN.y : crN.z;
+                      const double dPx = (x == 0) ? crF.m_sPoint.x : (x == 1) ? crF.m_sPoint.y : crF.m_sPoint.z;
+                      if (smos_Fabs(dNx) == 1.0) { rH.a[x] = dPx * rH.a[3]; }
+                    }
+                }
+        }
+      // no fold: each patch's normal on one side of e, certified
+      for (size_t p=0; p<2*n; p++)
+        {
+          sm_SbT sF[4];
+          sm_SbFundamentals(sNets[p], sE, sF);
+          sm_SbT sNegO = sF[3];
+          for (size_t i=0; i<sNegO.c.size(); i++) { sNegO.c[i] = -sNegO.c[i]; }
+          const double dO = 1.0e-12 * sm_SbTScale(sF[3]);
+          if (sm_SbTNonneg(sF[3], dO, SM_SB_GRAPH_DEPTH) != 1 && sm_SbTNonneg(sNegO, dO, SM_SB_GRAPH_DEPTH) != 1)
+            { SM_SB_FAIL(rFill.m_pReason, SM_ERR, _T("SmBlendSetback: the fill folds (a patch's normal turns across the corner's axis)")); }
+        }
+      std::vector<SmBSplineSurface *> sOut;
+      for (size_t p=0; p<2*n; p++)
+        {
+          SmBSplineSurface * pSurface = NULL;
+          const SmStatus eStatus = sm_SbSurface(crContext, sNets[p], pSurface);
+          if (eStatus != SM_SUCCESS || pSurface == NULL)
+            {
+              for (size_t o=0; o<sOut.size(); o++) { delete sOut[o]; }
+              SER(eStatus != SM_SUCCESS ? eStatus : SM_ERR);
+            }
+          sOut.push_back(pSurface);
+        }
+      rFill.m_vPatches = sOut;
+      rFill.m_vRound = crRound;
+      rFill.m_vFace = crFace;
+      rFill.m_vReversed = crRev;
+      rFill.m_lDegree = static_cast<ULONG>(d);
+      return SM_SUCCESS;
+    }
+  SM_SB_FAIL(rFill.m_pReason, SM_ERR, _T("SmBlendSetback: no interior map up to degree 9 meets the setback patches' conditions"));
+}
+
 } // namespace
 
 /*******************************************************************//**
 PURPOSE: The hole's fill by the setback split (SmBlendSetback.h).
 
 NOTES: The cycle: round m between faces m (its setback patch's v = 0) and
-    m + 1. The domain: the regular n-gon with vertices B_m = (cos 2 pi m / n,
+    m + 1. A G1 fill is a graph over the corner's axis (sm_SbGraphG1); the
+    rest is the G2 fill's. Its domain: the regular n-gon with vertices B_m = (cos 2 pi m / n,
     sin 2 pi m / n), B_m the base point of face m; its edge m from B_m to
     B_m+1 is the inner curve of setback patch m; at B_m the direction field
     of edge m starts as sigma_m = t_m + t_m-1 (t the edges' unit directions)
@@ -1064,6 +1682,8 @@ SmStatus SmBlendSetback::FillHole(const SmContext & crContext, const std::vector
       }
   }
 
+  if (k == 1)
+    { return sm_SbGraphG1(crContext, crFaces, crRounds, sJets, sQ, sRound, sFace, sRev, dTol, rFill); }
   // the domain
   std::vector<SmPoint2d> sB(n);
   for (size_t m=0; m<n; m++)

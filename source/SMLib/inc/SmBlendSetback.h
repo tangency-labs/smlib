@@ -41,6 +41,13 @@
 * the least degree whose conditions can be met: the conditions are met
 * exactly, the energy only chooses among the maps that meet them.
 *
+* A G1 fill (order 1) is the same layout as a graph over the plane square
+* to the corner's axis: its interior map's projection is the base points'
+* (each the middle of its face's spring curve, the parabola tangent to the
+* two rails at their ends), the setback patches' projections are fixed by
+* the rounds and the spring curves, and only heights along the axis are
+* free (SmBlendSetback.cpp, sm_SbGraphG1).
+*
 * Faces are planes (a curved face is not filled here yet). Every patch lies
 * in the convex hull of its control points (all weights positive), so
 * Containment's bound is certified.
