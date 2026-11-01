@@ -6633,6 +6633,57 @@ void scenario_hole_short_of_band()
     scenario_feature_in_band(false, false, 1.9, featured_rounded(false, 1.9), 1e-9, 9, false);
 }
 
+// SolidCraft #851's plate with its concave R21 corner wall: the plate x 0..41.1667, y -21..0 and
+// the corner x 41.1667..62.1667 less the cylinder r 21 about (62.1667, -21), 10 high, V0 = 10
+// (62.1667 x 21 - pi 21^2 / 4) = 9591.394099. The wall runs into the back face y = 0 tangent at
+// the tip (62.1667, 0, 10), a knife edge. A blend of the wall's top edge takes all of the part
+// between its rails near the tip, where the part is thinner than the band, and ends there: the
+// part is not cut in two, the tip is blended away (SolidCraft rig fillets/851-*-arc-*).
+smlib_brep *arc_wall_plate()
+{
+    const double w = 41.0 + 1.0 / 6.0;
+    smlib_brep *corner = combined(box(w, -21, 0, 21, 21, 10), cylinder(w + 21.0, -21, 0, 21, 10), SMLIB_BOOLEAN_SUBTRACT);
+    return combined(box(0, -21, 0, w, 21, 10), corner, SMLIB_BOOLEAN_UNION);
+}
+
+// Rounded R9.5 just under the wall's height: the section in (rho, z) about the wall's axis, the
+// corner outside the circle about (21 + s, 10 - s), s = 9.5, swept round from the front face to
+// the back face: at radius rho the part spans the angle asin(21 / rho), so the round takes
+// Int_21^30.5 rho asin(21 / rho) h(rho) drho, h(rho) = s - sqrt(s^2 - (rho - 21 - s)^2):
+// 525.584488. V = 9065.809611 (the rig's analytic volume).
+void scenario_round_of_an_arc_wall_into_its_tip()
+{
+    scenario_blend(arc_wall_plate(), SMLIB_BLEND_ROUND, {47.31742426174917, -6.150757595082503, 10}, {9.5}, 9065.80961148609, 1e-6, -1);
+}
+
+// Chamfered 9.5: the triangle (rho - 21) + (10 - z) <= 9.5 swept the same way, V = 8410.449939.
+void scenario_chamfer_of_an_arc_wall_into_its_tip()
+{
+    scenario_blend(arc_wall_plate(), SMLIB_BLEND_CHAMFER, {47.31742426174917, -6.150757595082503, 10}, {9.5}, 8410.449939154401, 1e-6, -1);
+}
+
+// The wall's top edge and the plate's top front edge chamfered 2 together: V = 9453.635955.
+void scenario_chamfers_of_an_arc_wall_and_the_top_front()
+{
+    scenario_blend(arc_wall_plate(), SMLIB_BLEND_CHAMFER, {47.31742426174917, -6.150757595082503, 10, 20, -21, 10}, {2, 2}, 9453.6359553261, 1e-6, -1);
+}
+
+// The top rim of a cylinder r10 x 20 chamfered 12 across the top and 3 down the wall (SolidCraft
+// rig fillets/2893-chamfer-two-distances-past-the-top-refused): 12 across a top of radius 10 runs
+// past the axis, so no chamfer between the top and the wall has those sizes: refused,
+// SMLIB_ERR_NO_ROOM, with a reason.
+void scenario_chamfer_two_distances_past_the_top_refused()
+{
+    smlib_brep *can = cylinder(0, 0, 0, 10, 20), *r = nullptr;
+    const double rim[3] = {0, 10, 20}, up[3] = {0, 0, 1};
+    const int32_t s = smlib_chamfer_sides(can, rim, 1, 0.1, 12.0, 3.0, 0, up, &r, nullptr);
+    const std::string why = last_blend_reason();
+    std::printf("  status %d: %s\n", static_cast<int>(s), why.c_str());
+    CHECK(s == SMLIB_ERR_NO_ROOM && r == nullptr && !why.empty());
+    smlib_brep_free(r);
+    smlib_brep_free(can);
+}
+
 // The scenario cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--scenarios-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SCENARIO_CASES[] = {
@@ -6640,12 +6691,16 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"boss_in_band_taken", scenario_boss_in_band_taken, nullptr},
     {"boss_short_of_band", scenario_boss_short_of_band, nullptr},
     {"chamfer_cutting_a_bridge_refused", scenario_chamfer_cutting_a_bridge_refused, nullptr},
+    {"chamfer_of_an_arc_wall_into_its_tip", scenario_chamfer_of_an_arc_wall_into_its_tip, nullptr},
     {"chamfer_past_the_rim_over_an_opening", scenario_chamfer_past_the_rim_over_an_opening, nullptr},
+    {"chamfer_two_distances_past_the_top_refused", scenario_chamfer_two_distances_past_the_top_refused, nullptr},
+    {"chamfers_of_an_arc_wall_and_the_top_front", scenario_chamfers_of_an_arc_wall_and_the_top_front, nullptr},
     {"chord_on_a_60_degree_edge", scenario_chord_on_a_60_degree_edge, nullptr},
     {"hole_in_band_kept", scenario_hole_in_band_kept, nullptr},
     {"hole_in_band_taken", scenario_hole_in_band_taken, nullptr},
     {"hole_short_of_band", scenario_hole_short_of_band, nullptr},
     {"round_cutting_a_bridge_refused", scenario_round_cutting_a_bridge_refused, nullptr},
+    {"round_of_an_arc_wall_into_its_tip", scenario_round_of_an_arc_wall_into_its_tip, nullptr},
     {"round_past_the_rim_over_an_opening", scenario_round_past_the_rim_over_an_opening, nullptr},
     {"square_bar_rounded_to_a_rod", scenario_square_bar_rounded_to_a_rod,
      "status 0, but one of the four rounds is left out: 268.4956 (320 less three rounds of 20 A(2)) and 7 faces, not the rod's 80 pi and 6"},
