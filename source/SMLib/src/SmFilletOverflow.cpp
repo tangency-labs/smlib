@@ -1558,5 +1558,40 @@ SmStatus SmFilletExecutive::TrimAtCreases()
       GetFilletErrorInfo()->NoteError( SM_FILERR_BAD_MERGE, _T("Fillet Error: a blend past its faces does not sew into the body along its creases and rails") );
       return SM_ERR;
     }
+
+  // Faces sewn on one surface are one face, as a boolean's post-process leaves them (only the
+  // edges it made are looked at, SmMerge::BooleanPostProcess): a corner's end face on the end
+  // wall's plane carried on over a rim is that wall, past the edges the blend sewed in. Every
+  // other edge and vertex of the body stays.
+  {
+    std::set<SmEdge*>   sSewnEdges;
+    std::set<SmVertex*> sSewnVertices;
+    for (ULONG f=0; f<sCopies.GetSize(); f++)
+      {
+        SmTArray<SmEdge*> sEdges;
+        sCopies[f]->GetEdges( sEdges );
+        for (ULONG e=0; e<sEdges.GetSize(); e++)
+          {
+            sSewnEdges.insert( sEdges[e] );
+            sSewnVertices.insert( sEdges[e]->GetStartVertex() );
+            sSewnVertices.insert( sEdges[e]->GetEndVertex() );
+          }
+      }
+    SmTArray<SmEdge*>   sAllEdges, sKeepEdges;
+    SmTArray<SmVertex*> sAllVertices, sKeepVertices;
+    m_pTargetBrep->GetEdges( sAllEdges );
+    m_pTargetBrep->GetVertices( sAllVertices );
+    for (ULONG e=0; e<sAllEdges.GetSize(); e++)
+      {
+        if ( !sSewnEdges.count( sAllEdges[e] ))
+          { sKeepEdges.Add( sAllEdges[e] ); }
+      }
+    for (ULONG v=0; v<sAllVertices.GetSize(); v++)
+      {
+        if ( !sSewnVertices.count( sAllVertices[v] ))
+          { sKeepVertices.Add( sAllVertices[v] ); }
+      }
+    SER( m_pTargetBrep->RemoveTopologicalEdgesAndVertices( &sKeepEdges, &sKeepVertices ));
+  }
   return SM_SUCCESS;
 } // end SmFilletExecutive::TrimAtCreases
