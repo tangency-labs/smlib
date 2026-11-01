@@ -9057,6 +9057,138 @@ void setback_box_corner_unequal_g1()
     setback_box_corner({2, 3, 4}, 1, 0.0, 1);
 }
 
+// box_corner_round's round over the same stretch of its edge in another parameter along it:
+// quadratic along, its middle row of sections at s + mid len and that row's weights times wmid,
+// so its sections move along the edge as the rational quadratic (2 mid wmid t (1 - t) + t^2) /
+// ((1 - t)^2 + 2 wmid t (1 - t) + t^2) of the parameter's share t: the same surface, its rails
+// and sections the same curves, at another speed along (not constant unless mid = 1/2, wmid = 1).
+SmBSplineSurface *box_corner_round_reparametrized(int a, double r, double s, double len, int order, double mid, double wmid)
+{
+    SmBSplineSurface *lin = box_corner_round(a, r, s, len, order);
+    if (lin == nullptr)
+    {
+        return nullptr;
+    }
+    ULONG ud, vd;
+    SmTArray<SmPoint3d> pts;
+    SmBSplineSurfaceForm form;
+    SmTArray<ULONG> um, vm;
+    SmTArray<double> uk, vk, w;
+    SmKnotType kt;
+    CHECK(lin->GetCanonical(ud, vd, pts, form, um, vm, uk, vk, kt, w) == SM_SUCCESS && ud == 1);
+    const ULONG nv = vd + 1;
+    SmTArray<SmPoint3d> pts2;
+    SmTArray<double> w2;
+    const double share[3] = {0.0, mid, 1.0}, rho[3] = {1.0, wmid, 1.0};
+    for (int i = 0; i < 3; i++)
+    {
+        for (ULONG j = 0; j < nv; j++)
+        {
+            SmPoint3d q = pts[j]; // the first row, at s
+            double c[3] = {q.x, q.y, q.z};
+            c[a] = s + share[i] * len;
+            pts2.Add(SmPoint3d(c[0], c[1], c[2]));
+            w2.Add(rho[i] * (w.GetSize() > 0 ? w[j] : 1.0));
+        }
+    }
+    delete lin;
+    SmTArray<ULONG> um2;
+    um2.Add(3);
+    um2.Add(3);
+    SmBSplineSurface *srf = nullptr;
+    CHECK(SmBSplineSurface::CreateCanonical(*SmApiGetOrCreateContext(), 2, vd, pts2, SM_SF_UNSPECIFIED, um2, vm, uk, vk, SM_KT_UNSPECIFIED, &w2,
+                                            nullptr, srf) == SM_SUCCESS &&
+          srf != nullptr);
+    return srf;
+}
+
+// The fill is the rounds' geometry's: the box corner's rounds r 2, 3, 4 (box_corner_round,
+// linear along their edges) and the same rounds in other parameters along them
+// (box_corner_round_reparametrized: polynomial and rational, at other speeds and accelerations
+// at their ends), and for G2 also the circular rounds eased into the order-2 sections over 2
+// before their ends (SmBlendSetback::EaseSurface; the rounds there the order-2 sections, flat to
+// second order), give the same fill, patch for patch, at every (u, v) to 1e-12 of its size.
+void setback_fill_is_the_geometry_s()
+{
+    SmContext &ctx = *SmApiGetOrCreateContext();
+    const std::array<double, 3> radii = {2, 3, 4};
+    std::vector<double> setbacks;
+    CHECK(SmBlendSetback::Distances(box_corner_faces(), box_corner_edges(radii), setbacks) == SM_SUCCESS && setbacks.size() == 3);
+    if (setbacks.size() != 3)
+    {
+        return;
+    }
+    for (ULONG order = 1; order <= 2; order++)
+    {
+        const int round_order = static_cast<int>(order);
+        // 0: linear; 1: quadratic, polynomial; 2: quadratic, rational; 3 (G2): eased
+        double worst[4] = {0, 0, 0, 0};
+        std::vector<std::vector<SmBSplineSurface *>> sets(4);
+        for (int a = 0; a < 3; a++)
+        {
+            const double r = radii[static_cast<size_t>(a)], sb = setbacks[static_cast<size_t>(a)];
+            sets[0].push_back(box_corner_round(a, r, sb, 10.0, round_order));
+            sets[1].push_back(box_corner_round_reparametrized(a, r, sb, 10.0, round_order, 0.3, 1.0));
+            sets[2].push_back(box_corner_round_reparametrized(a, r, sb, 10.0, round_order, 0.65, 2.5));
+            SmBSplineSurface *eased = nullptr;
+            if (order == 2)
+            {
+                SmBSplineSurface *circle = box_corner_round(a, r, sb, 10.0, 1);
+                const std::vector<SmEaseRamp> ramp = {{sb + 2.0, sb}};
+                CHECK(circle != nullptr && SmBlendSetback::EaseSurface(ctx, *circle, *sets[0].back(), SM_SP_U, ramp, eased) == SM_SUCCESS && eased != nullptr);
+                delete circle;
+            }
+            sets[3].push_back(eased);
+        }
+        SmBlendSetback::Fill fills[4];
+        for (int k = 0; k < 4; k++)
+        {
+            if (k == 3 && order == 1)
+            {
+                continue;
+            }
+            std::vector<SmBlendSetback::Round> in;
+            for (SmBSplineSurface *q : sets[static_cast<size_t>(k)])
+            {
+                CHECK(q != nullptr);
+                if (q != nullptr)
+                {
+                    in.push_back({q, SM_SP_U, q->GetNaturalUVDomain().GetMin().x, FALSE});
+                }
+            }
+            CHECK(in.size() == 3 && SmBlendSetback::FillHole(ctx, box_corner_faces(), in, order, 1e-9, fills[k]) == SM_SUCCESS &&
+                  fills[k].m_vPatches.size() == 6);
+            if (k == 0 || fills[k].m_vPatches.size() != 6 || fills[0].m_vPatches.size() != 6)
+            {
+                continue;
+            }
+            for (size_t m = 0; m < 6; m++)
+            {
+                for (int i = 0; i <= 8; i++)
+                {
+                    for (int j = 0; j <= 8; j++)
+                    {
+                        SmPoint3d p, q;
+                        CHECK(fills[0].m_vPatches[m]->EvaluatePoint(SmPoint2d(i / 8.0, j / 8.0), p) == SM_SUCCESS &&
+                              fills[k].m_vPatches[m]->EvaluatePoint(SmPoint2d(i / 8.0, j / 8.0), q) == SM_SUCCESS);
+                        worst[k] = std::max(worst[k], p.DistanceBetween(q));
+                    }
+                }
+            }
+        }
+        std::printf("  G%lu: the fill of the rounds in other parameters off the linear ones' by %.3g (polynomial), %.3g (rational), %.3g (eased)\n",
+                    static_cast<unsigned long>(order), worst[1], worst[2], worst[3]);
+        CHECK(worst[1] <= 6e-12 && worst[2] <= 6e-12 && worst[3] <= 6e-12);
+        for (auto &set : sets)
+        {
+            for (SmBSplineSurface *q : set)
+            {
+                delete q;
+            }
+        }
+    }
+}
+
 // A G2 fill of circular rounds not eased first is refused: they meet their faces only to G1.
 void setback_g2_fill_of_uneased_rounds_refused()
 {
@@ -9109,8 +9241,8 @@ smlib_brep *setback_corner_body(int32_t kind, const std::array<double, 3> &radii
 // edge; every seam of the patches (with the blends, the faces and each other) of order `order`
 // (normals within 1e-9 rad, and for G2 the cross curvature continuous to 1e-6 / mm), and each patch face
 // the fill of the blends' exact sections (box_corner_round / box_corner_gn_round, rebuilt
-// here by FillHole; round_order 1 circles, 3 SmGnSectionFSG's order-2 sections, 0 eased rounds,
-// not compared) to 1e-9. `setback` > 0: the setback asked for in place
+// here by FillHole; round_order 1 circles, 2 the order-2 sections at thumbweight 0, 3
+// SmGnSectionFSG's, 0 eased rounds, whose sections at the setback are the order-2 ones) to 1e-9. `setback` > 0: the setback asked for in place
 // of the rule's.
 void setback_corner_built(smlib_brep *r, const std::array<double, 3> &radii, int round_order, ULONG order, double setback = 0.0)
 {
@@ -9319,10 +9451,7 @@ void setback_corner_built(smlib_brep *r, const std::array<double, 3> &radii, int
         }
     }
     std::printf("  the corner's patches off the fill of the exact rounds by up to %.3g\n", worst_off);
-    // (round_order 0: eased rounds, whose sections at the setback are the order-2 ones exactly
-    // but whose rail parameter there is the executive's: the patches' rows across take the
-    // rounds' derivatives along it, so they are not compared)
-    CHECK(round_order == 0 || worst_off <= 1e-9);
+    CHECK(worst_off <= 1e-9);
     // the patches within the box (tight boxes of the faces)
     double past = 0.0;
     for (SmFace *f : patch_faces)
@@ -9469,9 +9598,12 @@ const TangentEndCase SETBACK_CASES[] = {
     {"box_corner_g2_gn_section_rounds", setback_box_corner_g2_gn_section_rounds, nullptr},
     {"box_corner_unequal_g1", setback_box_corner_unequal_g1, nullptr},
     {"g2_fill_of_uneased_rounds_refused", setback_g2_fill_of_uneased_rounds_refused, nullptr},
+    {"fill_is_the_geometry_s", setback_fill_is_the_geometry_s,
+     "the fill takes the rounds' homogeneous derivatives along their own parameter: rounds in other parameters along give other fills, G1 0.0722 off (rational), G2 0.0619 (polynomial), 0.102 (rational)"},
     {"corner_rounds_2_3_4", setback_corner_rounds_2_3_4, nullptr},
     {"corner_curvature_g2", setback_corner_curvature_g2, nullptr},
-    {"corner_eased_g2", setback_corner_eased_g2, nullptr},
+    {"corner_eased_g2", setback_corner_eased_g2,
+     "the executive's eased rounds are the order-2 sections at the setback but in their own parameter along, and the fill takes it: its patches 0.074 off the fill of the linear rounds"},
     {"concave_corner_rounds", setback_concave_corner_rounds, nullptr},
 };
 
