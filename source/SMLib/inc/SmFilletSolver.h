@@ -527,8 +527,8 @@ protected:
                          SmBSplineCurve * pUV2, SmBSplineSurface *& rpFilletSurface);
   SmStatus CircleSurfaceFromCurves(const SmContext & crContext, SmBSplineCurve & rCenterLine, SmBSplineCurve & rRail1Curve,
                                    SmBSplineCurve & rRail2Curve, double dThisApproxTol3d, SmBoolean bNeedG1Continuity,
-                                   SmSurface * pSurf1, SmBSplineCurve * pUV1, SmSurface * pSurf2, SmBSplineCurve * pUV2,
-                                   SmBSplineSurface *& rpFilletSurface);
+                                   SmBoolean bBallRadiusVaries, SmSurface * pSurf1, SmBSplineCurve * pUV1, SmSurface * pSurf2,
+                                   SmBSplineCurve * pUV2, SmBSplineSurface *& rpFilletSurface);
   SmStatus Build(const SmContext   & crContext,
                  SmBSplineCurve    & rCenterLine,
                  SmBSplineCurve    & rRail1Curve,
