@@ -2129,25 +2129,32 @@ SmBoolean bDebugMe=FALSE;
                                  ? 0
                                  : ii;
 
-              // get center, rail1, rail2 points for dT
+              // get center, rail1, rail2 points (and their tangents) for dT
+              SmVector3d sRail1PV[2], sRail2PV[2];
               SER(rCenterLine.Evaluate(dT,1,TRUE,sCentPV));
-              SER(rRail1Curve.EvaluatePoint(dT,sP1));
-              SER(rRail2Curve.EvaluatePoint(dT,sP2));
+              SER(rRail1Curve.Evaluate(dT,1,TRUE,sRail1PV,FALSE));
+              SER(rRail2Curve.Evaluate(dT,1,TRUE,sRail2PV,FALSE));
+              sP1 = SmPoint3d(sRail1PV[0]);
+              sP2 = SmPoint3d(sRail2PV[0]);
 
               // SolidCraft change: the section is the circle along which the balls' envelope
-              // touches the ball, in the plane square to the centre line through the rail points
-              // (the ball's touch points, so both lie in it). Where the ball's radius varies, its
-              // centre is the ball's centre moved along the centre line by the rails' projection
-              // on it, -r r'/|c'|, where the great circle through the rails would leave the
-              // envelope; at a constant radius that is zero, the great circle (whose rails, where a
-              // corner moved them, would only add their own error).
+              // touches the ball, square to the centre line. Where the ball's radius varies, its
+              // centre is the ball's centre moved along the centre line by -r r'/|c'| (the
+              // envelope's condition <p - c, c'> = -r r' on the ball |p - c| = r), r and r' read
+              // off the rails, which lie on the ball: at the ball's touch points that is their
+              // projection on the centre line, and where a corner's rails only lie on the ball, its
+              // radius law's own slope. At a constant radius it is zero, the great circle (whose
+              // rails, where a corner moved them, would only add their own error).
               SmVector3d sV1 = sP1 - sCentPV[0];
               SmVector3d sV2 = sP2 - sCentPV[0];
               SmVector3d sAlong = sCentPV[1];
-              if (bBallRadiusVaries && sAlong.Length() > SM_EFF_ZERO)
+              double dSpeed = sAlong.Length();
+              if (bBallRadiusVaries && dSpeed > SM_EFF_ZERO && sV1.Length() > SM_EFF_ZERO && sV2.Length() > SM_EFF_ZERO)
                 {
-                  SER(sAlong.Unitize());
-                  sCentPV[0] += sAlong * (0.5 * (sV1.Dot(sAlong) + sV2.Dot(sAlong)));
+                  double dR1 = sV1.Length(), dR2 = sV2.Length();
+                  double dRate = 0.5 * (sV1.Dot(sRail1PV[1] - sCentPV[1]) / dR1 + sV2.Dot(sRail2PV[1] - sCentPV[1]) / dR2);
+                  sAlong = sAlong / dSpeed;
+                  sCentPV[0] += sAlong * (-0.5 * (dR1 + dR2) * dRate / dSpeed);
                   sV1 = sP1 - sCentPV[0];
                   sV2 = sP2 - sCentPV[0];
                 }
