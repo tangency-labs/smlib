@@ -5039,6 +5039,29 @@ void section_variable_round_law_dips()
 
 // The section-order cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--section-orders-known-failing` runs the failing ones and fails if one passes.
+// A cubic law 2, 2, 40, 3, 2 (knots 0, 0, 0, 0, 0.5, 1, 1, 1, 1; up to 21.25) on the top edge
+// x = 10, z = 30 of a 10 x 20 x 30 box. The balls' envelope folds over itself at the peak: for
+// the balls' family F(x, p) = |p - c(x)|^2 - r(x)^2 the touch arc there has F_xx down to -8.88
+// (regressive), where the touch circles move back along the edge. The
+// round is refused (SMLIB_ERR_NO_ROOM), never built folded (the balls' great circles, which
+// never fold, used to build it to 726.53 removed against the union's 332.2). The law 2, 2, 6,
+// 3, 0 on the same edge is progressive all along (F_xx at least 0.816) and builds.
+void section_variable_round_spline_folds()
+{
+    smlib_brep *block = box(0, 0, 0, 10, 20, 30);
+    const double at[3] = {10, 10, 30}, from[3] = {10, 0, 30};
+    const double knots[9] = {0, 0, 0, 0, 0.5, 1, 1, 1, 1}, folds[5] = {2, 2, 40, 3, 2}, holds[5] = {2, 2, 6, 3, 0};
+    smlib_brep *r = nullptr;
+    CHECK(smlib_fillet_variable(block, at, 0.1, from, 3, knots, 9, folds, 5, &r) == SMLIB_ERR_NO_ROOM && r == nullptr);
+    CHECK(smlib_fillet_variable(block, at, 0.1, from, 3, knots, 9, holds, 5, &r) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        CHECK(sound(r));
+        smlib_brep_free(r);
+    }
+    smlib_brep_free(block);
+}
+
 const TangentEndCase SECTION_CASES[] = {
     {"box_edge_chamfer", section_box_edge_chamfer, nullptr},
     {"box_edge_round", section_box_edge_round, nullptr},
@@ -5060,6 +5083,7 @@ const TangentEndCase SECTION_CASES[] = {
     {"variable_round_law_peak", section_variable_round_law_peak,
      "the ball's sphere between its two sides' touch circles at the law's corner is not built: 39.8302 removed against 39.5410 (w 4)"},
     {"variable_round_on_its_cone", section_variable_round_on_its_cone, nullptr},
+    {"variable_round_spline_folds", section_variable_round_spline_folds, nullptr},
 };
 
 int section_cases(bool known_failing, const char *only)
@@ -5088,28 +5112,6 @@ int section_cases(bool known_failing, const char *only)
     }
     return wrong;
 }
-// A cubic law 2, 2, 40, 3, 2 (knots 0, 0, 0, 0, 0.5, 1, 1, 1, 1; up to 21.25) on the top edge
-// x = 10, z = 30 of a 10 x 20 x 30 box. The balls' envelope folds over itself at the peak: for
-// the balls' family F(x, p) = |p - c(x)|^2 - r(x)^2 the touch arc there has F_xx down to -8.88
-// (regressive), where the touch circles move back along the edge. The
-// round is refused (SMLIB_ERR_NO_ROOM), never built folded (the balls' great circles, which
-// never fold, used to build it to 726.53 removed against the union's 332.2). The law 2, 2, 6,
-// 3, 0 on the same edge is progressive all along (F_xx at least 0.816) and builds.
-void section_variable_round_spline_folds()
-{
-    smlib_brep *block = box(0, 0, 0, 10, 20, 30);
-    const double at[3] = {10, 10, 30}, from[3] = {10, 0, 30};
-    const double knots[9] = {0, 0, 0, 0, 0.5, 1, 1, 1, 1}, folds[5] = {2, 2, 40, 3, 2}, holds[5] = {2, 2, 6, 3, 0};
-    smlib_brep *r = nullptr;
-    CHECK(smlib_fillet_variable(block, at, 0.1, from, 3, knots, 9, folds, 5, &r) == SMLIB_ERR_NO_ROOM && r == nullptr);
-    CHECK(smlib_fillet_variable(block, at, 0.1, from, 3, knots, 9, holds, 5, &r) == SMLIB_OK);
-    if (r != nullptr)
-    {
-        CHECK(sound(r));
-        smlib_brep_free(r);
-    }
-    smlib_brep_free(block);
-}
 
 
 int main(int argc, char **argv)
@@ -5134,7 +5136,6 @@ int main(int argc, char **argv)
     }
     if (argc == 4 && std::strcmp(argv[1], "--solidcore-1173") == 0)
     {
-    {"variable_round_spline_folds", section_variable_round_spline_folds, nullptr},
         return corner_child(argv[2], argv[3]);
     }
     if (argc == 2 && std::strcmp(argv[1], "--tangent-ends-known-failing") == 0)
