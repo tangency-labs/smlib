@@ -5301,7 +5301,9 @@ void section_pipe_on_plate_g2_thumbweight_half()
 // run on a line, r proportional to their distance from the apex (-5, 30, 20) where r would be 0:
 // the balls' envelope is the circular cone about that line, sin(phi) = r / |c - apex| = 1/sqrt(27).
 // The round lies on that cone, within the fillet's tolerance (a fitted surface), and meets the
-// faces tangentially. Each ball touches the cone along the circle in the plane square to the line
+// faces tangentially. It is not its definition: the solver rolls the ball on past the edge's ends
+// (x from -10 to 30) with the law continued, and r = 1 + x/5 is 0 at x = -5 (the apex): no ball
+// of that radius exists there (variable_round_on_a_cone_is_its_definition is one that does). Each ball touches the cone along the circle in the plane square to the line
 // of centres offset by -r r' / |c'| from its centre (r' = dr/dx = 1/5, |c'| = sqrt(27)/5), not along
 // the great circle about the centre, whose middle is 0.0101 off the cone at x = 10. The volume
 // removed, 43.7775732641296, is the area the cone's section in each plane x = const cuts off the
@@ -5334,6 +5336,80 @@ void section_variable_round_on_its_cone()
         {
             const double at[3] = {10, 30, 20}, from[3] = {0, 30, 20}, knots[4] = {0, 0, 1, 1}, radii[2] = {1, 5};
             const int32_t s = smlib_fillet_variable(body, at, 0.1, from, 1, knots, 4, radii, 2, out);
+            smlib_brep_free(body);
+            return s;
+        },
+        g);
+}
+
+// The same edge rounded by r = 3 + x/10 (from x = 0 to 20): the solver's stations run from x = -10
+// to 30, where r stays from 2 to 6, and the round is its definition: the balls' envelope, the
+// circular cone about the line of centres (x, 30 - r, 20 - r) with its apex at (-30, 30, 20) where
+// r would be 0, sin(phi) = r / |c - apex| = 1 / sqrt(102). Its points on that cone to rounding, its
+// net within its certified bound, the round meeting both faces tangentially.
+void section_variable_round_on_a_cone_is_its_definition()
+{
+    SectionGrade g;
+    g.volume = 0.0;
+    g.volume_rel = -1.0;
+    const double apex[3] = {-30, 30, 20}, l = std::sqrt(1.02), ax[3] = {1 / l, -0.1 / l, -0.1 / l};
+    const double sphi = 1 / std::sqrt(102.0), cphi = std::sqrt(101.0 / 102.0);
+    g.off = [=](const SmPoint3d &x)
+    {
+        const double w[3] = {x.x - apex[0], x.y - apex[1], x.z - apex[2]};
+        const double along = w[0] * ax[0] + w[1] * ax[1] + w[2] * ax[2];
+        const double across = std::sqrt(std::max(0.0, w[0] * w[0] + w[1] * w[1] + w[2] * w[2] - along * along));
+        return std::fabs(across * cphi - along * sphi);
+    };
+    smlib_brep *body = box(0, 0, 0, 20, 30, 20);
+    g.off_tol = 100.0 * static_cast<double>(body->p->GetTolerance());
+    g.faces = {{ExactFace::PLANE, {0, 0, 0}, {1, 0, 0}, 0}, {ExactFace::PLANE, {20, 0, 0}, {1, 0, 0}, 0},
+               {ExactFace::PLANE, {0, 0, 0}, {0, 1, 0}, 0}, {ExactFace::PLANE, {0, 30, 0}, {0, 1, 0}, 0},
+               {ExactFace::PLANE, {0, 0, 0}, {0, 0, 1}, 0}, {ExactFace::PLANE, {0, 0, 20}, {0, 0, 1}, 0}};
+    g.rails = {5, 3};
+    g.order = 1;
+    g.fitted = true;
+    g.size = 3.0;
+    g.definition = true;
+    g.spans = 16;
+    g = counted(g, 9100, 5250);
+    section_blend(
+        [body](smlib_brep **out)
+        {
+            const double at[3] = {10, 30, 20}, from[3] = {0, 30, 20}, knots[4] = {0, 0, 1, 1}, radii[2] = {3, 5};
+            const int32_t s = smlib_fillet_variable(body, at, 0.1, from, 1, knots, 4, radii, 2, out);
+            smlib_brep_free(body);
+            return s;
+        },
+        g);
+}
+
+// The same edge rounded by the quadratic law of radii 3, 4, 3 (knots 0, 0, 0, 1, 1, 1): no closed
+// form, so the round is graded as its definition only, its net within its certified bound of it,
+// the round meeting both faces tangentially.
+void section_variable_round_quadratic_law_is_its_definition()
+{
+    SectionGrade g;
+    g.volume = 0.0;
+    g.volume_rel = -1.0;
+    g.off = nullptr;
+    smlib_brep *body = box(0, 0, 0, 20, 30, 20);
+    g.off_tol = 100.0 * static_cast<double>(body->p->GetTolerance());
+    g.faces = {{ExactFace::PLANE, {0, 0, 0}, {1, 0, 0}, 0}, {ExactFace::PLANE, {20, 0, 0}, {1, 0, 0}, 0},
+               {ExactFace::PLANE, {0, 0, 0}, {0, 1, 0}, 0}, {ExactFace::PLANE, {0, 30, 0}, {0, 1, 0}, 0},
+               {ExactFace::PLANE, {0, 0, 0}, {0, 0, 1}, 0}, {ExactFace::PLANE, {0, 0, 20}, {0, 0, 1}, 0}};
+    g.rails = {5, 3};
+    g.order = 1;
+    g.fitted = true;
+    g.size = 3.0;
+    g.definition = true;
+    g.spans = 22;
+    g = counted(g, 9600, 5450);
+    section_blend(
+        [body](smlib_brep **out)
+        {
+            const double at[3] = {10, 30, 20}, from[3] = {0, 30, 20}, knots[6] = {0, 0, 0, 1, 1, 1}, radii[3] = {3, 4, 3};
+            const int32_t s = smlib_fillet_variable(body, at, 0.1, from, 2, knots, 6, radii, 3, out);
             smlib_brep_free(body);
             return s;
         },
@@ -6366,6 +6442,8 @@ const TangentEndCase SECTION_CASES[] = {
     {"variable_round_law_dips", section_variable_round_law_dips, nullptr},
     {"variable_round_law_peak", section_variable_round_law_peak, nullptr},
     {"variable_round_on_its_cone", section_variable_round_on_its_cone, nullptr},
+    {"variable_round_on_a_cone_is_its_definition", section_variable_round_on_a_cone_is_its_definition, nullptr},
+    {"variable_round_quadratic_law_is_its_definition", section_variable_round_quadratic_law_is_its_definition, nullptr},
     {"variable_round_spline_folds", section_variable_round_spline_folds, nullptr},
 };
 
