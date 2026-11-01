@@ -9452,6 +9452,413 @@ void setback_asked_too_long_names_what_fits()
     smlib_brep_free(r);
 }
 
+// Bivariate Bernstein polynomials on [0, 1]^2, for the certified shape checks of a fill:
+// degree (p, q), coefficients c[i (q + 1) + j]. The polynomial lies in the hull of its
+// coefficients, and its coefficients after de Casteljau subdivision close in on it.
+struct BB
+{
+    int p = 0, q = 0;
+    std::vector<double> c;
+    double &at(int i, int j) { return c[static_cast<size_t>(i * (q + 1) + j)]; }
+    double at(int i, int j) const { return c[static_cast<size_t>(i * (q + 1) + j)]; }
+};
+double bb_binom(int n, int k)
+{
+    double r = 1.0;
+    for (int i = 1; i <= k; i++)
+    {
+        r = r * (n - k + i) / i;
+    }
+    return r;
+}
+BB bb_make(int p, int q)
+{
+    BB b;
+    b.p = p;
+    b.q = q;
+    b.c.assign(static_cast<size_t>((p + 1) * (q + 1)), 0.0);
+    return b;
+}
+BB bb_mul(const BB &a, const BB &b)
+{
+    BB r = bb_make(a.p + b.p, a.q + b.q);
+    for (int i = 0; i <= a.p; i++)
+        for (int j = 0; j <= a.q; j++)
+            for (int k = 0; k <= b.p; k++)
+                for (int l = 0; l <= b.q; l++)
+                {
+                    r.at(i + k, j + l) += a.at(i, j) * b.at(k, l) * bb_binom(a.p, i) * bb_binom(b.p, k) / bb_binom(r.p, i + k) * bb_binom(a.q, j) *
+                                          bb_binom(b.q, l) / bb_binom(r.q, j + l);
+                }
+    return r;
+}
+BB bb_elevate(const BB &a, int p, int q)
+{
+    BB r = a;
+    while (r.p < p)
+    {
+        BB e = bb_make(r.p + 1, r.q);
+        for (int i = 0; i <= e.p; i++)
+            for (int j = 0; j <= e.q; j++)
+            {
+                const double t = static_cast<double>(i) / e.p;
+                e.at(i, j) = (i > 0 ? t * r.at(i - 1, j) : 0.0) + (i < e.p ? (1.0 - t) * r.at(i, j) : 0.0);
+            }
+        r = e;
+    }
+    while (r.q < q)
+    {
+        BB e = bb_make(r.p, r.q + 1);
+        for (int i = 0; i <= e.p; i++)
+            for (int j = 0; j <= e.q; j++)
+            {
+                const double t = static_cast<double>(j) / e.q;
+                e.at(i, j) = (j > 0 ? t * r.at(i, j - 1) : 0.0) + (j < e.q ? (1.0 - t) * r.at(i, j) : 0.0);
+            }
+        r = e;
+    }
+    return r;
+}
+BB bb_axpy(const BB &y, double s, const BB &x)
+{
+    const int p = std::max(y.p, x.p), q = std::max(y.q, x.q);
+    BB a = bb_elevate(y, p, q), b = bb_elevate(x, p, q);
+    for (size_t k = 0; k < a.c.size(); k++)
+    {
+        a.c[k] += s * b.c[k];
+    }
+    return a;
+}
+BB bb_du(const BB &a)
+{
+    BB r = bb_make(std::max(a.p - 1, 0), a.q);
+    for (int i = 0; i < a.p; i++)
+        for (int j = 0; j <= a.q; j++)
+        {
+            r.at(i, j) = a.p * (a.at(i + 1, j) - a.at(i, j));
+        }
+    return r;
+}
+BB bb_dv(const BB &a)
+{
+    BB r = bb_make(a.p, std::max(a.q - 1, 0));
+    for (int i = 0; i <= a.p; i++)
+        for (int j = 0; j < a.q; j++)
+        {
+            r.at(i, j) = a.q * (a.at(i, j + 1) - a.at(i, j));
+        }
+    return r;
+}
+// The determinant of a 4 x 4 matrix of polynomials m[row][col], by its first row's cofactors.
+BB bb_det(const std::vector<std::vector<BB>> &m)
+{
+    const size_t n = m.size();
+    if (n == 1)
+    {
+        return m[0][0];
+    }
+    BB r = bb_make(0, 0);
+    for (size_t j = 0; j < n; j++)
+    {
+        std::vector<std::vector<BB>> minor;
+        for (size_t i = 1; i < n; i++)
+        {
+            std::vector<BB> row;
+            for (size_t k = 0; k < n; k++)
+            {
+                if (k != j)
+                {
+                    row.push_back(m[i][k]);
+                }
+            }
+            minor.push_back(row);
+        }
+        r = bb_axpy(r, (j % 2 == 0) ? 1.0 : -1.0, bb_mul(m[0][j], bb_det(minor)));
+    }
+    return r;
+}
+// a's halves at u = 1/2 (dir 0) or v = 1/2 (dir 1), by de Casteljau.
+void bb_split(const BB &a, int dir, BB &lo, BB &hi)
+{
+    lo = a;
+    hi = a;
+    const int n = dir == 0 ? a.p : a.q, m = dir == 0 ? a.q : a.p;
+    for (int k = 0; k <= m; k++)
+    {
+        std::vector<double> w(static_cast<size_t>(n + 1));
+        for (int i = 0; i <= n; i++)
+        {
+            w[static_cast<size_t>(i)] = dir == 0 ? a.at(i, k) : a.at(k, i);
+        }
+        for (int r = 0; r <= n; r++)
+        {
+            (dir == 0 ? lo.at(r, k) : lo.at(k, r)) = w[0];
+            (dir == 0 ? hi.at(n - r, k) : hi.at(k, n - r)) = w[static_cast<size_t>(n - r)];
+            for (int i = 0; i < n - r; i++)
+            {
+                w[static_cast<size_t>(i)] = 0.5 * (w[static_cast<size_t>(i)] + w[static_cast<size_t>(i + 1)]);
+            }
+        }
+    }
+}
+// Whether a >= -eps on the whole square, certified: 1 (every coefficient of a piece >= -eps,
+// subdividing up to `depth` times), 0 (a corner of some piece, a value of a, below -eps),
+// -1 (undecided at that depth). `worst` gets the lowest corner value seen.
+int bb_nonneg(const BB &a, double eps, int depth, double &worst)
+{
+    const double corners[4] = {a.at(0, 0), a.at(a.p, 0), a.at(0, a.q), a.at(a.p, a.q)};
+    for (double v : corners)
+    {
+        worst = std::min(worst, v);
+        if (v < -eps)
+        {
+            return 0;
+        }
+    }
+    if (*std::min_element(a.c.begin(), a.c.end()) >= -eps)
+    {
+        return 1;
+    }
+    if (depth == 0)
+    {
+        return -1;
+    }
+    BB l, h, ll, lh, hl, hh;
+    bb_split(a, 0, l, h);
+    bb_split(l, 1, ll, lh);
+    bb_split(h, 1, hl, hh);
+    int result = 1;
+    for (const BB *piece : {&ll, &lh, &hl, &hh})
+    {
+        const int r = bb_nonneg(*piece, eps, depth - 1, worst);
+        if (r == 0)
+        {
+            return 0;
+        }
+        result = std::min(result, r);
+    }
+    return result;
+}
+
+// A fill patch's homogeneous net as four polynomials (x w, y w, z w, w); false unless one Bezier
+// span each way over [0, 1]^2.
+bool bb_net(const SmBSplineSurface *s, BB h[4])
+{
+    ULONG ud, vd;
+    SmTArray<SmPoint3d> pts;
+    SmBSplineSurfaceForm form;
+    SmTArray<ULONG> um, vm;
+    SmTArray<double> uk, vk, w;
+    SmKnotType kt;
+    if (s->GetCanonical(ud, vd, pts, form, um, vm, uk, vk, kt, w) != SM_SUCCESS || uk.GetSize() != 2 || vk.GetSize() != 2 || uk[0] != 0.0 ||
+        uk[1] != 1.0 || vk[0] != 0.0 || vk[1] != 1.0)
+    {
+        return false;
+    }
+    for (int c = 0; c < 4; c++)
+    {
+        h[c] = bb_make(static_cast<int>(ud), static_cast<int>(vd));
+    }
+    for (ULONG i = 0; i <= ud; i++)
+        for (ULONG j = 0; j <= vd; j++)
+        {
+            const ULONG k = i * (vd + 1) + j;
+            const double wk = w.GetSize() > 0 ? w[k] : 1.0;
+            h[0].at(static_cast<int>(i), static_cast<int>(j)) = pts[k].x * wk;
+            h[1].at(static_cast<int>(i), static_cast<int>(j)) = pts[k].y * wk;
+            h[2].at(static_cast<int>(i), static_cast<int>(j)) = pts[k].z * wk;
+            h[3].at(static_cast<int>(i), static_cast<int>(j)) = wk;
+        }
+    return true;
+}
+
+// Certified: the box corner's fill (corner at the origin, the material in the positive octant)
+// keeps the body convex. On each patch P = H / w, with l = det(H, Hu, Hv, Huu) = -w^4 (Pu x Pv).Puu,
+// m and n alike (Huv, Hvv), and o = det(H, Hu, Hv, (1, 1, 1, 0)) = -w^3 (Pu x Pv).(1, 1, 1): o of one
+// sign s (the patch's normal Pu x Pv one way across it), and s l >= 0, s n >= 0, l n - m^2 >= 0 (its
+// second fundamental form about the normal out of the material, -s (Pu x Pv), negative
+// semidefinite: K >= 0, curving into the material). And within each round's prism: where a point
+// is nearer both of a round a's faces than its radius (A = H_f - r w < 0, B = H_g - r w < 0, f and
+// g those faces' axes), within its cylinder (C = A^2 + B^2 - r^2 w^2 <= 0), certified per piece
+// (A >= 0 or B >= 0 or -C >= 0 on it, subdividing). Each polynomial is held to -1e-12 of its
+// coefficients' scale (rounding); `report` prints the worst values seen.
+bool fill_keeps_the_body_convex(const SmBlendSetback::Fill &fill, const std::array<double, 3> &radii, const char *what)
+{
+    bool all = true;
+    double worst_k = 0.0, worst_prism = 0.0;
+    int undecided = 0;
+    for (size_t m = 0; m < fill.m_vPatches.size(); m++)
+    {
+        BB h[4];
+        if (!bb_net(fill.m_vPatches[m], h))
+        {
+            std::printf("  %s: patch %lu is not one Bezier span over the unit square\n", what, static_cast<unsigned long>(m));
+            all = false;
+            continue;
+        }
+        BB hu[4], hv[4], huu[4], huv[4], hvv[4], one[4];
+        for (int c = 0; c < 4; c++)
+        {
+            hu[c] = bb_du(h[c]);
+            hv[c] = bb_dv(h[c]);
+            huu[c] = bb_du(hu[c]);
+            huv[c] = bb_dv(hu[c]);
+            hvv[c] = bb_dv(hv[c]);
+            one[c] = bb_make(0, 0);
+            one[c].c[0] = c < 3 ? 1.0 : 0.0;
+        }
+        auto det = [&](const BB *last)
+        {
+            std::vector<std::vector<BB>> mtx(4, std::vector<BB>(4));
+            for (int c = 0; c < 4; c++)
+            {
+                mtx[0][static_cast<size_t>(c)] = h[c];
+                mtx[1][static_cast<size_t>(c)] = hu[c];
+                mtx[2][static_cast<size_t>(c)] = hv[c];
+                mtx[3][static_cast<size_t>(c)] = last[c];
+            }
+            return bb_det(mtx);
+        };
+        const BB l = det(huu), mm = det(huv), n = det(hvv), o = det(one);
+        auto scale = [](const BB &b)
+        {
+            double x = 0.0;
+            for (double v : b.c)
+            {
+                x = std::max(x, std::fabs(v));
+            }
+            return x;
+        };
+        const int depth = 6;
+        double w0 = HUGE_VAL;
+        BB neg_o = bb_axpy(bb_make(0, 0), -1.0, o);
+        double wa = HUGE_VAL, wb = HUGE_VAL;
+        const int pos = bb_nonneg(o, 1e-12 * scale(o), depth, wa), negv = bb_nonneg(neg_o, 1e-12 * scale(o), depth, wb);
+        const double s = pos == 1 ? 1.0 : negv == 1 ? -1.0 : 0.0;
+        if (s == 0.0)
+        {
+            std::printf("  %s: patch %lu's normal turns across it (not of one sign)\n", what, static_cast<unsigned long>(m));
+            all = false;
+            continue;
+        }
+        const BB sl = bb_axpy(bb_make(0, 0), s, l), sn = bb_axpy(bb_make(0, 0), s, n);
+        const BB disc = bb_axpy(bb_mul(l, n), -1.0, bb_mul(mm, mm));
+        for (const BB *b : {&sl, &sn, &disc})
+        {
+            double w = HUGE_VAL;
+            const int r = bb_nonneg(*b, 1e-12 * scale(*b), depth, w);
+            worst_k = std::min(worst_k, w / std::max(scale(*b), 1e-300));
+            if (r != 1)
+            {
+                all = false;
+                undecided += r == -1 ? 1 : 0;
+            }
+        }
+        // the prisms
+        for (int a = 0; a < 3; a++)
+        {
+            const int f = (a + 1) % 3, g = (a + 2) % 3;
+            const double r = radii[static_cast<size_t>(a)];
+            const BB A = bb_axpy(h[f], -r, h[3]), B = bb_axpy(h[g], -r, h[3]);
+            const BB C = bb_axpy(bb_axpy(bb_mul(A, A), 1.0, bb_mul(B, B)), -r * r, bb_mul(h[3], h[3]));
+            std::function<int(const BB &, const BB &, const BB &, int)> held = [&](const BB &a1, const BB &b1, const BB &c1, int d) -> int
+            {
+                const double ea = 1e-12 * std::max(scale(a1), r), ec = 1e-12 * std::max(scale(c1), r * r);
+                if (*std::min_element(a1.c.begin(), a1.c.end()) >= -ea || *std::min_element(b1.c.begin(), b1.c.end()) >= -ea ||
+                    *std::max_element(c1.c.begin(), c1.c.end()) <= ec)
+                {
+                    return 1;
+                }
+                // a point of the piece (its corner) outside: certified out
+                const int cp[4][2] = {{0, 0}, {1, 0}, {0, 1}, {1, 1}};
+                for (const auto &k : cp)
+                {
+                    const double av = a1.at(k[0] * a1.p, k[1] * a1.q), bv = b1.at(k[0] * b1.p, k[1] * b1.q), cv = c1.at(k[0] * c1.p, k[1] * c1.q);
+                    if (av < -ea && bv < -ea && cv > ec)
+                    {
+                        worst_prism = std::max(worst_prism, cv / (r * r));
+                        return 0;
+                    }
+                }
+                if (d == 0)
+                {
+                    return -1;
+                }
+                BB pieces[3][4];
+                const BB *src[3] = {&a1, &b1, &c1};
+                for (int t = 0; t < 3; t++)
+                {
+                    BB lo, hi;
+                    bb_split(*src[t], 0, lo, hi);
+                    bb_split(lo, 1, pieces[t][0], pieces[t][1]);
+                    bb_split(hi, 1, pieces[t][2], pieces[t][3]);
+                }
+                int res = 1;
+                for (int k = 0; k < 4; k++)
+                {
+                    const int rr = held(pieces[0][k], pieces[1][k], pieces[2][k], d - 1);
+                    if (rr == 0)
+                    {
+                        return 0;
+                    }
+                    res = std::min(res, rr);
+                }
+                return res;
+            };
+            const int r2 = held(A, B, C, depth);
+            if (r2 != 1)
+            {
+                all = false;
+                undecided += r2 == -1 ? 1 : 0;
+            }
+        }
+    }
+    std::printf("  %s: %s; the worst curvature sign value %.3g of its scale, out of a prism by %.3g r^2 (w^2-scaled), %d undecided\n", what,
+                all ? "convex and within the prisms (certified)" : "NOT certified convex within the prisms", worst_k, worst_prism, undecided);
+    return all;
+}
+
+// The setback fill of a convex corner keeps the body convex (owner, 2026-11-01): rounding a convex
+// body with balls keeps it convex, so the fill curves into the material (K >= 0) and lies within
+// the rounds' prisms, certified from the patches' Bernstein coefficients
+// (fill_keeps_the_body_convex). The G1 corners: rounds 2, 3, 4 set back by the rule, the r 5
+// rounds set back 8 (corner_setback_8's), and the notch's rounds 1, 1.5, 2 (its concave corner
+// is the convex void's: the same shape about the void).
+void setback_g1_fill_keeps_the_body_convex()
+{
+    SmContext &ctx = *SmApiGetOrCreateContext();
+    struct Case
+    {
+        std::array<double, 3> radii;
+        double setback;
+        const char *what;
+    };
+    const Case cases[] = {{{2, 3, 4}, 0.0, "rounds 2, 3, 4"}, {{5, 5, 5}, 8.0, "rounds 5 set back 8"}, {{1, 1.5, 2}, 0.0, "rounds 1, 1.5, 2"}};
+    for (const Case &c : cases)
+    {
+        std::vector<double> setbacks;
+        CHECK(SmBlendSetback::Distances(box_corner_faces(), box_corner_edges(c.radii), setbacks) == SM_SUCCESS && setbacks.size() == 3);
+        if (c.setback > 0.0)
+        {
+            setbacks.assign(3, c.setback);
+        }
+        std::vector<SmBSplineSurface *> rounds;
+        std::vector<SmBlendSetback::Round> in;
+        for (int a = 0; a < 3; a++)
+        {
+            rounds.push_back(box_corner_round(a, c.radii[static_cast<size_t>(a)], setbacks[static_cast<size_t>(a)], 10.0, 1));
+            in.push_back({rounds.back(), SM_SP_U, setbacks[static_cast<size_t>(a)], FALSE});
+        }
+        SmBlendSetback::Fill fill;
+        CHECK(SmBlendSetback::FillHole(ctx, box_corner_faces(), in, 1, 1e-9, fill) == SM_SUCCESS && fill.m_vPatches.size() == 6);
+        CHECK(fill_keeps_the_body_convex(fill, c.radii, c.what));
+        for (SmBSplineSurface *q : rounds)
+        {
+            delete q;
+        }
+    }
+}
+
 // The setback corner's cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--setbacks-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SETBACK_CASES[] = {
@@ -9465,6 +9872,8 @@ const TangentEndCase SETBACK_CASES[] = {
     {"corner_setback_8", corner_setback,
      "the setback split's fill of the r 5 rounds set back 8 is not convex at this convex corner (saddles, K down to -0.034): its setback patches stand up to 0.34 past the rounds' prisms, volume 47389.1475 above the prisms' bound 47384.8935 (owner: a fullness rule, held)"},
     {"fill_is_the_geometry_s", setback_fill_is_the_geometry_s, nullptr},
+    {"g1_fill_keeps_the_body_convex", setback_g1_fill_keeps_the_body_convex,
+     "the G1 fill (thin-plate energy, spoke-length speed off the rounds) is a saddle in part and stands past the prisms: certified out at every one of the three corners (the setback patches curve against the material along their rails' direction, l n - m^2 < 0 inside them; a prism's cylinder left by 0.214 r^2, w^2-scaled, at rounds 2, 3, 4)"},
     {"default_shrinks_to_fit", setback_default_shrinks_to_fit, nullptr},
     {"asked_too_long_names_what_fits", setback_asked_too_long_names_what_fits, nullptr},
     {"corner_rounds_2_3_4", setback_corner_rounds_2_3_4, nullptr},
