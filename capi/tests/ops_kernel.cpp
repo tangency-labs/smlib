@@ -4286,8 +4286,11 @@ void exact_class_oblique_plane_cone()
                 {{ExactFace::PLANE, {0, 0, 15}, n, 0}, {ExactFace::CONE, {0, 0, za}, {0, 0, -1}, al}});
 }
 
-// A ball R 10 cut flat at z = 4; its rim rounded r 2. Ball and plane share the ball's axis square
-// to the plane: the spine is the circle of radius sqrt 60 at z = 2, the round a torus piece.
+// A ball R 10 cut flat at z = 4; its rim rounded r 2. The rim is two edges, joined at
+// (+-sqrt 84, 0, 4) where the ball's seam and the cut face's split meet it: both are selected
+// (a point on each), as smlib_fillet rounds exactly the edges selected. Ball and plane share
+// the ball's axis square to the plane: the spine is the circle of radius sqrt 60 at z = 2, the
+// round a torus piece.
 // V0 = 4000 pi / 3 - 288 pi; the round removes 22.492758031524.
 void exact_class_sphere_plane()
 {
@@ -4295,7 +4298,7 @@ void exact_class_sphere_plane()
     smlib_brep *ball = nullptr;
     CHECK(smlib_make_sphere(c0, 10.0, &ball) == SMLIB_OK);
     smlib_brep *cut = combined(ball, cutter({0, 0, 4}, Z_AXIS), SMLIB_BOOLEAN_SUBTRACT);
-    exact_round(cut, {0, std::sqrt(84.0), 4}, 2.0, 3261.518762521006, RoundKind::REVOLVED, {0, 0},
+    exact_round(cut, {0, std::sqrt(84.0), 4, 0, -std::sqrt(84.0), 4}, 2.0, 3261.518762521006, RoundKind::REVOLVED, {0, 0},
                 {{ExactFace::PLANE, {0, 0, 4}, Z_AXIS, 0}, {ExactFace::SPHERE, {0, 0, 0}, Z_AXIS, 10}});
 }
 
@@ -4354,7 +4357,9 @@ void exact_class_cone_cylinder_sharing_a_ball()
 // Two pipes that touch at one point: A R 10 about the line y = 0, z = -10 (x within 20) and B R 5
 // about x = 0, z = -5 (y within 20), both touching z = 0 at the origin from below. Joined, then
 // cut at z = -2, which takes their touching point away; the concave arc of their edge on the +y
-// side, from (4, 6, -2) down through (0, 10, -10) and up to (-4, 6, -2), rounded r 1. The offsets
+// side, from (4, 6, -2) down through (0, 10, -10) and up to (-4, 6, -2), rounded r 1: two edges,
+// split at (5, 5 sqrt 3, -5) by B's seam, each selected (the second by the point halfway along it
+// on B, at angle asin(0.6) / 2 above B's seam). The offsets
 // touch at (0, 0, 1) too: they meet in a quartic with a node there, rational, and the round is of
 // degrees (12, 2). V0 = 13437.742049099792; the round adds 4.961081486747.
 void exact_class_cylinders_touching_at_a_point()
@@ -4367,7 +4372,9 @@ void exact_class_cylinders_touching_at_a_point()
     b = placed(b, X_AXIS, {0, 0, -1}, Y_AXIS, {0, -20, -5});
     smlib_brep *both = combined(combined(a, b, SMLIB_BOOLEAN_UNION), cutter({0, 0, -2}, Z_AXIS), SMLIB_BOOLEAN_SUBTRACT);
     const double z = -5.0 - 5.0 * std::cos(1.0), y = std::sqrt(100.0 - (z + 10.0) * (z + 10.0));
-    exact_round(both, {5.0 * std::sin(1.0), y, z, -5.0 * std::sin(1.0), y, z}, 1.0, 13442.703130586538, RoundKind::RATIONAL, {12, 2},
+    const double h = 0.5 * std::asin(0.6), zh = -5.0 + 5.0 * std::sin(h), yh = std::sqrt(100.0 - (zh + 10.0) * (zh + 10.0));
+    exact_round(both, {5.0 * std::sin(1.0), y, z, -5.0 * std::sin(1.0), y, z, 5.0 * std::cos(h), yh, zh}, 1.0, 13442.703130586538,
+                RoundKind::RATIONAL, {12, 2},
                 {{ExactFace::CYLINDER, {0, 0, -10}, X_AXIS, 10}, {ExactFace::CYLINDER, {0, 0, -5}, Y_AXIS, 5}});
 }
 
@@ -4392,13 +4399,11 @@ void exact_class_tee_is_fitted()
 const TangentEndCase EXACT_CLASS_CASES[] = {
     {"coaxial_cones", exact_class_coaxial_cones, nullptr},
     {"cone_cylinder_sharing_a_ball", exact_class_cone_cylinder_sharing_a_ball, nullptr},
-    {"cylinders_touching_at_a_point", exact_class_cylinders_touching_at_a_point,
-     "status 1001: SmFilletNx1Corner, Corner Edge Computation Failure, where the round ends on the cut at z = -2 (the exact round is built)"},
+    {"cylinders_touching_at_a_point", exact_class_cylinders_touching_at_a_point, nullptr},
     {"oblique_plane_cone", exact_class_oblique_plane_cone, nullptr},
     {"oblique_plane_cylinder", exact_class_oblique_plane_cylinder, nullptr},
     {"sphere_coaxial_cone", exact_class_sphere_coaxial_cone, nullptr},
-    {"sphere_plane", exact_class_sphere_plane,
-     "status 1001: SmFilletNx1Corner, Corner Edge Computation Failure, at the rim's one vertex, on the sphere's seam (the torus is built)"},
+    {"sphere_plane", exact_class_sphere_plane, nullptr},
     {"tee_is_fitted", exact_class_tee_is_fitted, nullptr},
 };
 
