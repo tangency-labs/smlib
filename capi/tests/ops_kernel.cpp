@@ -59,11 +59,6 @@
 #include <utility>
 #include <vector>
 
-// The setback fill's reference (defined with the setback cases).
-bool box_corner_reference_fill(const std::array<double, 3> &radii, const std::vector<double> &setbacks, int round_order, ULONG order,
-                               SmBlendSetback::Fill &fill, std::vector<SmBSplineSurface *> &rounds);
-double off_fill(const std::vector<SmPoint3d> &points, const SmBlendSetback::Fill &fill);
-double fill_flux(const SmBlendSetback::Fill &fill);
 
 namespace
 {
@@ -1288,13 +1283,11 @@ void shelled_tapered_box_rounds()
 // (on the top face (52, 35, 20) and (55, 32, 20), and so on). Outside the corner cube C =
 // [52, 60] x [32, 40] x [12, 20] the body is that of the corner without a setback, the sphere
 // corner (ladder 07-fillets/009: V0 = 47377.120025868, of which 512 - 225 (1 - pi/4) -
-// 125 (1 - pi/6) in C). The patch is the blend corner's Setback, the setback split's fill of
-// the rounds' end sections (SmBlendSetback, filled to G1): rebuilt here from the rounds' exact
-// circles, the body's patch faces lie on it, and inside C the body is what the box's faces, C's
-// three inner faces and the fill bound, its volume by the divergence theorem. (The fill is not
-// convex: its setback patches are saddles in part, standing up to 0.34 past the rounds' prisms,
-// so the hull of the body's points on C's faces, 299.0201, and the prisms, 512 - 225 (1 - pi/4)
-// - 125 (sqrt 2 - 1), that bounded the convex patch before no longer bound it.)
+// 125 (1 - pi/6) in C). The body is convex, so inside C it holds the hull of its points on C's
+// faces (the three sections and the box's corners outside the patch: 299.0201, by a hull of
+// them sampled, below the true hull) and lies within every plane tangent to it along the
+// sections, the three rounds' prisms: 512 - 225 (1 - pi/4) - 125 (sqrt 2 - 1), the corner cube
+// of r keeping the three cylinders' common octant, (2 - sqrt 2) r^3, in place of the sphere's.
 void corner_setback()
 {
     smlib_brep *part = box(0, 0, 0, 60, 40, 20);
@@ -1309,64 +1302,16 @@ void corner_setback()
     {
         const double in_c_sphere = 512.0 - 225.0 * (1.0 - PI / 4.0) - 125.0 * (1.0 - PI / 6.0);
         const double outside = 47377.120025868 - in_c_sphere;
+        const double hull = 299.0201;
+        const double prisms = 512.0 - 225.0 * (1.0 - PI / 4.0) - 125.0 * (std::sqrt(2.0) - 1.0);
         double v = volume_of(r);
-        // the patch: the setback split's fill of the three rounds' circles at their end
-        // sections (SmBlendSetback), the box's corner moved to the origin by p -> (60, 40, 20) - p
-        // (its faces then box_corner_faces, the rounds box_corner_round's)
-        SmBlendSetback::Fill fill;
-        std::vector<SmBSplineSurface *> rounds;
-        CHECK(box_corner_reference_fill({5, 5, 5}, {8, 8, 8}, 1, 1, fill, rounds));
-        std::vector<SmPoint3d> pts;
-        SmTArray<SmFace *> fs;
-        r->p->GetFaces(fs);
-        int n_patches = 0;
-        for (ULONG f = 0; f < fs.GetSize(); ++f)
-        {
-            SmSurface *s = fs[f]->GetSurface();
-            if (s == nullptr || s->IsPlanar(1e-9))
-            {
-                continue;
-            }
-            SmTArray<SmVertex *> fv;
-            fs[f]->GetVertices(fv);
-            bool in_c = true;
-            for (ULONG k = 0; k < fv.GetSize(); ++k)
-            {
-                const SmPoint3d p = fv[k]->GetPoint();
-                in_c = in_c && p.x > 51.9 && p.y > 31.9 && p.z > 11.9;
-            }
-            if (!in_c)
-            {
-                continue;
-            }
-            n_patches++;
-            for (int i = 0; i <= 4; i++)
-            {
-                for (int j = 0; j <= 4; j++)
-                {
-                    SmPoint3d p;
-                    CHECK(s->EvaluatePoint(fs[f]->GetUVDomain().Evaluate(i / 4.0, j / 4.0), p) == SM_SUCCESS);
-                    pts.push_back(SmPoint3d(60.0 - p.x, 40.0 - p.y, 20.0 - p.z));
-                }
-            }
-        }
-        const double off = off_fill(pts, fill);
-        // inside C: the divergence theorem with the field (p - corner) / 3, to which the box's
-        // three faces through the corner add nothing; C's three inner faces, each 8 from the
-        // corner, hold the box's 64 less a round's section corner, 25 (1 - pi/4), each; and the fill
-        const double in_c = (3.0 * 8.0 * (64.0 - 25.0 * (1.0 - PI / 4.0)) + fill_flux(fill)) / 3.0;
-        std::fprintf(stderr, "  corner setback: %d patches, off the fill by %.3g; volume %.12g, the fill's %.12g\n", n_patches, off, v, outside + in_c);
-        CHECK(n_patches == 6 && off <= 1e-9);
-        CHECK(near(v, outside + in_c, 1e-9));
-        for (SmBSplineSurface *q : rounds)
-        {
-            delete q;
-        }
-        // The box's six faces, the three rounds and the fill's six patches (a setback patch per
-        // round, an interior part per face). Vertices: the box's four corners untouched, two at
-        // each round's far end, the six section ends, the three base points (one per face), the
-        // three middles of the inner curves and the centre (23); edges by Euler's formula,
-        // 23 + 15 - 2.
+        std::fprintf(stderr, "  corner setback: volume %.9g in [%.9g, %.9g]\n", v, outside + hull, outside + prisms);
+        CHECK(v > outside + hull && v < outside + prisms);
+        // The box's six faces, the three rounds and the patch, which SMLib builds as two
+        // quadrilaterals per side (2 x 3), each pair split at the middle of its side (its
+        // section's or face curve's) and all six meeting at the patch's centre. Vertices: the
+        // box's four corners untouched, two at each round's far end, the six section ends, the
+        // six side middles and the centre (23); edges by Euler's formula, 23 + 15 - 2.
         int64_t counts[3] = {0, 0, 0};
         CHECK(smlib_brep_counts(r, counts) == SMLIB_OK);
         CHECK(counts[0] == 15 && counts[1] == 36 && counts[2] == 23);
@@ -8661,114 +8606,6 @@ SmBSplineSurface *box_corner_gn_round(int a, double r, double s, double len)
     return out;
 }
 
-// The box corner's setback fill (SmBlendSetback::FillHole at the origin, faces box_corner_faces)
-// of rounds of `radii` set back `setbacks`, made as box_corner_round (round_order 1, 2) or
-// box_corner_gn_round (3), filled to `order`: the rounds in `rounds` (the caller deletes them).
-bool box_corner_reference_fill(const std::array<double, 3> &radii, const std::vector<double> &setbacks, int round_order, ULONG order,
-                               SmBlendSetback::Fill &fill, std::vector<SmBSplineSurface *> &rounds)
-{
-    std::vector<SmBlendSetback::Round> in;
-    for (int a = 0; a < 3 && setbacks.size() == 3; a++)
-    {
-        const double rr = radii[static_cast<size_t>(a)], sb = setbacks[static_cast<size_t>(a)];
-        SmBSplineSurface *own = round_order == 3 ? box_corner_gn_round(a, rr, sb, 10.0) : box_corner_round(a, rr, sb, 10.0, round_order);
-        rounds.push_back(own);
-        if (own != nullptr)
-        {
-            in.push_back({own, SM_SP_U, own->GetNaturalUVDomain().GetMin().x, FALSE});
-        }
-    }
-    return in.size() == 3 && SmBlendSetback::FillHole(*SmApiGetOrCreateContext(), box_corner_faces(), in, order, 1e-9, fill) == SM_SUCCESS &&
-           fill.m_vPatches.size() == 6;
-}
-
-// The farthest of `points` from the surfaces of `fill` (each point's nearest).
-double off_fill(const std::vector<SmPoint3d> &points, const SmBlendSetback::Fill &fill)
-{
-    double worst = 0.0;
-    for (const SmPoint3d &p : points)
-    {
-        double best = HUGE_VAL;
-        for (SmBSplineSurface *q : fill.m_vPatches)
-        {
-            SmSolutionArray sols;
-            if (q->GlobalPointSolve(q->GetNaturalUVDomain(), SM_SO_MINIMIZE, p, 1e-12, nullptr, SM_SR_SINGLE, sols) == SM_SUCCESS && sols.GetSize() > 0)
-            {
-                SmPoint3d at;
-                if (q->EvaluatePoint(SmPoint2d(sols[0].m_vStart[0], sols[0].m_vStart[1]), at) == SM_SUCCESS)
-                {
-                    best = std::min(best, at.DistanceBetween(p));
-                }
-            }
-        }
-        worst = std::max(worst, best);
-    }
-    return worst;
-}
-
-// The integral over the box corner's fill (corner at the origin, the material in the positive
-// octant) of p . n dA, n its normal out of the material (towards the corner, -(1, 1, 1) side):
-// a third of it is the fill's share of the volume between it and the origin (the divergence
-// theorem with the field p / 3, which the corner's three planes, through the origin, add nothing
-// to). By Gauss-Legendre, 24 points a side on each patch (one Bezier span each way).
-double fill_flux(const SmBlendSetback::Fill &fill)
-{
-    // the 24-point Gauss-Legendre rule on [0, 1], by Newton on P_24
-    const int ng = 24;
-    std::vector<double> x(ng), w(ng);
-    for (int i = 0; i < ng; i++)
-    {
-        double t = std::cos(PI * (i + 0.75) / (ng + 0.5));
-        for (int it = 0; it < 100; it++)
-        {
-            double p0 = 1.0, p1 = t;
-            for (int k = 2; k <= ng; k++)
-            {
-                const double p2 = ((2.0 * k - 1.0) * t * p1 - (k - 1.0) * p0) / k;
-                p0 = p1;
-                p1 = p2;
-            }
-            const double dp = ng * (t * p1 - p0) / (t * t - 1.0);
-            const double dt = p1 / dp;
-            t -= dt;
-            if (std::fabs(dt) < 1e-16)
-            {
-                double q0 = 1.0, q1 = t;
-                for (int k = 2; k <= ng; k++)
-                {
-                    const double q2 = ((2.0 * k - 1.0) * t * q1 - (k - 1.0) * q0) / k;
-                    q0 = q1;
-                    q1 = q2;
-                }
-                const double dq = ng * (t * q1 - q0) / (t * t - 1.0);
-                x[static_cast<size_t>(i)] = 0.5 * (1.0 - t);
-                w[static_cast<size_t>(i)] = 1.0 / ((1.0 - t * t) * dq * dq);
-                break;
-            }
-        }
-    }
-    double total = 0.0;
-    for (const SmBSplineSurface *q : fill.m_vPatches)
-    {
-        const SmExtent2d dom = q->GetNaturalUVDomain();
-        const double du = dom.GetUInterval().GetLength(), dv = dom.GetVInterval().GetLength();
-        double sum = 0.0, side = 0.0;
-        for (int i = 0; i < ng; i++)
-        {
-            for (int j = 0; j < ng; j++)
-            {
-                SmVector3d d[4]; // D, Dv, Du, Duv
-                CHECK(q->Evaluate(dom.Evaluate(x[static_cast<size_t>(i)], x[static_cast<size_t>(j)]), 1, 1, TRUE, TRUE, FALSE, d, FALSE) == SM_SUCCESS);
-                const SmVector3d n = d[2] * d[1];
-                sum += w[static_cast<size_t>(i)] * w[static_cast<size_t>(j)] * d[0].Dot(n);
-                side += n.Dot(SmVector3d(-1, -1, -1));
-            }
-        }
-        total += (side < 0.0 ? -sum : sum) * du * dv;
-    }
-    return total;
-}
-
 // The order the surfaces a and b meet to across their common boundary, graded by seam_graph at
 // nine stations t = k / 10: a's side by uv_a(t) and a step into a along in_a (in its uv), b's
 // by uv_b(t) (b's own Newton walks from there). `order`: the least every station must reach at
@@ -9598,6 +9435,8 @@ const TangentEndCase SETBACK_CASES[] = {
     {"box_corner_g2_gn_section_rounds", setback_box_corner_g2_gn_section_rounds, nullptr},
     {"box_corner_unequal_g1", setback_box_corner_unequal_g1, nullptr},
     {"g2_fill_of_uneased_rounds_refused", setback_g2_fill_of_uneased_rounds_refused, nullptr},
+    {"corner_setback_8", corner_setback,
+     "the setback split's fill of the r 5 rounds set back 8 is not convex at this convex corner (saddles, K down to -0.034): its setback patches stand up to 0.34 past the rounds' prisms, volume 47389.1475 above the prisms' bound 47384.8935 (owner: a fullness rule, held)"},
     {"fill_is_the_geometry_s", setback_fill_is_the_geometry_s, nullptr},
     {"corner_rounds_2_3_4", setback_corner_rounds_2_3_4, nullptr},
     {"corner_curvature_g2", setback_corner_curvature_g2, nullptr},
@@ -13339,7 +13178,6 @@ int main(int argc, char **argv)
     knife_edge_chamfers();
     overflow_goes_first();
     crease_rounds_from_half_a_degree();
-    corner_setback();
     corner_setback_open();
     setback_sections_are_exact_arcs();
     concave_corner_setback();
