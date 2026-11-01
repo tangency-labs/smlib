@@ -5040,7 +5040,14 @@ void turn_swept_sharp_pocket_refused()
     smlib_brep *r = nullptr;
     CHECK(part != nullptr && smlib_blend_turn(part, SMLIB_BLEND_ROUND, SMLIB_TURN_SWEPT, edges, sizes, 4, 0.1, &r, nullptr) == SMLIB_ERR_NO_ROOM);
     CHECK(r == nullptr);
+    // the reason names the radius the side edge must be rounded at first, the round's
+    char why[512];
+    int64_t length = 0;
+    CHECK(smlib_blend_reason(why, sizeof why, &length) == SMLIB_OK && length > 0);
+    std::printf("  swept refused: %s\n", why);
+    CHECK(std::strstr(why, "at least 1") != nullptr);
     CHECK(part != nullptr && smlib_blend_turn(part, SMLIB_BLEND_ROUND, SMLIB_TURN_MITRE, edges, sizes, 4, 0.1, &r, nullptr) == SMLIB_OK);
+    CHECK(smlib_blend_reason(why, sizeof why, &length) == SMLIB_OK && length == 0);
     if (r != nullptr)
     {
         CHECK(sound(r));

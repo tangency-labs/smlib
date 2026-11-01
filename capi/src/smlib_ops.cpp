@@ -12,6 +12,7 @@
 #include "smlib_shim.h"
 
 #include <algorithm>
+#include <cstring>
 #include <vector>
 #include "smlib_pick.h"
 
@@ -286,6 +287,10 @@ bool chamfer_radius(SmEdge *e, double distance, double &radius)
 // call's inputs (Call::input_text) so a failing blend can be read without a debugger.
 std::string g_blend_why;
 
+// The executive's own words for why the last blend failed (its comment), for smlib_blend_reason:
+// empty when the last blend built, or failed without one.
+std::string g_blend_reason;
+
 // The status a blend that failed with status `s` reports, its reason noted (g_blend_why): a
 // blend the executive found larger than its faces allow (SM_FILERR_NO_ROOM: a concave blend whose
 // rail leaves the face it rolls on, a round whose rail runs on into the body's material, a cliff
@@ -305,6 +310,7 @@ int32_t blend_failure(SmFilletExecutive &exec, int32_t s)
                   static_cast<int>(e->GetErrorCode()), static_cast<int>(e->m_eCornerType), static_cast<int>(e->m_eEdgeType), e->m_vLocation[0],
                   e->m_vLocation[1], e->m_vLocation[2]);
     g_blend_why = head;
+    g_blend_reason = ascii(e->m_cComment, SM_TBLOCK_SIZE);
     for (const TCHAR *c : {e->m_cComment, e->m_cEntityName})
     {
         g_blend_why += ascii(c, SM_TBLOCK_SIZE) + "\n";
@@ -1771,6 +1777,7 @@ int32_t blend_call(const char *fn, const smlib_brep *brep, const Section &sectio
         [&]
         {
             g_blend_why.clear();
+            g_blend_reason.clear();
             int32_t s = SMLIB_OK;
             Owned w = copy_of(brep, s);
             if (s != SMLIB_OK)
@@ -2192,6 +2199,7 @@ extern "C" int32_t smlib_fillet_variable(const smlib_brep *brep, const double *p
         [&]
         {
             g_blend_why.clear();
+            g_blend_reason.clear();
             int32_t s = SMLIB_OK;
             Owned w = copy_of(brep, s);
             if (s != SMLIB_OK)
@@ -2252,6 +2260,7 @@ extern "C" int32_t smlib_chamfer_sides(const smlib_brep *brep, const double *poi
         [&]
         {
             g_blend_why.clear();
+            g_blend_reason.clear();
             int32_t s = SMLIB_OK;
             Owned w = copy_of(brep, s);
             if (s != SMLIB_OK)
@@ -2556,4 +2565,20 @@ extern "C" int32_t smlib_merge_faces(const smlib_brep *brep, const double *keep,
             return finish(std::move(w), solid_in, out);
         }
     );
+}
+
+extern "C" int32_t smlib_blend_reason(char *out, int64_t size, int64_t *out_length)
+{
+    if (out_length == nullptr || size < 0 || (out == nullptr && size > 0))
+    {
+        return SMLIB_ERR_ARG;
+    }
+    *out_length = static_cast<int64_t>(g_blend_reason.size());
+    if (size > 0)
+    {
+        const size_t n = std::min(g_blend_reason.size(), static_cast<size_t>(size - 1));
+        std::memcpy(out, g_blend_reason.data(), n);
+        out[n] = '\0';
+    }
+    return SMLIB_OK;
 }

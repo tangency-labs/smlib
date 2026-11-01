@@ -708,9 +708,16 @@ int32_t smlib_blend(const smlib_brep *brep, int32_t kind, const double *points, 
 /* The rounds' section is revolved about the side edge through the corner's turn (between planes
  * at a straight side edge, a torus segment), meeting each round tangentially (G1) where it ends
  * on its section straight across from where its contact lines meet the side edge. A ball cannot
- * pass a sharp concave side edge: such a corner is SMLIB_ERR_NO_ROOM, the call's log line naming
+ * pass a sharp concave side edge: such a corner is SMLIB_ERR_NO_ROOM, smlib_blend_reason naming
  * the radius that edge must be rounded at first (the round's). */
 #define SMLIB_TURN_SWEPT 1
+
+/* Why the last blend call (smlib_blend and its variants, smlib_fillet_variable, the chamfers) in
+ * this process failed, in SMLib's words, e.g. a round whose balls fold over one another or a
+ * swept turn at a sharp concave side edge, each naming the radius: written to `out` (`size`
+ * bytes, NUL-terminated, cut short to fit), its full length in `out_length` (0 when that call
+ * built, or failed without a reason). `size` 0 and `out` NULL ask the length only. */
+int32_t smlib_blend_reason(char *out, int64_t size, int64_t *out_length);
 
 /* As smlib_blend, the corners where a chain of its rounds turns at a side edge turned as `turn`
  * (SMLIB_TURN_*; smlib_blend turns them SMLIB_TURN_MITRE). SMLIB_TURN_SWEPT is for rounds
