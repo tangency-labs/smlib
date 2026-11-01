@@ -502,8 +502,10 @@ SmStatus sm_SurfacePartials(const SmSurface & crSurface, const SmPoint2d & crUV,
       sm_NurbsPartials<double>(sN, ku, kv, crUV.x, crUV.y, lK, rP);
       return SM_SUCCESS;
     }
+  // (a side: the upper interval of a parameter, FromLeft TRUE, or the lower one)
   std::vector<SmVector3d> sD(static_cast<size_t>((lK + 1) * (lK + 1)));
-  SER(crSurface.Evaluate(crUV, static_cast<ULONG>(lK), static_cast<ULONG>(lK), TRUE, TRUE, TRUE, sD.data(), FALSE));
+  SER(crSurface.Evaluate(crUV, static_cast<ULONG>(lK), static_cast<ULONG>(lK), (lSideU < 0) ? FALSE : TRUE, (lSideV < 0) ? FALSE : TRUE, TRUE,
+                         sD.data(), FALSE));
   for (int a=0; a<=lK; a++)
     for (int b=0; a+b<=lK; b++)
       rP.P[a][b] = sm_V3From<double>(sD[static_cast<size_t>(a * (lK + 1) + b)]);
@@ -855,6 +857,58 @@ SmStatus sm_GnSolveStation(const SmSurface * apFace[2], const SmBSplineCurve & c
   if (pC != NULL) { for (int f=0; f<2; f++) { (*pC)[f] = rStation.asF[f]; } }
   if (pN != NULL) { for (int f=0; f<2; f++) { (*pN)[f] = asN[f]; } }
   sm_GnTopJets(lTop, tr, asN, rStation.asF);
+  return SM_SUCCESS;
+}
+
+/*******************************************************************//**
+   The feet of a station that stand on a knot line of their support (within
+   the margin a crossing station is placed by, Build's), at crX, moving
+   along s as crDir says, where the face's partials to order lPartials
+   differ on the line's two sides (it is C^(p - multiplicity) there):
+   rSides[q] the side of that line foot coordinate q is taken on (+-1,
+   sm_SidedSpan's; 0 off such a line), the piece it moves
+   into as s grows, or with bBefore the one it comes from. rbOther: some
+   foot's side is not the piece a solve without sides takes there (the
+   span the foot's value is in, sm_Span's), so the station is solved again
+   with these sides.
+***********************************************************************/
+SmStatus sm_FeetOnKnots(const SmSurface * apFace[2], const double (&crX)[4], const double (&crDir)[4], SmBoolean bBefore, int lPartials, int (&rSides)[4],
+                        SmBoolean & rbOther)
+{
+  rbOther = FALSE;
+  for (int f=0; f<2; f++)
+    {
+      rSides[2*f] = rSides[2*f+1] = 0;
+      const SmBSplineSurface * pBS = SM_CAST_PTR(SmBSplineSurface, apFace[f]);
+      if (pBS == NULL)
+        { continue; }
+      ULONG lKU = 0, lKV = 0;
+      double * pU = NULL, * pV = NULL;
+      SER(pBS->GetKnotsPointers(lKU, lKV, pU, pV));
+      NER(pU); NER(pV);
+      for (int c=0; c<2; c++)
+        {
+          const double * pK = (c == 0) ? pU : pV;
+          const ULONG lK = (c == 0) ? lKU : lKV;
+          const ULONG lOrd = pBS->GetDegree((c == 0) ? SM_SP_U : SM_SP_V) + 1;
+          const double x = crX[2*f+c];
+          for (ULONG m=lOrd; m+lOrd<lK; m++)
+            if (std::fabs(x - pK[m]) <= 1.0e-9 * (1.0 + std::fabs(pK[m])))
+              {
+                // the face is C^(p - multiplicity) across the line: partials to that order agree on its sides
+                ULONG lMult = 0;
+                for (ULONG j=0; j<lK; j++) { if (pK[j] == pK[m]) { lMult++; } }
+                if (static_cast<long>(lPartials) <= static_cast<long>(lOrd - 1) - static_cast<long>(lMult))
+                  { break; }
+                int lSide = (crDir[2*f+c] < 0.0) ? -1 : 1;
+                if (bBefore) { lSide = -lSide; }
+                rSides[2*f+c] = lSide;
+                if ((lSide < 0 && x >= pK[m]) || (lSide > 0 && x < pK[m]))
+                  { rbOther = TRUE; }
+                break;
+              }
+        }
+    }
   return SM_SUCCESS;
 }
 
@@ -1439,12 +1493,14 @@ SmStatus sm_NurbsPartialsOverPiece(const sm_Nurbs & crN, int ku, int kv, double 
 }
 
 // The leader's point and unit tangent over S as series in sigma to tr.s, enclosed.
-SmStatus sm_LeaderSeriesOver(const sm_NurbsCurve & crLeader, const sm_Ivl & crS, const sm_Trunc & tr, sm_VSer<sm_Ivl> & rL, sm_VSer<sm_Ivl> & rT)
+// lPiece: the leader's piece whose polynomial is taken over S (-1: the one S's middle lies in).
+SmStatus sm_LeaderSeriesOver(const sm_NurbsCurve & crLeader, const sm_Ivl & crS, const sm_Trunc & tr, sm_VSer<sm_Ivl> & rL, sm_VSer<sm_Ivl> & rT,
+                             int lPiece = -1)
 {
   const sm_Trunc sSigma = { tr.s, 0 };
   std::vector< sm_V3<sm_Ivl> > sD;
   // the span lies in one piece of the leader (the stations hold its knots)
-  SER(sm_CurveDerivsOver(crLeader, crS, tr.s + 1, sD, sm_Span(crLeader.U, crLeader.p, crLeader.n, sm_Mid(crS))));
+  SER(sm_CurveDerivsOver(crLeader, crS, tr.s + 1, sD, (lPiece >= 0) ? lPiece : sm_Span(crLeader.U, crLeader.p, crLeader.n, sm_Mid(crS))));
   const sm_V3<sm_Ivl> sZero = { sm_Ivl(0.0), sm_Ivl(0.0), sm_Ivl(0.0) };
   rL = sm_VSerConst<sm_Ivl>(sZero);
   sm_VSer<sm_Ivl> sD1 = rL;
@@ -1536,16 +1592,75 @@ SmStatus sm_Inverse4(const double (&crA)[4][4], double (&rY)[4][4])
 #define SM_GN_TRY(a) { if ((a) != SM_SUCCESS) { return SM_SUCCESS; } }
 
 /*******************************************************************//**
-   The feet's series over S = [crA.dS, crB.dS] (a point when they are one
-   station), to order lOrderS in s and n in tau, enclosed: rF (and pV, the
-   point V's), with rbProved FALSE where Krawczyk's test fails on S.
+   A face that is a blend by its definition, for the certificate of a blend
+   on it: its definition's partials over a box of its (u, v) enclosed
+   (sm_DefinitionPartialsOverBox), on the polynomial pieces of the faces it
+   rolls on that its piece of the net (between two of its stations) lies on.
+   Only a round of the ball's circle (a constant radius) between NURBS faces
+   is enclosed (sm_DefinitionEnclosable).
 ***********************************************************************/
-SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader, const sm_GnStation & crA, const sm_GnStation & crB,
-                      const double (&crR)[2], const double (&crSide)[2], int n, int lOrderS, sm_VSer<sm_Ivl> (&rF)[2], SmBoolean & rbProved,
-                      sm_Ser<sm_Ivl> (*pX)[4] = NULL, double (*pDS)[2] = NULL, sm_VSer<sm_Ivl> * pV = NULL, const sm_GnLaw * pLaw = NULL)
+struct sm_GnDefPiece
+{
+  int    lState;        // 0 not solved yet, 1 solved, -1 the station did not solve
+  double dS;            // the piece's middle
+  double ax[3][4];      // the feet there, their first s-derivatives and second over 2
+  int    aku[2], akv[2]; // the faces' polynomial pieces the feet lie on over the piece
+  int    lLeader;       // the leader's
+};
+
+struct sm_GnDefFace
+{
+  const SmProceduralBlend * pDef;
+  const SmSurface         * apSup[2];
+  sm_Nurbs                  asSup[2];
+  sm_NurbsCurve             sLeader;
+  double                    adR[2], adSide[2];
+  double                    adA[2], adB[2]; // its (s, t) = (A + B p, ...), as SmProceduralBlend::GetDefinitionMap
+  SmBoolean                 bSwapped;
+  std::vector<sm_GnDefPiece> sPieces;       // by the net's knot span along s
+};
+
+// the enclosed definitions among a blend's two faces (NULL: a NURBS face)
+struct sm_GnDefs
+{
+  sm_GnDefFace * ap[2];
+};
+
+SmStatus sm_DefinitionPartialsOverBox(sm_GnDefFace & rD, const sm_Nurbs & crNet, int ku, int kv, double ua, double ub, double va, double vb,
+                                      int lK, sm_Partials<sm_Ivl> & rP);
+
+// A face's partials over [ua, ub] x [va, vb], enclosed: a NURBS face's piece (ku, kv), continued;
+// a definition's on the piece of its net along s that (ku, kv) is in.
+SmStatus sm_FacePartialsOver(const sm_Nurbs & crN, sm_GnDefFace * pDef, int ku, int kv, double ua, double ub, double va, double vb, int lK,
+                             sm_Partials<sm_Ivl> & rP)
+{
+  if (pDef != NULL)
+    { return sm_DefinitionPartialsOverBox(*pDef, crN, ku, kv, ua, ub, va, vb, lK, rP); }
+  return sm_NurbsPartialsOverPiece(crN, ku, kv, ua, ub, va, vb, lK, rP);
+}
+
+// A span the feet are enclosed over: S, the feet's guesses at its ends (their hull, widened, is
+// the first box), each face's polynomial piece over it and the leader's (-1: S's middle's).
+struct sm_GnSpanAt
+{
+  sm_Ivl sS;
+  double axA[4], axB[4];
+  int    aku[2], akv[2];
+  int    lLeader;
+};
+
+/*******************************************************************//**
+   The feet's series over crAt.sS, to order lOrderS in s and n in tau,
+   enclosed: rF (and pV, the point V's), with rbProved FALSE where
+   Krawczyk's test fails on S.
+***********************************************************************/
+SmStatus sm_GnEncloseOver(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader, const sm_GnSpanAt & crAt,
+                          const double (&crR)[2], const double (&crSide)[2], int n, int lOrderS, sm_VSer<sm_Ivl> (&rF)[2], SmBoolean & rbProved,
+                          sm_Ser<sm_Ivl> (*pX)[4] = NULL, double (*pDS)[2] = NULL, sm_VSer<sm_Ivl> * pV = NULL, const sm_GnLaw * pLaw = NULL,
+                          sm_GnDefs * pDefs = NULL)
 {
   rbProved = FALSE;
-  const sm_Ivl sS(crA.dS, crB.dS);
+  const sm_Ivl sS = crAt.sS;
   const sm_Trunc sTr = { lOrderS, n };
   sm_GnSystem<sm_Ivl> sSys;
   sm_Partials<sm_Ivl> asP[2];
@@ -1560,25 +1675,16 @@ SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader
       SM_GN_TRY(sm_LawSeriesOver(*pLaw, sS, lOrderS, sLawR));
       sSys.pR = &sLawR;
     }
-  SM_GN_TRY(sm_LeaderSeriesOver(crLeader, sS, sTr, sSys.sLeader, sSys.sTangent));
+  SM_GN_TRY(sm_LeaderSeriesOver(crLeader, sS, sTr, sSys.sLeader, sSys.sTangent, crAt.lLeader));
+  sm_GnDefFace * apDef[2] = { (pDefs != NULL) ? pDefs->ap[0] : NULL, (pDefs != NULL) ? pDefs->ap[1] : NULL };
+  const int (&aku)[2] = crAt.aku, (&akv)[2] = crAt.akv;
 
-  // each face's polynomial piece over the span: the one its middle lies in. A station stands where a
-  // foot crosses a knot line, so every foot over the span lies in that piece, and the piece's
-  // polynomial, continued over the rest of a box, is the face wherever a foot can be: the root
-  // Krawczyk's test proves unique in a box is the foot
-  int aku[2], akv[2];
-  for (int f=0; f<2; f++)
-    {
-      aku[f] = sm_Span(apFace[f]->U, apFace[f]->p, apFace[f]->nu, 0.5 * (crA.asX[2*f].c[0][0] + crB.asX[2*f].c[0][0]));
-      akv[f] = sm_Span(apFace[f]->V, apFace[f]->q, apFace[f]->nv, 0.5 * (crA.asX[2*f+1].c[0][0] + crB.asX[2*f+1].c[0][0]));
-    }
-
-  // the feet's box: Krawczyk's operator from the two stations' hull
+  // the feet's box: Krawczyk's operator from the guesses' hull
   double xm[4];
   sm_Ivl X[4];
   for (int c=0; c<4; c++)
     {
-      const double a = crA.asX[c].c[0][0], b = crB.asX[c].c[0][0];
+      const double a = crAt.axA[c], b = crAt.axB[c];
       xm[c] = 0.5 * (a + b);
       const double w = 0.5 * std::fabs(b - a) + 1.0e-9 * (1.0 + std::fabs(xm[c]));
       X[c] = sm_Ivl(xm[c] - 2.0 * w, xm[c] + 2.0 * w);
@@ -1587,20 +1693,22 @@ SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader
   sm_Ivl C[4][4];
   double q = HUGE_VAL;
   SmBoolean bProved = FALSE;
+  // G at the box's centre (which the iterations keep) for every s in the span
+  sm_Ser<sm_Ivl> sGc[4];
+  {
+    for (int f=0; f<2; f++)
+      { SM_GN_TRY(sm_FacePartialsOver(*apFace[f], apDef[f], aku[f], akv[f], xm[2*f], xm[2*f], xm[2*f+1], xm[2*f+1], 2, asP[f])); }
+    sm_Ser<sm_Ivl> sXc[4];
+    for (int c=0; c<4; c++) { sXc[c] = sm_SerConst<sm_Ivl>(sm_Ivl(xm[c])); }
+    const sm_Trunc sPoint = { 0, 0 };
+    sm_VSer<sm_Ivl> sF[2];
+    SM_GN_TRY(sm_GnEvaluate(sSys, sXc, sPoint, sGc, sF));
+  }
   for (int it=0; it<8 && !bProved; it++)
     {
-      // G at the box's centre for every s in the span
-      for (int f=0; f<2; f++)
-        { SM_GN_TRY(sm_NurbsPartialsOverPiece(*apFace[f], aku[f], akv[f], xm[2*f], xm[2*f], xm[2*f+1], xm[2*f+1], 2, asP[f])); }
-      sm_Ser<sm_Ivl> sXc[4];
-      for (int c=0; c<4; c++) { sXc[c] = sm_SerConst<sm_Ivl>(sm_Ivl(xm[c])); }
-      const sm_Trunc sPoint = { 0, 0 };
-      sm_Ser<sm_Ivl> sG[4];
-      sm_VSer<sm_Ivl> sF[2];
-      SM_GN_TRY(sm_GnEvaluate(sSys, sXc, sPoint, sG, sF));
       // the Jacobian over the box
       for (int f=0; f<2; f++)
-        { SM_GN_TRY(sm_NurbsPartialsOverPiece(*apFace[f], aku[f], akv[f], X[2*f].lo, X[2*f].hi, X[2*f+1].lo, X[2*f+1].hi, 2, asP[f])); }
+        { SM_GN_TRY(sm_FacePartialsOver(*apFace[f], apDef[f], aku[f], akv[f], X[2*f].lo, X[2*f].hi, X[2*f+1].lo, X[2*f+1].hi, 2, asP[f])); }
       sm_Ser<sm_Ivl> sXb[4];
       for (int c=0; c<4; c++) { sXb[c] = sm_SerConst<sm_Ivl>(X[c]); }
       sm_Ivl J[4][4];
@@ -1629,7 +1737,7 @@ SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader
       for (int i=0; i<4; i++)
         {
           sm_Ivl k(xm[i]);
-          for (int j=0; j<4; j++) { k = k - sm_Ivl(Y[i][j]) * sG[j].c[0][0]; }
+          for (int j=0; j<4; j++) { k = k - sm_Ivl(Y[i][j]) * sGc[j].c[0][0]; }
           for (int j=0; j<4; j++) { k = k + C[i][j] * (X[j] - sm_Ivl(xm[j])); }
           K[i] = k;
           if (!(k.lo > X[i].lo && k.hi < X[i].hi)) { bInside = FALSE; }
@@ -1650,7 +1758,7 @@ SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader
           for (int i=0; i<4; i++)
             {
               sm_Ivl v(0.0);
-              for (int j=0; j<4; j++) { v = v + sm_Ivl(Y[i][j]) * sG[j].c[0][0]; }
+              for (int j=0; j<4; j++) { v = v + sm_Ivl(Y[i][j]) * sGc[j].c[0][0]; }
               d[i] = sm_Mag(v - sm_Ivl(sm_Mid(v))) + std::fabs(sm_Mid(v));
               w[i] = d[i];
             }
@@ -1679,7 +1787,7 @@ SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader
   // the feet's Taylor coefficients over the span, order by order: x = -Y R + C x, |x| <= rho
   const int lK = sTr.s + sTr.e + 1;
   for (int f=0; f<2; f++)
-    { SM_GN_TRY(sm_NurbsPartialsOverPiece(*apFace[f], aku[f], akv[f], X[2*f].lo, X[2*f].hi, X[2*f+1].lo, X[2*f+1].hi, lK, asP[f])); }
+    { SM_GN_TRY(sm_FacePartialsOver(*apFace[f], apDef[f], aku[f], akv[f], X[2*f].lo, X[2*f].hi, X[2*f+1].lo, X[2*f+1].hi, lK, asP[f])); }
   sm_Ser<sm_Ivl> sX[4];
   for (int c=0; c<4; c++) { sX[c] = sm_SerConst<sm_Ivl>(X[c]); }
   for (int lTot=1; lTot<=sTr.s+sTr.e; lTot++)
@@ -1731,6 +1839,37 @@ SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader
     }
   rbProved = TRUE;
   return SM_SUCCESS;
+}
+
+/*******************************************************************//**
+   The feet's series over S = [crA.dS, crB.dS] (a point when they are one
+   station), to order lOrderS in s and n in tau, enclosed: rF (and pV, the
+   point V's), with rbProved FALSE where Krawczyk's test fails on S.
+***********************************************************************/
+SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader, const sm_GnStation & crA, const sm_GnStation & crB,
+                      const double (&crR)[2], const double (&crSide)[2], int n, int lOrderS, sm_VSer<sm_Ivl> (&rF)[2], SmBoolean & rbProved,
+                      sm_Ser<sm_Ivl> (*pX)[4] = NULL, double (*pDS)[2] = NULL, sm_VSer<sm_Ivl> * pV = NULL, const sm_GnLaw * pLaw = NULL,
+                      sm_GnDefs * pDefs = NULL)
+{
+  sm_GnSpanAt sAt;
+  sAt.sS = sm_Ivl(crA.dS, crB.dS);
+  for (int c=0; c<4; c++)
+    {
+      sAt.axA[c] = crA.asX[c].c[0][0];
+      sAt.axB[c] = crB.asX[c].c[0][0];
+    }
+  // each face's polynomial piece over the span: the one its middle lies in. A station stands where a
+  // foot crosses a knot line, so every foot over the span lies in that piece, and the piece's
+  // polynomial, continued over the rest of a box, is the face wherever a foot can be: the root
+  // Krawczyk's test proves unique in a box is the foot (a definition's piece of its net is one
+  // between two of its stations, its polynomial pieces the ones the faces under it have there)
+  for (int f=0; f<2; f++)
+    {
+      sAt.aku[f] = sm_Span(apFace[f]->U, apFace[f]->p, apFace[f]->nu, 0.5 * (crA.asX[2*f].c[0][0] + crB.asX[2*f].c[0][0]));
+      sAt.akv[f] = sm_Span(apFace[f]->V, apFace[f]->q, apFace[f]->nv, 0.5 * (crA.asX[2*f+1].c[0][0] + crB.asX[2*f+1].c[0][0]));
+    }
+  sAt.lLeader = -1;
+  return sm_GnEncloseOver(apFace, crLeader, sAt, crR, crSide, n, lOrderS, rF, rbProved, pX, pDS, pV, pLaw, pDefs);
 }
 
 /*******************************************************************//**
@@ -2082,7 +2221,7 @@ SmStatus sm_GnFourthOver(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLea
                          const sm_GnStation & crA, const sm_GnStation & crB, const double (&crR)[2], const double (&crSide)[2], int n,
                          double (&rM4)[2][SM_GN_MAXE + 1], double (&rUV4)[2], sm_VSer<sm_Ivl> (*pF)[2] = NULL, sm_VSer<sm_Ivl> * pV = NULL,
                          sm_VSer<sm_Ivl> (*pFm)[2] = NULL, sm_VSer<sm_Ivl> * pVm = NULL, double * pdMid = NULL,
-                         const sm_GnLaw * pLaw = NULL, int lExtra = 0)
+                         const sm_GnLaw * pLaw = NULL, int lExtra = 0, sm_GnDefs * pDefs = NULL)
 {
   for (int f=0; f<2; f++)
     {
@@ -2095,7 +2234,7 @@ SmStatus sm_GnFourthOver(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLea
   sm_Ser<sm_Ivl> asX5[4], asX4[4];
   double adDS[2] = { 0.0, 0.0 }, adDSm[2] = { 0.0, 0.0 };
   SmBoolean bProved = FALSE;
-  SM_GN_TRY(sm_GnEnclose(apFace, crLeader, crA, crB, crR, crSide, n, 4 + SM_GN_TAYLOR + lExtra, asF5, bProved, &asX5, &adDS, pV, pLaw));
+  SM_GN_TRY(sm_GnEnclose(apFace, crLeader, crA, crB, crR, crSide, n, 4 + SM_GN_TAYLOR + lExtra, asF5, bProved, &asX5, &adDS, pV, pLaw, pDefs));
   if (!bProved)
     { return SM_SUCCESS; }
   if (pF != NULL)
@@ -2112,7 +2251,8 @@ SmStatus sm_GnFourthOver(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLea
   const sm_Ser<double> * pMidR = NULL;
   SM_GN_TRY(sm_LawSeries(pLaw, dMid, 0, sMidR, pMidR));
   SM_GN_TRY(sm_GnSolveStation(apSurf, crCenter, dMid, adSeed, crR, crSide, sPointTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()), sMid, pMidR));
-  SM_GN_TRY(sm_GnEnclose(apFace, crLeader, sMid, sMid, crR, crSide, n, 4 + SM_GN_TAYLOR - 1 + lExtra, asF4, bProved, &asX4, &adDSm, pVm, pLaw));
+  SM_GN_TRY(sm_GnEnclose(apFace, crLeader, sMid, sMid, crR, crSide, n, 4 + SM_GN_TAYLOR - 1 + lExtra, asF4, bProved, &asX4, &adDSm, pVm, pLaw,
+                         pDefs));
   if (!bProved)
     { return SM_SUCCESS; }
   if (pFm != NULL)
@@ -2175,7 +2315,8 @@ SmStatus sm_GnFourthOver(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLea
 ***********************************************************************/
 SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader, const SmSurface * apSurf[2], const SmBSplineCurve & crCenter,
                           const sm_GnStation & crA, const sm_GnStation & crB, const double (&crR)[2], const double (&crSide)[2], int n,
-                          double dTarget, double & rdBound, const sm_GnVarying * pVary = NULL, const sm_GnLaw * pLaw = NULL)
+                          double dTarget, double & rdBound, const sm_GnVarying * pVary = NULL, const sm_GnLaw * pLaw = NULL,
+                          sm_GnDefs * pDefs = NULL)
 {
   rdBound = HUGE_VAL;
   const double h = crB.dS - crA.dS;
@@ -2243,7 +2384,7 @@ SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
           // the touch circle of a varying ball takes the centre's s-derivative: one order more
           SM_GN_TRY(sm_GnFourthOver(apFace, crLeader, apSurf, crCenter, crPA, crPB, crR, crSide, lJets, adP, adPUV,
                                     bRows ? &asF : NULL, bRows ? &sV : NULL, bRows ? &asFm : NULL, bRows ? &sVm : NULL, &dMid,
-                                    pLaw, (bArc && pLaw != NULL) ? 1 : 0));
+                                    pLaw, (bArc && pLaw != NULL) ? 1 : 0, pDefs));
           for (int f=0; f<2; f++)
             {
               for (int k=0; k<=lJets; k++)
@@ -2310,58 +2451,76 @@ SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
    evaluation of a blend by its definition: c[i (E + 1) + j] the coefficient
    of sigma^i dt^j.
 ***********************************************************************/
-struct sm_T2
+// N: the total order kept (S + E unless truncated; the coefficients past it are zero)
+template <class Z> struct sm_T2Of
 {
-  int S, E;
-  std::vector<double> c;
-  sm_T2(int lS = 0, int lE = 0, double d = 0.0) : S(lS), E(lE), c(static_cast<size_t>((lS + 1) * (lE + 1)), 0.0) { c[0] = d; }
-  double & at(int i, int j) { return c[static_cast<size_t>(i * (E + 1) + j)]; }
-  double   at(int i, int j) const { return c[static_cast<size_t>(i * (E + 1) + j)]; }
+  int S, E, N;
+  std::vector<Z> c;
+  sm_T2Of(int lS = 0, int lE = 0, const Z & d = Z(0.0), int lN = -1)
+    : S(lS), E(lE), N((lN < 0) ? lS + lE : lN), c(static_cast<size_t>((lS + 1) * (lE + 1)), Z(0.0)) { c[0] = d; }
+  Z &       at(int i, int j) { return c[static_cast<size_t>(i * (E + 1) + j)]; }
+  const Z & at(int i, int j) const { return c[static_cast<size_t>(i * (E + 1) + j)]; }
 };
-sm_T2 operator+(const sm_T2 & a, const sm_T2 & b) { sm_T2 r(a.S, a.E); for (size_t k=0; k<r.c.size(); k++) { r.c[k] = a.c[k] + b.c[k]; } return r; }
-sm_T2 operator-(const sm_T2 & a, const sm_T2 & b) { sm_T2 r(a.S, a.E); for (size_t k=0; k<r.c.size(); k++) { r.c[k] = a.c[k] - b.c[k]; } return r; }
-sm_T2 operator*(const sm_T2 & a, double d) { sm_T2 r(a.S, a.E); for (size_t k=0; k<r.c.size(); k++) { r.c[k] = a.c[k] * d; } return r; }
-sm_T2 operator*(const sm_T2 & a, const sm_T2 & b)
+typedef sm_T2Of<double> sm_T2;
+template <class Z> sm_T2Of<Z> operator+(const sm_T2Of<Z> & a, const sm_T2Of<Z> & b) { sm_T2Of<Z> r(a.S, a.E, Z(0.0), a.N); for (size_t k=0; k<r.c.size(); k++) { r.c[k] = a.c[k] + b.c[k]; } return r; }
+template <class Z> sm_T2Of<Z> operator-(const sm_T2Of<Z> & a, const sm_T2Of<Z> & b) { sm_T2Of<Z> r(a.S, a.E, Z(0.0), a.N); for (size_t k=0; k<r.c.size(); k++) { r.c[k] = a.c[k] - b.c[k]; } return r; }
+template <class Z> sm_T2Of<Z> sm_T2Scale(const sm_T2Of<Z> & a, const Z & d) { sm_T2Of<Z> r(a.S, a.E, Z(0.0), a.N); for (size_t k=0; k<r.c.size(); k++) { r.c[k] = a.c[k] * d; } return r; }
+sm_T2 operator*(const sm_T2 & a, double d) { return sm_T2Scale<double>(a, d); }
+template <class Z> sm_T2Of<Z> operator*(const sm_T2Of<Z> & a, const sm_T2Of<Z> & b)
 {
-  sm_T2 r(a.S, a.E);
+  sm_T2Of<Z> r(a.S, a.E, Z(0.0), a.N);
   for (int i=0; i<=a.S; i++)
-    for (int j=0; j<=a.E; j++)
+    for (int j=0; j<=a.E && i+j<=a.N; j++)
       {
-        double d = 0.0;
+        Z d(0.0);
         for (int i1=0; i1<=i; i1++)
           for (int j1=0; j1<=j; j1++)
-            d += a.at(i1, j1) * b.at(i - i1, j - j1);
+            d = d + a.at(i1, j1) * b.at(i - i1, j - j1);
         r.at(i, j) = d;
       }
   return r;
 }
+// x0^p, p one of -1, -1/2, 1/2 for an interval
+inline double sm_PowOf(double x, double p) { return smos_Pow(x, p); }
+inline sm_Ivl sm_PowOf(const sm_Ivl & x, double p)
+{
+  if (p == -1.0) { return sm_Ivl(1.0) / x; }
+  if (p == 0.5)  { return sm_Sqrt(x); }
+  if (p == -0.5) { return sm_Ivl(1.0) / sm_Sqrt(x); }
+  return sm_Whole();
+}
+inline SmBoolean sm_PositiveFinite(double x) { return (x > 0.0 && std::isfinite(x)) ? TRUE : FALSE; }
+inline SmBoolean sm_PositiveFinite(const sm_Ivl & x) { return (x.lo > 0.0 && std::isfinite(x.hi)) ? TRUE : FALSE; }
 // x^p for a series whose constant term is positive: x0^p (1 + z)^p, z = x / x0 - 1, summed as the
 // binomial series in z, which has no constant term (so S + E terms are all there are)
-SmStatus sm_T2Pow(const sm_T2 & x, double p, sm_T2 & rY)
+template <class Z> SmStatus sm_T2Pow(const sm_T2Of<Z> & x, double p, sm_T2Of<Z> & rY)
 {
-  const double x0 = x.c[0];
-  if (!(x0 > 0.0) || !std::isfinite(x0))
+  const Z x0 = x.c[0];
+  if (!sm_PositiveFinite(x0))
     { SER_MSG(SM_ERR, _T("SmProceduralBlend: its section degenerates at this point (a weight or a length is zero)")); }
-  sm_T2 z = x * (1.0 / x0);
-  z.c[0] = 0.0;
-  sm_T2 sPow(x.S, x.E, 1.0), sSum(x.S, x.E, 1.0);
-  double dBinom = 1.0;
-  for (int m=1; m<=x.S+x.E; m++)
+  sm_T2Of<Z> z = sm_T2Scale(x, Z(1.0) / x0);
+  z.c[0] = Z(0.0);
+  sm_T2Of<Z> sPow(x.S, x.E, Z(1.0), x.N), sSum(x.S, x.E, Z(1.0), x.N);
+  Z dBinom(1.0);
+  for (int m=1; m<=x.N; m++)
     {
-      dBinom *= (p - (m - 1)) / m;
+      dBinom = dBinom * (Z(p - (m - 1)) / Z(m));
       sPow = sPow * z;
-      sSum = sSum + sPow * dBinom;
+      sSum = sSum + sm_T2Scale(sPow, dBinom);
     }
-  rY = sSum * smos_Pow(x0, p);
+  rY = sm_T2Scale(sSum, sm_PowOf(x0, p));
   return SM_SUCCESS;
 }
-struct sm_TV { sm_T2 a[3]; };
-sm_TV sm_TVZero(int lS, int lE) { sm_TV r; for (int k=0; k<3; k++) { r.a[k] = sm_T2(lS, lE); } return r; }
-sm_TV operator+(const sm_TV & p, const sm_TV & q) { sm_TV r; for (int k=0; k<3; k++) { r.a[k] = p.a[k] + q.a[k]; } return r; }
-sm_TV operator-(const sm_TV & p, const sm_TV & q) { sm_TV r; for (int k=0; k<3; k++) { r.a[k] = p.a[k] - q.a[k]; } return r; }
-sm_TV operator*(const sm_TV & p, const sm_T2 & s) { sm_TV r; for (int k=0; k<3; k++) { r.a[k] = p.a[k] * s; } return r; }
+template <class Z> struct sm_TVT { sm_T2Of<Z> a[3]; };
+typedef sm_TVT<double> sm_TV;
+template <class Z> sm_TVT<Z> sm_TVZeroOf(int lS, int lE) { sm_TVT<Z> r; for (int k=0; k<3; k++) { r.a[k] = sm_T2Of<Z>(lS, lE); } return r; }
+sm_TV sm_TVZero(int lS, int lE) { return sm_TVZeroOf<double>(lS, lE); }
+template <class Z> sm_TVT<Z> operator+(const sm_TVT<Z> & p, const sm_TVT<Z> & q) { sm_TVT<Z> r; for (int k=0; k<3; k++) { r.a[k] = p.a[k] + q.a[k]; } return r; }
+template <class Z> sm_TVT<Z> operator-(const sm_TVT<Z> & p, const sm_TVT<Z> & q) { sm_TVT<Z> r; for (int k=0; k<3; k++) { r.a[k] = p.a[k] - q.a[k]; } return r; }
+template <class Z> sm_TVT<Z> operator*(const sm_TVT<Z> & p, const sm_T2Of<Z> & s) { sm_TVT<Z> r; for (int k=0; k<3; k++) { r.a[k] = p.a[k] * s; } return r; }
 sm_TV operator*(const sm_TV & p, double d) { sm_TV r; for (int k=0; k<3; k++) { r.a[k] = p.a[k] * d; } return r; }
-sm_T2 sm_TVDot(const sm_TV & p, const sm_TV & q) { return p.a[0] * q.a[0] + p.a[1] * q.a[1] + p.a[2] * q.a[2]; }
+template <class Z> sm_TVT<Z> sm_TVScale(const sm_TVT<Z> & p, const Z & d) { sm_TVT<Z> r; for (int k=0; k<3; k++) { r.a[k] = sm_T2Scale(p.a[k], d); } return r; }
+template <class Z> sm_T2Of<Z> sm_TVDot(const sm_TVT<Z> & p, const sm_TVT<Z> & q) { return p.a[0] * q.a[0] + p.a[1] * q.a[1] + p.a[2] * q.a[2]; }
 // a series in sigma of a station (its eps^k coefficients), up to lS, as an sm_T2 of orders (lS, lE)
 sm_TV sm_TVOf(const sm_VSer<double> & crV, int k, int lS, int lE)
 {
@@ -2371,6 +2530,264 @@ sm_TV sm_TVOf(const sm_VSer<double> & crV, int k, int lS, int lE)
       r.a[c].at(i, 0) = crV.a[c].c[i][k];
   return r;
 }
+/*******************************************************************//**
+   A blend by its definition enclosed over a box, for the certificate of a
+   blend on it (sm_GnDefFace).
+***********************************************************************/
+// A definition the certificate encloses: the ball's circle of one radius between two NURBS faces
+// (its partials of total order up to SM_GN_MAXS: the order its feet's series hold in s).
+SmBoolean sm_DefinitionEnclosable(const SmSurface & crSurface)
+{
+  if (!crSurface.IsKindOf(SmProceduralBlend_TYPE))
+    { return FALSE; }
+  const SmProceduralBlend & crD = static_cast<const SmProceduralBlend &>(crSurface);
+  if (crD.GetOrder() != 1 || crD.GetLaw() != NULL || crD.GetLeader() == NULL || crD.GetSeed(0) == NULL || crD.GetSeed(1) == NULL)
+    { return FALSE; }
+  for (ULONG i=0; i<2; i++)
+    {
+      const SmSurface * pSup = crD.GetSupport(i);
+      if (pSup == NULL || !pSup->IsKindOf(SmBSplineSurface_TYPE) || pSup->IsKindOf(SmProceduralBlend_TYPE))
+        { return FALSE; }
+    }
+  return TRUE;
+}
+
+SmStatus sm_GnDefFaceOf(const SmProceduralBlend & crD, sm_GnDefFace & rD)
+{
+  if (!sm_DefinitionEnclosable(crD))
+    { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmGnSectionFSG: a blend by its definition that is not enclosed (only the ball's circle of one radius between NURBS faces is)")); }
+  rD.pDef = &crD;
+  for (ULONG i=0; i<2; i++)
+    {
+      rD.apSup[i] = crD.GetSupport(i);
+      SER(sm_NurbsOf(*static_cast<const SmBSplineSurface *>(rD.apSup[i]), rD.asSup[i]));
+      rD.adR[i] = crD.GetOffset(i);
+      rD.adSide[i] = crD.GetSide(i);
+    }
+  SER(sm_NurbsCurveOf(*crD.GetLeader(), rD.sLeader));
+  crD.GetDefinitionMap(rD.adA, rD.adB, rD.bSwapped);
+  rD.sPieces.clear();
+  return SM_SUCCESS;
+}
+
+// The station at the middle of the net's piece k along s, solved once: its feet's pieces of the
+// faces, the leader's piece and the feet's Taylor terms there (the guesses over the piece).
+SmStatus sm_DefPieceAt(sm_GnDefFace & rD, const sm_Nurbs & crNet, int k, const sm_GnDefPiece *& rpPiece)
+{
+  rpPiece = NULL;
+  const std::vector<double> & crK = rD.bSwapped ? crNet.V : crNet.U;
+  if (k < 0 || static_cast<size_t>(k) + 1 >= crK.size() || !(crK[static_cast<size_t>(k) + 1] > crK[static_cast<size_t>(k)]))
+    { return SM_ERR; }
+  if (rD.sPieces.size() < crK.size())
+    {
+      sm_GnDefPiece sNone;
+      sNone.lState = 0;
+      rD.sPieces.resize(crK.size(), sNone);
+    }
+  sm_GnDefPiece & rP = rD.sPieces[static_cast<size_t>(k)];
+  if (rP.lState == 0)
+    {
+      rP.lState = -1;
+      const SmProceduralBlend & crD = *rD.pDef;
+      rP.dS = rD.adA[0] + rD.adB[0] * 0.5 * (crK[static_cast<size_t>(k)] + crK[static_cast<size_t>(k) + 1]);
+      double adSeed[4];
+      for (ULONG f=0; f<2; f++)
+        {
+          SmPoint3d sW;
+          SER(crD.GetSeed(f)->EvaluatePoint(rP.dS, sW));
+          adSeed[2*f] = sW.x;
+          adSeed[2*f+1] = sW.y;
+        }
+      SmPoint3d sL;
+      SER(crD.GetLeader()->EvaluatePoint(rP.dS, sL));
+      const sm_Trunc sTr = { 2, 0 };
+      sm_GnStation sSt;
+      if (sm_GnSolveStation(rD.apSup, *crD.GetLeader(), rP.dS, adSeed, rD.adR, rD.adSide, sTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sL).Length()), sSt)
+          == SM_SUCCESS)
+        {
+          for (int i=0; i<3; i++)
+            for (int q=0; q<4; q++)
+              rP.ax[i][q] = sSt.asX[q].c[i][0];
+          for (int f=0; f<2; f++)
+            {
+              rP.aku[f] = sm_Span(rD.asSup[f].U, rD.asSup[f].p, rD.asSup[f].nu, rP.ax[0][2*f]);
+              rP.akv[f] = sm_Span(rD.asSup[f].V, rD.asSup[f].q, rD.asSup[f].nv, rP.ax[0][2*f+1]);
+            }
+          rP.lLeader = sm_Span(rD.sLeader.U, rD.sLeader.p, rD.sLeader.n, rP.dS);
+          rP.lState = 1;
+        }
+    }
+  if (rP.lState != 1)
+    { return SM_ERR; }
+  rpPiece = &rP;
+  return SM_SUCCESS;
+}
+
+// p^(j)(t) / j!, j <= lJ, of the polynomial of Bernstein coefficients crB, at every t in crT
+std::vector<sm_Ivl> sm_BernTaylorOver(const std::vector<double> & crB, const sm_Ivl & crT, int lJ)
+{
+  std::vector<sm_Ivl> sOut(static_cast<size_t>(lJ + 1), sm_Ivl(0.0));
+  std::vector<sm_Ivl> sD;
+  for (size_t q=0; q<crB.size(); q++) { sD.push_back(sm_Ivl(crB[q])); }
+  double dFact = 1.0, dJFact = 1.0;
+  for (int j=0; j<=lJ && !sD.empty(); j++)
+    {
+      if (j > 0) { dJFact *= j; }
+      std::vector<sm_Ivl> sW = sD;
+      for (size_t r=1; r<sW.size(); r++)
+        for (size_t q=0; q+r<sW.size(); q++)
+          sW[q] = (sm_Ivl(1.0) - crT) * sW[q] + crT * sW[q+1];
+      sOut[static_cast<size_t>(j)] = sm_Ivl(dFact) * sW[0] / sm_Ivl(dJFact);
+      const double dDeg = static_cast<double>(sD.size() - 1);
+      std::vector<sm_Ivl> sNext;
+      for (size_t q=0; q+1<sD.size(); q++) { sNext.push_back(sD[q+1] - sD[q]); }
+      dFact *= dDeg;
+      sD.swap(sNext);
+    }
+  return sOut;
+}
+
+/*******************************************************************//**
+   The definition's partials over the box [ua, ub] x [va, vb] of its (u, v),
+   to total order lK, enclosed: rP.P[a][b] holds d^(a+b) S / du^a dv^b at
+   every point of the box. On the net's piece along s that (ku, kv) is in
+   (between two of the definition's stations), its feet lie on one
+   polynomial piece of each face it rolls on (a station stands where a foot
+   crosses a knot line), and the definition there is that of the pieces'
+   polynomials, continued over the rest of the box as the faces' pieces are
+   (sm_GnEnclose): its feet's series in s over the box's s enclosed by
+   Krawczyk's operator on those pieces, the leader's piece, then the arc in
+   (sigma, dt) over the box's t, as SmProceduralBlend::EvaluateDefinition
+   makes it (the circle's centre the ball's: a constant radius), in rounded
+   interval arithmetic. Fails (SM_ERR) where an enclosure is not proved.
+***********************************************************************/
+SmStatus sm_DefinitionPartialsNaive(sm_GnDefFace & rD, const sm_Nurbs & crNet, int ku, int kv, double ua, double ub, double va, double vb,
+                                    int lK, sm_Partials<sm_Ivl> & rP)
+{
+  if (lK < 0 || lK > SM_GN_MAXS)
+    { return SM_ERR; }
+  const sm_GnDefPiece * pPiece = NULL;
+  if (sm_DefPieceAt(rD, crNet, rD.bSwapped ? kv : ku, pPiece) != SM_SUCCESS)
+    { return SM_ERR; }
+  // the box in (s, t)
+  const sm_Ivl sPs = rD.bSwapped ? sm_Ivl(va, vb) : sm_Ivl(ua, ub), sPt = rD.bSwapped ? sm_Ivl(ua, ub) : sm_Ivl(va, vb);
+  const sm_Ivl sS = sm_Ivl(rD.adA[0]) + sm_Ivl(rD.adB[0]) * sPs, sT = sm_Ivl(rD.adA[1]) + sm_Ivl(rD.adB[1]) * sPt;
+  if (!(std::isfinite(sS.lo) && std::isfinite(sS.hi) && std::isfinite(sT.lo) && std::isfinite(sT.hi)))
+    { return SM_ERR; }
+  // the feet over the box's s, guessed at its ends from the piece's middle
+  sm_GnSpanAt sAt;
+  sAt.sS = sS;
+  for (int q=0; q<4; q++)
+    {
+      const double dA = sS.lo - pPiece->dS, dB = sS.hi - pPiece->dS;
+      sAt.axA[q] = pPiece->ax[0][q] + dA * (pPiece->ax[1][q] + dA * pPiece->ax[2][q]);
+      sAt.axB[q] = pPiece->ax[0][q] + dB * (pPiece->ax[1][q] + dB * pPiece->ax[2][q]);
+    }
+  for (int f=0; f<2; f++)
+    {
+      sAt.aku[f] = pPiece->aku[f];
+      sAt.akv[f] = pPiece->akv[f];
+    }
+  sAt.lLeader = pPiece->lLeader;
+  const sm_Nurbs * apSup[2] = { &rD.asSup[0], &rD.asSup[1] };
+  sm_VSer<sm_Ivl> asF[2], sV;
+  SmBoolean bProved = FALSE;
+  if (sm_GnEncloseOver(apSup, rD.sLeader, sAt, rD.adR, rD.adSide, 0, lK, asF, bProved, NULL, NULL, &sV) != SM_SUCCESS || !bProved)
+    { return SM_ERR; }
+
+  // the arc from the first rail to the second about the ball's centre, weights 1, cos(theta / 2), 1
+  typedef sm_T2Of<sm_Ivl> T2;
+  typedef sm_TVT<sm_Ivl> TV;
+  // (to total order lK: the rest is not asked for)
+  TV sRho1, sRho2, sM;
+  for (int c=0; c<3; c++) { sRho1.a[c] = T2(lK, lK, sm_Ivl(0.0), lK); }
+  sRho2 = sRho1;
+  sM = sRho1;
+  for (int c=0; c<3; c++)
+    for (int i=0; i<=lK; i++)
+      {
+        sRho1.a[c].at(i, 0) = asF[0].a[c].c[i][0];
+        sRho2.a[c].at(i, 0) = asF[1].a[c].c[i][0];
+        sM.a[c].at(i, 0) = sV.a[c].c[i][0];
+      }
+  const TV sB1 = sRho1 - sM, sB2 = sRho2 - sM;
+  T2 sI1, sI2, sW, sInvW2, sInvDen;
+  if (sm_T2Pow(sm_TVDot(sB1, sB1), -0.5, sI1) != SM_SUCCESS || sm_T2Pow(sm_TVDot(sB2, sB2), -0.5, sI2) != SM_SUCCESS)
+    { return SM_ERR; }
+  const T2 sHalf = sm_T2Scale(sm_TVDot(sB1, sB2) * sI1 * sI2 + T2(lK, lK, sm_Ivl(1.0), lK), sm_Ivl(0.5)); // cos^2(theta / 2)
+  if (sm_T2Pow(sHalf, 0.5, sW) != SM_SUCCESS || sm_T2Pow(sHalf, -1.0, sInvW2) != SM_SUCCESS)
+    { return SM_ERR; }
+  const TV sP1 = sM + (sm_TVScale(sRho1 + sRho2, sm_Ivl(0.5)) - sM) * sInvW2;
+  // the quadratic Bernstein basis about every t of the box: B0 = (1 - t)^2, B1 = 2 t (1 - t), B2 = t^2
+  T2 asB[3] = { T2(lK, lK, sm_Ivl(0.0), lK), T2(lK, lK, sm_Ivl(0.0), lK), T2(lK, lK, sm_Ivl(0.0), lK) };
+  const double adBern[3][3] = { { 1.0, 0.0, 0.0 }, { 0.0, 1.0, 0.0 }, { 0.0, 0.0, 1.0 } };
+  for (int b=0; b<3; b++)
+    {
+      const std::vector<double> sUnit(adBern[b], adBern[b] + 3);
+      const std::vector<sm_Ivl> sTay = sm_BernTaylorOver(sUnit, sT, std::min(lK, 2));
+      for (size_t j=0; j<sTay.size(); j++) { asB[b].at(0, static_cast<int>(j)) = sTay[j]; }
+    }
+  const T2 sWB1 = sW * asB[1];
+  if (sm_T2Pow(asB[0] + sWB1 + asB[2], -1.0, sInvDen) != SM_SUCCESS)
+    { return SM_ERR; }
+  const TV sSum = (sRho1 * asB[0] + sP1 * sWB1 + sRho2 * asB[2]) * sInvDen;
+
+  // to the surface's (u, v): d/du = b_s d/ds (b_t d/dt when swapped), d/dv the other
+  double dFa = 1.0;
+  for (int a=0; a<=lK; a++)
+    {
+      if (a > 0) { dFa *= a; }
+      double dFb = 1.0;
+      for (int b=0; a+b<=lK; b++)
+        {
+          if (b > 0) { dFb *= b; }
+          const int i = rD.bSwapped ? b : a, j = rD.bSwapped ? a : b;
+          sm_Ivl sScale(dFa * dFb);
+          for (int m=0; m<i; m++) { sScale = sScale * sm_Ivl(rD.adB[0]); }
+          for (int m=0; m<j; m++) { sScale = sScale * sm_Ivl(rD.adB[1]); }
+          rP.P[a][b].x = sSum.a[0].at(i, j) * sScale;
+          rP.P[a][b].y = sSum.a[1].at(i, j) * sScale;
+          rP.P[a][b].z = sSum.a[2].at(i, j) * sScale;
+        }
+    }
+  return SM_SUCCESS;
+}
+
+// The same, in the centred form where the box has room and one order more is held: the partials
+// at the box's middle plus the next order's over the box times the box's half widths (the mean
+// value theorem), within the direct enclosure, whose interval arithmetic widens with the box much
+// more than the centred form's does.
+SmStatus sm_DefinitionPartialsOverBox(sm_GnDefFace & rD, const sm_Nurbs & crNet, int ku, int kv, double ua, double ub, double va, double vb,
+                                      int lK, sm_Partials<sm_Ivl> & rP)
+{
+  if (!(lK + 1 <= SM_GN_MAXS && (ub > ua || vb > va)))
+    { return sm_DefinitionPartialsNaive(rD, crNet, ku, kv, ua, ub, va, vb, lK, rP); }
+  const double um = 0.5 * (ua + ub), vm = 0.5 * (va + vb);
+  sm_Partials<sm_Ivl> sWide, sMid;
+  if (sm_DefinitionPartialsNaive(rD, crNet, ku, kv, ua, ub, va, vb, lK + 1, sWide) != SM_SUCCESS
+      || sm_DefinitionPartialsNaive(rD, crNet, ku, kv, um, um, vm, vm, lK, sMid) != SM_SUCCESS)
+    { return SM_ERR; }
+  const sm_Ivl du = sm_Ivl(ua, ub) - sm_Ivl(um), dv = sm_Ivl(va, vb) - sm_Ivl(vm);
+  for (int a=0; a<=lK; a++)
+    for (int b=0; a+b<=lK; b++)
+      {
+        sm_Ivl * apOut[3] = { &rP.P[a][b].x, &rP.P[a][b].y, &rP.P[a][b].z };
+        const sm_Ivl acMid[3] = { sMid.P[a][b].x, sMid.P[a][b].y, sMid.P[a][b].z };
+        const sm_Ivl acU[3] = { sWide.P[a+1][b].x, sWide.P[a+1][b].y, sWide.P[a+1][b].z };
+        const sm_Ivl acV[3] = { sWide.P[a][b+1].x, sWide.P[a][b+1].y, sWide.P[a][b+1].z };
+        const sm_Ivl acW[3] = { sWide.P[a][b].x, sWide.P[a][b].y, sWide.P[a][b].z };
+        for (int c=0; c<3; c++)
+          {
+            const sm_Ivl sC = acMid[c] + acU[c] * du + acV[c] * dv;
+            const sm_Ivl sX(std::max(sC.lo, acW[c].lo), std::min(sC.hi, acW[c].hi));
+            if (!(sX.lo <= sX.hi))
+              { return SM_ERR; }
+            *apOut[c] = sX;
+          }
+      }
+  return SM_SUCCESS;
+}
+
 // The stations a thread solved last for blends by their definitions: an evaluation at the same s
 // (another t: a row of a grid, quadrature, an isocurve) takes its station from here. Keyed by the
 // definition's serial (SmProceduralBlend::Renew), never reused, so a station is never another's.
@@ -2379,6 +2796,8 @@ struct sm_StationMemo
   unsigned long long lSerial; // 0: empty
   double             dS;
   int                ts, te;
+  SmBoolean          bBefore;    // the station's partials on the side before s
+  SmBoolean          bSided;     // and they differ from the side after it (s is one of the definition's stations)
   sm_GnStation       sStation;
   SmBoolean          bW;         // sW holds the station's equal area thumbweight series
   sm_Tay<double>     sW;
@@ -2787,10 +3206,14 @@ SmStatus SmGnSectionFSG::CircleSurface
             const SmOffsetSurface * apOff[2] = { SM_CAST_PTR(SmOffsetSurface, pSurf1), SM_CAST_PTR(SmOffsetSurface, pSurf2) };
             bDefinition = (apOff[0] != NULL && apOff[1] != NULL && pUV1 != NULL && pUV2 != NULL
                            && !m_sArcs.bApproximateArcs && !m_sArcs.bMirror && !m_sArcs.bComplement) ? TRUE : FALSE;
+            // (a face that is itself a blend by its definition takes a ball of one radius, on a round
+            // of one radius between NURBS faces: the definition its certificate encloses)
+            const SmBoolean bConstantBall = (rFilletSolver.GetSolverType() == SM_FS_CONST_RADIUS && !bBallRadiusVaries) ? TRUE : FALSE;
             for (int f=0; f<2 && bDefinition; f++)
             {
                 apBase[f] = apOff[f]->GetBaseSurface();
-                if (   apBase[f] == NULL || !apBase[f]->IsKindOf(SmBSplineSurface_TYPE) || apBase[f]->IsKindOf(SmProceduralBlend_TYPE))
+                if (   apBase[f] == NULL || !apBase[f]->IsKindOf(SmBSplineSurface_TYPE)
+                    || (apBase[f]->IsKindOf(SmProceduralBlend_TYPE) && !(bConstantBall && sm_DefinitionEnclosable(*apBase[f]))))
                     { bDefinition = FALSE; }
             }
             // the ball's radius: the constant radius solver's, the same for both faces; or the
@@ -4065,16 +4488,28 @@ SmStatus SmGnSectionFSG::Build
   {
     sm_Nurbs asN[2];
     const sm_Nurbs * apN[2] = { &asN[0], &asN[1] };
+    // a face that is a blend by its definition: its definition enclosed over the certificate's boxes
+    // (sm_DefinitionPartialsOverBox), its net's knots its stations
+    sm_GnDefFace asDef[2];
+    sm_GnDefs sDefs = { { NULL, NULL } };
     for (int f=0; f<2; f++)
       {
         const SmBSplineSurface * pBS = SM_CAST_PTR(SmBSplineSurface, apFace[f]);
         if (pBS == NULL)
           { SER_MSG(SM_ERR, _T("SmGnSectionFSG: a face that is not a NURBS surface: its blend of order 2 and up cannot be certified")); }
-        // a blend by its definition is enclosed only on its net, which is not the surface the feet are solved on
         if (apFace[f]->IsKindOf(SmProceduralBlend_TYPE))
-          { SER_MSG(SM_ERR, _T("SmGnSectionFSG: a face that is a blend by its definition: a blend of order 2 and up on it cannot be certified until its definition is enclosed")); }
+          {
+            // the certificate takes the face's partials to total order 7 in a round of one radius
+            // (its fourth s-derivatives' Taylor form, sm_GnFourthOver), which the definition's
+            // feet's series hold (SM_GN_MAXS); a law's touch circle, or a G^n section, takes more
+            if (!(n == 1 && pLawRound == NULL && sm_DefinitionEnclosable(*apFace[f])))
+              { SER_MSG(SM_ERR, _T("SmGnSectionFSG: a face that is a blend by its definition: only a round of one radius is certified on it, and only on a round of one radius between NURBS faces")); }
+            SER(sm_GnDefFaceOf(static_cast<const SmProceduralBlend &>(*apFace[f]), asDef[f]));
+            sDefs.ap[f] = &asDef[f];
+          }
         SER(sm_NurbsOf(*pBS, asN[f]));
       }
+    sm_GnDefs * pDefs = (sDefs.ap[0] != NULL || sDefs.ap[1] != NULL) ? &sDefs : NULL;
     sm_NurbsCurve sLeader;
     SER(sm_NurbsCurveOf(rLeader, sLeader));
     const double dTarget = 0.1 * dTol;
@@ -4176,7 +4611,7 @@ SmStatus SmGnSectionFSG::Build
           {
             if (sBounds[j] < 0.0)
               { SER(sm_GnCertifySpan(apN, sLeader, apFace, rLeader, sStations[j], sStations[j+1], adR, adSide, static_cast<int>(n), dTarget, sBounds[j],
-                                     bEqualArea ? &sVary : NULL, pGnLaw)); }
+                                     bEqualArea ? &sVary : NULL, pGnLaw, pDefs)); }
             if (!(sBounds[j] <= dTarget))
               { bAll = FALSE; }
           }
@@ -4612,7 +5047,8 @@ NOTES: One station solve: the feet by Newton from the seeds, then their
     of it as truncated series in (sigma, dt), so the partials are exact to
     rounding.
 ***********************************************************************/
-SmStatus SmProceduralBlend::EvaluateDefinition(double dS, double dT, ULONG lHighestS, ULONG lHighestT, SmVector3d * aDerivs) const
+SmStatus SmProceduralBlend::EvaluateDefinition(double dS, double dT, ULONG lHighestS, ULONG lHighestT, SmVector3d * aDerivs,
+                                               SmBoolean bBefore) const
 {
   NER(aDerivs); NER(m_apSupport[0]); NER(m_apSupport[1]); NER(m_pLeader); NER(m_apSeed[0]); NER(m_apSeed[1]);
   CountEvaluation();
@@ -4638,7 +5074,7 @@ SmStatus SmProceduralBlend::EvaluateDefinition(double dS, double dT, ULONG lHigh
   if (m_pLaw != NULL)
     {
       SmVector3d asD[SM_GN_MAXS + 1];
-      SER(m_pLaw->Evaluate(dS, static_cast<ULONG>(sTr.s), TRUE, asD, FALSE));
+      SER(m_pLaw->Evaluate(dS, static_cast<ULONG>(sTr.s), bBefore ? FALSE : TRUE, asD, FALSE));
       double dFact = 1.0;
       for (int i=0; i<=sTr.s; i++)
         {
@@ -4656,7 +5092,7 @@ SmStatus SmProceduralBlend::EvaluateDefinition(double dS, double dT, ULONG lHigh
   for (int m=0; m<SM_STATION_MEMO && !bMemo; m++)
     {
       sm_StationMemo & rMemo = t_asMemo[m];
-      if (rMemo.lSerial == m_lSerial && rMemo.dS == dS && rMemo.ts == sTr.s && rMemo.te == sTr.e)
+      if (rMemo.lSerial == m_lSerial && rMemo.dS == dS && rMemo.ts == sTr.s && rMemo.te == sTr.e && (!rMemo.bSided || rMemo.bBefore == bBefore))
         {
           sAt = rMemo.sStation;
           pMemo = &rMemo;
@@ -4669,16 +5105,61 @@ SmStatus SmProceduralBlend::EvaluateDefinition(double dS, double dT, ULONG lHigh
       SER(m_pLeader->EvaluatePoint(dS, sL));
       const SmSurface * apFace[2] = { m_apSupport[0], m_apSupport[1] };
       // (a nested support's own evaluations use the memo meanwhile: the station is kept only once solved)
-      const SmStatus eSolved = sm_GnSolveStation(apFace, *m_pLeader, dS, adSeed, adR, m_adSide, sTr,
-                                                 1.0e-9 * smos_Max(1.0, SmVector3d(sL).Length()), sAt, pR, n >= 2 ? n : 0);
+      const double dSolveTol = 1.0e-9 * smos_Max(1.0, SmVector3d(sL).Length());
+      SmStatus eSolved = sm_GnSolveStation(apFace, *m_pLeader, dS, adSeed, adR, m_adSide, sTr, dSolveTol, sAt, pR, n >= 2 ? n : 0,
+                                           NULL, NULL, NULL, bBefore);
       CountSolve(static_cast<ULONG>(sAt.lSteps));
       SER(eSolved);
+      // a foot on a knot line of its support: the support's partials there on the piece the foot
+      // moves into along s (comes from, bBefore), as the stations' series were taken; the way it
+      // moves is the seed's (the stations' feet and their s-derivatives, interpolated)
+      double adOn[4], adDir[4];
+      for (int f=0; f<2; f++)
+        {
+          SmVector3d asW[2];
+          SER(m_apSeed[f]->Evaluate(dS, 1, bBefore ? FALSE : TRUE, asW, FALSE));
+          adDir[2*f] = asW[1].x;
+          adDir[2*f+1] = asW[1].y;
+        }
+      for (int q=0; q<4; q++) { adOn[q] = sAt.asX[q].c[0][0]; }
+      int aiSides[4] = { 0, 0, 0, 0 };
+      SmBoolean bOther = FALSE;
+      SER(sm_FeetOnKnots(apFace, adOn, adDir, bBefore, sTr.s + sTr.e + 1, aiSides, bOther));
+      if (bOther)
+        {
+          eSolved = sm_GnSolveStation(apFace, *m_pLeader, dS, adOn, adR, m_adSide, sTr, dSolveTol, sAt, pR, n >= 2 ? n : 0, &aiSides,
+                                      NULL, NULL, bBefore);
+          CountSolve(static_cast<ULONG>(sAt.lSteps));
+          SER(eSolved);
+        }
+      // the side matters only at one of the definition's stations: a foot on a knot line, or s a
+      // knot of the leader or the law; elsewhere the station is the same from either side
+      SmBoolean bSided = FALSE;
+      for (int q=0; q<4; q++) { if (aiSides[q] != 0) { bSided = TRUE; } }
+      // (the leader's derivatives to order s + 1 enter, its unit tangent's; the law's to order s; a
+      // curve is C^(p - multiplicity) at a knot, its derivatives to that order the same either side)
+      const SmBSplineCurve * apAlong[2] = { m_pLeader, m_pLaw };
+      const long alUsed[2] = { sTr.s + 1, sTr.s };
+      for (int c=0; c<2 && !bSided; c++)
+        {
+          if (apAlong[c] == NULL)
+            { continue; }
+          SmTArray<double> sKnots;
+          SmTArray<ULONG> sMult;
+          SER(apAlong[c]->GetKnots(sKnots, &sMult));
+          const long lDeg = static_cast<long>(apAlong[c]->GetDegree());
+          for (ULONG m=1; m+1<sKnots.GetSize() && m<sMult.GetSize(); m++)
+            if (std::fabs(dS - sKnots[m]) <= 1.0e-9 * (1.0 + std::fabs(sKnots[m])) && alUsed[c] > lDeg - static_cast<long>(sMult[m]))
+              { bSided = TRUE; }
+        }
       sm_StationMemo & rMemo = t_asMemo[t_lMemoNext];
       t_lMemoNext = (t_lMemoNext + 1) % SM_STATION_MEMO;
       rMemo.lSerial = m_lSerial;
       rMemo.dS = dS;
       rMemo.ts = sTr.s;
       rMemo.te = sTr.e;
+      rMemo.bBefore = bBefore;
+      rMemo.bSided = bSided;
       rMemo.sStation = sAt;
       rMemo.bW = FALSE;
       pMemo = &rMemo;

@@ -143,10 +143,16 @@ public:
   ULONG                  GetDepth() const;
   // the definition's (s, t) at the surface's (u, v)
   SmPoint2d              DefinitionParameters(const SmPoint2d & crUV) const;
+  // that map's terms: (s, t) = (rA[0] + rB[0] p, rA[1] + rB[1] q), (p, q) = (u, v), or (v, u) when rbSwapped
+  void                   GetDefinitionMap(double (&rA)[2], double (&rB)[2], SmBoolean & rbSwapped) const;
 
   // The definition's partials at (dS, dT): aDerivs[i * (lHighestT + 1) + j] = d^(i+j) S / ds^i dt^j,
-  // i <= lHighestS, j <= lHighestT. The work is counted (SmBlendCounts).
-  SmStatus EvaluateDefinition(double dS, double dT, ULONG lHighestS, ULONG lHighestT, SmVector3d * aDerivs) const;
+  // i <= lHighestS, j <= lHighestT. The work is counted (SmBlendCounts). Where s is one of its
+  // stations (a support's knot line under a foot, a knot of the leader or the law) the definition
+  // is only as smooth as they are there: its partials on the side after s, or with bBefore on the
+  // side before it.
+  SmStatus EvaluateDefinition(double dS, double dT, ULONG lHighestS, ULONG lHighestT, SmVector3d * aDerivs,
+                              SmBoolean bBefore = FALSE) const;
 
   // the counts of every procedural blend's exact evaluations since the last reset
   static SmBlendCounts GetCounts();

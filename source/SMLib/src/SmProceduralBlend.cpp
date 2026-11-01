@@ -310,6 +310,16 @@ SmPoint2d SmProceduralBlend::DefinitionParameters(const SmPoint2d & crUV) const
   return SmPoint2d(m_adA[0] + m_adB[0] * p, m_adA[1] + m_adB[1] * q);
 }
 
+void SmProceduralBlend::GetDefinitionMap(double (&rA)[2], double (&rB)[2], SmBoolean & rbSwapped) const
+{
+  for (int i=0; i<2; i++)
+    {
+      rA[i] = m_adA[i];
+      rB[i] = m_adB[i];
+    }
+  rbSwapped = m_bSwapped;
+}
+
 void SmProceduralBlend::ReparametrizeMap(SmBoolean bU, double dAlpha, double dBeta)
 {
   // u drives s unless swapped
@@ -428,7 +438,11 @@ SmStatus SmProceduralBlend::EvaluateSimple
   const SmPoint2d sST = DefinitionParameters(sUV);
   const ULONG lS = m_bSwapped ? lHighestVDeriv : lHighestUDeriv, lT = m_bSwapped ? lHighestUDeriv : lHighestVDeriv;
   std::vector<SmVector3d> sD(static_cast<size_t>((lS + 1) * (lT + 1)));
-  SER(EvaluateDefinition(sST.x, sST.y, lS, lT, sD.data()));
+  // the side of s the partials are taken on: the upper interval of the parameter driving s
+  // (FromLeft TRUE) is the side after s where s grows with it
+  const SmBoolean bUpper = m_bSwapped ? bVFromLeft : bUFromLeft;
+  const SmBoolean bBefore = ((bUpper ? 1 : 0) != (m_adB[0] > 0.0 ? 1 : 0)) ? TRUE : FALSE;
+  SER(EvaluateDefinition(sST.x, sST.y, lS, lT, sD.data(), bBefore));
   for (ULONG i=0; i<=lHighestUDeriv; i++)
     for (ULONG j=0; j<=lHighestVDeriv; j++)
       {

@@ -6461,11 +6461,13 @@ int circle_definitions(const smlib_brep *b, double r, double &worst_circle, doub
         const SmExtent2d dom = pb->GetNaturalUVDomain();
         for (int a = 0; a <= 32; a++)
         {
-            const double u = dom.GetMin().x + (dom.GetMax().x - dom.GetMin().x) * a / 32.0;
+            // a section: s fixed, t across (u and v the other way round on a face turned over)
             std::vector<SmPoint3d> p;
             for (int c = 0; c <= 8; c++)
             {
-                const SmPoint2d uv(u, dom.GetMin().y + (dom.GetMax().y - dom.GetMin().y) * c / 8.0);
+                const double fs = a / 32.0, ft = c / 8.0;
+                const SmPoint2d uv(dom.GetMin().x + (dom.GetMax().x - dom.GetMin().x) * (u_is_s ? fs : ft),
+                                   dom.GetMin().y + (dom.GetMax().y - dom.GetMin().y) * (u_is_s ? ft : fs));
                 SmPoint3d x, y;
                 CHECK(pb->EvaluatePoint(uv, x) == SM_SUCCESS && pb->SmBSplineSurface::EvaluatePoint(uv, y) == SM_SUCCESS);
                 p.push_back(x);
@@ -6626,7 +6628,7 @@ void round_chain_on_a_c2_face_is_its_definition()
 
 // A round on a round by its definition: the twisted wedge's front edge rounded r 3 (a definition:
 // the top is a cubic spline), then the block cut by the plane x + 0.6 y + 0.6 z = 55, which crosses
-// that round at x 37 to 41, in the twist, and the cut's edges with the front, the round and the
+// that round at about x 38 to 42, in the twist, and the cut's edges with the front, the round and the
 // top (a tangent chain) rounded r 1. The round on the round rolls on a definition: it is its own
 // definition two deep, its sections the ball's circles to rounding, its net within the certified
 // bound, the inner round's derivatives enclosed over the boxes its certificate takes. Its rail on
@@ -6680,7 +6682,11 @@ void round_on_a_definition_is_its_definition()
         std::printf("  %d round(s) on a round by definition, %d spans: sections off the ball's circle by %.3g, the net at %.3g of its bound;"
                     " %llu definition evaluations, %llu station solves\n",
                     graded, spans, circle, net, counts.lEvaluations, counts.lSolves);
-        CHECK(graded == 1 && circle <= 1e-11 && net <= 1.0);
+        // its certificate's spans, and the definition evaluations the three rounds take (the two
+        // on definitions: each of the outer round's evaluations takes the inner round's), about 5%
+        // over 137720 and 102941 station solves
+        CHECK(graded == 1 && spans == 45 && circle <= 1e-11 && net <= 1.0);
+        CHECK(counts.lEvaluations <= 145000 && counts.lSolves <= 108000);
         // a station wherever the rail on the inner round crosses one of its stations (its knots along s)
         SmTArray<SmFace *> faces;
         r2->p->GetFaces(faces);
@@ -6770,8 +6776,7 @@ const TangentEndCase SECTION_CASES[] = {
     {"round_chain_on_a_c2_face_is_its_definition", round_chain_on_a_c2_face_is_its_definition, nullptr},
     {"tessellating_a_definition_meshes_its_net", tessellating_a_definition_meshes_its_net, nullptr},
     {"boolean_across_a_definition", boolean_across_a_definition, nullptr},
-    {"round_on_a_definition_is_its_definition", round_on_a_definition_is_its_definition,
-     "a round on a face that is a blend by its definition is not built as its definition: the certificate does not enclose the inner definition yet"},
+    {"round_on_a_definition_is_its_definition", round_on_a_definition_is_its_definition, nullptr},
     {"variable_round_law_dip", section_variable_round_law_dip, nullptr},
     {"variable_round_law_dips", section_variable_round_law_dips, nullptr},
     {"variable_round_law_peak", section_variable_round_law_peak, nullptr},
