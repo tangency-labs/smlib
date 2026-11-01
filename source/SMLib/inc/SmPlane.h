@@ -426,6 +426,10 @@ public:
   // trim plane domain to given TrimDomain
   virtual SmStatus TrimWithDomain( SmExtent2d & crTrimDomain );
 
+  // SolidCraft change: its trim adjusts its STEP domain, not shown to keep the map
+  virtual SmBoolean TrimKeepsParameterization(const SmExtent2d & crTrimDomain) const
+                                   { SM_REF1(crTrimDomain) ; return FALSE; }
+
   virtual SmBoolean IsBounded() const;  // TRUE=finite (FALSE=infinite) parameter range
 
   // eff: planes are never closed - always return FALSE

@@ -1759,6 +1759,13 @@ public:
 
   virtual SmStatus TrimWithDomain(SmExtent2d & crTrimUVDomain)         
                                  { SM_REF1(crTrimUVDomain) ; SE(SM_ERR) ; return SM_ERR; }
+
+  // SolidCraft change: TRUE where TrimWithDomain(crTrimDomain) keeps this surface's
+  // parameterization by its construction: every (u, v) of the trimmed domain evaluates to the
+  // point it did, so curves made on its parameters (a face's trim curves) still lie on it.
+  // FALSE unless the kind's trim is known to.
+  virtual SmBoolean TrimKeepsParameterization(const SmExtent2d & crTrimDomain) const
+                                 { SM_REF1(crTrimDomain) ; return FALSE; }
   
 
   // See if intersecting coincident range is really a tangent intersection point 

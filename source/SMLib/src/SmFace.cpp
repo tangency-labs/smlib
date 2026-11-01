@@ -18995,11 +18995,19 @@ SmStatus SmFace::ShrinkGeometry()
   pF->SetUVDomain(sNewDomain);
   // end CalculateUVDomainFromUVTrimCurves
 
+  // SolidCraft change: whether the trim keeps the surface's parameterization, by its kind's
+  // construction (SmSurface::TrimKeepsParameterization), asked before it is trimmed
+  const SmBoolean bSameMap = pSurface->TrimKeepsParameterization(sNewDomain);
+
   // Trim the surface and reset the surface domain to the Face's trim boundary
   SER( pSurface->TrimWithDomain(sNewDomain) );
 
   // remove all associated UVTrimCurves
-  SER( this->RemoveUVTrimCurves() );
+  // SolidCraft change: but where the trim kept the surface's parameterization: they lie on it as
+  // they did (the fillet's own exactly), and are kept. Else they no longer lie on it and are made
+  // again by projecting the edges' curves.
+  if ( !bSameMap )
+    { SER( this->RemoveUVTrimCurves() ); }
 
 // Remove Composites
 //  // Now Trim all Curves to the face edges  (NOT composites)

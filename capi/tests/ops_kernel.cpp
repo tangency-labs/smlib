@@ -6567,9 +6567,8 @@ void shrink_plane()
 
 // Each kind of surface a face is shrunk on, and why each that fails today fails.
 const TangentEndCase SHRINK_CASES[] = {
-    {"bspline_patch", shrink_bspline_patch, "SmFace::ShrinkGeometry removes every trim curve, whatever the trim does to the surface's map"},
-    {"cylinder_along_its_axis", shrink_cylinder_along_its_axis,
-     "SmFace::ShrinkGeometry removes every trim curve, whatever the trim does to the surface's map"},
+    {"bspline_patch", shrink_bspline_patch, nullptr},
+    {"cylinder_along_its_axis", shrink_cylinder_along_its_axis, nullptr},
     {"cylinder_in_its_angle", shrink_cylinder_in_its_angle, nullptr},
     {"torus_along_its_generator", shrink_torus_along_its_generator, nullptr},
     {"plane", shrink_plane, nullptr},

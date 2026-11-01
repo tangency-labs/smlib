@@ -486,6 +486,10 @@ public:
 
   virtual SmStatus TrimWithDomain(SmExtent2d & crTrimDomain) ;
 
+  // SolidCraft change: TRUE where the trim leaves the rotation's range as it is and the generator
+  // is a line (or is not trimmed); see the definition
+  virtual SmBoolean TrimKeepsParameterization(const SmExtent2d & crTrimDomain) const ;
+
   virtual SmStatus UpdateAnalyticalDomain( const SmExtent2d & crNewNurbsDomain ) ;
 
   // get memory used for curve but not its attributes

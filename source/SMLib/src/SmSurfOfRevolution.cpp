@@ -5511,6 +5511,45 @@ SmBoolean bDebugMe = FALSE;
 } // end SmSurfOfRevolution::Transform
 
 /*******************************************************************//**
+PURPOSE: Whether TrimWithDomain(crTrimDomain) keeps this surface's
+         parameterization, by its construction.
+
+NOTES: TrimWithDomain maps the trim domain's corners to the analytic domain,
+   rebuilds the NURB from it and reparameterizes that to the trim domain.
+   - The rotation: its arcs are rebuilt over the trimmed angle. Over the same
+     angle they are the same arcs; over a smaller one the circle's rational
+     parameterization differs (a linear fractional map of the old, which
+     agrees with it at two parameters at most).
+   - The generator: its AdjustSTEPInterval, then ScaleKnotVector. A line
+     (SmLine) is rebuilt over the trimmed STEP interval, the image of the trim
+     interval under its affine map, and scaled to that interval: the same
+     affine map. A circle's or a free B-spline's is not (an arc rebuilt; a
+     B-spline only extended, then its whole knot vector scaled).
+***********************************************************************/
+SmBoolean SmSurfOfRevolution::TrimKeepsParameterization
+ (const SmExtent2d & crTrimDomain)  // in : the domain TrimWithDomain would be given
+ const
+{
+  const SmExtent2d sNow    = GetNaturalUVDomain();
+  const SmExtent1d sRotNow = m_bSwapUV ? sNow.GetVInterval()         : sNow.GetUInterval();
+  const SmExtent1d sRotNew = m_bSwapUV ? crTrimDomain.GetVInterval() : crTrimDomain.GetUInterval();
+  const SmExtent1d sGenNow = m_bSwapUV ? sNow.GetUInterval()         : sNow.GetVInterval();
+  const SmExtent1d sGenNew = m_bSwapUV ? crTrimDomain.GetUInterval() : crTrimDomain.GetVInterval();
+
+  // the same rotation range (as TrimWithDomain tells an untrimmed domain)
+  if (   !sRotNow.IsContainedBy( sRotNew, SM_EFF_ZERO_PARAM )
+      || !sRotNew.IsContainedBy( sRotNow, SM_EFF_ZERO_PARAM ))
+    { return FALSE; }
+
+  // the generator untrimmed, or a line
+  if (   sGenNow.IsContainedBy( sGenNew, SM_EFF_ZERO_PARAM )
+      && sGenNew.IsContainedBy( sGenNow, SM_EFF_ZERO_PARAM ))
+    { return TRUE; }
+  return ( m_pGenCurve != NULL && m_pGenCurve->IsKindOf( SmLine_TYPE )) ? TRUE : FALSE;
+
+} // end SmSurfOfRevolution::TrimKeepsParameterization
+
+/*******************************************************************//**
 PURPOSE: Trim the Surface with the given NURB domain.
 
 NOTES:

@@ -1327,6 +1327,10 @@ public:
 
     virtual SmStatus TrimWithDomain(SmExtent2d & rTrimDomain);
 
+    // SolidCraft change: TrimWithDomain extracts the patch (knot insertion): the same map
+    virtual SmBoolean TrimKeepsParameterization(const SmExtent2d & crTrimDomain) const
+                                   { SM_REF1(crTrimDomain) ; return TRUE; }
+
 
     // for backward compatibility - define these read/write methods which have moved to SmSurface
 
