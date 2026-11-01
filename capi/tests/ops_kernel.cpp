@@ -5518,8 +5518,7 @@ const TangentEndCase TURN_CASES[] = {
     {"mitre_boss_base", turn_mitre_boss_base, nullptr},
     {"swept_boss_base", turn_swept_boss_base, nullptr},
     {"swept_sharp_pocket_refused", turn_swept_sharp_pocket_refused, nullptr},
-    {"swept_tori_turned_round", turn_swept_tori_turned_round,
-     "SmTorus::RebuildSTEPFromNURBParameters after SwapUV makes the horn torus a spindle torus whose v domain runs through its apex (SmTorus tests 2, 5), its edges off it by up to 1.41"},
+    {"swept_tori_turned_round", turn_swept_tori_turned_round, nullptr},
 };
 
 int turn_cases(bool known_failing, const char *only)
