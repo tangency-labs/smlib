@@ -516,6 +516,20 @@ struct SmArcSection
 };
 
 /*******************************************************************//**
+PURPOSE: SolidCraft change. A round whose ball's radius varies, as the variable
+    radius solver rolls it: the ball's centre in the plane square to pLeader
+    (the edge's curve) at t, at the distance pLaw(t) (its x) from both faces;
+    pPoints the solver's stations (their t in m_adUserDoubles[0], their feet
+    in UVPos), which seed SmGnSectionFSG::Build's.
+***********************************************************************/
+struct SmGnLawRound
+{
+  const SmBSplineCurve          * pLeader;
+  const SmBSplineCurve          * pLaw;
+  const SmTArray<SmTsectPnt*>   * pPoints;
+};
+
+/*******************************************************************//**
 PURPOSE: SolidCraft change. A blend's cross-section by its order n of contact
     with its faces along the rails: 0 the chord between the rails (a
     chamfer), 1 the ball's circle (a round: the canal surface of the balls,
@@ -610,7 +624,7 @@ public:
 
 protected:
   // the order-1 section's surface (the ball's circles skinned, swept or revolved)
-  SmStatus CircleSurface(SmFilletSolver & rFilletSolver, SmBSplineCurve * pCenterLine, SmBSplineCurve * pRail1Curve,
+  SmStatus CircleSurface(SmFilletSolver & rFilletSolver, const SmTArray<SmTsectPnt*> & crFilletPoints, SmBSplineCurve * pCenterLine, SmBSplineCurve * pRail1Curve,
                          SmBSplineCurve * pRail2Curve, SmSurface * pSurf1, SmBSplineCurve * pUV1, SmSurface * pSurf2,
                          SmBSplineCurve * pUV2, SmBSplineSurface *& rpFilletSurface);
   SmStatus CircleSurfaceFromCurves(const SmContext & crContext, SmBSplineCurve & rCenterLine, SmBSplineCurve & rRail1Curve,
@@ -629,7 +643,8 @@ protected:
                  SmBoolean           bReplaceRails,
                  SmBSplineSurface *& rpFilletSurface,
                  double              dRadius = 0.0,          // the ball's radius, given (0: as the rails stand off the centre line)
-                 SmBoolean         * pbNotTheFeet = NULL);   // with a radius given: TRUE (and no surface) where the rails are not its feet
+                 SmBoolean         * pbNotTheFeet = NULL,    // with a radius given: TRUE (and no surface) where the rails are not its feet
+                 const SmGnLawRound * pLawRound = NULL);     // a ball whose radius varies (order 1): its law and leader
 
 } ; // end class SmGnSectionFSG
 

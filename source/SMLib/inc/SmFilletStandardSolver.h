@@ -294,6 +294,8 @@ public:
         smos_WStrCpy(pcMyName,lMyNameAllocLen,_T("SmCurveBasedFS")); }
 
     const SmCurve * GetOriginalCurve() { return m_pOriginal; }
+    // SolidCraft change: the curve EvaluateBaseCurve evaluates, the extended one where there is one
+    const SmCurve * GetBaseCurve() const { return (m_pExtended != NULL) ? static_cast<const SmCurve *>(m_pExtended) : m_pOriginal; }
 
     virtual void SetOriginalCurve( SmCurve * pNewCurve ) { m_pOriginal = pNewCurve; }
 

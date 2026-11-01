@@ -1466,6 +1466,58 @@ SmStatus sm_LeaderSeriesOver(const sm_NurbsCurve & crLeader, const sm_Ivl & crS,
   return SM_SUCCESS;
 }
 
+/*******************************************************************//**
+   A ball whose radius varies: its law r(s) over the leader's parameter (the
+   x of a B-spline curve), as a series in sigma at a point or over a span.
+***********************************************************************/
+struct sm_GnLaw
+{
+  const SmBSplineCurve * pCurve;
+  sm_NurbsCurve          sN;
+};
+
+// r at dS to order lOrder in sigma: rR, and rpR pointing at it (NULL without a law)
+SmStatus sm_LawSeries(const sm_GnLaw * pLaw, double dS, int lOrder, sm_Ser<double> & rR, const sm_Ser<double> *& rpR,
+                      SmBoolean bBefore = FALSE)
+{
+  rpR = NULL;
+  if (pLaw == NULL)
+    { return SM_SUCCESS; }
+  rR = sm_SerConst<double>(0.0);
+  ULONG lDerivs = static_cast<ULONG>(lOrder);
+  if (!pLaw->pCurve->IsRational())
+    { lDerivs = smos_Min(lDerivs, pLaw->pCurve->GetDegree()); }
+  SmVector3d asD[SM_GN_MAXS + 2];
+  SER(pLaw->pCurve->Evaluate(dS, lDerivs, bBefore ? FALSE : TRUE, asD, FALSE));
+  double dFact = 1.0;
+  for (ULONG i=0; i<=lDerivs; i++)
+    {
+      if (i > 0) { dFact *= static_cast<double>(i); }
+      rR.c[i][0] = asD[i].x / dFact;
+    }
+  if (!(rR.c[0][0] > 0.0))
+    { SER_MSG(SM_ERR, _T("SmGnSectionFSG: the radius law is not positive")); }
+  rpR = &rR;
+  return SM_SUCCESS;
+}
+
+// r over the span crS (in one piece of the law: the stations hold its knots), to order lOrder
+SmStatus sm_LawSeriesOver(const sm_GnLaw & crLaw, const sm_Ivl & crS, int lOrder, sm_Ser<sm_Ivl> & rR)
+{
+  rR = sm_SerConst<sm_Ivl>(sm_Ivl(0.0));
+  std::vector< sm_V3<sm_Ivl> > sD;
+  SER(sm_CurveDerivsOver(crLaw.sN, crS, lOrder, sD, sm_Span(crLaw.sN.U, crLaw.sN.p, crLaw.sN.n, sm_Mid(crS))));
+  double dFact = 1.0;
+  for (int i=0; i<=lOrder; i++)
+    {
+      if (i > 0) { dFact *= i; }
+      rR.c[i][0] = sD[static_cast<size_t>(i)].x * sm_Ivl(1.0 / dFact);
+    }
+  if (!sm_Positive(rR.c[0][0]))
+    { SER(SM_ERR); }
+  return SM_SUCCESS;
+}
+
 // The inverse of a 4 x 4 matrix (the preconditioner; any approximation will do).
 SmStatus sm_Inverse4(const double (&crA)[4][4], double (&rY)[4][4])
 {
@@ -1490,7 +1542,7 @@ SmStatus sm_Inverse4(const double (&crA)[4][4], double (&rY)[4][4])
 ***********************************************************************/
 SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader, const sm_GnStation & crA, const sm_GnStation & crB,
                       const double (&crR)[2], const double (&crSide)[2], int n, int lOrderS, sm_VSer<sm_Ivl> (&rF)[2], SmBoolean & rbProved,
-                      sm_Ser<sm_Ivl> (*pX)[4] = NULL, double (*pDS)[2] = NULL, sm_VSer<sm_Ivl> * pV = NULL)
+                      sm_Ser<sm_Ivl> (*pX)[4] = NULL, double (*pDS)[2] = NULL, sm_VSer<sm_Ivl> * pV = NULL, const sm_GnLaw * pLaw = NULL)
 {
   rbProved = FALSE;
   const sm_Ivl sS(crA.dS, crB.dS);
@@ -1502,6 +1554,12 @@ SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader
   for (int f=0; f<2; f++) { sSys.adR[f] = crR[f]; sSys.adSide[f] = crSide[f]; }
   sSys.bHold = FALSE;
   sSys.pR = NULL;
+  sm_Ser<sm_Ivl> sLawR;
+  if (pLaw != NULL)
+    {
+      SM_GN_TRY(sm_LawSeriesOver(*pLaw, sS, lOrderS, sLawR));
+      sSys.pR = &sLawR;
+    }
   SM_GN_TRY(sm_LeaderSeriesOver(crLeader, sS, sTr, sSys.sLeader, sSys.sTangent));
 
   // each face's polynomial piece over the span: the one its middle lies in. A station stands where a
@@ -1939,8 +1997,11 @@ template <class S> SmBoolean sm_ArcRows(const sm_Tay<S> (&crRho1)[3], const sm_T
 
 // The arc's row terms over one piece (sm_GnRowTermsOver's, every row varying): the rails' and the
 // centre's series over the piece (crF, crCentre to order K) and at its middle (crFm, crCm, to K - 1).
+// bTouch: the ball's radius varies, and the circle is the one it touches the envelope along, about
+// m + ((rho1 - m) . m' / m' . m') m' (crCentre and crCm one order more, for m').
 SmStatus sm_ArcRowTermsOver(const sm_VSer<sm_Ivl> (&crF)[2], const sm_VSer<sm_Ivl> & crCentre, const sm_VSer<sm_Ivl> (&crFm)[2],
-                            const sm_VSer<sm_Ivl> & crCm, const sm_Ivl & crD, const double (&crO)[3], sm_GnRowTerms & rT, SmBoolean & rbProved)
+                            const sm_VSer<sm_Ivl> & crCm, const sm_Ivl & crD, const double (&crO)[3], sm_GnRowTerms & rT, SmBoolean & rbProved,
+                            SmBoolean bTouch = FALSE)
 {
   rbProved = FALSE;
   const int K = 4 + SM_GN_TAYLOR;
@@ -1955,6 +2016,27 @@ SmStatus sm_ArcRowTermsOver(const sm_VSer<sm_Ivl> (&crF)[2], const sm_VSer<sm_Iv
         }
       for (int i=0; i<K; i++) { acMid[i] = crCm.a[q].c[i][0]; }
       asM[q] = sm_Centred(acMid, crCentre.a[q].c[K][0], K, crD);
+    }
+  if (bTouch)
+    {
+      // m' from the centre's coefficients one order up: (i + 1) c_(i+1)
+      sm_Tay<sm_Ivl> asDm[3];
+      for (int q=0; q<3; q++)
+        {
+          sm_Ivl acMid[K];
+          for (int i=0; i<K; i++) { acMid[i] = crCm.a[q].c[i+1][0] * sm_Ivl(static_cast<double>(i + 1)); }
+          asDm[q] = sm_Centred(acMid, crCentre.a[q].c[K+1][0] * sm_Ivl(static_cast<double>(K + 1)), K, crD);
+        }
+      sm_Tay<sm_Ivl> sDD, sBD;
+      for (int q=0; q<3; q++)
+        {
+          sDD = sDD + asDm[q] * asDm[q];
+          sBD = sBD + (asRho[0][q] - asM[q]) * asDm[q];
+        }
+      if (!sm_Positive(sDD.c[0]))
+        { return SM_SUCCESS; }
+      const sm_Tay<sm_Ivl> sK = sBD / sDD;
+      for (int q=0; q<3; q++) { asM[q] = asM[q] + sK * asDm[q]; }
     }
   sm_Tay<sm_Ivl> asH[3][3], asW[3];
   if (!sm_ArcRows(asRho[0], asRho[1], asM, crO, asH, asW))
@@ -1999,7 +2081,8 @@ SmStatus sm_ArcRowTermsOver(const sm_VSer<sm_Ivl> (&crF)[2], const sm_VSer<sm_Iv
 SmStatus sm_GnFourthOver(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader, const SmSurface * apSurf[2], const SmBSplineCurve & crCenter,
                          const sm_GnStation & crA, const sm_GnStation & crB, const double (&crR)[2], const double (&crSide)[2], int n,
                          double (&rM4)[2][SM_GN_MAXE + 1], double (&rUV4)[2], sm_VSer<sm_Ivl> (*pF)[2] = NULL, sm_VSer<sm_Ivl> * pV = NULL,
-                         sm_VSer<sm_Ivl> (*pFm)[2] = NULL, sm_VSer<sm_Ivl> * pVm = NULL, double * pdMid = NULL)
+                         sm_VSer<sm_Ivl> (*pFm)[2] = NULL, sm_VSer<sm_Ivl> * pVm = NULL, double * pdMid = NULL,
+                         const sm_GnLaw * pLaw = NULL, int lExtra = 0)
 {
   for (int f=0; f<2; f++)
     {
@@ -2012,7 +2095,7 @@ SmStatus sm_GnFourthOver(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLea
   sm_Ser<sm_Ivl> asX5[4], asX4[4];
   double adDS[2] = { 0.0, 0.0 }, adDSm[2] = { 0.0, 0.0 };
   SmBoolean bProved = FALSE;
-  SM_GN_TRY(sm_GnEnclose(apFace, crLeader, crA, crB, crR, crSide, n, 4 + SM_GN_TAYLOR, asF5, bProved, &asX5, &adDS, pV));
+  SM_GN_TRY(sm_GnEnclose(apFace, crLeader, crA, crB, crR, crSide, n, 4 + SM_GN_TAYLOR + lExtra, asF5, bProved, &asX5, &adDS, pV, pLaw));
   if (!bProved)
     { return SM_SUCCESS; }
   if (pF != NULL)
@@ -2025,8 +2108,11 @@ SmStatus sm_GnFourthOver(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLea
   SM_GN_TRY(crCenter.EvaluatePoint(dMid, sM));
   const sm_Trunc sPointTr = { 0, 0 };
   sm_GnStation sMid;
-  SM_GN_TRY(sm_GnSolveStation(apSurf, crCenter, dMid, adSeed, crR, crSide, sPointTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()), sMid));
-  SM_GN_TRY(sm_GnEnclose(apFace, crLeader, sMid, sMid, crR, crSide, n, 4 + SM_GN_TAYLOR - 1, asF4, bProved, &asX4, &adDSm, pVm));
+  sm_Ser<double> sMidR;
+  const sm_Ser<double> * pMidR = NULL;
+  SM_GN_TRY(sm_LawSeries(pLaw, dMid, 0, sMidR, pMidR));
+  SM_GN_TRY(sm_GnSolveStation(apSurf, crCenter, dMid, adSeed, crR, crSide, sPointTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()), sMid, pMidR));
+  SM_GN_TRY(sm_GnEnclose(apFace, crLeader, sMid, sMid, crR, crSide, n, 4 + SM_GN_TAYLOR - 1 + lExtra, asF4, bProved, &asX4, &adDSm, pVm, pLaw));
   if (!bProved)
     { return SM_SUCCESS; }
   if (pFm != NULL)
@@ -2089,7 +2175,7 @@ SmStatus sm_GnFourthOver(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLea
 ***********************************************************************/
 SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader, const SmSurface * apSurf[2], const SmBSplineCurve & crCenter,
                           const sm_GnStation & crA, const sm_GnStation & crB, const double (&crR)[2], const double (&crSide)[2], int n,
-                          double dTarget, double & rdBound, const sm_GnVarying * pVary = NULL)
+                          double dTarget, double & rdBound, const sm_GnVarying * pVary = NULL, const sm_GnLaw * pLaw = NULL)
 {
   rdBound = HUGE_VAL;
   const double h = crB.dS - crA.dS;
@@ -2129,8 +2215,11 @@ SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
           SmPoint3d sM;
           SM_GN_TRY(crCenter.EvaluatePoint(dS, sM));
           const sm_Trunc sPointTr = { 0, 0 };
+          sm_Ser<double> sEndR;
+          const sm_Ser<double> * pEndR = NULL;
+          SM_GN_TRY(sm_LawSeries(pLaw, dS, 0, sEndR, pEndR));
           if (sm_GnSolveStation(apSurf, crCenter, dS, adSeed, crR, crSide, sPointTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()),
-                                sEnds[static_cast<size_t>(i)]) != SM_SUCCESS)
+                                sEnds[static_cast<size_t>(i)], pEndR) != SM_SUCCESS)
             { bSolved = FALSE; }
         }
       if (!bSolved)
@@ -2151,8 +2240,10 @@ SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
           sm_VSer<sm_Ivl> asF[2], sV, asFm[2], sVm;
           double dMid = 0.0;
           const sm_GnStation & crPA = sEnds[static_cast<size_t>(i)], & crPB = sEnds[static_cast<size_t>(i + 1)];
+          // the touch circle of a varying ball takes the centre's s-derivative: one order more
           SM_GN_TRY(sm_GnFourthOver(apFace, crLeader, apSurf, crCenter, crPA, crPB, crR, crSide, lJets, adP, adPUV,
-                                    bRows ? &asF : NULL, bRows ? &sV : NULL, bRows ? &asFm : NULL, bRows ? &sVm : NULL, &dMid));
+                                    bRows ? &asF : NULL, bRows ? &sV : NULL, bRows ? &asFm : NULL, bRows ? &sVm : NULL, &dMid,
+                                    pLaw, (bArc && pLaw != NULL) ? 1 : 0));
           for (int f=0; f<2; f++)
             {
               for (int k=0; k<=lJets; k++)
@@ -2173,7 +2264,7 @@ SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
           if (bProved && bArc)
             {
               const sm_Ivl sD = sm_Ivl(crPA.dS, crPB.dS) - sm_Ivl(dMid);
-              SM_GN_TRY(sm_ArcRowTermsOver(asF, sV, asFm, sVm, sD, adO, sRows, bProved));
+              SM_GN_TRY(sm_ArcRowTermsOver(asF, sV, asFm, sVm, sD, adO, sRows, bProved, pLaw != NULL ? TRUE : FALSE));
             }
         }
       if (!bProved)
@@ -2566,6 +2657,79 @@ static SmStatus sm_CircleSweptOrRevolved(const SmBSplineCurve & crCenterLine, co
 } // end sm_CircleSweptOrRevolved
 
 /*******************************************************************//**
+PURPOSE: The variable radius solver's law as a curve over the edge's
+    parameter t: the radius its x, exactly the solver's (its law curve
+    mapped by the law's interval, edge map and orientation, all affine in t;
+    a linear law as a line). NULL where the law is of another kind.
+***********************************************************************/
+static SmStatus sm_LawInParameter(const SmContext & crContext, SmVariableRadiusFS & rSolver, SmBSplineCurve *& rpLaw)
+{
+  rpLaw = NULL;
+  SmFilletLaw * pLaw = rSolver.GetFilletLaw();
+  NER(pLaw);
+  const SmExtent1d sIvl = rSolver.GetFilletLawInterval();
+  const SmBoolean bReverse = rSolver.GetFilletLawOrientation();
+  if (!(sIvl.GetLength() > 0.0) || !(pLaw->m_vEdgeMap.GetLength() > 0.0))
+    { return SM_SUCCESS; }
+  // the law's parameter at t: m0 + (m1 - m0) T, T = (t - t0) / (t1 - t0), or (t1 - t) / (t1 - t0) reversed
+  const double t0 = sIvl.GetMin(), t1 = sIvl.GetMax(), m0 = pLaw->m_vEdgeMap.GetMin(), m1 = pLaw->m_vEdgeMap.GetMax();
+  const double dB = (m1 - m0) / (t1 - t0) * (bReverse ? -1.0 : 1.0);
+  const double dA = bReverse ? m0 + (m1 - m0) * t1 / (t1 - t0) : m0 - (m1 - m0) * t0 / (t1 - t0);
+  SmBSplineCurve * pCurve = NULL;
+  if (pLaw->IsKindOf(SmBSplineFilletLaw_TYPE))
+    {
+      const SmBSplineCurve * pLawCurve = static_cast<SmBSplineFilletLaw *>(pLaw)->GetLawCurve();
+      NER(pLawCurve);
+      ULONG lDim = 0, lDeg = 0;
+      SmTArray<SmPoint3d> sCPs;
+      SmBSplineCurveForm eForm;
+      SmTArray<ULONG> sMult;
+      SmTArray<double> sKnots, sWts;
+      SmKnotType eKnots;
+      SER(pLawCurve->GetCanonical(lDim, lDeg, sCPs, eForm, sMult, sKnots, eKnots, sWts));
+      // the knots taken to t (t = (k - a) / b), in their order along t
+      SmTArray<SmPoint3d> sTCPs;
+      SmTArray<ULONG> sTMult;
+      SmTArray<double> sTKnots, sTWts;
+      const ULONG lK = sKnots.GetSize(), lC = sCPs.GetSize();
+      for (ULONG i=0; i<lK; i++)
+        {
+          const ULONG k = (dB > 0.0) ? i : lK - 1 - i;
+          sTKnots.Add((sKnots[k] - dA) / dB);
+          sTMult.Add(sMult[k]);
+        }
+      for (ULONG i=0; i<lC; i++)
+        {
+          const ULONG k = (dB > 0.0) ? i : lC - 1 - i;
+          sTCPs.Add(sCPs[k]);
+          if (sWts.GetSize() == lC) { sTWts.Add(sWts[k]); }
+        }
+      SER(SmBSplineCurve::CreateCanonical(crContext, lDim, lDeg, sTCPs, SM_CF_UNSPECIFIED, sTMult, sTKnots, SM_KT_UNSPECIFIED,
+                                          sTWts.GetSize() == lC ? &sTWts : NULL, NULL, pCurve));
+    }
+  else if (pLaw->IsKindOf(SmLinearFilletLaw_TYPE))
+    {
+      double adR0[3], adR1[3];
+      SER(pLaw->Evaluate(t0, sIvl, bReverse, adR0));
+      SER(pLaw->Evaluate(t1, sIvl, bReverse, adR1));
+      SmTArray<SmPoint3d> sCPs;
+      sCPs.Add(SmPoint3d(adR0[0], 0.0, 0.0));
+      sCPs.Add(SmPoint3d(adR1[0], 0.0, 0.0));
+      SmTArray<ULONG> sMult;
+      sMult.Add(2);
+      sMult.Add(2);
+      SmTArray<double> sKnots;
+      sKnots.Add(t0);
+      sKnots.Add(t1);
+      SER(SmBSplineCurve::CreateCanonical(crContext, 3, 1, sCPs, SM_CF_UNSPECIFIED, sMult, sKnots, SM_KT_UNSPECIFIED, NULL, NULL, pCurve));
+    }
+  if (pCurve != NULL)
+    { pCurve->SetOutOfBoundsEnabled(TRUE); }
+  rpLaw = pCurve;
+  return SM_SUCCESS;
+}
+
+/*******************************************************************//**
 PURPOSE: Create a fillet surface with a circular cross section.  This
     is a lofted surface or in some special cases a cylinder or a torus.
 
@@ -2573,6 +2737,7 @@ NOTES:
 ***********************************************************************/
 SmStatus SmGnSectionFSG::CircleSurface
   (SmFilletSolver & rFilletSolver,
+   const SmTArray<SmTsectPnt*> & crFilletPoints,
    SmBSplineCurve * pCenterLine,
    SmBSplineCurve * pRail1Curve,
    SmBSplineCurve * pRail2Curve,
@@ -2616,9 +2781,11 @@ SmStatus SmGnSectionFSG::CircleSurface
         SmBoolean bDefinition = FALSE;
         double dRadius = 0.0;
         SmSurface * apBase[2] = { NULL, NULL };
+        SmBSplineCurve * pLeader = NULL, * pLaw = NULL;
+        SmObjDelete sDelLeader, sDelLaw;
         {
             const SmOffsetSurface * apOff[2] = { SM_CAST_PTR(SmOffsetSurface, pSurf1), SM_CAST_PTR(SmOffsetSurface, pSurf2) };
-            bDefinition = (!bBallRadiusVaries && apOff[0] != NULL && apOff[1] != NULL && pUV1 != NULL && pUV2 != NULL
+            bDefinition = (apOff[0] != NULL && apOff[1] != NULL && pUV1 != NULL && pUV2 != NULL
                            && !m_sArcs.bApproximateArcs && !m_sArcs.bMirror && !m_sArcs.bComplement) ? TRUE : FALSE;
             for (int f=0; f<2 && bDefinition; f++)
             {
@@ -2626,14 +2793,54 @@ SmStatus SmGnSectionFSG::CircleSurface
                 if (   apBase[f] == NULL || !apBase[f]->IsKindOf(SmBSplineSurface_TYPE) || apBase[f]->IsKindOf(SmProceduralBlend_TYPE))
                     { bDefinition = FALSE; }
             }
-            // the ball's radius: the constant radius solver's, the same for both faces
-            SmConstantRadiusFS * pConstant = (rFilletSolver.GetSolverType() == SM_FS_CONST_RADIUS)
+            // the ball's radius: the constant radius solver's, the same for both faces; or the
+            // variable radius solver's law over the edge's curve (sm_LawInParameter)
+            SmConstantRadiusFS * pConstant = (rFilletSolver.GetSolverType() == SM_FS_CONST_RADIUS && !bBallRadiusVaries)
                                              ? static_cast<SmConstantRadiusFS *>(&rFilletSolver) : NULL;
+            SmVariableRadiusFS * pVariable = (rFilletSolver.GetSolverType() == SM_FS_VARIABLE_RADIUS)
+                                             ? static_cast<SmVariableRadiusFS *>(&rFilletSolver) : NULL;
             if (bDefinition && pConstant != NULL)
             {
                 dRadius = pConstant->GetFilletRadius(0);
                 if (!(dRadius > dThisApproxTol3d) || pConstant->GetFilletRadius(1) != dRadius)
                     { bDefinition = FALSE; }
+            }
+            else if (bDefinition && pVariable != NULL)
+            {
+                const SmBSplineCurve * pEdge = SM_CAST_PTR(SmBSplineCurve, pVariable->GetBaseCurve());
+                if (pEdge == NULL || crFilletPoints.GetSize() < 2)
+                    { bDefinition = FALSE; }
+                else
+                {
+                    SmCurve * pCopy = NULL;
+                    SER(pEdge->Copy(rFilletSolver.GetCreationContext(), pCopy));
+                    sDelLeader.SetObj(pCopy);
+                    pLeader = SM_CAST_PTR(SmBSplineCurve, pCopy);
+                    NER(pLeader);
+                    pLeader->SetOutOfBoundsEnabled(TRUE);
+                    SER(sm_LawInParameter(rFilletSolver.GetCreationContext(), *pVariable, pLaw));
+                    sDelLaw.SetObj(pLaw);
+                    if (pLaw == NULL)
+                        { bDefinition = FALSE; }
+                    else
+                    {
+                        // the solver's stations run past the edge's ends, the law continued there: a ball
+                        // of the law's radius exists over them only where it stays positive (an
+                        // enclosure of the law over their range)
+                        double t0 = SM_BIG_DOUBLE, t1 = -SM_BIG_DOUBLE;
+                        for (ULONG i=0; i<crFilletPoints.GetSize(); i++)
+                        {
+                            NER(crFilletPoints[i]);
+                            t0 = smos_Min(t0, crFilletPoints[i]->m_adUserDoubles[0]);
+                            t1 = smos_Max(t1, crFilletPoints[i]->m_adUserDoubles[0]);
+                        }
+                        sm_NurbsCurve sLawN;
+                        SER(sm_NurbsCurveOf(*pLaw, sLawN));
+                        std::vector< sm_V3<sm_Ivl> > sR;
+                        if (!(t1 > t0) || sm_CurveDerivsOver(sLawN, sm_Ivl(t0, t1), 0, sR) != SM_SUCCESS || !(sR[0].x.lo > dThisApproxTol3d))
+                            { bDefinition = FALSE; }
+                    }
+                }
             }
             else
                 { bDefinition = FALSE; }
@@ -2660,8 +2867,9 @@ SmStatus SmGnSectionFSG::CircleSurface
         if (bDefinition)
         {
             SmBoolean bNotTheFeet = FALSE;
+            SmGnLawRound sLawRound = { pLeader, pLaw, &crFilletPoints };
             SER(Build(rFilletSolver.GetCreationContext(), *pCenterLine, *pRail1Curve, *pRail2Curve, dThisApproxTol3d,
-                      apBase[0], pUV1, apBase[1], pUV2, TRUE, rpFilletSurface, dRadius, &bNotTheFeet));
+                      apBase[0], pUV1, apBase[1], pUV2, TRUE, rpFilletSurface, dRadius, &bNotTheFeet, (pLaw != NULL) ? &sLawRound : NULL));
             if (!bNotTheFeet)
                 { return SM_SUCCESS; }
         }
@@ -3564,7 +3772,7 @@ SmStatus SmGnSectionFSG::CreateSurface
    SmBSplineCurve              * pCenterLine,
    SmBSplineCurve              * pRail1Curve,
    SmBSplineCurve              * pRail2Curve,
-   const SmTArray<SmTsectPnt*> & /*crFilletPoints*/,
+   const SmTArray<SmTsectPnt*> & crFilletPoints,
    SmSurface                   * pSurf1,
    SmBSplineCurve              * pUV1,
    SmSurface                   * pSurf2,
@@ -3579,7 +3787,7 @@ SmStatus SmGnSectionFSG::CreateSurface
     }
   if (m_lOrder == 1)
     {
-      SER(CircleSurface(rFilletSolver, pCenterLine, pRail1Curve, pRail2Curve, pSurf1, pUV1, pSurf2, pUV2, rpFilletSurface));
+      SER(CircleSurface(rFilletSolver, crFilletPoints, pCenterLine, pRail1Curve, pRail2Curve, pSurf1, pUV1, pSurf2, pUV2, rpFilletSurface));
       return SM_SUCCESS;
     }
   const SmOffsetSurface * apOff[2] = { SM_CAST_PTR(SmOffsetSurface, pSurf1), SM_CAST_PTR(SmOffsetSurface, pSurf2) };
@@ -3646,27 +3854,95 @@ SmStatus SmGnSectionFSG::Build
    SmBoolean           bReplaceRails,
    SmBSplineSurface *& rpFilletSurface,
    double              dRadius,
-   SmBoolean         * pbNotTheFeet)
+   SmBoolean         * pbNotTheFeet,
+   const SmGnLawRound * pLawRound)
 {
   rpFilletSurface = NULL;
   if (pbNotTheFeet != NULL) { *pbNotTheFeet = FALSE; }
   NER(pFace1); NER(pFace2); NER(pUV1); NER(pUV2);
+  // a ball whose radius varies (the ball's circle only): its law r(t) and the curve whose planes square
+  // to it at t hold the ball's centre (the solver's), t the stations' parameter
+  if (pLawRound != NULL && (m_lOrder != 1 || pLawRound->pLeader == NULL || pLawRound->pLaw == NULL || pLawRound->pPoints == NULL))
+    { SER(SM_ERR_INVALID_INPUT); }
+  sm_GnLaw sLaw;
+  const sm_GnLaw * pGnLaw = NULL;
+  if (pLawRound != NULL)
+    {
+      sLaw.pCurve = pLawRound->pLaw;
+      SER(sm_NurbsCurveOf(*pLawRound->pLaw, sLaw.sN));
+      pGnLaw = &sLaw;
+    }
+  const SmBSplineCurve & rLeader = (pLawRound != NULL) ? *pLawRound->pLeader : rCenterLine;
   const ULONG n = m_lOrder;
   if (!(n == 1 && !m_sArcs.bApproximateArcs && !m_sArcs.bMirror && !m_sArcs.bComplement) && !IsValid(n, m_dThumbweight))
     { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmGnSectionFSG: the order must be 1 (the ball's circle) or 2 to 4 with a thumbweight below 1")); }
   const SmSurface * apFace[2] = { pFace1, pFace2 };
   SmBSplineCurve * apRail[2] = { &rRail1Curve, &rRail2Curve };
   SmBSplineCurve * apUV[2] = { pUV1, pUV2 };
-  const double dScale = smos_Max(1.0, rCenterLine.GetNaturalInterval().GetLength());
-
-  // the stations: the unique knots of the rails and the centre line
+  // the stations: the unique knots of the rails and the centre line; with a law, the solver's own
+  // stations' t (their feet the seeds) and the leader's and the law's knots between
   SmTArray<double> sKnots;
   std::vector<double> sS;
+  std::vector< std::array<double, 4> > sLawSeeds; // with a law: each station's seed
+  std::vector<SmBoolean> sLawFoot;                // and whether it is one of the solver's stations
+  std::vector<double> sLawCp;                     // and then its parameter on the solver's rails
   const SmBSplineCurve * apCurves[3] = { &rCenterLine, &rRail1Curve, &rRail2Curve };
-  const SmExtent1d sIvl = rCenterLine.GetNaturalInterval();
+  SmExtent1d sIvl = rCenterLine.GetNaturalInterval();
+  if (pLawRound != NULL)
+    {
+      // each solver's station: its t, and its feet as the solver's uv curves hold them at its curve
+      // parameter (the rails' and uv curves' own, which is not t)
+      std::vector< std::pair<double, std::array<double, 5> > > sPts;
+      for (ULONG i=0; i<pLawRound->pPoints->GetSize(); i++)
+        {
+          SmTsectPnt * pPnt = (*pLawRound->pPoints)[i];
+          NER(pPnt);
+          SmPoint3d asW[2];
+          for (int f=0; f<2; f++) { SER(apUV[f]->EvaluatePoint(pPnt->m_dCurveParameter, asW[f])); }
+          const std::array<double, 5> sX = { asW[0].x, asW[0].y, asW[1].x, asW[1].y, pPnt->m_dCurveParameter };
+          sPts.push_back(std::make_pair(pPnt->m_adUserDoubles[0], sX));
+        }
+      std::sort(sPts.begin(), sPts.end(), [](const std::pair<double, std::array<double, 5> > & a, const std::pair<double, std::array<double, 5> > & b)
+                { return a.first < b.first; });
+      if (sPts.size() < 2 || !(sPts.back().first > sPts.front().first))
+        { SER_MSG(SM_ERR, _T("SmGnSectionFSG: the round's stations have no length")); }
+      sIvl = SmExtent1d(sPts.front().first, sPts.back().first);
+      const double dLawScale = smos_Max(1.0, sIvl.GetLength());
+      std::vector<double> sAt;
+      for (size_t i=0; i<sPts.size(); i++) { sAt.push_back(sPts[i].first); }
+      const SmBSplineCurve * apLawCurves[2] = { pLawRound->pLeader, pLawRound->pLaw };
+      for (int c=0; c<2; c++)
+        {
+          SER(apLawCurves[c]->GetKnots(sKnots));
+          for (ULONG j=0; j<sKnots.GetSize(); j++)
+            if (sKnots[j] > sIvl.GetMin() + 1.0e-9 * dLawScale && sKnots[j] < sIvl.GetMax() - 1.0e-9 * dLawScale)
+              { sAt.push_back(sKnots[j]); }
+        }
+      std::sort(sAt.begin(), sAt.end());
+      for (size_t j=0; j<sAt.size(); j++)
+        {
+          if (!sS.empty() && sAt[j] - sS.back() <= 1.0e-9 * dLawScale)
+            { continue; }
+          // the seed: the solver's station at t, or between the two about it
+          size_t k = 0;
+          while (k + 1 < sPts.size() && sPts[k+1].first <= sAt[j]) { k++; }
+          std::array<double, 5> sX = sPts[k].second;
+          SmBoolean bFoot = (smos_Fabs(sPts[k].first - sAt[j]) <= 1.0e-9 * dLawScale) ? TRUE : FALSE;
+          if (!bFoot && k + 1 < sPts.size())
+            {
+              const double w = (sAt[j] - sPts[k].first) / (sPts[k+1].first - sPts[k].first);
+              for (int q=0; q<5; q++) { sX[static_cast<size_t>(q)] = (1.0 - w) * sPts[k].second[static_cast<size_t>(q)] + w * sPts[k+1].second[static_cast<size_t>(q)]; }
+            }
+          sS.push_back(sAt[j]);
+          sLawSeeds.push_back({ sX[0], sX[1], sX[2], sX[3] });
+          sLawFoot.push_back(bFoot);
+          sLawCp.push_back(sX[4]);
+        }
+    }
+  const double dScale = smos_Max(1.0, sIvl.GetLength());
   // the equal area thumbweight is resolved per station, from its own wedge
   const SmBoolean bEqualArea = (m_dThumbweight == SM_GN_THUMBWEIGHT_EQUAL_AREA) ? TRUE : FALSE;
-  for (int c=0; c<3; c++)
+  for (int c=0; c<3 && pLawRound == NULL; c++)
     {
       const SmExtent1d sCIvl = apCurves[c]->GetNaturalInterval();
       if (   smos_Fabs(sCIvl.GetMin() - sIvl.GetMin()) > 1.0e-9 * dScale
@@ -3675,8 +3951,9 @@ SmStatus SmGnSectionFSG::Build
       SER(apCurves[c]->GetKnots(sKnots));
       for (ULONG j=0; j<sKnots.GetSize(); j++) { sS.push_back(sKnots[j]); }
     }
-  std::sort(sS.begin(), sS.end());
+  if (pLawRound == NULL)
   {
+    std::sort(sS.begin(), sS.end());
     std::vector<double> sUnique;
     for (size_t j=0; j<sS.size(); j++)
       if (sUnique.empty() || sS[j] - sUnique.back() > 1.0e-9 * dScale)
@@ -3691,20 +3968,29 @@ SmStatus SmGnSectionFSG::Build
   // the offsets and the sides, at the first station: the centre line there is the ball's centre
   double adR[2], adSide[2];
   {
+    // (at the curves' own start: with a law their parameter is not t)
+    const double dStart = rCenterLine.GetNaturalInterval().GetMin();
     SmPoint3d sM;
-    SER(rCenterLine.EvaluatePoint(sS.front(), sM));
+    SER(rCenterLine.EvaluatePoint(dStart, sM));
+    double dLawR = 0.0;
+    if (pLawRound != NULL)
+      {
+        SmPoint3d sR;
+        SER(pLawRound->pLaw->EvaluatePoint(sIvl.GetMin(), sR));
+        dLawR = sR.x;
+      }
     for (int f=0; f<2; f++)
       {
         SmPoint3d sRho, sW;
-        SER(apRail[f]->EvaluatePoint(sS.front(), sRho));
-        SER(apUV[f]->EvaluatePoint(sS.front(), sW));
+        SER(apRail[f]->EvaluatePoint(dStart, sRho));
+        SER(apUV[f]->EvaluatePoint(dStart, sW));
         const SmPoint2d sUV(sW.x, sW.y);
         SmVector3d sN;
         SER(apFace[f]->EvaluateNormal(sUV, TRUE, TRUE, sN));
         SER(sN.Unitize());
         const SmVector3d sOff = sM - sRho;
         // the ball's radius where the solver gives it (its offsets'), else as the rails stand off
-        adR[f] = (dRadius > 0.0) ? dRadius : sOff.Length();
+        adR[f] = (pLawRound != NULL) ? dLawR : ((dRadius > 0.0) ? dRadius : sOff.Length());
         adSide[f] = (sOff.Dot(sN) >= 0.0) ? 1.0 : -1.0;
         if (!(adR[f] > dTol))
           { SER_MSG(SM_ERR, _T("SmGnSectionFSG: the ball has no radius at the rails' start")); }
@@ -3713,7 +3999,8 @@ SmStatus SmGnSectionFSG::Build
 
   // every station's feet and their series: values and s-derivatives (sigma order 1), jets to order n
   // (the ball's circle takes the rails and the centre only)
-  const sm_Trunc sTr = { 1, (n >= 2) ? static_cast<int>(n) : 0 };
+  // (and with a law the centre to one order more, for the touch circle's m')
+  const sm_Trunc sTr = { (pLawRound != NULL) ? 2 : 1, (n >= 2) ? static_cast<int>(n) : 0 };
   std::vector<sm_GnStation> sStations(sS.size());
   for (size_t j=0; j<sS.size(); j++)
     {
@@ -3721,35 +4008,44 @@ SmStatus SmGnSectionFSG::Build
       for (int f=0; f<2; f++)
         {
           SmPoint3d sW;
-          SER(apUV[f]->EvaluatePoint(sS[j], sW));
+          if (pLawRound != NULL)
+            { sW = SmPoint3d(sLawSeeds[j][static_cast<size_t>(2*f)], sLawSeeds[j][static_cast<size_t>(2*f+1)], 0.0); }
+          else
+            { SER(apUV[f]->EvaluatePoint(sS[j], sW)); }
           adSeed[2*f] = sW.x;
           adSeed[2*f+1] = sW.y;
         }
       // a constant ball: the station's centre on the centre line at the same offsets
       SmPoint3d sM;
-      SER(rCenterLine.EvaluatePoint(sS[j], sM));
+      SER(rLeader.EvaluatePoint(sS[j], sM));
       const double dSolveTol = 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length());
-      // with a ball of a given radius (pbNotTheFeet), a station that does not solve from the solver's
-      // rails (Newton from within the tolerance of a regular root converges) says the rails are not
-      // that ball's feet there
+      sm_Ser<double> sR;
+      const sm_Ser<double> * pR = NULL;
+      SER(sm_LawSeries(pGnLaw, sS[j], sTr.s, sR, pR));
+      // with a ball of a given radius or law (pbNotTheFeet), a station that does not solve from the
+      // solver's rails (Newton from within the tolerance of a regular root converges) says the rails
+      // are not that ball's feet there
       if (pbNotTheFeet != NULL
-          && sm_GnSolveStation(apFace, rCenterLine, sS[j], adSeed, adR, adSide, sTr, dSolveTol, sStations[j], NULL, static_cast<int>(n)) != SM_SUCCESS)
+          && sm_GnSolveStation(apFace, rLeader, sS[j], adSeed, adR, adSide, sTr, dSolveTol, sStations[j], pR, static_cast<int>(n)) != SM_SUCCESS)
         {
           *pbNotTheFeet = TRUE;
           return SM_SUCCESS;
         }
       if (pbNotTheFeet == NULL)
-        { SER(sm_GnSolveStation(apFace, rCenterLine, sS[j], adSeed, adR, adSide, sTr, dSolveTol, sStations[j], NULL, static_cast<int>(n))); }
+        { SER(sm_GnSolveStation(apFace, rLeader, sS[j], adSeed, adR, adSide, sTr, dSolveTol, sStations[j], pR, static_cast<int>(n))); }
       for (int f=0; f<2; f++)
         {
           const SmPoint3d sRho(sStations[j].asF[f].a[0].c[0][0], sStations[j].asF[f].a[1].c[0][0], sStations[j].asF[f].a[2].c[0][0]);
           // the ball's circle of a given radius (pbNotTheFeet): the solver's rails are this ball's feet
           // on the two faces, or the round is not their ball's (a rail held on a face's boundary, the
-          // ball rolling on its edge), which the caller builds otherwise
+          // ball rolling on its edge), which the caller builds otherwise; with a law, the solver's
+          // stations' feet are
           if (pbNotTheFeet != NULL)
             {
+              if (pLawRound != NULL && !sLawFoot[j])
+                { continue; }
               SmPoint3d sRail;
-              SER(apRail[f]->EvaluatePoint(sS[j], sRail));
+              SER(apRail[f]->EvaluatePoint((pLawRound != NULL) ? sLawCp[j] : sS[j], sRail));
               if (sRail.DistanceBetween(sRho) > dTol)
                 {
                   *pbNotTheFeet = TRUE;
@@ -3778,7 +4074,7 @@ SmStatus SmGnSectionFSG::Build
         SER(sm_NurbsOf(*pBS, asN[f]));
       }
     sm_NurbsCurve sLeader;
-    SER(sm_NurbsCurveOf(rCenterLine, sLeader));
+    SER(sm_NurbsCurveOf(rLeader, sLeader));
     const double dTarget = 0.1 * dTol;
     // a station wherever a foot crosses a knot line of its face: the face is only as smooth there
     // as the knot allows, and a span's enclosures are taken on one side of it
@@ -3815,9 +4111,12 @@ SmStatus SmGnSectionFSG::Build
                       const double t = (dS - sA.dS) / (crB.dS - sA.dS);
                       for (int q2=0; q2<4; q2++) { adSeed[q2] = (1.0 - t) * sA.asX[q2].c[0][0] + t * crB.asX[q2].c[0][0]; }
                       SmPoint3d sM;
-                      SER(rCenterLine.EvaluatePoint(dS, sM));
-                      SER(sm_GnSolveStation(apFace, rCenterLine, dS, adSeed, adR, adSide, sTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()), sAt,
-                                            NULL, static_cast<int>(n)));
+                      SER(rLeader.EvaluatePoint(dS, sM));
+                      sm_Ser<double> sR;
+                      const sm_Ser<double> * pR = NULL;
+                      SER(sm_LawSeries(pGnLaw, dS, sTr.s, sR, pR));
+                      SER(sm_GnSolveStation(apFace, rLeader, dS, adSeed, adR, adSide, sTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()), sAt,
+                                            pR, static_cast<int>(n)));
                       const double x = sAt.asX[2*f+c].c[0][0] - dK;
                       if (std::fabs(x) <= 1.0e-12 * (1.0 + std::fabs(dK)))
                         { break; }
@@ -3834,9 +4133,12 @@ SmStatus SmGnSectionFSG::Build
                     double adOn[4];
                     for (int q2=0; q2<4; q2++) { adOn[q2] = sAt.asX[q2].c[0][0]; }
                     SmPoint3d sM;
-                    SER(rCenterLine.EvaluatePoint(sAt.dS, sM));
+                    SER(rLeader.EvaluatePoint(sAt.dS, sM));
                     const double dOnTol = 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length());
-                    SER(sm_GnSolveStation(apFace, rCenterLine, sAt.dS, adOn, adR, adSide, sTr, dOnTol, sAt, NULL, static_cast<int>(n), &aiAfter));
+                    sm_Ser<double> sR;
+                    const sm_Ser<double> * pR = NULL;
+                    SER(sm_LawSeries(pGnLaw, sAt.dS, sTr.s, sR, pR));
+                    SER(sm_GnSolveStation(apFace, rLeader, sAt.dS, adOn, adR, adSide, sTr, dOnTol, sAt, pR, static_cast<int>(n), &aiAfter));
                     for (int q2=0; q2<4; q2++) { sAt.aiBefore[q2] = aiBefore[q2]; }
                   }
                   sNext.push_back(sAt);
@@ -3871,8 +4173,8 @@ SmStatus SmGnSectionFSG::Build
         for (size_t j=0; j+1<sStations.size(); j++)
           {
             if (sBounds[j] < 0.0)
-              { SER(sm_GnCertifySpan(apN, sLeader, apFace, rCenterLine, sStations[j], sStations[j+1], adR, adSide, static_cast<int>(n), dTarget, sBounds[j],
-                                     bEqualArea ? &sVary : NULL)); }
+              { SER(sm_GnCertifySpan(apN, sLeader, apFace, rLeader, sStations[j], sStations[j+1], adR, adSide, static_cast<int>(n), dTarget, sBounds[j],
+                                     bEqualArea ? &sVary : NULL, pGnLaw)); }
             if (!(sBounds[j] <= dTarget))
               { bAll = FALSE; }
           }
@@ -3897,10 +4199,13 @@ SmStatus SmGnSectionFSG::Build
             double adSeed[4];
             for (int c=0; c<4; c++) { adSeed[c] = 0.5 * (sStations[j].asX[c].c[0][0] + sStations[j+1].asX[c].c[0][0]); }
             SmPoint3d sM;
-            SER(rCenterLine.EvaluatePoint(dMid, sM));
+            SER(rLeader.EvaluatePoint(dMid, sM));
             sm_GnStation sMid;
-            SER(sm_GnSolveStation(apFace, rCenterLine, dMid, adSeed, adR, adSide, sTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()), sMid,
-                                  NULL, static_cast<int>(n)));
+            sm_Ser<double> sR;
+            const sm_Ser<double> * pR = NULL;
+            SER(sm_LawSeries(pGnLaw, dMid, sTr.s, sR, pR));
+            SER(sm_GnSolveStation(apFace, rLeader, dMid, adSeed, adR, adSide, sTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()), sMid,
+                                  pR, static_cast<int>(n)));
             if (bEqualArea)
               { SER(sm_GnStationThumbweight(n, dRR, sMid)); }
             sNext.push_back(sMid);
@@ -3942,11 +4247,14 @@ SmStatus SmGnSectionFSG::Build
       double adOn[4];
       for (int q=0; q<4; q++) { adOn[q] = rSt.asX[q].c[0][0]; }
       SmPoint3d sM;
-      SER(rCenterLine.EvaluatePoint(rSt.dS, sM));
+      SER(rLeader.EvaluatePoint(rSt.dS, sM));
       sm_GnStation sBefore;
       const int (&raiBefore)[4] = rSt.aiBefore;
-      SER(sm_GnSolveStation(apFace, rCenterLine, rSt.dS, adOn, adR, adSide, sTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()), sBefore,
-                            NULL, static_cast<int>(n), &raiBefore, NULL, NULL, TRUE));
+      sm_Ser<double> sR;
+      const sm_Ser<double> * pR = NULL;
+      SER(sm_LawSeries(pGnLaw, rSt.dS, sTr.s, sR, pR, TRUE));
+      SER(sm_GnSolveStation(apFace, rLeader, rSt.dS, adOn, adR, adSide, sTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()), sBefore,
+                            pR, static_cast<int>(n), &raiBefore, NULL, NULL, TRUE));
       if (bEqualArea)
         {
           SER(sm_GnStationThumbweight(n, adR[0] * adR[1], sBefore));
@@ -4006,9 +4314,35 @@ SmStatus SmGnSectionFSG::Build
                     const sm_VSer<double> & crFD = lIn ? sm_InF(crSt, f) : crSt.asF[f];
                     asRho[f][q] = sm_TayOf(crSt.asF[f].a[q].c[0][0], crFD.a[q].c[1][0]);
                   }
-                // the centre's s-derivative: the incoming one is the rail's less the ball's turn,
-                // the same as the station's where the leader and faces are smooth
-                asM[q] = sm_TayOf(crSt.sV.a[q].c[0][0], (lIn && crSt.bSided) ? crSt.sVL.a[q].c[1][0] : crSt.sV.a[q].c[1][0]);
+                // the centre's s-derivatives, as the span the rows are for takes them
+                const sm_VSer<double> & crV = (lIn && crSt.bSided) ? crSt.sVL : crSt.sV;
+                asM[q] = sm_TayOf(crSt.sV.a[q].c[0][0], crV.a[q].c[1][0]);
+                if (pLawRound != NULL)
+                  { asM[q].c[2] = crV.a[q].c[2][0]; }
+              }
+            if (pLawRound != NULL)
+              {
+                // a varying ball: the circle it touches the envelope along, about m + k m',
+                // k = (rho1 - m) . m' / m' . m'
+                sm_Tay<double> asDm[3], sDD, sBD;
+                for (int q=0; q<3; q++)
+                  {
+                    asDm[q] = sm_TayOf(asM[q].c[1], 2.0 * asM[q].c[2]);
+                    asM[q].c[2] = 0.0;
+                  }
+                for (int q=0; q<3; q++)
+                  {
+                    sDD = sDD + asDm[q] * asDm[q];
+                    sBD = sBD + (asRho[0][q] - asM[q]) * asDm[q];
+                  }
+                if (!(sDD.c[0] > 0.0))
+                  { SER_MSG(SM_ERR, _T("SmGnSectionFSG: the balls' centres stand still")); }
+                const sm_Tay<double> sK = sBD / sDD;
+                for (int q=0; q<3; q++)
+                  {
+                    asM[q] = asM[q] + sK * asDm[q];
+                    for (int i=2; i<=SM_GN_TAY; i++) { asM[q].c[i] = 0.0; }
+                  }
               }
             sm_Tay<double> asH[3][3], asW[3];
             if (!sm_ArcRows(asRho[0], asRho[1], asM, adO, asH, asW))
@@ -4153,11 +4487,28 @@ SmStatus SmGnSectionFSG::Build
         }
     }
 
+  // with a law the rails now run over t: the centre line too, the balls' centres at the stations
+  if (bReplaceRails && pLawRound != NULL)
+    {
+      std::vector<SmVector3d> sV, sD, sDIn, sCPs3;
+      for (size_t j=0; j<sS.size(); j++)
+        {
+          const sm_VSer<double> & crV = sStations[j].sV, & crVIn = sStations[j].bSided ? sStations[j].sVL : sStations[j].sV;
+          sV.push_back(SmVector3d(crV.a[0].c[0][0], crV.a[1].c[0][0], crV.a[2].c[0][0]));
+          sD.push_back(SmVector3d(crV.a[0].c[1][0], crV.a[1].c[1][0], crV.a[2].c[1][0]));
+          sDIn.push_back(SmVector3d(crVIn.a[0].c[1][0], crVIn.a[1].c[1][0], crVIn.a[2].c[1][0]));
+        }
+      sm_HermitePoints(sS, sV, sD, sDIn, sCPs3);
+      SmTArray<SmPoint3d> sCentreCPs;
+      for (size_t i=0; i<sCPs3.size(); i++) { sCentreCPs.Add(sCPs3[i]); }
+      SER(rCenterLine.SetCanonical(3, 3, sCentreCPs, SM_CF_UNSPECIFIED, sUMult, sUKnots, SM_KT_UNSPECIFIED, NULL));
+    }
+
   // the blend by its definition on this net: the faces, the ball's offsets and sides, the section,
   // the centre line as the leader the stations were solved in, the seeds, the certified bound
   const SmBSplineCurve * apConstSeed[2] = { apSeed[0], apSeed[1] };
   SmProceduralBlend * pBlend = NULL;
-  SER(SmProceduralBlend::Create(crContext, *pSurface, apFace, adSide, adR, NULL, n, m_dThumbweight, rCenterLine, apConstSeed,
+  SER(SmProceduralBlend::Create(crContext, *pSurface, apFace, adSide, adR, (pLawRound != NULL) ? pLawRound->pLaw : NULL, n, m_dThumbweight, rLeader, apConstSeed,
                                 m_dCertifiedBound, pBlend));
   NER(pBlend);
   rpFilletSurface = pBlend;
