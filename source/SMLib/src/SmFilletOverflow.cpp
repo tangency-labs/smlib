@@ -659,7 +659,7 @@ NOTES: See the file's head. Each sheet face is sectioned by every face of
     the target faces they lie on (SmBrep::MergeCurvesOnSurface, which
     clips each to the face and cuts the edges it ends on); the target faces
     reached from the blended edges without crossing an imprinted edge are
-    the material the blends take off, and are deleted; the sheet is copied
+    the material the blends take off, and are deleted; the sheet is merged
     in and stitched, and the body oriented. Refused (SM_FILERR_NO_ROOM): a
     variable round whose surface misses its law (sm_HoldsItsLaw). A sheet
     whose boundary does not close on the body (SM_FILERR_BAD_MERGE).
@@ -738,7 +738,9 @@ SmStatus SmFilletExecutive::TrimAtCreases()
           if ( bHolds )
             { continue; }
           sm_Curves sCreases;
-          SER( sm_Creases( m_crContext, *pSheet, *pFace, dTol, sCreases ));
+          // fitted to the body's own accuracy, so that creases meeting at a corner of the sheet
+          // (on two faces past a cliff) meet there within it; exact sections stay exact
+          SER( sm_Creases( m_crContext, *pSheet, *pFace, m_pTargetBrep->GetTolerance(), sCreases ));
           // each crease where it lies inside both faces
           SmTArray<SmCurve*> sInFace;
           SmObjsDelete<SmCurve*> sCleanInFace( &sInFace );
@@ -940,10 +942,22 @@ SmStatus SmFilletExecutive::TrimAtCreases()
         { sSheetEdges[i]->RemoveAttribute( m_pAttributeE ); }
     }
 
-  // the sheet sewn in, and the body oriented
-  SmTArray<SmFace*> sKept, sCopies;
-  m_pFilletBrep->GetFaces( sKept );
-  SER( m_pFilletBrep->CopyFaces( sKept, m_pTargetBrep, &sCopies, FALSE ));
+  // the sheet sewn in, and the body oriented. The sheet is merged in as the fillet's normal path
+  // merges it (SmBrep::MergeBrep, surfaces kept as they are): its edges keep their own
+  // tolerances and the body its own (SmBrep::CopyFaces sets the body's tolerance to the sheet's,
+  // which raises every edge of the body to it).
+  SmTArray<SmFace*> sBefore, sAfter, sCopies;
+  m_pTargetBrep->GetFaces( sBefore );
+  std::set<SmFace*> sOld;
+  for (ULONG f=0; f<sBefore.GetSize(); f++)
+    { sOld.insert( sBefore[f] ); }
+  SER( m_pTargetBrep->MergeBrep( *m_pFilletBrep, NULL, NULL, FALSE ));
+  m_pTargetBrep->GetFaces( sAfter );
+  for (ULONG f=0; f<sAfter.GetSize(); f++)
+    {
+      if ( !sOld.count( sAfter[f] ))
+        { sCopies.Add( sAfter[f] ); }
+    }
   SmBrep * pSheet = m_pFilletBrep;
   m_pFilletBrep = NULL;
   delete pSheet;
@@ -951,10 +965,19 @@ SmStatus SmFilletExecutive::TrimAtCreases()
     {
       SmFace * pFace = NULL;
       SER( sm_MakeExtensionFace( m_crContext, *m_pTargetBrep, rExt, dTol, pFace ));
+      sCopies.Add( pFace );
     }
   ULONG  lStitched = 0, lLamina = 0;
   double dVertexGap = 0.0, dEdgeGap = 0.0;
-  SER( m_pTargetBrep->StitchFaces( dTol, lStitched, lLamina, dVertexGap, dEdgeGap ));
+  SER( m_pTargetBrep->StitchFaces( dTol, lStitched, lLamina, dVertexGap, dEdgeGap, &sCopies ));
+  // the edges the sheet is sewn along hold it to its own accuracy
+  for (ULONG f=0; f<sCopies.GetSize(); f++)
+    {
+      SmTArray<SmEdge*> sEdges;
+      sCopies[f]->GetEdges( sEdges );
+      for (ULONG e=0; e<sEdges.GetSize(); e++)
+        { sEdges[e]->SetTolerance( smos_Max( dTol, smos_Max( dVertexGap, dEdgeGap ))); }
+    }
   SmBoolean bMaybeOpen = FALSE;
   if ( lLamina == 0 )
     { SER( m_pTargetBrep->OrientTrimmedSurfaces( TRUE, bMaybeOpen, FALSE )); }
