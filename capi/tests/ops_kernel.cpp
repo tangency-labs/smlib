@@ -9425,6 +9425,106 @@ void setback_concave_corner_rounds()
     smlib_brep_free(r);
 }
 
+// The corner (0, 0, 0) of the box [0, 20] x [0, 20] x [0, 5.5], its edges along x, y and z
+// rounded r 2, 3 and 4 together. The owner's rule sets the upright edge back 6, longer than the
+// edge (5.5); its far end is no setback corner, so the edge's room is its length, and the default
+// shrinks to that room less a quarter of its round's radius, 5.5 - 1 = 4.5, at or above its
+// contact-line minimum, 3 (owner, 2026-11-01: a default setback shrinks to fit). The others keep
+// theirs, 4.5 and 4.75. Sound; the box's 6 faces, 3 rounds and 6 patches; the end sections'
+// ends there, r from their edges; the patches' seams G1 (1e-9 rad), within the box.
+void setback_default_shrinks_to_fit()
+{
+    smlib_brep *part = box(0, 0, 0, 20, 20, 5.5), *r = nullptr;
+    const double edges[9] = {10, 0, 0, 0, 10, 0, 0, 0, 2.75};
+    const double radii[3] = {2, 3, 4};
+    int64_t failed = -1;
+    const int32_t st = smlib_blend(part, SMLIB_BLEND_ROUND, edges, radii, 3, 0.1, &r, &failed);
+    std::printf("  blend status %d%s%s\n", static_cast<int>(st), st == SMLIB_OK ? "" : ": ", st == SMLIB_OK ? "" : last_blend_reason().c_str());
+    smlib_brep_free(part);
+    CHECK(st == SMLIB_OK && r != nullptr && sound(r));
+    if (r == nullptr)
+    {
+        return;
+    }
+    int64_t counts[3] = {0, 0, 0};
+    CHECK(smlib_brep_counts(r, counts) == SMLIB_OK);
+    std::printf("  faces %lld\n", static_cast<long long>(counts[0]));
+    CHECK(counts[0] == 15);
+    const double setbacks[3] = {4.5, 4.75, 4.5};
+    SmTArray<SmVertex *> vs;
+    r->p->GetVertices(vs);
+    double worst_end = 0.0;
+    for (int a = 0; a < 3; a++)
+    {
+        for (int side = 0; side < 2; side++)
+        {
+            double p[3] = {0, 0, 0};
+            p[a] = setbacks[a];
+            p[(a + 1 + side) % 3] = radii[a];
+            double best = HUGE_VAL;
+            for (ULONG k = 0; k < vs.GetSize(); ++k)
+            {
+                best = std::min(best, (vs[k]->GetPoint() - SmPoint3d(p[0], p[1], p[2])).Length());
+            }
+            worst_end = std::max(worst_end, best);
+        }
+    }
+    std::printf("  end sections' ends off their places by %.3g\n", worst_end);
+    CHECK(worst_end <= 1e-9);
+    SmTArray<SmFace *> faces;
+    r->p->GetFaces(faces);
+    double worst_angle = 0.0, past = 0.0;
+    int n_patches = 0;
+    for (ULONG f = 0; f < faces.GetSize(); ++f)
+    {
+        SmSurface *s = faces[f]->GetSurface();
+        if (s == nullptr || SM_CAST_PTR(SmPlane, s) != nullptr || s->IsPlanar(1e-9))
+        {
+            continue;
+        }
+        SmTArray<SmVertex *> fv;
+        faces[f]->GetVertices(fv);
+        bool at_corner = true;
+        for (ULONG k = 0; k < fv.GetSize(); ++k)
+        {
+            const SmPoint3d p = fv[k]->GetPoint();
+            at_corner = at_corner && p.x < 10.0 && p.y < 10.0 && p.z < 5.0;
+        }
+        if (!at_corner)
+        {
+            continue;
+        }
+        n_patches++;
+        int seams = 0;
+        worst_angle = std::max(worst_angle, worst_seam_angle(faces[f], seams));
+        SmExtent3d bb;
+        CHECK(faces[f]->CalculateTightBoundingBox(bb) == SM_SUCCESS);
+        past = std::max({past, -bb.GetMin().x, -bb.GetMin().y, -bb.GetMin().z});
+    }
+    std::printf("  %d patches; seams meet at up to %.3g rad; the patches stand %.3g past the faces\n", n_patches, worst_angle, past);
+    CHECK(n_patches == 6 && worst_angle <= 1e-9 && past <= 1e-12);
+    smlib_brep_free(r);
+}
+
+// The corner (60, 40, 20) of a 60 x 40 x 20 box, its three edges rounded r 5 and set back 25 on
+// request: longer than the upright edge (20, its far end no setback corner). Refused,
+// SMLIB_ERR_NO_ROOM, naming the largest setback that fits: below 20 (owner, 2026-11-01: an
+// asked-for setback that does not fit is refused, naming the largest that fits).
+void setback_asked_too_long_names_what_fits()
+{
+    smlib_brep *part = box(0, 0, 0, 60, 40, 20), *r = nullptr;
+    const double edges[9] = {30, 40, 20, 60, 20, 20, 60, 40, 10};
+    const double radii[3] = {5, 5, 5};
+    const double corner[3] = {60, 40, 20};
+    const double setback = 25.0;
+    const int32_t st = smlib_blend_setback(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, 1, 0.1, &r, nullptr, nullptr);
+    const std::string why = last_blend_reason();
+    std::printf("  status %d: %s\n", static_cast<int>(st), why.c_str());
+    CHECK(st == SMLIB_ERR_NO_ROOM && r == nullptr && names_size(why, 20.0, 1e-9));
+    smlib_brep_free(part);
+    smlib_brep_free(r);
+}
+
 // The setback corner's cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--setbacks-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SETBACK_CASES[] = {
@@ -9438,6 +9538,10 @@ const TangentEndCase SETBACK_CASES[] = {
     {"corner_setback_8", corner_setback,
      "the setback split's fill of the r 5 rounds set back 8 is not convex at this convex corner (saddles, K down to -0.034): its setback patches stand up to 0.34 past the rounds' prisms, volume 47389.1475 above the prisms' bound 47384.8935 (owner: a fullness rule, held)"},
     {"fill_is_the_geometry_s", setback_fill_is_the_geometry_s, nullptr},
+    {"default_shrinks_to_fit", setback_default_shrinks_to_fit,
+     "a default setback longer than its edge sends the corner back to SmFilletConvexNxNCorner: 10 faces, its seams 0.00251 rad apart"},
+    {"asked_too_long_names_what_fits", setback_asked_too_long_names_what_fits,
+     "SMLIB_ERR_NO_ROOM with no reason: the capi's check names no setback that fits"},
     {"corner_rounds_2_3_4", setback_corner_rounds_2_3_4, nullptr},
     {"corner_curvature_g2", setback_corner_curvature_g2, nullptr},
     {"corner_eased_g2", setback_corner_eased_g2, nullptr},
