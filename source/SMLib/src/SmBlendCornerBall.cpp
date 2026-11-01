@@ -18,19 +18,10 @@
 * ball there). The corner's face is the sphere's triangle P_0 P_1 P_2
 * between the three sections: exact, G1 to every round.
 *
-* Where one plane is square to the other two (n_k . n_i = n_k . n_j = 0) the
-* face is the SmSphere's natural patch: the pole at that plane's contact
-* P_k, so that the sections through P_k are meridians and the section
-* P_i P_j is the equator:
-*   S(u, v) = C + r (cos v (cos u X + sin u Y) + sin v Z),
-* Z = (P_k - C) / r, X = (P_i - C) / r, Y = Z x X, u in [0, theta] (theta the
-* angle from X to P_j - C), v in [0, 90] degrees. Elsewhere no side of the
-* triangle is the equator of a pole at another vertex, and a great circle
-* off the meridians and the equator has no rational curve in the SmSphere's
-* NURB parameters: the face is one rational patch of degree (4, 2) on the
-* sphere whose natural boundary is the triangle (sm_BallTrianglePatch). Its
-* loop, either way, is that patch's natural boundary, the pole left out: the
-* three sections.
+* The face is one rational patch of degree (4, 2) exactly on the sphere
+* whose natural boundary is the triangle (sm_BallTrianglePatch), at every
+* corner, square or oblique: its loop is that natural boundary, the pole at
+* one contact left out, the three sections.
 **********************************************************************/
 
 #include "StdAfx.h"
@@ -44,8 +35,8 @@
 #endif
 
 #include <SmAxis2Placement.h>
+#include <SmBallPatch.h>
 #include <SmOffsetSurface.h>
-#include <SmSphere.h>
 
 namespace
 {
@@ -56,19 +47,6 @@ void sm_BallRingFaces(const SmTArray<SmEdgeuse*> & crAllEUs, SmFace * apFace[3])
 {
   for (ULONG ii=0; ii<3; ii++)
     { apFace[ii] = sm_GetFaceByTwoEdgeuses( crAllEUs[(ii+2)%3], crAllEUs[ii], NULL ); }
-}
-
-// The index k of the plane square to the other two (|n_k . n_i| and |n_k . n_j| at most dSinTol),
-// or 3 when none is.
-ULONG sm_BallPole(const SmVector3d asNormal[3], double dSinTol)
-{
-  for (ULONG kk=0; kk<3; kk++)
-    {
-      if (   smos_Fabs( asNormal[kk].Dot( asNormal[(kk+1)%3] )) <= dSinTol
-          && smos_Fabs( asNormal[kk].Dot( asNormal[(kk+2)%3] )) <= dSinTol )
-        { return kk; }
-    }
-  return 3;
 }
 
 // A polynomial in (s, t) of degree (m, n) in the Bernstein basis: c[i][j] the coefficient of
@@ -445,102 +423,48 @@ SmStatus SmBlendCorner::BuildBallSurface()
   SmBoolean bAddsMaterial = FALSE;
   SER( SmFilletSolver::IsConcaveEdge( *(*m_pAllEUs)[0]->GetEdge(), bAddsMaterial ));
 
-  // the corners of the face's natural patch: the contacts at the pole and at the ends of the
-  // side opposite it
-  ULONG lPole = sm_BallPole( asNormal, dTol / dRadius ), lFrom = 0, lTo = 0;
+  // the face: one rational patch on the sphere, the pole at contact 0, its normal turned as the
+  // face's
+  const ULONG lPole = 0;
+  ULONG lFrom = 0, lTo = 0;
   SmSurface * pSurface = NULL;
-  if ( lPole != 3 )
+  SmVector3d asDir[3];
+  for (ULONG ii=0; ii<3; ii++)
     {
-      // the sphere, the pole's contact on the plane square to the other two, the equator through
-      // the others
-      lFrom = (lPole+1)%3;
-      lTo   = (lPole+2)%3;
-      SmVector3d sZ = asContact[lPole] - sCentre;
-      SER( sZ.Unitize() );
-      SmVector3d sX = asContact[lFrom] - sCentre;
-      sX = sX - sZ * sX.Dot( sZ );
-      SER( sX.Unitize() );
-      SmVector3d sY = sZ * sX;
-      SmVector3d sTo = asContact[lTo] - sCentre;
-      if ( sTo.Dot( sY ) < 0.0 )
-        {
-          // the equator runs from the other contact
-          ULONG lSwap = lFrom; lFrom = lTo; lTo = lSwap;
-          sX = asContact[lFrom] - sCentre;
-          sX = sX - sZ * sX.Dot( sZ );
-          SER( sX.Unitize() );
-          sY = sZ * sX;
-          sTo = asContact[lTo] - sCentre;
-        }
-      const double dTheta = SM_RAD2DEG( atan2( sTo.Dot( sY ), sTo.Dot( sX )));
-      if ( dTheta <= 0.0 || dTheta >= 180.0 )
-        { SER( SM_ERR ); }
-      // The sphere's normal points away from its centre unless its NURB parameters are swapped.
-      SmExtent2d sDomain;
-      SER( sDomain.SetMinMax( 0.0, 0.0, dTheta, 90.0 ));
-      SmSphere * pSphere = new (m_crContext) SmSphere( sCentre, sX, sY, sDomain, dRadius, bAddsMaterial, FALSE, NULL, &m_crContext );
-      NER( pSphere );
-      m_pBallSurface = pSurface = pSphere;
-      SER( pSphere->MakeNurb() );
+      asDir[ii] = asContact[ii] - sCentre;
+      SER( asDir[ii].Unitize() );
     }
-  else
+  for (ULONG lTurn=0; lTurn<2 && pSurface == NULL; lTurn++)
     {
-      // one rational patch on the sphere, the pole at contact 0, its normal turned as the face's
-      lPole = 0;
-      SmVector3d asDir[3];
-      for (ULONG ii=0; ii<3; ii++)
+      SmBSplineSurface * pPatch = NULL;
+      SER( sm_BallTrianglePatch( m_crContext, sCentre, dRadius, asDir, lPole, lTurn == 1 ? TRUE : FALSE, pPatch, lFrom, lTo ));
+      SmObjDelete sClean( pPatch );
+      const SmPoint2d sMid = pPatch->GetNaturalUVDomain().Evaluate( 0.5, 0.5 );
+      SmPoint3d  sAt;
+      SmVector3d sNormal;
+      SER( pPatch->EvaluatePoint( sMid, sAt ));
+      SER( pPatch->EvaluateNormal( sMid, TRUE, TRUE, sNormal ));
+      if ( ( sNormal.Dot( sAt - sCentre ) < 0.0 ) == ( bAddsMaterial ? TRUE : FALSE ))
         {
-          asDir[ii] = asContact[ii] - sCentre;
-          SER( asDir[ii].Unitize() );
+          // the face's surface carries its sphere as its definition (its offset is exact)
+          SmBallPatch * pBall = NULL;
+          SER( SmBallPatch::Create( m_crContext, *pPatch, sCentre, dRadius, pBall ));
+          m_pBallSurface = pSurface = pBall;
         }
-      for (ULONG lTurn=0; lTurn<2 && pSurface == NULL; lTurn++)
-        {
-          SmBSplineSurface * pPatch = NULL;
-          SER( sm_BallTrianglePatch( m_crContext, sCentre, dRadius, asDir, lPole, lTurn == 1 ? TRUE : FALSE, pPatch, lFrom, lTo ));
-          SmObjDelete sClean( pPatch );
-          const SmPoint2d sMid = pPatch->GetNaturalUVDomain().Evaluate( 0.5, 0.5 );
-          SmPoint3d  sAt;
-          SmVector3d sNormal;
-          SER( pPatch->EvaluatePoint( sMid, sAt ));
-          SER( pPatch->EvaluateNormal( sMid, TRUE, TRUE, sNormal ));
-          if ( ( sNormal.Dot( sAt - sCentre ) < 0.0 ) == ( bAddsMaterial ? TRUE : FALSE ))
-            {
-              sClean.Clear();
-              m_pBallSurface = pSurface = pPatch;
-            }
-        }
-      NER( pSurface );
     }
+  NER( pSurface );
 
-  // its corners are the contacts: the pole at v = vmax (the sphere) or v = vmin (the patch)
+  // its corners are the contacts: the pole at v = vmin, the others at v = vmax
   const SmExtent2d sNurbDomain = pSurface->GetNaturalUVDomain();
-  SmPoint3d sAt;
-  if ( lPole != 3 && pSurface->GetType() == SmSphere_TYPE )
+  const SmPoint2d asUV[3] = { SmPoint2d( sNurbDomain.GetMin().x, sNurbDomain.GetMax().y ), SmPoint2d( sNurbDomain.GetMax().x, sNurbDomain.GetMax().y ),
+                              SmPoint2d( sNurbDomain.GetMin().x, sNurbDomain.GetMin().y ) };
+  const ULONG alAt[3] = { lFrom, lTo, lPole };
+  for (ULONG ii=0; ii<3; ii++)
     {
-      SmSphere * pSphere = SM_CAST_PTR( SmSphere, pSurface );
-      NER( pSphere );
-      const SmExtent2d sStep = pSphere->GetSTEPUVDomain();
-      const SmPoint2d asStep[3] = { SmPoint2d( sStep.GetMin().x, sStep.GetMin().y ), SmPoint2d( sStep.GetMax().x, sStep.GetMin().y ),
-                                    SmPoint2d( sStep.GetMin().x, sStep.GetMax().y ) };
-      const ULONG alAt[3] = { lFrom, lTo, lPole };
-      for (ULONG ii=0; ii<3; ii++)
-        {
-          SER( pSphere->EvaluateSTEPPoint( asStep[ii], sAt ));
-          if ( sAt.DistanceBetween( m_vVertices[alAt[ii]]->GetPoint() ) > dTol )
-            { SER( SM_ERR ); }
-        }
-    }
-  else
-    {
-      const SmPoint2d asUV[3] = { SmPoint2d( sNurbDomain.GetMin().x, sNurbDomain.GetMax().y ), SmPoint2d( sNurbDomain.GetMax().x, sNurbDomain.GetMax().y ),
-                                  SmPoint2d( sNurbDomain.GetMin().x, sNurbDomain.GetMin().y ) };
-      const ULONG alAt[3] = { lFrom, lTo, lPole };
-      for (ULONG ii=0; ii<3; ii++)
-        {
-          SER( pSurface->EvaluatePoint( asUV[ii], sAt ));
-          if ( sAt.DistanceBetween( m_vVertices[alAt[ii]]->GetPoint() ) > dTol )
-            { SER( SM_ERR ); }
-        }
+      SmPoint3d sAt;
+      SER( pSurface->EvaluatePoint( asUV[ii], sAt ));
+      if ( sAt.DistanceBetween( m_vVertices[alAt[ii]]->GetPoint() ) > dTol )
+        { SER( SM_ERR ); }
     }
 
   SER( pSurface->CreateNaturalUVTrimCurves( m_crContext, sNurbDomain, SM_SP_V, TRUE, m_vBall3d, m_vBallUV, m_vBallOrients ));

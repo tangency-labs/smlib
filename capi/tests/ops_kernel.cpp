@@ -33,6 +33,7 @@
 #include <SmProceduralBlend.h>
 #include <SmRegion.h>
 #include <SmAxis2Placement.h>
+#include <SmBallPatch.h>
 #include <SmSolutionArray.h>
 #include <SmSphere.h>
 #include <SmSurface.h>
@@ -6739,7 +6740,8 @@ int shrink_cases(bool known_failing, const char *only)
 double spandrel(double r);
 
 // The corner's face of `r`: exactly one face with the three vertices `v`, a rational B-spline
-// patch (the owner's ruling: the Ball's face is the rational patch, never the analytic SmSphere):
+// patch (the owner's ruling: the Ball's face is the rational patch, never the analytic SmSphere)
+// carrying its sphere as its definition (SmBallPatch):
 // its surface on the sphere about `c` of radius `rad` (its centre and radius), its edges on it, G1
 // across all three edges (the rounds' end sections). Its normal points out of the body: away from
 // `c` at a convex corner, towards it at a concave one. `edge_tol` bounds its edges' distance from
@@ -6763,6 +6765,9 @@ void ball_corner_sphere(const smlib_brep *r, const SmPoint3d &c, double rad, con
         std::printf("  corner face %lu: type %d, rational %d\n", static_cast<unsigned long>(f), static_cast<int>(srf->GetType()),
                     bss != nullptr ? static_cast<int>(bss->IsRational()) : -1);
         CHECK(srf->IsKindOf(SmBSplineSurface_TYPE) && srf->GetType() != SmSphere_TYPE && bss != nullptr && bss->IsRational());
+        // its definition: the sphere it is on
+        const SmBallPatch *ball = SM_CAST_PTR(SmBallPatch, srf);
+        CHECK(ball != nullptr && (ball->GetCentre() - c).Length() <= 1e-12 && std::fabs(ball->GetRadius() - rad) <= 1e-12);
         // the surface on the sphere about c, its normal out of the body
         double surf_off = 0.0, edge_off = 0.0, normal_off = 0.0;
         const SmExtent2d dom = srf->GetNaturalUVDomain();
@@ -7065,16 +7070,12 @@ void ball_sphere_turned_round()
 // The Ball corner's cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--balls-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase BALL_CASES[] = {
-    {"box_corner", ball_box_corner,
-     "the corner is the analytic SmSphere, not the rational patch every Ball is to be (the owner's ruling)"},
-    {"pocket_corner", ball_pocket_corner,
-     "the corner is the analytic SmSphere, not the rational patch every Ball is to be (the owner's ruling)"},
-    {"prism_corner", ball_prism_corner,
-     "the corner is the analytic SmSphere, not the rational patch every Ball is to be (the owner's ruling)"},
+    {"box_corner", ball_box_corner, nullptr},
+    {"pocket_corner", ball_pocket_corner, nullptr},
+    {"prism_corner", ball_prism_corner, nullptr},
     {"oblique_corner", ball_oblique_corner,
      "the rounds' end circles 1.3e-12 off the sphere: each exact round's axis and span run between its trace's end sections as solved at the rails' crossings, not through the ball's centre"},
-    {"sphere_turned_round", ball_sphere_turned_round,
-     "the corner is the analytic SmSphere, not the rational patch every Ball is to be (the owner's ruling)"},
+    {"sphere_turned_round", ball_sphere_turned_round, nullptr},
 };
 
 int ball_cases(bool known_failing, const char *only)

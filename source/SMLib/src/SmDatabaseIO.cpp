@@ -458,6 +458,7 @@ SmBoolean SmDatabaseIO::IsValidType(long &lType)
          || lType == SmSurfOfExtrusion_TYPE
          || lType == SmBlendSurface_TYPE
          || lType == SmProceduralBlend_TYPE
+         || lType == SmBallPatch_TYPE
          || lType == SmCurveBoundedSurface_TYPE
          || lType == SmSrfInVolume_TYPE
          || lType == SmOffsetSurface_TYPE
