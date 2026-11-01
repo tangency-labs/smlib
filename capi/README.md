@@ -95,8 +95,10 @@ given order of contact with the faces along the contact lines: 0 the chord (the 
 ball's circle (the round), 2 to 4 the G^n section f T1(1 - p1) + (1 - f) T2(p2) between them
 (`SmGnSectionFSG`), its fullness set by a thumbweight. `smlib_blend_turn` sets how a chain of
 rounds turns where two meet at an unblended side edge: mitred (the default, a crease) or swept
-(the section revolved about the side edge, `SmFilletExecutive::SetSweptTurns`), refused at a
-sharp concave side edge. `smlib_fillet_variable` rounds one edge with a
+(the section revolved about the side edge, `SmFilletExecutive::SetSweptTurns`, built by
+`SmBlendCorner`), refused at a sharp concave side edge. Swept is built so far where the side
+edge is straight and square to both rounded edges on a plane, between rounds of one radius: an
+exact torus, tangent to both rounds; elsewhere `SMLIB_ERR_CORNER_UNSUPPORTED`. `smlib_fillet_variable` rounds one edge with a
 radius that follows a clamped B-spline law (degree 1 to 3) over the edge's parameter, 0 at the
 end nearest a given point; it becomes an `SmBSplineFilletLaw` on SMLib's variable-radius solver,
 whose law curve carries the radius as x and, as SMLib's own laws do, the parameter itself as y
