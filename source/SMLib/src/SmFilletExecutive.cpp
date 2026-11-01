@@ -2719,6 +2719,14 @@ SmStatus SmFilletExecutive::EaseSetBackSections()
       NER(pG2);
       SmObjDelete sDeleteG2(pG2);
 
+      // a round whose law dips or peaks is put back from its exact pieces after the merge
+      // (BuildLawCorners), which would drop the ease: such a round is not eased into a corner yet
+      if (pFS->HasBuiltLawCorners())
+        {
+          GetFilletErrorInfo()->NoteError(SM_FILERR_CORNER_UNSUPPORTED,
+            _T("Fillet Error: a round whose radius law has a corner cannot be eased into a corner of the edges yet"));
+          SER(SM_ERR);
+        }
       SmBSplineSurface * pEased = NULL;
       SER(sm_EaseSurface(m_crContext, *pOwn, *pG2, eAlong, sRamps[g], pEased));
       NER(pEased);
@@ -3134,6 +3142,24 @@ SmStatus SmFilletExecutive::BuildLawCorners
     { return SM_ERR; }
   SmBoolean bMaybeOpen = FALSE;
   SER(m_pTargetBrep->OrientTrimmedSurfaces(TRUE, bMaybeOpen, FALSE));
+
+  // the corners' edges, and their ends, are as near their faces as the pieces' sections are to
+  // the balls' circles (the zone itself is exact, a crossing is traced within a quarter of that)
+  for (ULONG k=0; k+1<lPieces; k++)
+    {
+      if (crKept.m_vKinds[k] != SmLawCornerPieces::SM_LC_PEAK)
+        { continue; }
+      SmEdge * pCrossing = sm_EdgeBetween(sOf[k], sStarts[k], sEnds[k], dTol);
+      NER(pCrossing);
+      pCrossing->SetTolerance(dTol);
+    }
+  for (ULONG i=0; i<sZones.GetSize(); i++)
+    {
+      SmTArray<SmEdge*> sEdges;
+      sZones[i]->GetEdges(sEdges);
+      for (ULONG j=0; j<sEdges.GetSize(); j++)
+        { sEdges[j]->SetTolerance(dTol); }
+    }
   return SM_SUCCESS;
 
 } // end SmFilletExecutive::BuildLawCorners
@@ -3173,28 +3199,13 @@ SmStatus SmFilletExecutive::NoteRadiusCornerSurfaces()
           SER(pSurface->Copy(*GetContext(), pCopy));
           NER(pCopy);
           m_vRadiusCornerSurfaces.Add(pCopy);
-          // the exact pieces where a law corner dips or peaks
+          // the exact pieces where a law corner dips or peaks: those kept with the same corners
           SmLawCornerPieces * pPieces = NULL;
-          const SmLawCornerPieces * pKept = pFS->FindLawCornerPieces(pSurface);
+          SmLawCornerPieces * pKept = NULL;
+          SER(pFS->FindLawCornerPieces(*pSurface, pKept));
           if (pKept != NULL && (pKept->m_vKinds.IsIn(SmLawCornerPieces::SM_LC_DIP) || pKept->m_vKinds.IsIn(SmLawCornerPieces::SM_LC_PEAK)))
             { SER(pKept->Copy(*GetContext(), pPieces)); }
           m_vRadiusCornerPieces.Add(pPieces);
-        }
-      // a round whose law dips or peaks keeps its joined surface, or its corners cannot be built
-      for (ULONG j=0; j<pFS->m_vLawCornerPieces.GetSize(); j++)
-        {
-          const SmLawCornerPieces * pKept = pFS->m_vLawCornerPieces[j];
-          if (pKept == NULL || !(pKept->m_vKinds.IsIn(SmLawCornerPieces::SM_LC_DIP) || pKept->m_vKinds.IsIn(SmLawCornerPieces::SM_LC_PEAK)))
-            { continue; }
-          SmBoolean bKept = FALSE;
-          for (ULONG k=0; k<pFS->m_vFilletGeoms.GetSize() && !bKept; k++)
-            { bKept = pFS->m_vFilletGeoms[k] != NULL && pFS->m_vFilletGeoms[k]->GetFilletSurface() == pKept->m_pJoined; }
-          if (!bKept)
-            {
-              GetFilletErrorInfo()->NoteError(SM_FILERR_CORNER_UNSUPPORTED,
-                _T("Fillet Error: a round whose radius law has a corner cannot be eased into a corner of the edges yet"));
-              SER(SM_ERR);
-            }
         }
     }
   return SM_SUCCESS;

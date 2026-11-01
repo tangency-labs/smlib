@@ -81,7 +81,7 @@ class SM_EXPORT SmLawCornerPieces
 public:
   enum { SM_LC_MATCHING = 0, SM_LC_DIP = 1, SM_LC_PEAK = 2 };
 
-  const SmSurface             * m_pJoined;      // the joined surface (not owned)
+  SmBoolean                     m_bTaken;       // matched to a fillet geom's surface already (SmFilletSolver::FindLawCornerPieces)
   SmTArray<SmBSplineSurface*>   m_vPieces;      // the pieces in order along the round (owned)
   SmTArray<double>              m_vJoinedEnds;  // each piece's end in the joined surface's u
   SmTArray<ULONG>               m_vKinds;       // per corner: SM_LC_MATCHING, SM_LC_DIP or SM_LC_PEAK
@@ -89,7 +89,7 @@ public:
   SmTArray<double>              m_vRadii;       // per corner: its radius
   double                        m_dTol3d;       // how near the pieces' sections are to the balls' circles
 
-  SmLawCornerPieces() : m_pJoined(NULL), m_dTol3d(0.0) {}
+  SmLawCornerPieces() : m_bTaken(FALSE), m_dTol3d(0.0) {}
   ~SmLawCornerPieces();
   SmStatus Copy(const SmContext & crContext, SmLawCornerPieces *& rpCopy) const;
 } ; // end class SmLawCornerPieces
@@ -250,9 +250,13 @@ public:
   // None by default.
   virtual SmStatus  GetRadiusCornerParameters(SmTArray<double> & rParams) { SM_REF1(rParams); return SM_SUCCESS; }
   // SolidCraft change: the exact pieces of a surface joined at law corners (owned from here on),
-  // and those of a given joined surface (NULL: none kept).
-  void                       AddLawCornerPieces(SmLawCornerPieces * pPieces) { m_vLawCornerPieces.Add(pPieces); }
-  const SmLawCornerPieces *  FindLawCornerPieces(const SmSurface * pJoined) const;
+  // and those of a fillet surface not matched yet whose turns (its C0 u knots) are at their
+  // corners (NULL: none). Matched by the corners, not by the surface's address: a fillet geom's
+  // surface is replaced on the way (extended at its ends, SmFilletGeom), keeping its corners.
+  void                 AddLawCornerPieces(SmLawCornerPieces * pPieces) { m_vLawCornerPieces.Add(pPieces); }
+  SmStatus             FindLawCornerPieces(const SmSurface & crSurface, SmLawCornerPieces *& rpPieces);
+  // whether the solver has kept pieces with a corner that dips or peaks
+  SmBoolean            HasBuiltLawCorners() const;
   virtual SmBoolean IsAtRadiusCorner(const SmTsectPnt & crTsectPnt)      { SM_REF1(crTsectPnt); return FALSE; }
   // SolidCraft change: the edge parameter of an intersection point, FALSE where the solver
   // has no radius corners.
@@ -448,9 +452,10 @@ public:
 #define SM_GN_THUMBWEIGHT_EQUAL_AREA (2.0)
 #define SM_GN_DEFAULT_THUMBWEIGHT SM_GN_THUMBWEIGHT_EQUAL_AREA
 
-// SolidCraft change: how SmGnSectionFSG's order-1 section, the ball's circle, is built: with
-// circular arcs as far as the rails allow (bApproximateArcs, within dTolPercentRadius of the
-// radius) or exactly; mirrored about the rails' chord; or the larger arc (bComplement).
+// SolidCraft change: how SmGnSectionFSG's order-1 section, the ball's circle, is built: exactly,
+// as a rational arc (the default, the round's own section), or approximated by polynomial arcs
+// within dTolPercentRadius percent of the radius (bApproximateArcs); mirrored about the rails'
+// chord; or the larger arc (bComplement).
 struct SmArcSection
 {
   SmBoolean bApproximateArcs;

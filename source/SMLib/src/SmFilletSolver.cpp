@@ -99,20 +99,59 @@ SmFilletSolver::~SmFilletSolver
 } // end SmFilletSolver::~SmFilletSolver destructor
 
 /*******************************************************************//**
-PURPOSE: SolidCraft change. The exact pieces kept for a surface joined at
-    law corners, NULL when none were kept for it.
+PURPOSE: SolidCraft change. The kept pieces, not matched yet, of a fillet
+    surface that turns (a C0 knot across u) at each of their corners, NULL
+    when there are none.
 ***********************************************************************/
-const SmLawCornerPieces * SmFilletSolver::FindLawCornerPieces
-  (const SmSurface * pJoined) const
+SmStatus SmFilletSolver::FindLawCornerPieces
+  (const SmSurface    & crSurface, // in : a fillet geom's surface
+   SmLawCornerPieces *& rpPieces)  // out: its pieces, marked matched, or NULL
+{
+  rpPieces = NULL;
+  SmTArray<double> sUKnots, sVKnots;
+  SER(crSurface.FindKnotsByMaxContinuity(SM_CT_C0, FALSE, sUKnots, sVKnots));
+  const SmExtent2d sDomain = crSurface.GetNaturalUVDomain();
+  const double dTol = 1.0e-9 * (1.0 + smos_Fabs(sDomain.GetMin().x) + smos_Fabs(sDomain.GetMax().x));
+  for (ULONG i=0; i<m_vLawCornerPieces.GetSize() && rpPieces == NULL; i++)
+    {
+      SmLawCornerPieces * pKept = m_vLawCornerPieces[i];
+      if (pKept == NULL || pKept->m_bTaken || pKept->m_vJoinedEnds.GetSize() < 2)
+        { continue; }
+      // each corner (the pieces' inner ends) a turn of the surface; an extension at an end may
+      // add a turn of its own where it joins
+      SmBoolean bSame = TRUE;
+      for (ULONG k=0; k+1<pKept->m_vJoinedEnds.GetSize() && bSame; k++)
+        {
+          SmBoolean bFound = FALSE;
+          for (ULONG m=0; m<sUKnots.GetSize() && !bFound; m++)
+            { bFound = (smos_Fabs(sUKnots[m] - pKept->m_vJoinedEnds[k]) <= dTol) ? TRUE : FALSE; }
+          bSame = bFound;
+        }
+      if (bSame)
+        {
+          pKept->m_bTaken = TRUE;
+          rpPieces = pKept;
+        }
+    }
+  return SM_SUCCESS;
+
+} // end SmFilletSolver::FindLawCornerPieces
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. Whether a round of this solver has a law corner
+    that dips or peaks (built by SmFilletExecutive::BuildLawCorners).
+***********************************************************************/
+SmBoolean SmFilletSolver::HasBuiltLawCorners() const
 {
   for (ULONG i=0; i<m_vLawCornerPieces.GetSize(); i++)
     {
-      if (m_vLawCornerPieces[i] != NULL && m_vLawCornerPieces[i]->m_pJoined == pJoined)
-        { return m_vLawCornerPieces[i]; }
+      const SmLawCornerPieces * pKept = m_vLawCornerPieces[i];
+      if (pKept != NULL && (pKept->m_vKinds.IsIn(SmLawCornerPieces::SM_LC_DIP) || pKept->m_vKinds.IsIn(SmLawCornerPieces::SM_LC_PEAK)))
+        { return TRUE; }
     }
-  return NULL;
+  return FALSE;
 
-} // end SmFilletSolver::FindLawCornerPieces
+} // end SmFilletSolver::HasBuiltLawCorners
 
 /*******************************************************************//**
 PURPOSE: SolidCraft change. SmLawCornerPieces owns its pieces.
@@ -134,7 +173,7 @@ SmStatus SmLawCornerPieces::Copy
 {
   rpCopy = NULL;
   SmLawCornerPieces * pCopy = new SmLawCornerPieces;
-  pCopy->m_pJoined     = m_pJoined;
+  pCopy->m_bTaken      = m_bTaken;
   pCopy->m_vJoinedEnds = m_vJoinedEnds;
   pCopy->m_vKinds      = m_vKinds;
   pCopy->m_vCentres    = m_vCentres;

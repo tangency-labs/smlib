@@ -1889,7 +1889,6 @@ SmStatus SmGnSectionFSG::CircleSurface
         }
         // the pieces' sections are the balls' circles within the skin's tolerance, and within the
         // arcs' own where they are approximated (a share of the radius)
-        pKept->m_pJoined = pJoined;
         pKept->m_dTol3d = dThisApproxTol3d;
         for (ULONG i=0; i<pKept->m_vRadii.GetSize() && m_sArcs.bApproximateArcs; i++)
             { pKept->m_dTol3d = smos_Max(pKept->m_dTol3d, 0.01 * m_sArcs.dTolPercentRadius * pKept->m_vRadii[i]); }
