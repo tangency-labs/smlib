@@ -10574,6 +10574,12 @@ static ULONG lDebugCount = 0 ;
       SmRegion *pNewRegion = NULL;
       SmShell  *pNewShell = NULL;
 
+      // SolidCraft change: the face's edgeuses keep these trim curves, the fillet's own (each its
+      // edge's curve on this surface, made with it: a corner's exact ones exactly). Without the
+      // flag MakeFaceWithCurves drops them and each is made again later by projecting its edge's
+      // curve onto the surface, to the projection's tolerance.
+      const SmBoolean bKeepUVCurves = TRUE;
+
       // make face bounded by sequenced curves
       SER( pBrep->MakeFaceWithCurves
              (pBrep->GetInfiniteRegion(),  // in : region to contain new topology objects
@@ -10587,7 +10593,8 @@ static ULONG lDebugCount = 0 ;
               SM_OT_SAME,                  // in : Surface orient, oneof SM_OT_SAME or SM_OT_OPPOSITE
               pNewRegion,                  // out: New region if any. NULL when building trimmed surfaces, may be NotNULL for solids.
               pNewShell,                   // out: New shell if any.  Trimmed surfaces always create a new shell.
-              pNewFace));                  // out: the new face
+              pNewFace,                    // out: the new face
+              &bKeepUVCurves));            // in : TRUE = the edgeuses take sUVCurves1 as their UVTrimCurves
     } // end using UVTrimCurves branch
 
 #ifdef SM_DEBUG_CODE

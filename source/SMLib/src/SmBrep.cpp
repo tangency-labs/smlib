@@ -16354,6 +16354,7 @@ SmStatus SmBrep::MakeFaceWithCurves
   SmShell                          *& rpNewShell,           // out: New shell if any.  Trimmed surfaces always create a new shell.
   SmFace                           *& rpNewFace,            // out: the new face
   const SmBoolean                   * pbOptCrvOnSurf)       // in : Optional flag to utilize CrvOnSurf for face construction from UV curves. NULL to ignore. Default is NULL.
+                                                            //      With 3D curves given, TRUE = the edgeuses keep the UV curves as their trim curves.
      //  SmBoolean                           bRunHeal)             // in : TRUE = Run Healer on new Face - may edit Face data to fix problems
      //                                                            //      FALSE= don't
      //                                                            //      default:[FALSE]

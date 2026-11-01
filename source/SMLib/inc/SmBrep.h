@@ -1019,7 +1019,8 @@ public:
                               SmShell                         *& rpNewShell,                  // out: New shell if any.  Trimmed surfaces always create a new shell.                                 
                               SmFace                          *& rpNewFace,                   // out: the new face                                                                                   
                               const SmBoolean                  * pbOptCrvOnSurf = NULL ) ;    // in : Optional flag to utilize CrvOnSurf for face construction from UV curves. NULL
-                                                                                               //      to ignore. Default is NULL.
+                                                                                               //      to ignore. Default is NULL. With 3D curves given,
+                                                                                               //      TRUE = the edgeuses keep the UV curves as their trim curves.
 
   SmStatus MakeFaceWithCurvesFast(SmRegion                         * pRegion,                 // in : Topological region in which the new face is to be constructed.                 
                                                                                               //    : NULL for infinite region.                                                      

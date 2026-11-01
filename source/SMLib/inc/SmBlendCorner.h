@@ -78,10 +78,13 @@ protected:
   // face (X) to where they meet the side edge (S). Where the rails meet the side edge at two
   // places (unequal radii, or a slope), the larger round meets the smaller one's side face
   // between them: on the face itself at a convex face corner, on its continuation, where a patch
-  // of it fills the gap, at a concave one. The mitre is the rounds' certified intersection.
+  // of it fills the gap, at a concave one. The mitre is the rounds' exact plane section where
+  // both are cylinders of one radius cut by the plane they are symmetric about (an ellipse arc),
+  // else their certified intersection.
   SmStatus MakeMitreTopology();
   SmStatus AdjustMitreTopology();
   SmStatus SplitMitreSideVertex(SmFilletVertex * pSide, SmBoolean bGapOnContinuation);
+  SmStatus ExactMitreCurve(SmFilletEdge * pMitre, SmBoolean & rbExact);
   SmStatus CreateMitrePatch();
 
   // the Swept turn

@@ -37,6 +37,7 @@
 #include <SmAxis2Placement.h>
 #include <SmOffsetSurface.h>
 #include <SmTorus.h>
+#include <SmFilletExact.h>
 
 #ifdef SM_GFX_CODE
   #include <SmGraphicsOutput.h>
@@ -266,6 +267,43 @@ double sm_MeridianAngleDeg(const SmVector3d & w, const SmVector3d & crX, const S
 }
 
 
+// The point of crSurface nearest crPoint (on it), from the guess rUV: Newton on the foot's normal
+// equations, to rounding. rbFound FALSE where it does not converge.
+SmStatus sm_FootOnSurface(const SmSurface & crSurface, const SmPoint3d & crPoint, SmPoint2d & rUV, SmBoolean & rbFound)
+{
+  rbFound = FALSE;
+  for ( ULONG lIter=0; lIter<40; lIter++ )
+    {
+      SmVector3d sD[2][2];
+      SER( crSurface.Evaluate( rUV, 1, 1, TRUE, TRUE, TRUE, sD[0], FALSE ));
+      const SmVector3d sR  = crPoint - sD[0][0];
+      const SmVector3d sSu = sD[1][0], sSv = sD[0][1];
+      const double dA = sSu.Dot( sSu ), dB = sSu.Dot( sSv ), dC = sSv.Dot( sSv );
+      const double dDet = dA * dC - dB * dB;
+      if ( dDet <= SM_EFF_ZERO * dA * dC )
+        { return SM_SUCCESS; }
+      const double dRu = sSu.Dot( sR ), dRv = sSv.Dot( sR );
+      const double dDu = ( dC * dRu - dB * dRv ) / dDet, dDv = ( dA * dRv - dB * dRu ) / dDet;
+      rUV.x += dDu;
+      rUV.y += dDv;
+      if ( smos_Fabs( dDu ) + smos_Fabs( dDv ) <= 4.0 * SM_EFF_ZERO * ( 1.0 + smos_Fabs( rUV.x ) + smos_Fabs( rUV.y )))
+        {
+          rbFound = TRUE;
+          return SM_SUCCESS;
+        }
+    }
+  return SM_SUCCESS;
+}
+
+// The product of two polynomials in Bernstein form on [0, 1], of degrees 2 (aQ) and 1 (aL): the
+// cubic's Bernstein coefficients.
+void sm_BernsteinProduct21(const double aQ[3], const double aL[2], double aP[4])
+{
+  aP[0] = aQ[0] * aL[0];
+  aP[1] = ( aQ[0] * aL[1] + 2.0 * aQ[1] * aL[0] ) / 3.0;
+  aP[2] = ( 2.0 * aQ[1] * aL[1] + aQ[2] * aL[0] ) / 3.0;
+  aP[3] = aQ[2] * aL[1];
+}
 } // namespace
 
 /*******************************************************************//**
@@ -667,6 +705,20 @@ PURPOSE: The corner's edges: the arc A-B is the torus's (its iso-curve at
 ***********************************************************************/
 SmStatus SmBlendCorner::CalcCornerEdgeGeom()
 {
+  if ( IsMitreTurn() )
+    {
+      // the mitre between the rails' crossing and the side vertex, exact where the class allows;
+      // its other edges (and a mitre of no exact class) as the edges' own kinds compute them
+      for (ULONG ii=0; ii<m_vEdges.GetSize(); ii++)
+        {
+          SmFilletEdge * pEdge = m_vEdges[ii];
+          if ( pEdge == NULL || pEdge->GetFilletEdgeType() != SM_FE_FILLET_X_FILLET || pEdge->GetCurve() != NULL )
+            { continue; }
+          SmBoolean bExact = FALSE;
+          SER( ExactMitreCurve( pEdge, bExact ));
+        }
+      return SmFilletCorner::CalcCornerEdgeGeom();
+    }
   if ( !IsSwept() )
     { return SmFilletCorner::CalcCornerEdgeGeom(); }
   SER( BuildSweptSurface() );
@@ -1001,6 +1053,324 @@ SmStatus SmBlendCorner::SplitMitreSideVertex
   return SM_SUCCESS;
 
 } // end SmBlendCorner::SplitMitreSideVertex
+
+/*******************************************************************//**
+PURPOSE: The mitre between the rails' crossing X and the side vertex S as
+    the rounds' exact plane section, where they are two cylinders of one
+    radius r whose axes meet (at C) and the plane they are symmetric about,
+    through C square to the difference (or sum) of their axes, holds X and S.
+
+NOTES: Cylinder 1, axis a through C, is C + r (cos t u + sin t w) + h a, u, w
+   square to a. In the plane through C with normal m, h = -r (cos t u.m +
+   sin t w.m) / a.m, so its section is C + r (cos t U + sin t W), U = u -
+   (u.m / a.m) a, W = w - (w.m / a.m) a: the circle's affine image, a rational
+   quadratic arc with the circle arc's weights (1, cos(t/2), 1) and its
+   control points mapped. By the symmetry the plane's section of cylinder 2
+   is the same curve. Its pcurves on the rounds are exact too (rational
+   cubics, below). rbExact FALSE (the edge left as it was) where any of this does
+   not hold: the rounds' certified intersection is the mitre then.
+***********************************************************************/
+SmStatus SmBlendCorner::ExactMitreCurve
+  (SmFilletEdge * pMitre,   // in : the mitre edge, S-X or X-S
+   SmBoolean    & rbExact)  // out: the exact curve was set
+{
+  rbExact = FALSE;
+  NER( pMitre );
+  SmFilletVertex * pStart = (SmFilletVertex*)pMitre->GetVertex();
+  NER( pStart );
+  SmFilletVertex * pEnd   = (SmFilletVertex*)pMitre->GetOtherVertex( pStart );
+  NER( pEnd );
+  const SmBoolean bFromS = ( pStart->GetFilletVertexType() == SM_FV_RAIL_X_EDGEUSE ) ? TRUE : FALSE;
+  SmFilletVertex * pS = bFromS ? pStart : pEnd;
+  SmFilletVertex * pX = bFromS ? pEnd : pStart;
+  if (   pS->GetFilletVertexType() != SM_FV_RAIL_X_EDGEUSE || pX->GetFilletVertexType() != SM_FV_RAIL_X_RAIL
+      || !pS->IsProcessed() || !pX->IsProcessed() )
+    return SM_SUCCESS;
+  SmFilletEdgeuse * apEU[2];
+  apEU[0] = (SmFilletEdgeuse*)pMitre->GetPrimaryEdgeuse();
+  NER( apEU[0] );
+  apEU[1] = (SmFilletEdgeuse*)apEU[0]->GetMate();
+  NER( apEU[1] );
+  const double dTol = GetThisApproxTol3d();
+
+  // both rounds constant circular ones on straight spines (cylinders), of one radius; the balls'
+  // centres at X and the spines' directions
+  SmPoint3d  asCentre[2];
+  SmVector3d asAxis[2];
+  double     adRadius[2];
+  for (ULONG ii=0; ii<2; ii++)
+    {
+      SmFilletGeom * pFG = apEU[ii]->GetFilletGeom();
+      NER( pFG );
+      SmFilletSolver * pFS = pFG->GetFilletSolver();
+      NER( pFS );
+      SmFilletVertexuse * pVU = pX->GetVUAtRailEnd( pFG );
+      NER( pVU );
+      SmTsectPnt   sTsect = pVU->GetTsectPnt();
+      SmExactBlend sBlend;
+      SER( pFS->ClassifyExactBlend( sTsect, sBlend ));
+      // Open gap: a round on a circular spine (a torus) has no exact mitre here yet; the mitre
+      // is then the rounds' certified SSI curve, and since the fillet's own trim curves reach
+      // the result (SmFilletGeom::MakeFaceBrep, SmFace::ShrinkGeometry) its fitted trim curves
+      // are the result's, not projections.
+      if ( sBlend.m_eSpine != SM_BS_LINE || pFS->GetFilletSurfaceGenerator() == NULL
+          || pFS->GetFilletSurfaceGenerator()->GetFilletSurfaceGeneratorType() != SM_FSG_CIRCULAR )
+        return SM_SUCCESS;
+      SmPoint3d sOn[2];
+      for (ULONG k=0; k<2; k++)
+        {
+          SmOffsetSurface * pOffset = pFG->GetOffsetSurface( k );
+          NER( pOffset );
+          SER( pOffset->EvaluatePoint( pVU->GetTsectPnt().UVPos( k ), sOn[k] ));
+        }
+      if ( sOn[0].DistanceBetween( sOn[1] ) > dTol )
+        return SM_SUCCESS;
+      asCentre[ii] = sOn[0];
+      adRadius[ii] = sBlend.m_dRadius;
+      SmBSplineCurve * pSpine = pFG->GetCenterLineCurve();
+      NER( pSpine );
+      SmPoint3d sLinePt;
+      if ( !pSpine->IsLine( 10, dTol, sLinePt, asAxis[ii] ) || asAxis[ii].Unitize( FALSE ) != SM_SUCCESS )
+        return SM_SUCCESS;
+    }
+  // Open gap: two cylinders of unequal radii meet in a quartic, not a plane conic, and have no
+  // exact mitre here yet: the certified SSI curve, its fitted trim curves the result's (above).
+  const double dR = adRadius[0];
+  if ( smos_Fabs( adRadius[1] - dR ) > dTol || dR <= dTol )
+    return SM_SUCCESS;
+
+  // C: where the axes meet
+  const SmVector3d sD  = asCentre[1] - asCentre[0];
+  const double     dAB = asAxis[0].Dot( asAxis[1] );
+  const double     dDen = 1.0 - dAB * dAB;
+  if ( dDen <= SM_EFF_ZERO )
+    return SM_SUCCESS; // parallel axes: no turn
+  const double dS1 = ( sD.Dot( asAxis[0] ) - dAB * sD.Dot( asAxis[1] )) / dDen;
+  const double dS2 = ( dAB * sD.Dot( asAxis[0] ) - sD.Dot( asAxis[1] )) / dDen;
+  const SmPoint3d sC  = asCentre[0] + asAxis[0] * dS1;
+  const SmPoint3d sC2 = asCentre[1] + asAxis[1] * dS2;
+  if ( sC.DistanceBetween( sC2 ) > dTol )
+    return SM_SUCCESS;
+
+  // X and S exactly: on the planes the rounds roll on, X is the foot of C on the common face
+  // (where the rails there cross: the corner ball touches it there) and S where each round's rail
+  // on its other face (the line through C's foot on that face along the axis) meets the side
+  // edge's line. The rails are trimmed at the corner's vertices (SmFilletGeom::TrimRailCurves),
+  // so the rails, the mitre and the faces between them all end there.
+  SmEdgeuse * pSideEU = (SmEdgeuse*)pS->GetPointClassObject();
+  NER( pSideEU );
+  SmFace * apWall[2] = { pSideEU->GetFace(), pSideEU->GetRadial()->GetFace() };
+  SmFace * pCommon   = (SmFace*)pX->GetPointClassObject();
+  NER( pCommon );
+  SmBlendQuadric sCommonPlane, asWallPlane[2];
+  SER( SmBlendQuadric::FromSurface( pCommon->GetSurface(), pCommon->GetUVDomain().GetMid(), dTol, sCommonPlane ));
+  for (ULONG ii=0; ii<2; ii++)
+    {
+      NER( apWall[ii] );
+      SER( SmBlendQuadric::FromSurface( apWall[ii]->GetSurface(), apWall[ii]->GetUVDomain().GetMid(), dTol, asWallPlane[ii] ));
+      if ( asWallPlane[ii].m_eKind != SmBlendQuadric::SM_BQ_PLANE )
+        return SM_SUCCESS;
+    }
+  SmPoint3d  sEdgePt;
+  SmVector3d sEdgeDir;
+  NER( pSideEU->GetEdge()->GetCurve() );
+  if (   sCommonPlane.m_eKind != SmBlendQuadric::SM_BQ_PLANE
+      || !pSideEU->GetEdge()->GetCurve()->IsLine( 10, dTol, sEdgePt, sEdgeDir ) || sEdgeDir.Unitize( FALSE ) != SM_SUCCESS )
+    return SM_SUCCESS;
+  auto foot = []( const SmPoint3d & crP, const SmBlendQuadric & crPlane )
+    { return crP - crPlane.m_sDir * SmVector3d( crP - crPlane.m_sPoint ).Dot( crPlane.m_sDir ); };
+  const SmPoint3d sXPnt = foot( sC, sCommonPlane );
+  SmPoint3d asOnEdge[2];
+  for (ULONG ii=0; ii<2; ii++)
+    {
+      // the rail on wall ii, Q + s a, meets the edge's line, P + t e
+      const SmPoint3d  sQ  = foot( sC, asWallPlane[ii] );
+      const SmVector3d sQP = sQ - sEdgePt;
+      const double     dAE = asAxis[ii].Dot( sEdgeDir );
+      const double     dD2 = 1.0 - dAE * dAE;
+      if ( dD2 <= SM_EFF_ZERO )
+        return SM_SUCCESS;
+      const double dT = ( sQP.Dot( sEdgeDir ) - dAE * sQP.Dot( asAxis[ii] )) / dD2;
+      const double dS = ( dAE * sQP.Dot( sEdgeDir ) - sQP.Dot( asAxis[ii] )) / dD2;
+      asOnEdge[ii] = sEdgePt + sEdgeDir * dT;
+      if ( asOnEdge[ii].DistanceBetween( sQ + asAxis[ii] * dS ) > dTol )
+        return SM_SUCCESS; // the rail misses the edge
+    }
+  const SmPoint3d sSPnt = asOnEdge[0];
+  if (   asOnEdge[1].DistanceBetween( sSPnt ) > dTol
+      || sXPnt.DistanceBetween( pX->GetPoint() ) > dTol || sSPnt.DistanceBetween( pS->GetPoint() ) > dTol )
+    return SM_SUCCESS;
+
+  // the plane of symmetry holding X and S
+  SmVector3d sM;
+  SmBoolean  bPlane = FALSE;
+  for (int iSign=-1; iSign<=1 && !bPlane; iSign+=2)
+    {
+      SmVector3d sTry = asAxis[0] + asAxis[1] * static_cast<double>( iSign );
+      if ( sTry.Unitize( FALSE ) != SM_SUCCESS )
+        { continue; }
+      if ( smos_Fabs( SmVector3d( sXPnt - sC ).Dot( sTry )) <= dTol && smos_Fabs( SmVector3d( sSPnt - sC ).Dot( sTry )) <= dTol )
+        { sM = sTry; bPlane = TRUE; }
+    }
+  if ( !bPlane )
+    return SM_SUCCESS;
+  const SmVector3d & sA = asAxis[0];
+  const double dAM = sA.Dot( sM );
+  if ( smos_Fabs( dAM ) <= SM_EFF_ZERO )
+    return SM_SUCCESS;
+
+  // the arc on cylinder 1 from X (t = 0) to S
+  SmVector3d sXOff = sXPnt - sC;
+  SmVector3d sU    = sXOff - sA * sXOff.Dot( sA );
+  if ( smos_Fabs( sU.Length() - dR ) > dTol || sU.Unitize( FALSE ) != SM_SUCCESS )
+    return SM_SUCCESS;
+  const SmVector3d sW    = sA * sU;
+  const SmVector3d sSOff = sSPnt - sC;
+  const double     dT    = atan2( sSOff.Dot( sW ), sSOff.Dot( sU ));
+  if ( smos_Fabs( dT ) <= SM_EFF_ZERO || smos_Fabs( dT ) >= 0.99 * SM_PI )
+    return SM_SUCCESS;
+  const SmVector3d sUm = sU - sA * ( sU.Dot( sM ) / dAM );
+  const SmVector3d sWm = sW - sA * ( sW.Dot( sM ) / dAM );
+  const double adX[3] = { 1.0, 1.0, cos( dT ) };
+  const double adY[3] = { 0.0, tan( 0.5 * dT ), sin( dT ) };
+  SmTArray<SmPoint3d> sPoints;
+  SmTArray<double>    sWeights;
+  for (ULONG jj=0; jj<3; jj++)
+    {
+      const ULONG k = bFromS ? 2 - jj : jj; // the curve runs as the edge does
+      sPoints.Add( sC + ( sUm * adX[k] + sWm * adY[k] ) * dR );
+      sWeights.Add( k == 1 ? cos( 0.5 * dT ) : 1.0 );
+    }
+  SmTArray<ULONG>  sMults;
+  SmTArray<double> sKnots;
+  sMults.Add( 3 ); sMults.Add( 3 );
+  sKnots.Add( 0.0 ); sKnots.Add( 1.0 );
+  SmBSplineCurve * pCurve = NULL;
+  SER( SmBSplineCurve::CreateCanonical( m_crContext, 3, 2, sPoints, SM_CF_ELLIPTIC_ARC, sMults, sKnots, SM_KT_UNSPECIFIED,
+                                        &sWeights, NULL, pCurve ));
+  NER( pCurve );
+  SmObjDelete sCleanCurve( pCurve );
+
+  // Its pcurves on the two rounds, exact. A round on a straight spine is its section's rational
+  // arc moved along the spine: along it the parameter is affine in the point's distance along the
+  // axis, so on the mitre, where the point is the curve's rational quadratic C(s) = P(s) / W(s),
+  // that parameter is N(s) / W(s), N quadratic; across it the arc's parameter p and the mitre's s
+  // both run as the tangent of the half angle about the axis (each its arc's, linearly), so p is
+  // linear fractional in s, (a s + b) / (c s + d). The pcurve is the rational cubic with
+  // denominator W(s) (c s + d). Both are read off the round's own parameters at s = 0, 1/2, 1 (its
+  // feet there, to rounding), and the pcurve holds where the round's surface at it is the mitre at
+  // s = 1/4, 3/4 and 1/8, 7/8 (to 1e-12 of the size): else the round is not so parameterized and the
+  // mitre is its certified intersection.
+  SmBSplineCurve * apUV[2] = { NULL, NULL };
+  SmObjDelete asCleanUV[2];
+  const double adW[3] = { sWeights[0], sWeights[1], sWeights[2] };
+  const double dSize  = 1.0 + sXPnt.GetMaxDimension() + dR;
+  for (ULONG ii=0; ii<2; ii++)
+    {
+      SmSurface * pSurface = apEU[ii]->GetFilletGeom()->GetFilletSurface();
+      NER( pSurface );
+      // a start for the feet: the round's own (fitted) drop of the mitre
+      double dMaxDrop = 0.0, dDev = 0.0;
+      SmTArray<SmBSplineCurve*> sUVs;
+      SER( pSurface->DropCurve( m_crContext, pSurface->GetNaturalUVDomain(), *pCurve, pCurve->GetNaturalInterval(), dTol,
+                                dMaxDrop, dDev, sUVs, FALSE ));
+      SmObjsDelete<SmBSplineCurve*> sCleanDrops( &sUVs );
+      if ( sUVs.GetSize() != 1 || dMaxDrop > dTol )
+        { return SM_SUCCESS; } // not on that round: its certified intersection
+      const double adAt[7] = { 0.0, 0.5, 1.0, 0.25, 0.75, 0.125, 0.875 };
+      SmPoint2d asUV[7];
+      SmPoint3d asOn[7];
+      for (ULONG k=0; k<7; k++)
+        {
+          SmPoint3d sGuess;
+          SER( sUVs[0]->EvaluatePoint( sUVs[0]->GetNaturalInterval().Evaluate( adAt[k] ), sGuess ));
+          SER( pCurve->EvaluatePoint( pCurve->GetNaturalInterval().Evaluate( adAt[k] ), asOn[k] ));
+          asUV[k] = SmPoint2d( sGuess.x, sGuess.y );
+          SmBoolean bFound = FALSE;
+          SER( sm_FootOnSurface( *pSurface, asOn[k], asUV[k], bFound ));
+          if ( !bFound )
+            { return SM_SUCCESS; }
+        }
+      // which parameter runs along the spine (N / W) and which across it (linear fractional)
+      SmBSplineCurve * pExact = NULL;
+      for (ULONG lAcross=0; lAcross<2 && pExact == NULL; lAcross++)
+        {
+          auto coord = [&]( ULONG k, ULONG lDir ) { return lDir == 0 ? asUV[k].x : asUV[k].y; };
+          const double dP0 = coord( 0, lAcross ), dPh = coord( 1, lAcross ), dP1 = coord( 2, lAcross );
+          if ( smos_Fabs( dPh - dP1 ) <= SM_EFF_ZERO )
+            { continue; }
+          const double dG  = ( dP1 + dP0 - 2.0 * dPh ) / ( dPh - dP1 );   // p = (a s + b) / (g s + 1)
+          const double adL[2]   = { 1.0, 1.0 + dG };
+          const double adNum[2] = { dP0, dP1 * ( 1.0 + dG ) };
+          if ( adL[1] <= 0.0 )
+            { continue; }
+          const ULONG lAlong = 1 - lAcross;
+          const double dU0 = coord( 0, lAlong ), dUh = coord( 1, lAlong ), dU1 = coord( 2, lAlong );
+          const double dWh = 0.25 * ( adW[0] + 2.0 * adW[1] + adW[2] );
+          const double adN[3] = { dU0 * adW[0], 0.5 * ( 4.0 * dUh * dWh - dU0 * adW[0] - dU1 * adW[2] ), dU1 * adW[2] };
+          double adDen[4], adAlong[4], adAcross[4];
+          sm_BernsteinProduct21( adW, adL, adDen );
+          sm_BernsteinProduct21( adN, adL, adAlong );
+          sm_BernsteinProduct21( adW, adNum, adAcross );
+          SmTArray<SmPoint3d> sUVPoints;
+          SmTArray<double>    sUVWeights;
+          for (ULONG j=0; j<4; j++)
+            {
+              const double dA = adAlong[j] / adDen[j], dC = adAcross[j] / adDen[j];
+              sUVPoints.Add( lAcross == 1 ? SmPoint3d( dA, dC, 0.0 ) : SmPoint3d( dC, dA, 0.0 ));
+              sUVWeights.Add( adDen[j] );
+            }
+          SmTArray<ULONG>  sUVMults;
+          SmTArray<double> sUVKnots;
+          sUVMults.Add( 4 ); sUVMults.Add( 4 );
+          sUVKnots.Add( pCurve->GetNaturalInterval().GetMin() ); sUVKnots.Add( pCurve->GetNaturalInterval().GetMax() );
+          SmBSplineCurve * pTry = NULL;
+          SER( SmBSplineCurve::CreateCanonical( m_crContext, 2, 3, sUVPoints, SM_CF_UNSPECIFIED, sUVMults, sUVKnots, SM_KT_UNSPECIFIED,
+                                                &sUVWeights, NULL, pTry ));
+          NER( pTry );
+          SmBoolean bHolds = TRUE;
+          for (ULONG k=0; k<7 && bHolds; k++)
+            {
+              SmPoint3d sW, sOnRound;
+              SER( pTry->EvaluatePoint( pTry->GetNaturalInterval().Evaluate( adAt[k] ), sW ));
+              SER( pSurface->EvaluatePoint( SmPoint2d( sW.x, sW.y ), sOnRound ));
+              bHolds = ( sOnRound.DistanceBetween( asOn[k] ) <= 1e-12 * dSize ) ? TRUE : FALSE;
+            }
+          if ( bHolds )
+            { pExact = pTry; }
+          else
+            { delete pTry; }
+        }
+      if ( pExact == NULL )
+        { return SM_SUCCESS; } // the round is not parameterized so: its certified intersection
+      apUV[ii] = pExact;
+      asCleanUV[ii].SetObj( pExact );
+    }
+
+  pMitre->SetCurve( pCurve, TRUE );
+  pCurve->SetOwner( pMitre );
+  sCleanCurve.Clear();
+  pX->SetPoint( sXPnt );
+  pS->SetPoint( sSPnt );
+  {
+    SmCurve * pSideCurve = pSideEU->GetEdge()->GetCurve();
+    SmBoolean bFound = FALSE;
+    double    dParam = 0.0, dDist = 0.0;
+    SER( pSideCurve->DropPoint( pSideEU->GetEdge()->GetInterval(), sSPnt, NULL, dTol, NULL, bFound, dParam, dDist ));
+    if ( bFound )
+      { pS->SetOriginalTParam( dParam ); }
+  }
+  for (ULONG ii=0; ii<2; ii++)
+    {
+      apEU[ii]->SetUVCurve( apUV[ii] );
+      asCleanUV[ii].Clear();
+      apEU[ii]->GetFilletGeom()->AddSideFilletEdgeuse( apEU[ii] );
+    }
+  pMitre->SetFilletEdgeType( SM_FE_PRECOMPUTED );
+  rbExact = TRUE;
+  return SM_SUCCESS;
+
+} // end SmBlendCorner::ExactMitreCurve
 
 /*******************************************************************//**
 PURPOSE: The Mitre turn's patch: none where the rounds meet on the side

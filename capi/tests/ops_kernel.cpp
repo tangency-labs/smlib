@@ -5570,7 +5570,8 @@ void turn_boss_base(int32_t turn)
     if (r != nullptr)
     {
         std::printf("  volume %.9f, want %.9f, %lu faces\n", volume_of(r), want, static_cast<unsigned long>(r->p->GetNumFaces()));
-        CHECK(near(volume_of(r), want, 1e-7));
+        // the mitred body is exact (its rounds, mitres and trim curves), to the volume's quadrature
+        CHECK(near(volume_of(r), want, turn == SMLIB_TURN_SWEPT ? 1e-7 : 1e-11));
         CHECK(sound(r));
         if (turn == SMLIB_TURN_SWEPT)
         {
@@ -6376,9 +6377,7 @@ int section_cases(bool known_failing, const char *only)
 // The turns of a chain of rounds at a sharp side edge (smlib_blend_turn), and why each that
 // fails today fails (null: it passes). As TANGENT_END_CASES.
 const TangentEndCase TURN_CASES[] = {
-    {"mitre_boss_base", turn_mitre_boss_base,
-     "the mitre is the rounds' marched intersection, fitted to the fillet's tolerance (1.39e-5 off the cylinders), not their exact plane section, "
-     "and the rounds' trim curves along it are made again by projection in the merge"},
+    {"mitre_boss_base", turn_mitre_boss_base, nullptr},
     {"swept_boss_base", turn_swept_boss_base, nullptr},
     {"swept_sharp_pocket_refused", turn_swept_sharp_pocket_refused, nullptr},
     {"swept_tori_turned_round", turn_swept_tori_turned_round, nullptr},
