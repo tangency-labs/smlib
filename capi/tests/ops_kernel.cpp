@@ -6684,7 +6684,9 @@ int turn_cases(bool known_failing, const char *only)
 // given, on its edge to 1e-12. Where the trim reparameterizes the surface, they no longer lie on
 // it: they are removed, and made again by projection they lie on their edges to the edges'
 // tolerance.
-void shrunk_face_trims(SmBSplineSurface *srf, const SmExtent2d &d, bool kept)
+// With spans_u >= 0 the trimmed surface must also have exactly that many spans along u: no sliver
+// span kept past a knot the face's bound sits on to rounding.
+void shrunk_face_trims(SmBSplineSurface *srf, const SmExtent2d &d, bool kept, int spans_u = -1)
 {
     const SmContext &ctx = *SmApiGetOrCreateContext();
     SmBrep *b = new (ctx) SmBrep();
@@ -6749,6 +6751,15 @@ void shrunk_face_trims(SmBSplineSurface *srf, const SmExtent2d &d, bool kept)
         removed += now == nullptr;
     }
     const double off = worst_pcurve_distance(b); // made again where removed
+    if (spans_u >= 0)
+    {
+        SmTArray<double> uk;
+        CHECK(srf->GetKnots(SM_SP_U, uk) == SM_SUCCESS);
+        const SmExtent2d now = srf->GetNaturalUVDomain();
+        std::printf("  trimmed to u [%.17g, %.17g]: %lu span(s) along u\n", now.GetMin().x, now.GetMax().x,
+                    static_cast<unsigned long>(uk.GetSize() - 1));
+        CHECK(static_cast<int>(uk.GetSize()) - 1 == spans_u);
+    }
     std::printf("  %s: %d of %zu trim curves kept, %d removed; then on their edges to %.3g\n", kept ? "kept" : "reparameterized", same,
                 given.size(), removed, off);
     CHECK(eus.GetSize() == 8);
@@ -6790,6 +6801,38 @@ void shrink_bspline_patch()
     if (s != nullptr)
     {
         shrunk_face_trims(s, SmExtent2d(SmPoint2d(0.2, 0.3), SmPoint2d(0.7, 0.9)), true);
+    }
+}
+
+// The same hill's patch whose bound in u sits one rounding step past its knot at 0.5 (a computed
+// end parameter, 0.5 to rounding): 0.5 is the bound, and its patch has the one span [0.2, 0.5]
+// along u, not a sliver span past 0.5 as well.
+void shrink_bound_a_rounding_step_past_a_knot()
+{
+    const SmContext &ctx = *SmApiGetOrCreateContext();
+    SmTArray<SmPoint3d> net;
+    for (int i = 0; i < 5; ++i)
+    {
+        for (int j = 0; j < 5; ++j)
+        {
+            net.Add(SmPoint3d(2.5 * i, 2.5 * j, (i == 2 && j == 2) ? 4.0 : 0.3 * i * j));
+        }
+    }
+    SmTArray<ULONG> mult;
+    mult.Add(4);
+    mult.Add(1);
+    mult.Add(4);
+    SmTArray<double> unique;
+    unique.Add(0.0);
+    unique.Add(0.5);
+    unique.Add(1.0);
+    SmBSplineSurface *s = nullptr;
+    CHECK(SmBSplineSurface::CreateCanonical(ctx, 3, 3, net, SM_SF_UNSPECIFIED, mult, mult, unique, unique, SM_KT_UNSPECIFIED, nullptr, nullptr,
+                                            s) == SM_SUCCESS &&
+          s != nullptr);
+    if (s != nullptr)
+    {
+        shrunk_face_trims(s, SmExtent2d(SmPoint2d(0.2, 0.3), SmPoint2d(std::nextafter(0.5, 1.0), 0.9)), true, 1);
     }
 }
 
@@ -6854,6 +6897,8 @@ void shrink_plane()
 // Each kind of surface a face is shrunk on, and why each that fails today fails.
 const TangentEndCase SHRINK_CASES[] = {
     {"bspline_patch", shrink_bspline_patch, nullptr},
+    {"bound_a_rounding_step_past_a_knot", shrink_bound_a_rounding_step_past_a_knot,
+     "the face's bound one rounding step past the knot at 0.5 is spaced off it, and its surface keeps a sliver span [0.5, 0.500015]"},
     {"cylinder_along_its_axis", shrink_cylinder_along_its_axis, nullptr},
     {"cylinder_in_its_angle", shrink_cylinder_in_its_angle, nullptr},
     {"torus_along_its_generator", shrink_torus_along_its_generator, nullptr},
