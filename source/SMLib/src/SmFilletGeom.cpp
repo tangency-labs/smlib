@@ -3188,20 +3188,10 @@ int iDebugLevel = 0;
 PURPOSE: Calculate vertex geometry of type SM_FV_RAIL_X_EXTENDED_EDGEUSE.
 
 NOTES:
-  vertex will be attached to a filletEdge of types
-  SM_FE_FILLET_X_SIDE_FACE or SM_FCR_3_x_2_MIXED.
+  At an End's end rib (SM_FE_FILLET_X_SIDE_FACE): the rail's crossing with
+  the end face's surface (CalcRailIntEndSurface, SmBlendCornerEnd.cpp).
 
-  When vertex->FilletEdgeType == SM_FE_FILLET_X_SIDE_FACE
-    Find FilletSurface/endSurface intersection curve
-    set FilletEdge->SetCurve(3DCurve)
-        FilletEdge->PrimaryEU->SetUVCurve(PUVCurve1)
-        FilletEdge->PrimaryEU->Mate->SetUVCurve(PUVCurve2)
-        3DCurve->SetOwner(pFilletEdge)
-
-        FilletVertex->SetPoint(3DCurve->EndPoint)
-        FilletVertex->SetStatus(SM_FIL_PROCESSED)
-
-  else  vertex->FilletEdgeType == SM_FCR_3_x_2_MIXED
+  At a SM_FCR_3_x_2_MIXED corner (its SM_FE_CROSS_SECTION):
     get surface/surface intersection
         FilletVertex->SetPoint(surface/surface xSectCurve->EndPoint projection onto surface)
         FilletVertex->SetStatus(SM_FIL_PROCESSED)
@@ -3212,13 +3202,10 @@ SmStatus SmFilletVertex::CalcRailIntExtendedEdgeuse()
   SmBoolean b3x2MixedCornerCase =  (m_cpCorner && m_cpCorner->GetCornerType() == SM_FCR_3_x_2_MIXED)
                                   ? TRUE
                                   : FALSE;
+  if ( !b3x2MixedCornerCase )
+    { return CalcRailIntEndSurface(); }
 
-  // Find adjacent fillet edge which was classifed
-  //   as SM_FE_FILLET_X_SIDE_FACE in regular cases,
-  //   or as SM_FE_CROSS_SECTION in 3x2MixedConvexity cases
-  enum SmFilletEdgeType eFEType =  (b3x2MixedCornerCase)
-                                  ? SM_FE_CROSS_SECTION
-                                  : SM_FE_FILLET_X_SIDE_FACE ;
+  // Find adjacent fillet edge classifed as SM_FE_CROSS_SECTION
   SmFilletEdge    * pCurrEdge = NULL;
   SmTArray<SmEdge*> sEdges;
   GetEdges(sEdges);
@@ -3227,7 +3214,7 @@ SmStatus SmFilletVertex::CalcRailIntExtendedEdgeuse()
   for (ULONG i=0; i<sEdges.GetSize(); i++)
     {
       SmFilletEdge * pFilEdge = (SmFilletEdge*)sEdges[i];
-      if (pFilEdge->GetFilletEdgeType() == eFEType)
+      if (pFilEdge->GetFilletEdgeType() == SM_FE_CROSS_SECTION)
         {
           pCurrEdge = pFilEdge;
           break;
@@ -3239,12 +3226,9 @@ SmStatus SmFilletVertex::CalcRailIntExtendedEdgeuse()
 
   // get FilletSurface stored in filletEdge->PrimaryEU->FilletGeom->FilletSurface
   SmFilletEdgeuse * pPrimEU     = (SmFilletEdgeuse*)pCurrEdge->GetPrimaryEdgeuse();
-  SmFilletEdgeuse * pMateEU     = (SmFilletEdgeuse*)pPrimEU->GetMate();
   SmFilletGeom    * pFilletGeom = pPrimEU->GetFilletGeom();
   NER(pFilletGeom);
   
-  // gwc: I think pSideSurface no longer has to be a BBSplineSurface - replace 1 line
-  // rm : SmBSplineSurface * pFilletSurface = pFilletGeom->GetFilletSurface();
   SM_FILLETSURF_TYPE * pFilletSurface = pFilletGeom->GetFilletSurface();
 
   if (!pFilletSurface)
@@ -3253,40 +3237,21 @@ SmStatus SmFilletVertex::CalcRailIntExtendedEdgeuse()
       return SM_SUCCESS;
     }
 
-  // get OtherFaceSurface
-  SmFilletVertex * pOtherFV  = NULL;
-  SmFace         * pSideFace = NULL; // Face used for surface-surface-interection
-  SmFace         * pOnFace   = NULL; // Face where 'THIS' is on(for 'SM_FCR_3_x_2_MIXED' cases only)
-  if (b3x2MixedCornerCase)
+  // Will intersect fillet with a side-face of the original brep
+  SmFace * pSideFace = NULL; // Face used for surface-surface-interection
+  SmFace * pOnFace   = NULL; // Face where 'THIS' is on
+  SmEdgeuse * pSideEU = (SmEdgeuse*)GetPointClassObject() ;
+  NER(pSideEU) ;
+  pSideFace = pSideEU->GetFace() ;
+  pOnFace   = pSideEU->GetRadial()->GetFace() ;
+  for (ULONG kk=0; kk<2; kk++)
     {
-      // Will intersect fillet with a side-face of the original brep
-      SmEdgeuse * pSideEU = (SmEdgeuse*)GetPointClassObject() ;
-      NER(pSideEU) ;
-      pSideFace = pSideEU->GetFace() ;
-      pOnFace   = pSideEU->GetRadial()->GetFace() ;
-      for (ULONG kk=0; kk<2; kk++)
+      SmEdgeuse * pEU = pFilletGeom->GetFilletSolver()->GetEdgeuse(kk) ;
+      if (pEU->GetFace() == pSideFace)
         {
-          SmEdgeuse * pEU = pFilletGeom->GetFilletSolver()->GetEdgeuse(kk) ;
-          if (pEU->GetFace() == pSideFace)
-            {
-              SM_SWAP_PTR(SmFace,pSideFace,pOnFace) ;
-              break ;
-            }
+          SM_SWAP_PTR(SmFace,pSideFace,pOnFace) ;
+          break ;
         }
-    } // end b3x2MixedCornerCase branch
-  else // pCurrEdge == SM_FE_FILLET_X_SIDE_FACE branch
-    {
-      pOtherFV = (SmFilletVertex*)pCurrEdge->GetOtherVertex(this) ;
-
-      // check state - the other filletVertex is already processed
-      // That vertex will be on a sideEdge not an extendedSideEdge
-      if (!pOtherFV->IsProcessed())
-        {
-          SER(SM_ERR) ;
-        }
-
-      // get face (sometimes its extended) upon which this filletEdge was originated
-      pSideFace = pCurrEdge->GetOriginalFace() ;
     }
   NER(pSideFace) ;
 
@@ -3310,7 +3275,7 @@ iDebugLevel = DebugLevel();
 
   // do surface/surface intersection
   if (SM_SUCCESS != sm_SrfSrfIntersection(m_cpCorner->GetContext(), // in : context for new object construction
-                                          pOtherFV,                 // in : 1st point known to be on intersection curve
+                                          NULL,                     // in : 1st point known to be on intersection curve
                                           NULL,                     // in : 2nd point known to be on intersection curve,
                                                                     //      NULL to ignore
                                           NULL,                     // in : expected general direction of intersection curve from 1st point
@@ -3333,132 +3298,56 @@ iDebugLevel = DebugLevel();
       SER_MSG(SM_ERR, _T("CalcRailIntExtendedEdgeuse(): Suffered a sm_SrfSrfIntersection() failure"));
     }
 
-#ifdef SM_DEBUG_CODE
-  // draw
-  if ( iDebugLevel > 0 )
-    {
-      smgfx_SetColor(1,0,0) ; pNew3DCurve->DrawWDeriv(pNew3DCurve->GetNaturalInterval(),0) ; sm_GraphicsLoop() ;
-      smgfx_SetColor(0,1,1) ; pFilletSurface->DrawUV(4,4) ; sm_GraphicsLoop() ;
-      smgfx_SetColor(0.5,1,0) ; pSideFace->Draw() ; sm_GraphicsLoop() ;
-      smgfx_SetColor(0.5,1,0) ; pSurface2->DrawUV(4,4) ; sm_GraphicsLoop() ;
-      smgfx_SetColor(0.5,1,0) ; pSideFace->GetBrep()->Draw() ; sm_GraphicsLoop() ;
-      sm_GraphicsLoop() ;
-    }
-#endif // SM_DEBUG_CODE
-
   // get surface/surface xSectCurve->endPoints
   SmExtent1d sIvl = pNew3DCurve->GetNaturalInterval( );
   SmPoint3d sPnt1, sPnt2 ;
   SER(pNew3DCurve->EvaluatePoint(sIvl.GetMin(), sPnt1)) ;
   SER(pNew3DCurve->EvaluatePoint(sIvl.GetMax(), sPnt2)) ;
 
-  //
-  if (b3x2MixedCornerCase)
+  // Destroy intersection curves
+  SM_ASSERT(pNew3DCurve != NULL) ; delete pNew3DCurve ; pNew3DCurve = NULL ;
+  SM_ASSERT(pUVCurve1   != NULL) ; delete pUVCurve1 ;   pUVCurve1   = NULL ;
+  SM_ASSERT(pUVCurve2   != NULL) ; delete pUVCurve2 ;   pUVCurve2   = NULL ;
+
+  // Find which end point lies on the pOnFace
+  SmSurface     * pSurf1 = pOnFace->GetSurface() ;
+  SmSolutionArray sSolutions ;
+  double          dTol   = pFilSolver->GetThisApproxTol3d() ;
+
+  SER(pSurf1->GlobalPointSolve(pSurf1->GetNaturalUVDomain(),
+                               SM_SO_INTERSECT,
+                               sPnt1,
+                               10.0*dTol,
+                               NULL,
+                               SM_SR_ALL,
+                               sSolutions)) ;
+
+  if (sSolutions.GetSize() > 0)
     {
-      // Destroy intersection curves
-      SM_ASSERT(pNew3DCurve != NULL) ; delete pNew3DCurve ; pNew3DCurve = NULL ;
-      SM_ASSERT(pUVCurve1   != NULL) ; delete pUVCurve1 ;   pUVCurve1   = NULL ;
-      SM_ASSERT(pUVCurve2   != NULL) ; delete pUVCurve2 ;   pUVCurve2   = NULL ;
-
-      // Find which end point lies on the pOnFace
-      SmSurface     * pSurf1 = pOnFace->GetSurface() ;
-      SmSolutionArray sSolutions ;
-      double          dTol   = pFilSolver->GetThisApproxTol3d() ;
-
+      SetPoint(sPnt1);
+      SetStatus(SM_FIL_PROCESSED) ;
+    }
+  else
+    {
       SER(pSurf1->GlobalPointSolve(pSurf1->GetNaturalUVDomain(),
                                    SM_SO_INTERSECT,
-                                   sPnt1,
+                                   sPnt2,
                                    10.0*dTol,
                                    NULL,
                                    SM_SR_ALL,
                                    sSolutions)) ;
-
       if (sSolutions.GetSize() > 0)
         {
-          SetPoint(sPnt1);
-          SetStatus(SM_FIL_PROCESSED) ;
+          SetPoint(sPnt2);
+          SetStatus(SM_FIL_PROCESSED);
         }
       else
         {
-          SER(pSurf1->GlobalPointSolve(pSurf1->GetNaturalUVDomain(),
-                                       SM_SO_INTERSECT,
-                                       sPnt2,
-                                       10.0*dTol,
-                                       NULL,
-                                       SM_SR_ALL,
-                                       sSolutions)) ;
-          if (sSolutions.GetSize() > 0)
-            {
-              SetPoint(sPnt2);
-              SetStatus(SM_FIL_PROCESSED);
-            }
-          else
-            {
-              SER(SM_ERR);
-            }
-        }
-
-      return SM_SUCCESS;
-
-    } // end b3x2MixedCornerCase check
-
-  // arrive here for SM_FE_FILLET_X_SIDE_FACE cases
-  SmPoint3d sVertGeom      = sPnt1;
-  SmBoolean bReverseCurves = FALSE;
-  SmPoint3d sOtherPnt      = pOtherFV->GetPoint();
-
-#ifdef SM_DEBUG_CODE
-  // draw OtherFilletVertex(blue)
-  if ( DebugLevel() > 0 )
-    {
-      sm_GraphicsLoop();
-      smgfx_SetColor(0,0,1); pOtherFV->Draw(); sm_GraphicsLoop() ;
-      sm_GraphicsLoop();
-    }
-#endif // SM_DEBUG_CODE
-
-  // make sure curve is parameterized from edge->StartVert to edge->EndVert
-  if (pCurrEdge->GetVertex() == this)
-    {
-      if (sOtherPnt.DistanceBetween(sPnt1) < sOtherPnt.DistanceBetween(sPnt2))
-        {
-          sVertGeom      = sPnt2;
-          bReverseCurves = TRUE;
-        }
-    }
-  else
-    {
-      if (sOtherPnt.DistanceBetween(sPnt1) < sOtherPnt.DistanceBetween(sPnt2))
-        {
-          sVertGeom = sPnt2;
-        }
-      else
-        {
-          bReverseCurves = TRUE;
+          SER(SM_ERR);
         }
     }
 
-  // reverse FilletEdge parameterization when needed
-  if (bReverseCurves)
-    {
-      SER(pNew3DCurve->ReverseParameterization(sIvl,sIvl));
-      SER(pUVCurve1->ReverseParameterization(sIvl,sIvl));
-      SER(pUVCurve2->ReverseParameterization(sIvl,sIvl));
-    }
-
-  // Set edge geometry
-  pCurrEdge->SetCurve(pNew3DCurve, TRUE)  ; // side effect: delete current pCurrEdge->UVTrimCurves
-  pNew3DCurve->SetOwner(pCurrEdge) ;
-  pCurrEdge->SetInterval(sIvl) ;
-  pPrimEU->SetUVCurve(pUVCurve1) ;
-  pMateEU->SetUVCurve(pUVCurve2) ;
-
-  // Set vertex geometry
-  SetPoint(sVertGeom) ;
-  SetStatus(SM_FIL_PROCESSED) ;
-
-  // all done
-  return SM_SUCCESS ;
+  return SM_SUCCESS;
 
 } // end SmFilletVertex::CalcRailIntExtendedEdgeuse
 

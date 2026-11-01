@@ -241,6 +241,7 @@ public:
   SmStatus         CalcFilletInt2Fillets     ();
   SmStatus         CalcRailIntEdgeuse        (SmFilletGeom * pOptFG = NULL);
   SmStatus         CalcRailIntExtendedEdgeuse();
+  SmStatus         CalcRailIntEndSurface     (); // SmBlendCornerEnd.cpp: an End's rail end on the end face's surface
   SmStatus         CalcRailIntRail           ();
   SmStatus         CalcSetBackVert           ();
   SmStatus         CalcVertOnVert            ();
