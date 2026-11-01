@@ -5426,6 +5426,54 @@ void turn_swept_corners(const smlib_brep *r)
     }
 }
 
+// The mitred boss base's corners: at corner (cx, cy) the two rounds (cylinders r 1 about the lines
+// x = cx + ox, z = 11 and y = cy + oy, z = 11, ox, oy the outward signs) run on to where they meet,
+// the bisector plane of the walls through the vertical edge, (x - cx) ox = (y - cy) oy. Their crossing
+// is that plane's section of either cylinder: an ellipse arc from the rails' crossing on the plate,
+// (cx + ox, cy + oy, 10), to the side vertex on the edge, (cx, cy, 11). Exact: every point of the
+// mitre edge in the plane and on both cylinders to 1e-12.
+void turn_mitre_corners(const smlib_brep *r)
+{
+    SmTArray<SmEdge *> es;
+    r->p->GetEdges(es);
+    int mitres[4] = {0, 0, 0, 0};
+    for (int c = 0; c < 4; ++c)
+    {
+        const double cx = TURN_CORNERS[c][0], cy = TURN_CORNERS[c][1];
+        const double ox = cx > 20 ? 1.0 : -1.0, oy = cy > 15 ? 1.0 : -1.0;
+        const SmPoint3d s(cx, cy, 11), x(cx + ox, cy + oy, 10);
+        for (ULONG k = 0; k < es.GetSize(); ++k)
+        {
+            const SmPoint3d a = es[k]->GetStartVertex()->GetPoint(), b = es[k]->GetEndVertex()->GetPoint();
+            if (!(((a - s).Length() <= 1e-6 && (b - x).Length() <= 1e-6) || ((a - x).Length() <= 1e-6 && (b - s).Length() <= 1e-6)))
+            {
+                continue;
+            }
+            mitres[c]++;
+            double plane = 0.0, cyl = 0.0;
+            SmExtent1d ivl = es[k]->GetInterval();
+            for (int t = 0; t <= 64; ++t)
+            {
+                SmPoint3d p;
+                if (es[k]->GetCurve() == nullptr || es[k]->GetCurve()->EvaluatePoint(ivl.Evaluate(t / 64.0), p) != SM_SUCCESS)
+                {
+                    plane = HUGE_VAL;
+                    continue;
+                }
+                plane = std::max(plane, std::fabs((p.x - cx) * ox - (p.y - cy) * oy) / std::sqrt(2.0));
+                cyl = std::max(cyl, std::fabs(std::hypot(p.x - (cx + ox), p.z - 11.0) - 1.0));
+                cyl = std::max(cyl, std::fabs(std::hypot(p.y - (cy + oy), p.z - 11.0) - 1.0));
+            }
+            std::printf("  mitre at (%g, %g): off the bisector plane by %.3g, off the cylinders by %.3g\n", cx, cy, plane, cyl);
+            CHECK(plane <= 1e-12 && cyl <= 1e-12);
+        }
+    }
+    for (int c = 0; c < 4; ++c)
+    {
+        CHECK(mitres[c] == 1);
+    }
+}
+
 void turn_boss_base(int32_t turn)
 {
     smlib_brep *plate = box(0, 0, 0, 40, 30, 10), *boss = box(15, 10, 10, 10, 10, 5), *part = nullptr;
@@ -5444,6 +5492,11 @@ void turn_boss_base(int32_t turn)
         {
             CHECK(r->p->GetNumFaces() == 19);
             turn_swept_corners(r);
+        }
+        else
+        {
+            CHECK(r->p->GetNumFaces() == 15);
+            turn_mitre_corners(r);
         }
         smlib_brep_free(r);
         r = nullptr;
@@ -6107,7 +6160,8 @@ int section_cases(bool known_failing, const char *only)
 // The turns of a chain of rounds at a sharp side edge (smlib_blend_turn), and why each that
 // fails today fails (null: it passes). As TANGENT_END_CASES.
 const TangentEndCase TURN_CASES[] = {
-    {"mitre_boss_base", turn_mitre_boss_base, nullptr},
+    {"mitre_boss_base", turn_mitre_boss_base,
+     "the mitre is the rounds' marched intersection, fitted to the fillet's tolerance, not their exact plane section"},
     {"swept_boss_base", turn_swept_boss_base, nullptr},
     {"swept_sharp_pocket_refused", turn_swept_sharp_pocket_refused, nullptr},
     {"swept_tori_turned_round", turn_swept_tori_turned_round, nullptr},
