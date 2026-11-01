@@ -236,7 +236,7 @@ double blend_fit(int32_t *what = nullptr)
     {
         *what = kind;
     }
-    std::printf("  fit: %.12g (%s)\n", size, kind == SMLIB_FIT_SETBACK ? "setback" : "size");
+    std::printf("  fit: %.12g (%s)\n", size, kind == SMLIB_FIT_SETBACK ? "setback" : kind == SMLIB_FIT_SETBACK_AT_LEAST ? "setback at least" : "size");
     return size;
 }
 
@@ -9534,7 +9534,8 @@ void setback_asked_too_long_names_what_fits()
 // along each edge on request: past every rail crossing (4), but too short for the G1 fill to be
 // certified convex (owner, 2026-11-01: a setback asked for is not grown). Refused
 // (SMLIB_ERR_NO_ROOM), naming the setback that builds the convex fill, smlib_blend_fit_size's
-// (SMLIB_FIT_SETBACK): the least scale of 4.25 that certifies, to 1e-2 (SmBlendSetback::
+// (SMLIB_FIT_SETBACK_AT_LEAST, the smallest that builds; the reason says "the smallest setback
+// that builds is" it): the least scale of 4.25 that certifies, to 1e-2 (SmBlendSetback::
 // CertifiedScale). At that setback the corner builds.
 void setback_asked_too_short_names_what_builds()
 {
@@ -9548,7 +9549,8 @@ void setback_asked_too_short_names_what_builds()
     int32_t what = -1;
     const double fit = blend_fit(&what);
     std::printf("  status %d: %s\n", static_cast<int>(st), why.c_str());
-    CHECK(st == SMLIB_ERR_NO_ROOM && r == nullptr && what == SMLIB_FIT_SETBACK && fit > setback && fit < 1.2 * setback && names_size(why, fit, 1e-9));
+    CHECK(st == SMLIB_ERR_NO_ROOM && r == nullptr && what == SMLIB_FIT_SETBACK_AT_LEAST && fit > setback && fit < 1.2 * setback && names_size(why, fit, 1e-9));
+    CHECK(why.find("the smallest setback that builds is") != std::string::npos && why.find("largest") == std::string::npos);
     if (fit > setback)
     {
         st = smlib_blend_setback(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &fit, 1, 0.1, &r, nullptr, nullptr);
@@ -10237,7 +10239,8 @@ const TangentEndCase SETBACK_CASES[] = {
     {"g1_convex_notch", setback_g1_convex_notch, nullptr},
     {"default_shrinks_to_fit", setback_default_shrinks_to_fit, nullptr},
     {"asked_too_long_names_what_fits", setback_asked_too_long_names_what_fits, nullptr},
-    {"asked_too_short_names_what_builds", setback_asked_too_short_names_what_builds, nullptr},
+    {"asked_too_short_names_what_builds", setback_asked_too_short_names_what_builds,
+     "the refusal names its setback as the largest that builds (SMLIB_FIT_SETBACK, \"the largest setback that builds is 4.7515\"), not the smallest (SMLIB_FIT_SETBACK_AT_LEAST)"},
     {"corner_rounds_2_3_4", setback_corner_rounds_2_3_4, nullptr},
     {"corner_curvature_g2", setback_corner_curvature_g2, nullptr},
     {"corner_eased_g2", setback_corner_eased_g2, nullptr},

@@ -720,16 +720,21 @@ int32_t smlib_blend(const smlib_brep *brep, int32_t kind, const double *points, 
 int32_t smlib_blend_reason(char *out, int64_t size, int64_t *out_length);
 
 /* What smlib_blend_fit_size's size is: the blend's own size (a round's radius, a chamfer's
- * distance), or the setback of a set-back corner. */
+ * distance), the largest setback of a set-back corner that fits (one too long), a chamfer pair's
+ * scale, or the smallest setback that builds the corner (one too short). */
 #define SMLIB_FIT_SIZE 0
 #define SMLIB_FIT_SETBACK 1
 /* A chamfer of two distances: the factor (< 1) both its distances are scaled by, along their ratio. */
 #define SMLIB_FIT_SCALE 2
+/* A setback too short: the smallest that builds (a corner whose G1 fill is certified convex only
+ * from that setback on). */
+#define SMLIB_FIT_SETBACK_AT_LEAST 3
 
 /* The largest size that builds, for the last blend call in this process that SMLib refused as
- * too large (SMLIB_ERR_NO_ROOM): written to `out_size` (0 when no size builds), what it sizes to
- * `out_what` (SMLIB_FIT_SIZE, SMLIB_FIT_SETBACK or SMLIB_FIT_SCALE; NULL to ignore). A chord-width
- * blend's size is its width. It comes from the refusal's
+ * too large (SMLIB_ERR_NO_ROOM), or the smallest, for a setback refused as too short: written to
+ * `out_size` (0 when no size builds), what it sizes to `out_what` (SMLIB_FIT_SIZE,
+ * SMLIB_FIT_SETBACK, SMLIB_FIT_SCALE or SMLIB_FIT_SETBACK_AT_LEAST; NULL to ignore). A
+ * chord-width blend's size is its width. It comes from the refusal's
  * cause in closed form or by solving that cause's own geometry, never by building again; where
  * the cause's bound is open (a size at it would leave a face or an edge of no extent), it is the
  * bound less a thousand of the blended edge's tolerances (0.01 mm at 1e-5: a sliver SMLib builds). smlib_blend_reason names it too. SMLIB_ERR_EMPTY when
