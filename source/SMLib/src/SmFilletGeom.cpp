@@ -13359,7 +13359,31 @@ SmStatus SmFilletGeom::TrimOriginalSurfaces
           // arrive here when pFBEdge   = m_pFilletBrep->Edge attached to fillet rail curve
           //                  pBrepEdge = mated Original m_pTargtBrep->Edge containing the OrigSurface being filleted
 
+          // SolidCraft change: the edgeuse of the fillet brep's edge on this fillet's own face.
+          // Where two blends' contact lines meet (the face between them used up, as on a square
+          // bar rounded to a rod) their rails are one edge of the fillet brep, between both
+          // fillets' faces, and its primary edgeuse can be the other fillet's: taken from there,
+          // this fillet's face was never collected to be kept, and the merge deleted it. A rail
+          // edge on one face only (a rail split where it rolls over a tangent edge, its piece
+          // bounding the fillet's face beyond) has the one.
           SmEdgeuse *pPrimEU = pFBEdge->GetPrimaryEdgeuse();
+          {
+            SmTArray<SmEdgeuse*> sFBEdgeuses;
+            SER( pFBEdge->GetEdgeuses( sFBEdgeuses ));
+            SmEdgeuse * pOwnEU = NULL;
+            SmBoolean   bTwoFaces = FALSE;
+            for ( kk=0; kk<sFBEdgeuses.GetSize(); kk++ )
+              {
+                if ( sFBEdgeuses[kk]->GetFace() != pPrimEU->GetFace() )
+                  { bTwoFaces = TRUE; }
+                if ( pOwnEU == NULL && sFBEdgeuses[kk]->GetFace()->GetSurface() == GetFilletSurface() )
+                  { pOwnEU = sFBEdgeuses[kk]; }
+              }
+            if ( pOwnEU != NULL )
+              { pPrimEU = pOwnEU; }
+            else if ( bTwoFaces )
+              { SER_MSG( SM_ERR, _T("TrimOriginalSurfaces(): a rail's edge lies between two faces, neither the fillet's own") ); }
+          }
           SmFace    *pFBFace = pPrimEU->GetFace();
 
           // Collect all faces reachable from pFBFace in m_pFilletBrep -- all new Fillet faces.
