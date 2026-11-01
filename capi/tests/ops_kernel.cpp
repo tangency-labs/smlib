@@ -5330,6 +5330,54 @@ void turn_swept_tori_turned_round()
     }
 }
 
+// Where the Swept build does not reach yet, a Swept turn is refused as unsupported, the reason
+// saying why, never mitred instead (smlib_blend_reason): on the boss base (above) with rounds of
+// 1 and 1.5 by turns (no common ball: the patch takes a fourth side up the edge); with the boss's
+// walls drafted 5 degrees about the plate (the side edges lean, out of the rounds' end sections);
+// and on a boss whose back wall is the cylinder r 20 about the line y = 0, z = 10 (its vertical
+// edges at the back are arcs of that circle). Mitred, each builds.
+void swept_refused_where_not_built(const char *what, smlib_brep *part, const double *edges, int64_t n, const double *sizes, const char *why_has)
+{
+    smlib_brep *r = nullptr;
+    CHECK(part != nullptr && smlib_blend_turn(part, SMLIB_BLEND_ROUND, SMLIB_TURN_SWEPT, edges, sizes, n, 0.1, &r, nullptr) == SMLIB_ERR_CORNER_UNSUPPORTED);
+    CHECK(r == nullptr);
+    char why[512];
+    int64_t length = 0;
+    CHECK(smlib_blend_reason(why, sizeof why, &length) == SMLIB_OK && length > 0);
+    std::printf("  %s: swept refused: %s\n", what, why);
+    CHECK(std::strstr(why, why_has) != nullptr);
+    CHECK(part != nullptr && smlib_blend_turn(part, SMLIB_BLEND_ROUND, SMLIB_TURN_MITRE, edges, sizes, n, 0.1, &r, nullptr) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        CHECK(sound(r));
+        smlib_brep_free(r);
+    }
+}
+
+void turn_swept_not_built_refused()
+{
+    smlib_brep *plate = box(0, 0, 0, 40, 30, 10), *boss = box(15, 10, 10, 10, 10, 5), *part = nullptr;
+    CHECK(smlib_boolean(plate, boss, SMLIB_BOOLEAN_UNION, &part) == SMLIB_OK && part != nullptr);
+    const double edges[12] = {20, 10, 10, 25, 15, 10, 20, 20, 10, 15, 15, 10}, unequal[4] = {1, 1.5, 1, 1.5};
+    swept_refused_where_not_built("unequal radii", part, edges, 4, unequal, "of one radius");
+
+    const double walls[12] = {20, 10, 12.5, 25, 15, 12.5, 20, 20, 12.5, 15, 15, 12.5}, neutral[3] = {0, 0, 10}, up[3] = {0, 0, 1};
+    smlib_brep *drafted = nullptr;
+    CHECK(part != nullptr && smlib_draft(part, walls, 4, 0.1, neutral, up, up, 5.0 * PI / 180.0, &drafted, nullptr) == SMLIB_OK);
+    const double ones[4] = {1, 1, 1, 1};
+    swept_refused_where_not_built("drafted walls", drafted, edges, 4, ones, "drafted side edge");
+
+    smlib_brep *block = box(15, 5, 10, 10, 20, 5), *drum = placed(cylinder(0, 0, 0, 20, 40), {0, 1, 0}, {0, 0, 1}, {1, 0, 0}, {0, 0, 10});
+    smlib_brep *curved_boss = combined(block, drum, SMLIB_BOOLEAN_INTERSECT), *curved = nullptr;
+    CHECK(curved_boss != nullptr && smlib_boolean(plate, curved_boss, SMLIB_BOOLEAN_UNION, &curved) == SMLIB_OK && curved != nullptr);
+    const double back[6] = {25, 12, 10, 20, 20, 10};
+    swept_refused_where_not_built("curved side edge", curved, back, 2, ones, "curved or drafted side edge");
+    for (smlib_brep *x : {plate, boss, part, drafted, curved_boss, curved})
+    {
+        smlib_brep_free(x);
+    }
+}
+
 void turn_mitre_boss_base()
 {
     turn_boss_base(SMLIB_TURN_MITRE);
@@ -5519,6 +5567,7 @@ const TangentEndCase TURN_CASES[] = {
     {"swept_boss_base", turn_swept_boss_base, nullptr},
     {"swept_sharp_pocket_refused", turn_swept_sharp_pocket_refused, nullptr},
     {"swept_tori_turned_round", turn_swept_tori_turned_round, nullptr},
+    {"swept_not_built_refused", turn_swept_not_built_refused, nullptr},
 };
 
 int turn_cases(bool known_failing, const char *only)

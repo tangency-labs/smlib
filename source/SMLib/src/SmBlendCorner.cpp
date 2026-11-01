@@ -389,7 +389,6 @@ SmStatus SmBlendCorner::Classify
 
   // what the exact torus needs
   const double dTol = smos_Min( apFS[0]->GetThisApproxTol3d(), apFS[1]->GetThisApproxTol3d() );
-  const double dSinTol = sin( SM_DEG2RAD( dTangencyTolDeg ));
   double dRadius = -1.0;
   for (ULONG ii=0; ii<2; ii++)
     {
@@ -413,6 +412,11 @@ SmStatus SmBlendCorner::Classify
       return sm_TurnNotBuilt( pExec, cpVertex, SM_FILERR_CORNER_UNSUPPORTED,
                               _T("Fillet Error: a swept turn is built at a sharp side edge (not at a tangent seam)") );
     }
+  // each round's end section (square to its edge) holds the side edge where the edge is square
+  // to it: off square by an angle whose sine is s, the section's arc of radius r leaves the edge's
+  // plane by up to s r, held to the fillet's tolerance (not the tangency tolerance, which takes
+  // a few degrees for tangent)
+  const double dSinTol = dTol / dRadius;
   SmPoint3d  sLinePt;
   SmVector3d sAxis;
   SmFace   * pCommon = sm_GetFaceByTwoEdgeuses( pEU1, pEU2, pSideEU );
