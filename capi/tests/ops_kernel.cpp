@@ -5476,12 +5476,17 @@ void section_variable_round_on_its_cone()
 // to 30, where r stays from 2 to 6, and the round is its definition: the balls' envelope, the
 // circular cone about the line of centres (x, 30 - r, 20 - r) with its apex at (-30, 30, 20) where
 // r would be 0, sin(phi) = r / |c - apex| = 1 / sqrt(102). Its points on that cone to rounding, its
-// net within its certified bound, the round meeting both faces tangentially.
+// net within its certified bound, the round meeting both faces tangentially. The volume removed,
+// 69.8731836896940, is the area the cone's section in each plane x = const cuts off the corner
+// (between the rails, by rays from the corner: the nearer root of the cone's quadratic along each
+// ray), integrated over x (Gauss-Legendre, 40 points on 64 panels in the ray's angle, taken as
+// pi/4 (1 - cos(pi v)) for the square root at the rails, and on 8 panels in x; the same sum gives
+// the r = 1 + x/5 cone's 43.7775732641296 to 1.4e-12): V = 11930.1268163103.
 void section_variable_round_on_a_cone_is_its_definition()
 {
     SectionGrade g;
-    g.volume = 0.0;
-    g.volume_rel = -1.0;
+    g.volume = 11930.1268163103;
+    g.volume_rel = 1e-7;
     const double apex[3] = {-30, 30, 20}, l = std::sqrt(1.02), ax[3] = {1 / l, -0.1 / l, -0.1 / l};
     const double sphi = 1 / std::sqrt(102.0), cphi = std::sqrt(101.0 / 102.0);
     g.off = [=](const SmPoint3d &x)
