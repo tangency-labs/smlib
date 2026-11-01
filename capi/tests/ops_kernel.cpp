@@ -5125,6 +5125,137 @@ void section_variable_round_on_its_cone()
 // round on to the corner's bisector plane, adding 40 A + 8 M (4 corners) to 12500; Swept revolves
 // the spandrel a quarter turn about the vertical edge at each corner, (pi/2) M (Pappus), adding
 // 40 A + 2 pi M. They differ by 0.0823, graded to 1e-7 (1.3e-3 of a mm^3).
+//
+// Swept, at each corner: the side vertex S = (cx, cy, 11) where both wall rails meet the vertical
+// edge, and two plate vertices, A and B, where each round's plate rail meets its end section (the
+// plane through the edge square to the round's edge), at distance r from the edge's foot. The
+// face between is the end section revolved a quarter turn about the edge: a horn torus, axis the
+// edge, centre S, major and minor radius r, bounded by the two end sections (S-A, S-B) and the
+// quarter circle A-B about the foot in the plate. It is tangent to both rounds along their end
+// sections and to the plate along A-B. So: 11 faces of the boss on the plate, 4 rounds, 4 tori.
+const double TURN_CORNERS[4][2] = {{15, 10}, {25, 10}, {25, 20}, {15, 20}};
+
+// Distance from `p` to the horn torus of the swept turn at corner (cx, cy): axis x = cx, y = cy,
+// centre z = 11, major and minor radius 1.
+double turn_torus_distance(const SmPoint3d &p, double cx, double cy)
+{
+    const double rho = std::hypot(p.x - cx, p.y - cy);
+    return std::fabs(std::hypot(rho - 1.0, p.z - 11.0) - 1.0);
+}
+
+// The largest angle (radians) between `face` and its neighbour across each of its edges that is
+// not a point, at 31 stations inside the edge (from the faceuses' binormals; a tangent seam reads
+// 0). Sets `seams` to the edges measured; HUGE_VAL where an edge has no neighbour.
+double worst_seam_angle(SmFace *face, int &seams)
+{
+    seams = 0;
+    double worst = 0.0;
+    SmTArray<SmEdge *> es;
+    face->GetEdges(es);
+    for (ULONG k = 0; k < es.GetSize(); ++k)
+    {
+        if (es[k]->GetCurve() == nullptr || es[k]->GetStartVertex() == es[k]->GetEndVertex())
+        {
+            continue; // a point (the torus's pole edge at S)
+        }
+        SmEdgeuse *a = es[k]->GetPrimaryEdgeuse();
+        SmEdgeuse *o = a != nullptr ? a->GetRadial() : nullptr;
+        if (o == nullptr || o == a)
+        {
+            return HUGE_VAL;
+        }
+        seams++;
+        SmExtent1d ivl = es[k]->GetInterval();
+        for (int s = 1; s < 32; ++s)
+        {
+            SmPoint3d pa, pb;
+            SmVector3d ba, bb;
+            if (a->EvaluateBinormal(ivl.Evaluate(s / 32.0), FALSE, pa, ba) != SM_SUCCESS ||
+                o->EvaluateBinormal(ivl.Evaluate(s / 32.0), FALSE, pb, bb) != SM_SUCCESS || ba.Unitize(FALSE) != SM_SUCCESS ||
+                bb.Unitize(FALSE) != SM_SUCCESS)
+            {
+                return HUGE_VAL;
+            }
+            // tangent faces' binormals (into each face, square to the edge) are opposed
+            worst = std::max(worst, std::acos(std::min(1.0, -ba.Dot(bb))));
+        }
+    }
+    return worst;
+}
+
+// The swept boss base's corners, as above: each corner's one face an exact torus, bounded on it.
+void turn_swept_corners(const smlib_brep *r)
+{
+    SmTArray<SmFace *> faces;
+    r->p->GetFaces(faces);
+    int tori[4] = {0, 0, 0, 0};
+    for (ULONG f = 0; f < faces.GetSize(); ++f)
+    {
+        SmSurface *srf = faces[f]->GetSurface();
+        if (srf == nullptr || srf->GetType() != SmTorus_TYPE)
+        {
+            continue;
+        }
+        SmTorus *torus = SM_CAST_PTR(SmTorus, srf);
+        SmAxis2Placement frame;
+        double major = 0.0, minor = 0.0;
+        CHECK(torus != nullptr && torus->GetCanonical(frame, major, minor) == SM_SUCCESS);
+        const SmPoint3d o = frame.GetOrigin();
+        const SmVector3d z = frame.GetZAxis();
+        int c = -1;
+        for (int k = 0; k < 4; ++k)
+        {
+            if (std::hypot(o.x - TURN_CORNERS[k][0], o.y - TURN_CORNERS[k][1]) <= 1e-12 && std::fabs(o.z - 11.0) <= 1e-12)
+            {
+                c = k;
+            }
+        }
+        std::printf("  torus face %lu: centre (%.12g, %.12g, %.12g), axis z %.15g, radii %.15g, %.15g\n", static_cast<unsigned long>(f), o.x, o.y,
+                    o.z, z.z, major, minor);
+        CHECK(c >= 0 && std::fabs(std::fabs(z.z) - 1.0) <= 1e-12 && std::fabs(major - 1.0) <= 1e-12 && std::fabs(minor - 1.0) <= 1e-12);
+        if (c < 0)
+        {
+            continue;
+        }
+        tori[c]++;
+        const double cx = TURN_CORNERS[c][0], cy = TURN_CORNERS[c][1];
+        const double ox = cx > 20 ? 1.0 : -1.0, oy = cy > 15 ? 1.0 : -1.0;
+        // its vertices: S on the edge, A and B on the plate a radius out from the walls
+        SmTArray<SmVertex *> vs;
+        faces[f]->GetVertices(vs);
+        CHECK(vs.GetSize() == 3 && vertex_at(vs, SmPoint3d(cx, cy, 11)) >= 0 && vertex_at(vs, SmPoint3d(cx + ox, cy, 10)) >= 0 &&
+              vertex_at(vs, SmPoint3d(cx, cy + oy, 10)) >= 0);
+        // its edges on the torus: the two end sections and the plate's quarter circle
+        SmTArray<SmEdge *> es;
+        faces[f]->GetEdges(es);
+        double off = 0.0;
+        for (ULONG k = 0; k < es.GetSize(); ++k)
+        {
+            SmExtent1d ivl = es[k]->GetInterval();
+            for (int s = 0; s <= 32; ++s)
+            {
+                SmPoint3d p;
+                if (es[k]->GetCurve() == nullptr || es[k]->GetCurve()->EvaluatePoint(ivl.Evaluate(s / 32.0), p) != SM_SUCCESS)
+                {
+                    off = HUGE_VAL;
+                    continue;
+                }
+                off = std::max(off, turn_torus_distance(p, cx, cy));
+            }
+        }
+        int seams = 0;
+        const double angle = worst_seam_angle(faces[f], seams);
+        std::printf("    edges off the torus by %.3g, %d seams, worst angle %.3g rad\n", off, seams, angle);
+        CHECK(off <= 1e-9);
+        // G1 to both rounds and to the plate
+        CHECK(seams == 3 && angle <= 1e-9);
+    }
+    for (int k = 0; k < 4; ++k)
+    {
+        CHECK(tori[k] == 1);
+    }
+}
+
 void turn_boss_base(int32_t turn)
 {
     smlib_brep *plate = box(0, 0, 0, 40, 30, 10), *boss = box(15, 10, 10, 10, 10, 5), *part = nullptr;
@@ -5139,6 +5270,11 @@ void turn_boss_base(int32_t turn)
         std::printf("  volume %.9f, want %.9f, %lu faces\n", volume_of(r), want, static_cast<unsigned long>(r->p->GetNumFaces()));
         CHECK(near(volume_of(r), want, 1e-7));
         CHECK(sound(r));
+        if (turn == SMLIB_TURN_SWEPT)
+        {
+            CHECK(r->p->GetNumFaces() == 19);
+            turn_swept_corners(r);
+        }
         smlib_brep_free(r);
         r = nullptr;
     }
