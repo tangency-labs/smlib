@@ -136,6 +136,32 @@ bool near(double got, double want, double rel)
     return ok;
 }
 
+// The last refused blend's largest size that builds (smlib_blend_fit_size), -1 when it names
+// none; `what` (if given) gets what it sizes.
+double blend_fit(int32_t *what = nullptr)
+{
+    double size = -1.0;
+    int32_t kind = -1;
+    if (smlib_blend_fit_size(&size, &kind) != SMLIB_OK)
+    {
+        return -1.0;
+    }
+    if (what != nullptr)
+    {
+        *what = kind;
+    }
+    std::printf("  fit: %.12g (%s)\n", size, kind == SMLIB_FIT_SETBACK ? "setback" : "size");
+    return size;
+}
+
+// Whether `fit` is just under an open bound `limit`: below it by SMLib's fit margin, a thousand of
+// the edge's tolerances (0.01 at these models' 1e-5).
+bool just_under(double fit, double limit)
+{
+    return fit < limit && fit > limit - 0.02;
+}
+
+
 // A sphere of radius `r` about the origin in six patches, each on its own sphere surface turned
 // to it, as an importer hands over a cube projected onto the sphere: the topology of a box, its
 // faces sphere patches (reference direction to the patch's middle, longitude and latitude in
@@ -1243,6 +1269,17 @@ void corner_setback()
           r == nullptr);
     CHECK(smlib_blend_setback(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &too_long, 1, 0.1, &r, nullptr, nullptr) == SMLIB_ERR_NO_ROOM &&
           r == nullptr);
+    // the largest setback that fits: just under the corner's shortest edge, 20 (open: a setback as
+    // long as the edge leaves none of it), and the corner builds with it
+    {
+        int32_t what = -1;
+        const double fit = blend_fit(&what);
+        CHECK(what == SMLIB_FIT_SETBACK && just_under(fit, 20.0));
+        CHECK(smlib_blend_setback(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &fit, 1, 0.1, &r, nullptr, nullptr) == SMLIB_OK &&
+              r != nullptr);
+        smlib_brep_free(r);
+        r = nullptr;
+    }
     CHECK(smlib_blend_setback(part, SMLIB_BLEND_CHAMFER, edges, radii, 3, corner, &setback, 1, 0.1, &r, nullptr, nullptr) ==
               SMLIB_ERR_UNSUPPORTED &&
           r == nullptr);
@@ -5791,6 +5828,9 @@ void turn_swept_sharp_pocket_refused()
     CHECK(smlib_blend_reason(why, sizeof why, &length) == SMLIB_OK && length > 0);
     std::printf("  swept refused: %s\n", why);
     CHECK(std::strstr(why, "at least 1") != nullptr);
+    // no radius builds the swept turn there: its size is not what refuses it
+    int32_t what = -1;
+    CHECK(blend_fit(&what) == 0.0 && what == SMLIB_FIT_SIZE);
     CHECK(part != nullptr && smlib_blend_turn(part, SMLIB_BLEND_ROUND, SMLIB_TURN_MITRE, edges, sizes, 4, 0.1, &r, nullptr) == SMLIB_OK);
     CHECK(smlib_blend_reason(why, sizeof why, &length) == SMLIB_OK && length == 0);
     if (r != nullptr)
@@ -7161,6 +7201,18 @@ void scenario_refused(smlib_brep *body, int32_t kind, std::vector<double> points
     std::printf("  status %d: %s\n", static_cast<int>(s), why.c_str());
     CHECK(s != SMLIB_OK && r == nullptr);
     CHECK(names_size(why, limit, 1e-3));
+    // the largest size that builds: just under the limit (an open bound: at it the part is
+    // joined at a line), and built there the part stays one solid
+    const double fit = blend_fit();
+    CHECK(just_under(fit, limit));
+    if (fit > 0.0 && body != nullptr)
+    {
+        smlib_brep *f = nullptr;
+        CHECK(smlib_blend(body, kind, points.data(), &fit, 1, 0.1, &f, nullptr) == SMLIB_OK && f != nullptr);
+        int64_t one = 0;
+        CHECK(f != nullptr && smlib_brep_solid_count(f, &one) == SMLIB_OK && one == 1);
+        smlib_brep_free(f);
+    }
     if (r != nullptr)
     {
         int64_t solids = 0;
@@ -7666,6 +7718,12 @@ void scenario_round_at_a_pin_on_a_slope_folds_refused()
     CHECK(s == SMLIB_ERR_NO_ROOM && r == nullptr);
     CHECK(why.find("folds over itself") != std::string::npos);
     CHECK(near(blend_reason_number("a radius below "), 2.0, 1e-6));
+    // the largest radius that builds: just under 2 (at 2 the touch arc has a point where f_ff = 0)
+    const double fit = blend_fit();
+    CHECK(just_under(fit, 2.0));
+    smlib_brep *f = nullptr;
+    CHECK(body != nullptr && smlib_blend(body, SMLIB_BLEND_ROUND, foot, &fit, 1, 0.1, &f, nullptr) == SMLIB_OK && f != nullptr && sound(f));
+    smlib_brep_free(f);
     smlib_brep_free(r);
     smlib_brep_free(body);
 }
@@ -7687,6 +7745,33 @@ void scenario_round_at_a_pin_on_a_slope_just_inside()
     smlib_brep_free(body);
 }
 
+// The three edges at a 20 cube's corner rounded R (SolidCraft rig fillets/477-*): their corner is
+// the ball's octant, each round ending on the plane through the ball's centre square to its edge,
+// r from the corner, and running out to the cube's far faces at the other end. At R20 the corner
+// takes each edge's whole length: refused, and the largest radius that keeps a length of the
+// edges is L / 1 = 20 (open), just under it. There the rounds take 3 (1 - pi/4) r^2 (20 - r) +
+// r^3 (1 - pi/6).
+void scenario_cube_corner_rounds_as_wide_as_faces_refused()
+{
+    smlib_brep *cube = box(0, 0, 0, 20, 20, 20), *r = nullptr;
+    const std::vector<double> edges = {10, 0, 0, 0, 10, 0, 0, 0, 10};
+    const double sizes[3] = {20, 20, 20};
+    CHECK(smlib_blend(cube, SMLIB_BLEND_ROUND, edges.data(), sizes, 3, 0.1, &r, nullptr) == SMLIB_ERR_NO_ROOM && r == nullptr);
+    std::printf("  reason: %s\n", last_blend_reason().c_str());
+    const double fit = blend_fit();
+    CHECK(just_under(fit, 20.0));
+    const double at[3] = {fit, fit, fit};
+    CHECK(smlib_blend(cube, SMLIB_BLEND_ROUND, edges.data(), at, 3, 0.1, &r, nullptr) == SMLIB_OK && r != nullptr);
+    if (r != nullptr)
+    {
+        const double off = 3.0 * (1.0 - PI / 4.0) * fit * fit * (20.0 - fit) + fit * fit * fit * (1.0 - PI / 6.0);
+        CHECK(near(volume_of(r), 8000.0 - off, 1e-6));
+        CHECK(sound(r));
+        smlib_brep_free(r);
+    }
+    smlib_brep_free(cube);
+}
+
 // The scenario cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--scenarios-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SCENARIO_CASES[] = {
@@ -7699,6 +7784,7 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"chamfer_two_distances_past_the_top_refused", scenario_chamfer_two_distances_past_the_top_refused, nullptr},
     {"chamfers_of_an_arc_wall_and_the_top_front", scenario_chamfers_of_an_arc_wall_and_the_top_front, nullptr},
     {"chord_on_a_60_degree_edge", scenario_chord_on_a_60_degree_edge, nullptr},
+    {"cube_corner_rounds_as_wide_as_faces_refused", scenario_cube_corner_rounds_as_wide_as_faces_refused, nullptr},
     {"hole_in_band_kept", scenario_hole_in_band_kept, nullptr},
     {"hole_in_band_taken", scenario_hole_in_band_taken, nullptr},
     {"hole_short_of_band", scenario_hole_short_of_band, nullptr},
@@ -9709,6 +9795,19 @@ int main(int argc, char **argv)
         const double at = 100.0 * PI / 180.0;
         const double rim[3] = {7.0 * std::cos(at), 7.0 * std::sin(at), 48.2};
         CHECK(bossed != nullptr && smlib_fillet(bossed, rim, 1, 0.1, 6.9, &r, nullptr) == SMLIB_ERR_NO_ROOM && r == nullptr);
+        // the largest radius whose rail on the top stays off the boss's footprint: the rail, a
+        // circle of radius 7 - r, reaches the footprint's 2.7 at r = 4.3 (open); the round builds
+        // just under it, taking (1 - pi/4) r^2 about the axis at its centroid 7 - r (10 - 3 pi) /
+        // (12 - 3 pi)
+        const double fit = blend_fit();
+        CHECK(just_under(fit, 4.3));
+        CHECK(bossed != nullptr && smlib_fillet(bossed, rim, 1, 0.1, fit, &r, nullptr) == SMLIB_OK);
+        if (r != nullptr)
+        {
+            const double off = 2.0 * PI * (7.0 - fit * (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI)) * (1.0 - PI / 4.0) * fit * fit;
+            CHECK(near(volume_of(r), PI * 49.0 * 48.2 + PI * 2.7 * 2.7 * 2.0 - off, 1e-6));
+            done(r);
+        }
         for (smlib_brep *b : {can, boss, bossed})
         {
             smlib_brep_free(b);
@@ -9733,6 +9832,16 @@ int main(int argc, char **argv)
             done(r);
         }
         CHECK(l != nullptr && smlib_fillet(l, inner, 1, 0.1, 9.0, &r, nullptr) == SMLIB_ERR_NO_ROOM && r == nullptr);
+        // the largest radius whose rails stay on their faces: the wall's rail at z = 2 + r reaches
+        // its top at r = 8 (open), and the round builds just under it
+        const double fit = blend_fit();
+        CHECK(just_under(fit, 8.0));
+        CHECK(l != nullptr && smlib_fillet(l, inner, 1, 0.1, fit, &r, nullptr) == SMLIB_OK);
+        if (r != nullptr)
+        {
+            CHECK(near(volume_of(r), 800.0 + 320.0 + (1.0 - PI / 4.0) * fit * fit * 20.0, 1e-6));
+            done(r);
+        }
         for (smlib_brep *b : {floor, wall, l})
         {
             smlib_brep_free(b);
@@ -9810,6 +9919,20 @@ int main(int argc, char **argv)
             }
             builds("fillet", s, 2.0 * PI * (10.0 - d * (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI)) * (1.0 - PI / 4.0) * d * d);
         }
+        // The equal chamfer of 10 refused: the largest that builds is just under 10, where its
+        // band reaches the top's centre (the ball touching the top there and the side: 10), the
+        // bound open (the cone's point), and it builds there.
+        CHECK(smlib_chamfer(can, top_rim, 1, 0.1, 10.0, &r, nullptr) == SMLIB_ERR_NO_ROOM && r == nullptr);
+        {
+            const double fit = blend_fit();
+            CHECK(just_under(fit, 10.0));
+            CHECK(smlib_chamfer(can, top_rim, 1, 0.1, fit, &r, nullptr) == SMLIB_OK && r != nullptr);
+            if (r != nullptr)
+            {
+                CHECK(near(volume_of(r), whole - ring(10, 20, 10 - fit, 20, 10, 20 - fit), 1e-7));
+                done(r);
+            }
+        }
         smlib_brep_free(can);
     }
 
@@ -9832,6 +9955,17 @@ int main(int argc, char **argv)
             smlib_brep *rounded = nullptr;
             CHECK(smlib_fillet(pin, rim, 1, 0.1, 2.0, &rounded, nullptr) == SMLIB_ERR_NO_ROOM && rounded == nullptr);
             CHECK(near(blend_reason_number("a radius below "), R, 1e-6));
+            // the largest radius that builds is R itself (the bound is closed: at r = R the ball's
+            // centre is on the axis, the round the pin's hemispherical end, pi R^2 (10 - R) +
+            // (2/3) pi R^3)
+            const double fit = blend_fit();
+            CHECK(near(fit, R, 1e-9));
+            CHECK(smlib_fillet(pin, rim, 1, 0.1, fit, &rounded, nullptr) == SMLIB_OK);
+            if (rounded != nullptr)
+            {
+                CHECK(near(volume_of(rounded), PI * R * R * (10.0 - R) + 2.0 / 3.0 * PI * R * R * R, 1e-6));
+                done(rounded);
+            }
             smlib_brep_free(pin);
         }
         {
@@ -9880,6 +10014,8 @@ int main(int argc, char **argv)
         for (double radius : {7.6, 10.0})
         {
             CHECK(smlib_fillet(bar, ends, 2, 0.1, radius, &r, nullptr) == SMLIB_ERR_NO_ROOM && r == nullptr);
+            // the largest radius that builds: 7.5, where the bands meet (closed: the full round)
+            CHECK(near(blend_fit(), 7.5, 1e-9));
         }
         smlib_brep_free(bar);
     }
@@ -9925,6 +10061,7 @@ int main(int argc, char **argv)
             smlib_brep *corner = nullptr;
             CHECK(smlib_fillet(both, up, 3, 0.1, radius, &corner, nullptr) == SMLIB_ERR_NO_ROOM && corner == nullptr);
             CHECK(near(blend_reason_number("a radius below "), 3.0, 1e-6));
+            CHECK(near(blend_fit(), 3.0, 1e-9));
         }
         for (double radius : {1.0, 2.0, 2.5, 2.9})
         {

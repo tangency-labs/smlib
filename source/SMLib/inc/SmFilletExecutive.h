@@ -260,6 +260,10 @@ protected:
                                                     //   loop of a face a round rolls on, and which the round's band reaches, stays: the
                                                     //   round is trimmed by its walls, carried to the round (SmFilletKeepFeatures.cpp);
                                                     //   FALSE = the round takes it (the merge drops it, as SMLib did)
+  double                    m_dFitRadius = -1.0;    // SolidCraft change: with a refusal as too large (SM_FILERR_NO_ROOM), the largest
+                                                    //   radius (the solver's, of a constant ball) that builds: > 0, 0 = none does, < 0
+                                                    //   = not known (a radius law, unequal offsets, a cause with no size)
+  SmEdge                  * m_pFitEdge = NULL;      // SolidCraft change: the blended edge m_dFitRadius is for
 
   // gwc: Only one of m_bDoPiecewiseMerge, m_bDoTopologyInsertion, and m_bDoGlobalMerge should be TRUE in any SmFilletExecutive.
   //      They are 3 different ways to do the same thing; move m_pFilletBrep Topology and Geometry into m_pTargetBrep. 
@@ -448,6 +452,17 @@ public:
   void      SetClassifyOnly(SmBoolean bOnly) { m_bClassifyOnly = bOnly; }
   void      SetSweptTurns(SmBoolean bSwept) { m_bSweptTurns = bSwept; }
   void      SetKeepFeatures(SmBoolean bKeep) { m_bKeepFeatures = bKeep; } // SolidCraft change: keep features (SmFilletKeepFeatures.cpp)
+  // SolidCraft change: a refusal's largest radius that builds (m_dFitRadius), for the blend of pEdge
+  void      NoteFitRadius(double dRadius, SmEdge * pEdge) { m_dFitRadius = dRadius; m_pFitEdge = pEdge; }
+  double    GetFitRadius() const { return m_dFitRadius; }
+  // SolidCraft change: how far under an open bound (a size at which the blend leaves a face, an
+  // edge or a part's bridge of no extent) the largest size that builds lies: a thousand of the
+  // blended edge's tolerances (0.01 mm at 1e-5), so that the sliver the size leaves (a strip of
+  // face, a length of edge, a bridge) is one SMLib builds. Closer it does not always: a tolerance
+  // under the bridged block's bound its remainder merges away, ten fail in the merge, and a
+  // hundred under the bossed can's bound fail to build its 0.001 wide annulus of top.
+  static double FitMargin(const SmEdge & crEdge) { return 1000.0 * crEdge.GetTolerance().val; }
+  SmEdge  * GetFitEdge() const { return m_pFitEdge; }
   SmStatus  KeepFeaturesInBands(SmBoolean & rbKept); // SolidCraft change: trim the rounds in place round the features their bands reach, sew them in
   SmBoolean GetSweptTurns() const { return m_bSweptTurns; }
   void      AddSetBackVertex(const SmVertex * cpVertex) { m_vSetBackVertices.Add( cpVertex ); } // SolidCraft change: before CreateFilletCorners

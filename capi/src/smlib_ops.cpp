@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <vector>
 #include "smlib_pick.h"
 
@@ -291,6 +292,40 @@ std::string g_blend_why;
 // empty when the last blend built, or failed without one.
 std::string g_blend_reason;
 
+// The last refused blend's largest size that builds (smlib_blend_fit_size): > 0, 0 when no size
+// does, < 0 when not known; g_blend_fit_what says whether it is the blend's size or a setback.
+double g_blend_fit = -1.0;
+int32_t g_blend_fit_what = SMLIB_FIT_SIZE;
+
+// How the running call's blend sizes map to the executive's radii, for a refusal's fit: a round's
+// size is its radius; an equal chamfer's is its distance, the radius chamfer_radius gives for it
+// (linear in it); other blends (a radius law, unequal or chord-width sizes) have no single size.
+enum class FitSize
+{
+    radius,
+    chamfer_distance,
+    none
+};
+FitSize g_fit_size = FitSize::none;
+
+// The reason's ending naming a fit: the largest size that builds, or that none does.
+void note_fit(double size, int32_t what)
+{
+    g_blend_fit = size;
+    g_blend_fit_what = what;
+    char text[160];
+    const char *of = what == SMLIB_FIT_SETBACK ? "setback" : "size";
+    if (size > 0.0)
+    {
+        std::snprintf(text, sizeof text, " (the largest %s that builds is %.9g)", of, size);
+    }
+    else
+    {
+        std::snprintf(text, sizeof text, " (no %s builds)", of);
+    }
+    g_blend_reason += text;
+}
+
 // The status a blend that failed with status `s` reports, its reason noted (g_blend_why): a
 // blend the executive found larger than its faces allow (SM_FILERR_NO_ROOM: a concave blend whose
 // rail leaves the face it rolls on, a round whose rail runs on into the body's material, a cliff
@@ -318,7 +353,28 @@ int32_t blend_failure(SmFilletExecutive &exec, int32_t s)
     switch (e->GetErrorCode())
     {
     case SM_FILERR_NO_ROOM:
+    {
+        // the cause's largest radius that builds, as the call's size
+        const double radius = exec.GetFitRadius();
+        SmEdge *edge = exec.GetFitEdge();
+        if (radius == 0.0 && g_fit_size != FitSize::none)
+        {
+            note_fit(0.0, SMLIB_FIT_SIZE);
+        }
+        else if (radius > 0.0 && g_fit_size == FitSize::radius)
+        {
+            note_fit(radius, SMLIB_FIT_SIZE);
+        }
+        else if (radius > 0.0 && g_fit_size == FitSize::chamfer_distance && edge != nullptr)
+        {
+            double per = 0.0;
+            if (chamfer_radius(edge, 1.0, per))
+            {
+                note_fit(radius / per, SMLIB_FIT_SIZE);
+            }
+        }
         return SMLIB_ERR_NO_ROOM;
+    }
     case SM_FILERR_NOT_EXACT:
         return SMLIB_ERR_NOT_EXACT;
     case SM_FILERR_CORNER_UNSUPPORTED:
@@ -336,6 +392,7 @@ int32_t blend_failure(SmFilletExecutive &exec, int32_t s)
 // alone and is gone before the caller hands `b` on or frees it.
 int32_t chamfer_offsets(SmBrep *b, const std::vector<SmEdge *> &edges, const std::vector<double> &first, const std::vector<double> &second)
 {
+    g_fit_size = first == second ? FitSize::chamfer_distance : FitSize::none;
     SmTArray<SmEdge *> es;
     SmTArray<SmFilletSurfaceGeneratorType> kinds;
     SmTArray<SmFilletSolverType> solvers;
@@ -590,6 +647,7 @@ int32_t round_edges(SmBrep *b, const std::vector<SmEdge *> &edges, const std::ve
     {
         return SMLIB_ERR_ARG;
     }
+    g_fit_size = (laws.empty() && kind != SMLIB_BLEND_CHORD) ? FitSize::radius : FitSize::none;
     mark_faces(b);
     SmFilletExecutive exec(*SmApiGetOrCreateContext(), b);
     int32_t s = status(exec.SetFilletParameters(b, es, sections, solvers, values, laws.empty() ? nullptr : &law_array, -1.0, -1.0,
@@ -1423,9 +1481,15 @@ bool size_ok(double x)
 
 // Whether each setback with its ease fits on the edges of its corner: the two together
 // shorter than every edge there, and where an edge's other end is a setback corner too, the
-// four together shorter than the edge.
-bool setbacks_fit(const std::vector<SetBack> &setbacks)
+// four together shorter than the edge. Where one does not, `longest` (if given) is the largest
+// setback that does, for the setback of the corner that does not fit with its ease and the
+// other end's as they are: the shortest such edge less the rest, less the fit margin
+// (SmFilletExecutive::FitMargin: the bound is open, a setback as long as the edge leaves none of
+// it); 0 when none does.
+bool setbacks_fit(const std::vector<SetBack> &setbacks, double *longest = nullptr)
 {
+    bool fit = true;
+    double least = std::numeric_limits<double>::max();
     for (const auto &sb : setbacks)
     {
         SmTArray<SmEdge *> edges;
@@ -1448,11 +1512,16 @@ bool setbacks_fit(const std::vector<SetBack> &setbacks)
             }
             if (sb.distance + sb.ease + other >= length)
             {
-                return false;
+                fit = false;
             }
+            least = std::min(least, length - sb.ease - other - SmFilletExecutive::FitMargin(*edges[k]));
         }
     }
-    return true;
+    if (!fit && longest != nullptr)
+    {
+        *longest = std::max(0.0, least);
+    }
+    return fit;
 }
 
 // One edge round an opened corner's hole: the face beside it, and whether that face's boundary,
@@ -1788,6 +1857,8 @@ int32_t blend_call(const char *fn, const smlib_brep *brep, const Section &sectio
         {
             g_blend_why.clear();
             g_blend_reason.clear();
+            g_blend_fit = -1.0;
+            g_blend_fit_what = SMLIB_FIT_SIZE;
             int32_t s = SMLIB_OK;
             Owned w = copy_of(brep, s);
             if (s != SMLIB_OK)
@@ -1821,8 +1892,11 @@ int32_t blend_call(const char *fn, const smlib_brep *brep, const Section &sectio
                 int64_t j = first_corner[k];
                 back.push_back({at[k], setbacks[j], eases != nullptr ? eases[j] : 0.0});
             }
-            if (!setbacks_fit(back))
+            double longest = 0.0;
+            if (!setbacks_fit(back, &longest))
             {
+                g_blend_reason = "Fillet Error: a setback with its ease is as long as an edge at its corner, or two on one edge together are";
+                note_fit(longest, SMLIB_FIT_SETBACK);
                 return SMLIB_ERR_NO_ROOM;
             }
             // The corners' places, read now: filleting deletes the vertices.
@@ -2222,6 +2296,8 @@ extern "C" int32_t smlib_fillet_variable(const smlib_brep *brep, const double *p
         {
             g_blend_why.clear();
             g_blend_reason.clear();
+            g_blend_fit = -1.0;
+            g_blend_fit_what = SMLIB_FIT_SIZE;
             int32_t s = SMLIB_OK;
             Owned w = copy_of(brep, s);
             if (s != SMLIB_OK)
@@ -2283,6 +2359,8 @@ extern "C" int32_t smlib_chamfer_sides(const smlib_brep *brep, const double *poi
         {
             g_blend_why.clear();
             g_blend_reason.clear();
+            g_blend_fit = -1.0;
+            g_blend_fit_what = SMLIB_FIT_SIZE;
             int32_t s = SMLIB_OK;
             Owned w = copy_of(brep, s);
             if (s != SMLIB_OK)
@@ -2587,6 +2665,24 @@ extern "C" int32_t smlib_merge_faces(const smlib_brep *brep, const double *keep,
             return finish(std::move(w), solid_in, out);
         }
     );
+}
+
+extern "C" int32_t smlib_blend_fit_size(double *out_size, int32_t *out_what)
+{
+    if (out_size == nullptr)
+    {
+        return SMLIB_ERR_ARG;
+    }
+    if (!(g_blend_fit >= 0.0))
+    {
+        return SMLIB_ERR_EMPTY;
+    }
+    *out_size = g_blend_fit;
+    if (out_what != nullptr)
+    {
+        *out_what = g_blend_fit_what;
+    }
+    return SMLIB_OK;
 }
 
 extern "C" int32_t smlib_blend_reason(char *out, int64_t size, int64_t *out_length)

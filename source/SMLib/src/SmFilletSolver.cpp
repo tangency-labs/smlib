@@ -6697,6 +6697,388 @@ SmStatus SmFilletSolver::BandCutsThePart
 } // end SmFilletSolver::BandCutsThePart
 
 /*******************************************************************//**
+PURPOSE: SolidCraft change. The radius of the ball of this solver's kind
+    that touches its face lK at the point crQ and its other face: the least
+    rho in (0, dMax] at which the face's offset by rho through crQ's normal,
+    c = q + rho n (n toward the ball, as the solver offsets the face), lies on
+    the other face's offset by rho; rbFound FALSE where none does, or where
+    that ball's centre lies past an end of the filleted edge.
+
+NOTES: h(rho) = <c - f, n'> - rho, f the foot of c on the other face's
+    surface and n' its normal toward the ball there: 0 where the other
+    face's offset passes through c. h is followed over 32 equal steps of
+    (0, dMax] and its first sign change bisected to the curve's precision.
+    The normals toward the ball are the solver's own: (offset - base) / r at
+    the solver's radius r.
+***********************************************************************/
+static SmStatus sm_BallThrough
+  (SmFilletSolver  & rSolver,  // in : the solver (a constant ball, at its radius)
+   ULONG             lK,       // in : the face crQ lies on (0 or 1)
+   const SmPoint3d & crQ,      // in : the point
+   double            dMax,     // in : the largest radius looked for
+   SmBoolean       & rbFound,  // out: TRUE = a ball touches both faces with its contact on face lK at crQ
+   double          & rdRho)    // out: its radius
+{
+  rbFound = FALSE;
+  rdRho = 0.0;
+  SmOffsetSurface * apOffset[2] = { rSolver.GetSurface(0), rSolver.GetSurface(1) };
+  NER(apOffset[0]); NER(apOffset[1]);
+  const SmSurface * apBase[2] = { apOffset[0]->GetBaseSurface(), apOffset[1]->GetBaseSurface() };
+  NER(apBase[0]); NER(apBase[1]);
+  SmExtent2d asDomain[2] = { apBase[0]->GetNaturalUVDomain(), apBase[1]->GetNaturalUVDomain() };
+  rSolver.SetupOffsetExtension(apBase[0], asDomain[0]);
+  rSolver.SetupOffsetExtension(apBase[1], asDomain[1]);
+  const ULONG lJ = 1 - lK;
+  const double dR = smos_Fabs(apOffset[lK]->GetOffsetDistance());
+  if (!(dR > SM_EFF_ZERO))
+    { return SM_SUCCESS; }
+  // the normal toward the ball at a point of face k's surface: (offset - base) / r
+  auto Toward = [&](ULONG k, const SmPoint2d & crUV, SmPoint3d & rOn, SmVector3d & rN) -> SmStatus
+  {
+    SmPoint3d sOff;
+    SER(apBase[k]->EvaluatePoint(crUV, rOn));
+    SER(apOffset[k]->EvaluatePoint(crUV, sOff));
+    const SmSurface * pExtended = apOffset[k]->GetExtendedBaseSurface();
+    if (   !apBase[k]->GetNaturalUVDomain().ContainsPoint2d(crUV)
+        && pExtended != NULL && pExtended->GetNaturalUVDomain().ContainsPoint2d(crUV))
+      { SER(pExtended->EvaluatePoint(crUV, rOn)); }
+    rN = (sOff - rOn) / dR;
+    return SM_SUCCESS;
+  };
+  SmBoolean bDropped = FALSE, bMulti = FALSE;
+  SmPoint2d sUV;
+  double dGap = 0.0;
+  SER(apBase[lK]->DropPoint(crQ, asDomain[lK], NULL, bDropped, sUV, dGap, bMulti));
+  if (!bDropped)
+    { return SM_SUCCESS; }
+  SmPoint3d sOn;
+  SmVector3d sN;
+  SER(Toward(lK, sUV, sOn, sN));
+  SmPoint2d sGuess;
+  SmBoolean bGuess = FALSE;
+  auto H = [&](double dRho, SmBoolean & rbOk, double & rdH) -> SmStatus
+  {
+    rbOk = FALSE;
+    const SmPoint3d sC = crQ + sN * dRho;
+    SmBoolean bOn = FALSE, bMany = FALSE;
+    SmPoint2d sFoot;
+    double dDist = 0.0;
+    SER(apBase[lJ]->DropPoint(sC, asDomain[lJ], bGuess ? &sGuess : NULL, bOn, sFoot, dDist, bMany));
+    if (!bOn)
+      { return SM_SUCCESS; }
+    sGuess = sFoot;
+    bGuess = TRUE;
+    SmPoint3d sF;
+    SmVector3d sNJ;
+    SER(Toward(lJ, sFoot, sF, sNJ));
+    rdH = (sC - sF).Dot(sNJ) - dRho;
+    rbOk = TRUE;
+    return SM_SUCCESS;
+  };
+  const ULONG lSteps = 32;
+  double dLo = 0.0, dHLo = 0.0;
+  SmBoolean bOk = FALSE;
+  SER(H(0.0, bOk, dHLo));
+  if (!bOk || !(dHLo > 0.0))
+    { return SM_SUCCESS; } // q not on the ball's side of the other face
+  for (ULONG i=1; i<=lSteps; i++)
+    {
+      const double dHi = dMax * i / lSteps;
+      double dHHi = 0.0;
+      SER(H(dHi, bOk, dHHi));
+      if (!bOk)
+        { return SM_SUCCESS; }
+      if (dHHi > 0.0)
+        {
+          dLo = dHi;
+          dHLo = dHHi;
+          continue;
+        }
+      double dA = dLo, dB = dHi;
+      for (ULONG k=0; k<60; k++)
+        {
+          const double dMid = 0.5 * (dA + dB);
+          double dHMid = 0.0;
+          SER(H(dMid, bOk, dHMid));
+          if (!bOk)
+            { return SM_SUCCESS; }
+          if (dHMid > 0.0)
+            { dA = dMid; }
+          else
+            { dB = dMid; }
+        }
+      rdRho = 0.5 * (dA + dB);
+      // the ball's centre square to the filleted edge within it, not past an end
+      const SmEdge  * pEdge  = rSolver.GetEdgeuse(0)->GetEdge();
+      const SmCurve * pCurve = (pEdge != NULL) ? pEdge->GetCurve() : NULL;
+      NER(pCurve);
+      const SmExtent1d sIvl = pEdge->GetInterval();
+      SmBoolean bOnEdge = FALSE;
+      double dT = 0.0, dToEdge = 0.0;
+      SER(pCurve->DropPoint(sIvl, crQ + sN * rdRho, NULL, SM_EFF_ZERO, NULL, bOnEdge, dT, dToEdge));
+      const double dEnds = 1.0e-9 * (1.0 + sIvl.GetLength());
+      rbFound = (bOnEdge && (pEdge->IsClosed() || (dT > sIvl.GetMin() + dEnds && dT < sIvl.GetMax() - dEnds))) ? TRUE : FALSE;
+      return SM_SUCCESS;
+    }
+  return SM_SUCCESS;
+} // end sm_BallThrough
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. The radius of the ball of this solver's kind
+    touching its face lK at crQ and its other face (sm_BallThrough), up to
+    dMax.
+***********************************************************************/
+SmStatus SmFilletSolver::BallThrough
+  (ULONG             lK,      // in : the face crQ lies on (0 or 1)
+   const SmPoint3d & crQ,     // in : the point
+   double            dMax,    // in : the largest radius looked for
+   SmBoolean       & rbFound, // out: TRUE = such a ball, its centre square to the edge within it
+   double          & rdRho)   // out: its radius
+{
+  SER(sm_BallThrough(*this, lK, crQ, dMax, rbFound, rdRho));
+  return SM_SUCCESS;
+} // end SmFilletSolver::BallThrough
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. The largest radius at which this constant
+    ball's rails stay on the faces it rolls on: the least radius of a ball
+    that touches one face at a point of that face's boundary (an edge not
+    the filleted one nor at its ends: a wall's top, a feature's footprint,
+    the far side of a face) and the other face (sm_BallThrough).
+
+NOTES: For a blend refused because a rail leaves its face (the rail meets
+    that boundary there first as the radius grows). Each such edge is
+    followed over 32 equal steps of its interval and the least radius found
+    refined by golden section over the steps either side. rbFound FALSE where
+    no boundary point has such a ball up to the solver's radius.
+***********************************************************************/
+SmStatus SmFilletSolver::LargestRadiusOnItsFaces
+  (SmBoolean & rbFound,  // out: TRUE = a boundary point bounds the radius
+   double    & rdRadius) // out: the least such radius
+{
+  rbFound  = FALSE;
+  rdRadius = 0.0;
+  SmBoolean bOnEdge = FALSE;
+  if (!RollsABall(bOnEdge) || bOnEdge || GetEdgeuse(0) == NULL || GetEdgeuse(1) == NULL)
+    { return SM_SUCCESS; }
+  SmEdge * pBlended = GetEdgeuse(0)->GetEdge();
+  NER(pBlended);
+  const SmVertex * apEnds[2] = { pBlended->GetVertex(), pBlended->GetOtherVertex(pBlended->GetVertex()) };
+  const double dMax = smos_Fabs(GetSurface(0)->GetOffsetDistance());
+  for (ULONG k=0; k<2; k++)
+    {
+      SmFace * pFace = GetEdgeuse(k)->GetFace();
+      if (pFace == NULL)
+        { continue; }
+      SmTArray<SmEdge*> sEdges;
+      pFace->GetEdges(sEdges);
+      for (ULONG e=0; e<sEdges.GetSize(); e++)
+        {
+          SmEdge * pEdge = sEdges[e];
+          if (pEdge == pBlended || pEdge->GetCurve() == NULL)
+            { continue; }
+          const SmVertex * pV0 = pEdge->GetVertex();
+          const SmVertex * pV1 = pEdge->GetOtherVertex(pV0);
+          if (pV0 == apEnds[0] || pV0 == apEnds[1] || pV1 == apEnds[0] || pV1 == apEnds[1])
+            { continue; } // a side edge at an end of the blended edge: the rail ends on it
+          const SmCurve * pCurve = pEdge->GetCurve();
+          const SmExtent1d sIvl = pEdge->GetInterval();
+          auto Rho = [&](double dT, double & rdRho) -> SmStatus
+          {
+            rdRho = SM_BIG_DOUBLE;
+            SmPoint3d sQ;
+            SER(pCurve->EvaluatePoint(sIvl.Evaluate(smos_Max(0.0, smos_Min(1.0, dT))), sQ));
+            SmBoolean bFound = FALSE;
+            double dRho = 0.0;
+            SER(sm_BallThrough(*this, k, sQ, dMax, bFound, dRho));
+            if (bFound)
+              { rdRho = dRho; }
+            return SM_SUCCESS;
+          };
+          const ULONG lSteps = 32;
+          double dLeast = SM_BIG_DOUBLE, dAt = 0.0;
+          for (ULONG j=0; j<=lSteps; j++)
+            {
+              double dRho = 0.0;
+              SER(Rho(double(j) / lSteps, dRho));
+              if (dRho < dLeast)
+                {
+                  dLeast = dRho;
+                  dAt = double(j) / lSteps;
+                }
+            }
+          if (!(dLeast < SM_BIG_DOUBLE))
+            { continue; }
+          double dA = smos_Max(0.0, dAt - 1.0 / lSteps), dB = smos_Min(1.0, dAt + 1.0 / lSteps);
+          const double dGolden = 0.5 * (std::sqrt(5.0) - 1.0);
+          double dX1 = dB - dGolden * (dB - dA), dX2 = dA + dGolden * (dB - dA), dF1 = 0.0, dF2 = 0.0;
+          SER(Rho(dX1, dF1));
+          SER(Rho(dX2, dF2));
+          for (ULONG i=0; i<60; i++)
+            {
+              if (dF1 < dF2)
+                {
+                  dB = dX2; dX2 = dX1; dF2 = dF1;
+                  dX1 = dB - dGolden * (dB - dA);
+                  SER(Rho(dX1, dF1));
+                }
+              else
+                {
+                  dA = dX1; dX1 = dX2; dF1 = dF2;
+                  dX2 = dA + dGolden * (dB - dA);
+                  SER(Rho(dX2, dF2));
+                }
+            }
+          dLeast = smos_Min(dLeast, smos_Min(dF1, dF2));
+          if (!rbFound || dLeast < rdRadius)
+            {
+              rbFound  = TRUE;
+              rdRadius = dLeast;
+            }
+        }
+    }
+  return SM_SUCCESS;
+} // end SmFilletSolver::LargestRadiusOnItsFaces
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. The radius at which this constant ball's rail on
+    its face lMine first reaches into the band rOther takes off the same face
+    (its face lTheirs), both blends at that radius: the largest common radius
+    at which their bands on the face stay apart (they meet there, a full
+    round when the two are as wide as half the face).
+
+NOTES: At a common radius rho the bands overlap where a point q of this
+    blend's rail (its contact at a section, sm_BallSectionAt with the ball's
+    radius rho) has rOther's ball through q (sm_BallThrough) of radius below
+    rho: g(rho) = min over the rail of rho_other(q) - rho <= 0. The least is
+    taken over 32 sections across the edge, refined by golden section about
+    the least, and rho found by bisection between a radius with the bands
+    apart (halving from the blends' radius) and one where they overlap.
+    rbFound FALSE where the two do not roll a constant ball of one radius,
+    or no radius below theirs keeps them apart.
+***********************************************************************/
+SmStatus SmFilletSolver::BandsMeetAt
+  (SmFilletSolver & rOther,   // in : the other blend on the face
+   ULONG            lMine,    // in : this blend's face index (0 or 1) of the shared face
+   ULONG            lTheirs,  // in : the other's index of it
+   SmBoolean      & rbFound,  // out: TRUE = rdRadius is where the bands meet
+   double         & rdRadius) // out: that radius
+{
+  rbFound  = FALSE;
+  rdRadius = 0.0;
+  SmBoolean bLaw = FALSE, bOtherLaw = FALSE;
+  if (!RollsABall(bLaw) || bLaw || !rOther.RollsABall(bOtherLaw) || bOtherLaw || GetEdgeuse(0) == NULL)
+    { return SM_SUCCESS; }
+  const double dOwn = smos_Fabs(GetSurface(0)->GetOffsetDistance());
+  if (!(smos_Fabs(smos_Fabs(rOther.GetSurface(0)->GetOffsetDistance()) - dOwn) <= SM_EFF_ZERO * (1.0 + dOwn)))
+    { return SM_SUCCESS; } // no single size: their radii differ
+  const SmEdge  * pEdge  = GetEdgeuse(0)->GetEdge();  NER(pEdge);
+  const SmCurve * pCurve = pEdge->GetCurve();         NER(pCurve);
+  const SmExtent1d sIvl  = pEdge->GetInterval();
+  const ULONG lSteps = 32;
+  // g at the edge's dT, both balls of radius dRho (BIG where no point of the rail is in reach)
+  auto G = [&](double dT, double dRho, SmTsectPnt & rNear, SmBoolean & rbNear, double & rdG) -> SmStatus
+  {
+    rdG = SM_BIG_DOUBLE;
+    (void)SetBallRadius(dRho);
+    (void)rOther.SetBallRadius(dRho);
+    SmTsectPnt sPnt;
+    SmBoolean  bFound = FALSE;
+    SmStatus eStatus = sm_BallSectionAt(*this, *pCurve, dT, rbNear ? &rNear : NULL, bFound, sPnt);
+    SmPoint3d sQ;
+    if (eStatus == SM_SUCCESS && bFound)
+      { eStatus = GetSurface(lMine)->GetBaseSurface()->EvaluatePoint(sPnt.UVPos(lMine), sQ); }
+    SmBoolean bThrough = FALSE;
+    double dThrough = 0.0;
+    if (eStatus == SM_SUCCESS && bFound)
+      { eStatus = sm_BallThrough(rOther, lTheirs, sQ, dRho, bThrough, dThrough); }
+    (void)SetBallRadius(dOwn);
+    (void)rOther.SetBallRadius(dOwn);
+    SER(eStatus);
+    if (bFound)
+      {
+        rNear  = sPnt;
+        rbNear = TRUE;
+      }
+    if (bThrough)
+      { rdG = dThrough - dRho; }
+    return SM_SUCCESS;
+  };
+  // the least of g over the rail at dRho
+  auto Least = [&](double dRho, double & rdLeast) -> SmStatus
+  {
+    SmTsectPnt sNear;
+    SmBoolean  bNear = FALSE;
+    rdLeast = SM_BIG_DOUBLE;
+    double dAt = 0.0;
+    for (ULONG j=0; j<lSteps; j++)
+      {
+        const double dT = sIvl.Evaluate((j + 0.5) / lSteps);
+        double dG = 0.0;
+        SER(G(dT, dRho, sNear, bNear, dG));
+        if (dG < rdLeast)
+          {
+            rdLeast = dG;
+            dAt = dT;
+          }
+      }
+    if (!(rdLeast < SM_BIG_DOUBLE))
+      { return SM_SUCCESS; }
+    const double dStep = sIvl.GetLength() / lSteps;
+    double dA = smos_Max(sIvl.GetMin(), dAt - dStep), dB = smos_Min(sIvl.GetMax(), dAt + dStep);
+    const double dGolden = 0.5 * (std::sqrt(5.0) - 1.0);
+    double dX1 = dB - dGolden * (dB - dA), dX2 = dA + dGolden * (dB - dA), dF1 = 0.0, dF2 = 0.0;
+    SER(G(dX1, dRho, sNear, bNear, dF1));
+    SER(G(dX2, dRho, sNear, bNear, dF2));
+    for (ULONG i=0; i<40; i++)
+      {
+        if (dF1 < dF2)
+          {
+            dB = dX2; dX2 = dX1; dF2 = dF1;
+            dX1 = dB - dGolden * (dB - dA);
+            SER(G(dX1, dRho, sNear, bNear, dF1));
+          }
+        else
+          {
+            dA = dX1; dX1 = dX2; dF1 = dF2;
+            dX2 = dA + dGolden * (dB - dA);
+            SER(G(dX2, dRho, sNear, bNear, dF2));
+          }
+      }
+    rdLeast = smos_Min(rdLeast, smos_Min(dF1, dF2));
+    return SM_SUCCESS;
+  };
+  double dHi = dOwn, dLo = 0.0, dLeast = 0.0;
+  SER(Least(dHi, dLeast));
+  if (!(dLeast <= 0.0))
+    { return SM_SUCCESS; } // the bands do not overlap at the blends' radius
+  for (double dTry = 0.5 * dOwn; dTry > 1.0e-6 * dOwn; dTry *= 0.5)
+    {
+      SER(Least(dTry, dLeast));
+      if (dLeast > 0.0)
+        {
+          dLo = dTry;
+          break;
+        }
+      dHi = dTry;
+    }
+  if (!(dLo > 0.0))
+    { return SM_SUCCESS; }
+  for (ULONG i=0; i<40; i++)
+    {
+      const double dMid = 0.5 * (dLo + dHi);
+      SER(Least(dMid, dLeast));
+      if (dLeast > 0.0)
+        { dLo = dMid; }
+      else
+        { dHi = dMid; }
+    }
+  rbFound  = TRUE;
+  rdRadius = 0.5 * (dLo + dHi);
+  return SM_SUCCESS;
+} // end SmFilletSolver::BandsMeetAt
+
+/*******************************************************************//**
 PURPOSE: SolidCraft change. Whether a rail leaves the face it rolls on, at crLeave (rail
     parameter dRailParam), past an end of the filleted edge, where the corner at that end
     trims it; otherwise it leaves the face beside the edge.

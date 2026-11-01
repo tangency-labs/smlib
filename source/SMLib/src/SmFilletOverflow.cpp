@@ -1111,6 +1111,80 @@ SmStatus SmFilletExecutive::CutFilletAtOpenEnd
   return SM_SUCCESS;
 } // end SmFilletExecutive::CutFilletAtOpenEnd
 
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. How far along the blended edge pEdge, per unit of
+    radius, the corner at its vertex pV takes it: a convex corner of three
+    planar faces whose three edges are all blended at one radius ends its
+    rounds on the plane through the corner's ball centre c = V + r u square to
+    each edge, so the edge loses r <u, e> there (e its unit direction leaving
+    V; u the point at unit distance inside each of the three planes, <n_f, u>
+    = -1 for their outward unit normals). 0 at any other vertex: an end the
+    round runs out to.
+***********************************************************************/
+static SmStatus sm_CornerTakesPerRadius
+  (const SmVertex          & crV,       // in : the vertex
+   const SmEdge            & crEdge,    // in : the blended edge
+   const std::set<SmEdge*> & crBlended, // in : the edges blended (at one radius)
+   double                  & rdPerR)    // out: the length taken per unit radius
+{
+  rdPerR = 0.0;
+  SmTArray<SmEdge*> sEdges;
+  crV.GetEdges(sEdges);
+  if (sEdges.GetSize() != 3)
+    { return SM_SUCCESS; }
+  SmVector3d asDir[3];
+  ULONG lThis = 3;
+  for (ULONG i=0; i<3; i++)
+    {
+      if (!crBlended.count(sEdges[i]) || sEdges[i]->GetCurve() == NULL)
+        { return SM_SUCCESS; }
+      if (sEdges[i] == &crEdge)
+        { lThis = i; }
+      // the edge's direction leaving V
+      const SmExtent1d sIvl = sEdges[i]->GetInterval();
+      const SmBoolean bAtStart = (sEdges[i]->GetVertex() == &crV) ? TRUE : FALSE;
+      SmVector3d sPV[2];
+      SER(sEdges[i]->GetCurve()->Evaluate(bAtStart ? sIvl.GetMin() : sIvl.GetMax(), 1, bAtStart, sPV));
+      asDir[i] = bAtStart ? sPV[1] : -sPV[1];
+      SER(asDir[i].Unitize());
+    }
+  if (lThis == 3)
+    { return SM_SUCCESS; }
+  // each face between two of the edges: its plane's normal, outward (away from the third edge)
+  SmVector3d asN[3];
+  for (ULONG i=0; i<3; i++)
+    {
+      SmVector3d sN = asDir[(i+1)%3] * asDir[(i+2)%3];
+      if (!(sN.Length() > SM_EFF_ZERO))
+        { return SM_SUCCESS; }
+      SER(sN.Unitize());
+      if (sN.Dot(asDir[i]) > 0.0)
+        { sN = -sN; }
+      asN[i] = sN;
+    }
+  // the faces at V are planes: each face holding two of the edges
+  SmTArray<SmFace*> sFaces;
+  crV.GetFaces(sFaces);
+  if (sFaces.GetSize() != 3)
+    { return SM_SUCCESS; }
+  for (ULONG f=0; f<3; f++)
+    {
+      if (SM_CAST_PTR(SmPlane, sFaces[f]->GetSurface()) == NULL)
+        { return SM_SUCCESS; }
+    }
+  // <n_f, u> = -1 for the three planes (Cramer's rule)
+  const SmVector3d & a = asN[0];
+  const SmVector3d & b = asN[1];
+  const SmVector3d & c = asN[2];
+  const double dDet = a.Dot(b * c);
+  if (!(smos_Fabs(dDet) > SM_EFF_ZERO))
+    { return SM_SUCCESS; }
+  const SmVector3d sU = ((b * c) + (c * a) + (a * b)) * (-1.0 / dDet);
+  rdPerR = smos_Max(0.0, sU.Dot(asDir[lThis]));
+  return SM_SUCCESS;
+} // end sm_CornerTakesPerRadius
+
 /*******************************************************************//**
 PURPOSE: SolidCraft change. In a cliff overflow, trim the blends along
     their creases with the faces beyond the cliffs and sew them into the
@@ -1332,6 +1406,31 @@ SmStatus SmFilletExecutive::TrimAtCreases()
       if ( bHas && !sKeptRounds.count( i ))
         {
           GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, _T("Fillet Error: a blend past its faces keeps no length of its edge: its corners take the whole of it (the blend is larger than the faces allow)") );
+          // the largest radius that keeps a length of the edge: its corners take r <u, e> at
+          // each end (sm_CornerTakesPerRadius), the edge's length L in all at r = L / (s0 + s1);
+          // open (at it the round keeps no length), so less the fit margin (FitMargin)
+          SmFilletSolver * pFS = m_vFilletSolvers[i];
+          SmBoolean bOnEdge = FALSE;
+          SmEdge * pEdge = ( pFS->GetEdgeuse(0) != NULL ) ? pFS->GetEdgeuse(0)->GetEdge() : NULL;
+          if ( pEdge != NULL && pFS->RollsABall( bOnEdge ) && !bOnEdge )
+            {
+              std::set<SmEdge*> sBlended;
+              for (ULONG k=0; k<m_vFilletSolvers.GetSize(); k++)
+                {
+                  SmBoolean bLaw = FALSE;
+                  if ( m_vFilletSolvers[k]->RollsABall( bLaw ) && !bLaw
+                       && smos_Fabs( m_vFilletSolvers[k]->GetSurface(0)->GetOffsetDistance() - pFS->GetSurface(0)->GetOffsetDistance() )
+                            <= SM_EFF_ZERO * ( 1.0 + smos_Fabs( pFS->GetSurface(0)->GetOffsetDistance() )))
+                    { sBlended.insert( m_vFilletSolvers[k]->GetEdgeuse(0)->GetEdge() ); }
+                }
+              double adPer[2] = { 0.0, 0.0 };
+              SER( sm_CornerTakesPerRadius( *pEdge->GetVertex(), *pEdge, sBlended, adPer[0] ));
+              SER( sm_CornerTakesPerRadius( *pEdge->GetOtherVertex( pEdge->GetVertex() ), *pEdge, sBlended, adPer[1] ));
+              double dLength = 0.0;
+              SER( pEdge->GetCurve()->Length( pEdge->GetInterval(), SM_EFF_ZERO, dLength ));
+              if ( adPer[0] + adPer[1] > 0.0 )
+                { NoteFitRadius( smos_Max( 0.0, dLength / ( adPer[0] + adPer[1] ) - FitMargin( *pEdge )), pEdge ); }
+            }
           return SM_ERR;
         }
     }

@@ -418,6 +418,14 @@ public:
   // SolidCraft change: whether this convex blend would take all of the part between its rails
   // somewhere, cutting it into pieces, and the largest radius (and its setback) that does not
   SmStatus     BandCutsThePart(const SmBrep & crBody, SmBoolean & rbCuts, double & rdRadius, double & rdSetback);
+  // SolidCraft change: the largest radius at which this constant ball's rails stay on their faces
+  // (where a boundary of a face first meets a rail as the radius grows)
+  SmStatus     LargestRadiusOnItsFaces(SmBoolean & rbFound, double & rdRadius);
+  // SolidCraft change: the radius of the ball touching face lK at crQ and the other face, up to dMax
+  SmStatus     BallThrough(ULONG lK, const SmPoint3d & crQ, double dMax, SmBoolean & rbFound, double & rdRho);
+  // SolidCraft change: the common radius at which this blend's rail on a face first reaches into
+  // the band another blend takes off that face (where the two bands meet)
+  SmStatus     BandsMeetAt(SmFilletSolver & rOther, ULONG lMine, ULONG lTheirs, SmBoolean & rbFound, double & rdRadius);
   // SolidCraft change: whether the solver rolls one ball on both faces at crPnt (rbBall), and its
   // radius law there: adR = r, dr/dt, d2r/dt2 in the trace's parameter t. rbOnEdge: t is the
   // filleted edge's parameter, the ball's centre in the plane square to the edge at C(t), asC =

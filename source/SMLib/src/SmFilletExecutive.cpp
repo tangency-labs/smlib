@@ -10,6 +10,7 @@
 
 #ifndef __SMFILLETEXECUTIVE_H__
 #include <SmFilletExecutive.h>
+#include <SmPlane.h>
 #include <SmBlendSetback.h>
 #endif
 #include <set>
@@ -3414,13 +3415,17 @@ SmStatus SmFilletExecutive::CreateFilletBrep
   {
     SmBallStation sWorst;
     sWorst.m_lCheck = SmBallStation::SM_BS_REGULAR;
+    SmFilletSolver * pWorst = NULL;
     for(ULONG lFitIdx=0; lFitIdx<m_vFilletSolvers.GetSize(); lFitIdx++)
       {
         SmBallStation sFirst;
         SER( m_vFilletSolvers[lFitIdx]->BallIsRegular( sFirst ));
         if (   sFirst.m_lCheck != SmBallStation::SM_BS_REGULAR
             && ( sWorst.m_lCheck == SmBallStation::SM_BS_REGULAR || sFirst.m_dWorks < sWorst.m_dWorks ))
-          { sWorst = sFirst; }
+          {
+            sWorst = sFirst;
+            pWorst = m_vFilletSolvers[lFitIdx];
+          }
       }
     if ( sWorst.m_lCheck != SmBallStation::SM_BS_REGULAR )
       {
@@ -3441,6 +3446,15 @@ SmStatus SmFilletExecutive::CreateFilletBrep
         else
           { smos_sprintf( cWhy, _T("Fillet Error: the rolling ball of radius %.7g folds over itself along the edge (its touch circles move back)%s"), sWorst.m_dRadius, cWorks ); }
         GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, cWhy );
+        // the largest radius that builds, for a constant ball: where h(r) reaches 0 (a focal
+        // station, which builds: the bound is closed), or where f_tt first reaches 0 (open: less
+        // the fit margin, FitMargin); none where no radius is regular there
+        if ( pWorst != NULL && sWorst.m_bBall && !sWorst.m_bLaw && pWorst->GetEdgeuse(0) != NULL )
+          {
+            SmEdge * pEdge = pWorst->GetEdgeuse(0)->GetEdge();
+            const double dOpen = ( sWorst.m_lCheck == SmBallStation::SM_BS_NOT_ENCLOSED ) ? 0.0 : FitMargin( *pEdge );
+            NoteFitRadius( sWorst.m_dWorks > 0.0 ? smos_Max( 0.0, sWorst.m_dWorks - dOpen ) : 0.0, pEdge );
+          }
         return SM_ERR;
       }
   }
@@ -3452,6 +3466,7 @@ SmStatus SmFilletExecutive::CreateFilletBrep
   {
     SmBoolean bCut = FALSE, bChamfer = FALSE;
     double dRadius = 0.0, dSetback = 0.0;
+    SmEdge * pCutEdge = NULL;
     for(ULONG lCutIdx=0; lCutIdx<m_vFilletSolvers.GetSize(); lCutIdx++)
       {
         SmFilletSolver * pFS = m_vFilletSolvers[lCutIdx];
@@ -3467,6 +3482,7 @@ SmStatus SmFilletExecutive::CreateFilletBrep
             bCut     = TRUE;
             dRadius  = dR;
             dSetback = dS;
+            pCutEdge = ( pFS->GetEdgeuse(0) != NULL ) ? pFS->GetEdgeuse(0)->GetEdge() : NULL;
             bChamfer = ( pFS->GetFilletSurfaceGenerator() != NULL
                          && pFS->GetFilletSurfaceGenerator()->GetFilletSurfaceGeneratorType() == SM_FSG_LINEAR ) ? TRUE : FALSE;
           }
@@ -3479,6 +3495,10 @@ SmStatus SmFilletExecutive::CreateFilletBrep
         else
           { smos_sprintf( cWhy, _T("Fillet Error: the round would take all of the part between its rails along the edge and cut it into pieces: a radius below %.7g keeps it whole"), dRadius ); }
         GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, cWhy );
+        // the largest radius that keeps it whole: the bound is open (at it the part is joined at a
+        // line or a point), so less the fit margin (FitMargin)
+        if ( pCutEdge != NULL )
+          { NoteFitRadius( dRadius > 0.0 ? smos_Max( 0.0, dRadius - FitMargin( *pCutEdge )) : 0.0, pCutEdge ); }
         return SM_ERR;
       }
   }
@@ -3865,6 +3885,23 @@ SmStatus SmFilletExecutive::CreateFilletBrep
       if ( cWhy != NULL )
         {
           GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, cWhy );
+          // the largest radius at which the overflowing blends' rails stay on their faces (where
+          // a boundary of a face first meets a rail): open (at it the rail runs along that
+          // boundary), so less the fit margin (FitMargin)
+          for (ULONG i=0; i<vOverflowing.GetSize(); i++)
+            {
+              for (ULONG k=0; k<m_vFilletSolvers.GetSize(); k++)
+                {
+                  if ( m_vFilletSolvers[k]->GetEdgeuse(0) == NULL || m_vFilletSolvers[k]->GetEdgeuse(0)->GetEdge() != vOverflowing[i] )
+                    { continue; }
+                  SmBoolean bFound = FALSE;
+                  double dLimit = 0.0;
+                  SER( m_vFilletSolvers[k]->LargestRadiusOnItsFaces( bFound, dLimit ));
+                  const double dFit = smos_Max( 0.0, dLimit - FitMargin( *vOverflowing[i] ));
+                  if ( bFound && ( GetFitRadius() < 0.0 || dFit < GetFitRadius() ))
+                    { NoteFitRadius( dFit, vOverflowing[i] ); }
+                }
+            }
           return SM_ERR;
         }
       m_bCliffOverflow = TRUE;
@@ -3877,6 +3914,47 @@ SmStatus SmFilletExecutive::CreateFilletBrep
   if ( !bOutlast )
     {
       GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, _T("Fillet Error: the blends take the whole of a face they roll on, some at an angle to it (the blend is larger than the faces allow)") );
+      // the largest radius that leaves some of the face, where the face is a plane bounded by
+      // one blended circle (a cylinder's top): the band reaches the circle's centre at the
+      // radius of the ball touching the face there (the bound is open: at it the face is a
+      // point), so less the fit margin; other faces taken whole are not sized
+      for (ULONG i=0; i<m_vFilletSolvers.GetSize(); i++)
+        {
+          SmFilletSolver * pFS = m_vFilletSolvers[i];
+          SmEdge * pEdge = ( pFS->GetEdgeuse(0) != NULL ) ? pFS->GetEdgeuse(0)->GetEdge() : NULL;
+          if ( pEdge == NULL || pEdge->GetCurve() == NULL || !pEdge->IsClosed() )
+            { continue; }
+          for (ULONG k=0; k<2; k++)
+            {
+              SmFace * pFace = ( pFS->GetEdgeuse(k) != NULL ) ? pFS->GetEdgeuse(k)->GetFace() : NULL;
+              SmTArray<SmEdge*> sOwn;
+              if ( pFace == NULL || SM_CAST_PTR( SmPlane, pFace->GetSurface() ) == NULL )
+                { continue; }
+              pFace->GetEdges( sOwn );
+              if ( sOwn.GetSize() != 1 || sOwn[0] != pEdge )
+                { continue; }
+              // the circle's centre from three of its points, a fourth on the same circle
+              SmPoint3d asP[4];
+              const SmExtent1d sIvl = pEdge->GetInterval();
+              for (ULONG j=0; j<4; j++)
+                { SER( pEdge->GetCurve()->EvaluatePoint( sIvl.Evaluate( 0.125 + 0.25 * j ), asP[j] )); }
+              const SmVector3d sA = asP[1] - asP[0], sB = asP[2] - asP[0];
+              const SmVector3d sN = sA * sB;
+              const double dN2 = sN.LengthSquared();
+              if ( !( dN2 > SM_EFF_ZERO ))
+                { continue; }
+              const SmPoint3d sCentre = asP[0] + ((sN * sA) * sB.LengthSquared() + (sB * sN) * sA.LengthSquared()) / (2.0 * dN2);
+              const double dRad = sCentre.DistanceBetween( asP[0] );
+              if ( smos_Fabs( sCentre.DistanceBetween( asP[3] ) - dRad ) > pEdge->GetTolerance().val )
+                { continue; } // not a circle
+              SmBoolean bFound = FALSE;
+              double dRho = 0.0;
+              SER( pFS->BallThrough( k, sCentre, smos_Fabs( pFS->GetSurface(0)->GetOffsetDistance() ), bFound, dRho ));
+              const double dFit = smos_Max( 0.0, dRho - FitMargin( *pEdge ));
+              if ( bFound && ( GetFitRadius() < 0.0 || dFit < GetFitRadius() ))
+                { NoteFitRadius( dFit, pEdge ); }
+            }
+        }
       return SM_ERR;
     }
   // SolidCraft change: blends whose bands on a face they share overlap, away from any corner
@@ -3886,6 +3964,32 @@ SmStatus SmFilletExecutive::CreateFilletBrep
   if ( !bClear )
     {
       GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, _T("Fillet Error: a blend's rail runs inside the band another blend takes off a face they share (the blends are larger than the face allows)") );
+      // the largest common radius at which the bands stay apart: where they meet (closed: there
+      // the two rails are one, a full round), the least over the pairs of blends on a face
+      for (ULONG a=0; a<m_vFilletSolvers.GetSize(); a++)
+        {
+          for (ULONG b=0; b<m_vFilletSolvers.GetSize(); b++)
+            {
+              SmFilletSolver * pA = m_vFilletSolvers[a];
+              SmFilletSolver * pB = m_vFilletSolvers[b];
+              if ( a == b || pA->GetEdgeuse(0) == NULL || pB->GetEdgeuse(0) == NULL )
+                { continue; }
+              for (ULONG ka=0; ka<2; ka++)
+                {
+                  for (ULONG kb=0; kb<2; kb++)
+                    {
+                      if ( pA->GetEdgeuse(ka) == NULL || pB->GetEdgeuse(kb) == NULL
+                           || pA->GetEdgeuse(ka)->GetFace() != pB->GetEdgeuse(kb)->GetFace() )
+                        { continue; }
+                      SmBoolean bFound = FALSE;
+                      double dMeet = 0.0;
+                      SER( pA->BandsMeetAt( *pB, ka, kb, bFound, dMeet ));
+                      if ( bFound && ( GetFitRadius() < 0.0 || dMeet < GetFitRadius() ))
+                        { NoteFitRadius( dMeet, pA->GetEdgeuse(0)->GetEdge() ); }
+                    }
+                }
+            }
+        }
       return SM_ERR;
     }
 

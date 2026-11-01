@@ -429,6 +429,9 @@ SmStatus SmBlendCorner::Classify
       TCHAR cWhy[SM_TBLOCK_SIZE];
       smos_sprintf( cWhy, _T("Fillet Error: a swept turn cannot pass the sharp concave corner edge between the rounds; round that edge at a radius of at least %g first"),
                     smos_Fabs( pOffset->GetOffsetDistance() ));
+      // no radius builds a swept turn past a sharp concave side edge: its size is not the cause
+      if ( pExec != NULL )
+        { pExec->NoteFitRadius( 0.0, pEU1->GetEdge() ); }
       return sm_TurnNotBuilt( pExec, cpVertex, SM_FILERR_NO_ROOM, cWhy );
     }
 

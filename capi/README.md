@@ -106,7 +106,19 @@ whose law curve carries the radius as x and, as SMLib's own laws do, the paramet
 Where the law has a corner the round turns and is split into faces there; a law whose radius is
 zero inside the edge (the round would pinch to a point) is `SMLIB_ERR_UNSUPPORTED`.
 `smlib_blend_reason` gives the last blend's failure in SMLib's words (a fold, a swept turn at a
-sharp concave side edge), naming the radius.
+sharp concave side edge), naming the radius. When SMLib refused the blend as too large
+(`SMLIB_ERR_NO_ROOM`), `smlib_blend_fit_size` gives the largest size that builds (0: none does), or
+for a set-back corner the largest setback (`SMLIB_FIT_SETBACK`). The size comes from the
+refusal's cause, never from building again. Where the cause's bound is open, the size is the bound
+less a thousand of the edge's tolerances. Sized so far:
+- a ball that does not fit its face's curve (closed) or folds (open);
+- a blend that would cut the part in two;
+- rails that leave their faces;
+- bands that meet on a shared face (closed);
+- a corner that takes the whole edge;
+- a cylinder's top taken whole;
+- a setback longer than an edge;
+- a swept turn at a sharp concave side edge (none).
 
 `smlib_merge_faces` removes a body's topological edges and vertices
 (`SmBrep::RemoveTopologicalEdgesAndVertices`): faces on one surface that meet along an edge
