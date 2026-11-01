@@ -6776,6 +6776,18 @@ static SmBoolean sm_TestManifoldTangentRollover
     return TRUE;
 } // end sm_TestManifoldTangentRollover
 
+/*******************************************************************//**
+PURPOSE: SolidCraft change. Whether the two faces at the manifold edge
+    pEdge meet tangentially there (sm_TestManifoldTangentRollover).
+***********************************************************************/
+SmBoolean SmFilletSolver::IsTangentEdge
+  (SmEdge * pEdge,             // in : a manifold edge
+   double   dTangencyTolRad)   // in : the angle tolerance
+{
+  SmBoolean bOpposite = FALSE;
+  return ( pEdge != NULL && pEdge->IsManifold() && sm_TestManifoldTangentRollover( pEdge, bOpposite, dTangencyTolRad, 0 )) ? TRUE : FALSE;
+}
+
 
 /****************************************************************
 PURPOSE:  Split a rail edge into two topologically

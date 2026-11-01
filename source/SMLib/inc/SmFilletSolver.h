@@ -227,6 +227,7 @@ public:
   double                      GetThisAngTolRad           ()                 const { SM_ASSERT_TOL(m_dThisAngTolRad) ; return m_dThisAngTolRad; }   // radians
   double                      GetConversionTol           ()                 const { return m_dConversionTol; }
   double                      GetTangencyTolerance       ()                 const { return m_dTangencyTolerance; }
+  static SmBoolean            IsTangentEdge(SmEdge * pEdge, double dTangencyTolRad); // SolidCraft change: the two faces at a manifold edge meet tangentially there
 
   SmVertex                  * GetVertex                  (ULONG lIndex)     const ;
   SmEdgeuse                 * GetEdgeuse                 (ULONG lIndex)     const { return m_pEdgeuses[lIndex]; }

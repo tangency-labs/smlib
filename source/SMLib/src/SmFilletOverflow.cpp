@@ -662,7 +662,9 @@ NOTES: See the file's head. Each sheet face is sectioned by every face of
     the material the blends take off, and are deleted; the sheet is merged
     in and stitched, and the body oriented. Refused (SM_FILERR_NO_ROOM): a
     variable round whose surface misses its law (sm_HoldsItsLaw). A sheet
-    whose boundary does not close on the body (SM_FILERR_BAD_MERGE).
+    whose boundary does not close on the body (SM_FILERR_BAD_MERGE). A crease
+    on a face that runs on tangentially from a face the sheet rolls on (the
+    rail rolls over onto it: no cliff, SM_FILERR_NO_ROOM).
 ***********************************************************************/
 SmStatus SmFilletExecutive::TrimAtCreases()
 {
@@ -684,6 +686,9 @@ SmStatus SmFilletExecutive::TrimAtCreases()
   for (ULONG i=0; i<m_vFilletSolvers.GetSize(); i++)
     { dTol = smos_Max( dTol, m_vFilletSolvers[i]->GetThisApproxTol3d() ); }
   const double dOnTol = 10.0 * dTol;
+  double dTangency = 0.0;
+  for (ULONG i=0; i<m_vFilletSolvers.GetSize(); i++)
+    { dTangency = smos_Max( dTangency, m_vFilletSolvers[i]->GetTangencyTolerance() ); }
 
   // the blended edges' curves, to find their pieces after the imprint
   std::vector<SmCurve*> vBlended;
@@ -722,20 +727,26 @@ SmStatus SmFilletExecutive::TrimAtCreases()
       SmObjsDelete<SmCurve*> sCleanPieces( &sPieces );
       const SmSurface * pOnly = NULL;
       ULONG lFaces = 0;
+      // the faces the sheet face rolls on or ends on: each holds one of its boundary edges
+      std::set<SmFace*> sSupports;
       for (ULONG f=0; f<sTargetFaces.GetSize(); f++)
         {
-          SmFace * pFace = sTargetFaces[f];
           if ( vTargetBoxes[f].AreDisjoint( sBox, dOnTol ))
             { continue; }
-          // a face the sheet face rolls on or ends on holds one of its boundary edges
           SmBoolean bHolds = FALSE;
           for (ULONG e=0; e<sEdges.GetSize() && !bHolds; e++)
             {
               if ( !sEdges[e]->IsLamina() )
                 { continue; }
-              SER( sm_EdgeOnSurface( *sEdges[e], *pFace, dOnTol, bHolds ));
+              SER( sm_EdgeOnSurface( *sEdges[e], *sTargetFaces[f], dOnTol, bHolds ));
             }
           if ( bHolds )
+            { sSupports.insert( sTargetFaces[f] ); }
+        }
+      for (ULONG f=0; f<sTargetFaces.GetSize(); f++)
+        {
+          SmFace * pFace = sTargetFaces[f];
+          if ( vTargetBoxes[f].AreDisjoint( sBox, dOnTol ) || sSupports.count( pFace ))
             { continue; }
           sm_Curves sCreases;
           // fitted to the body's own accuracy, so that creases meeting at a corner of the sheet
@@ -751,6 +762,25 @@ SmStatus SmFilletExecutive::TrimAtCreases()
             { SER( sm_PiecesInFace( m_crContext, *sInFace[c], *pSheet, dTol, sPieces )); }
           if ( sPieces.GetSize() > lBefore )
             {
+              // A face past a cliff meets the face the rail leaves at a sharp edge. One that
+              // runs on from it tangentially (a round already on the face) is no cliff: the rail
+              // would roll over onto it, and the ball does not fit between.
+              SmTArray<SmEdge*> sFaceEdges;
+              pFace->GetEdges( sFaceEdges );
+              for (ULONG e=0; e<sFaceEdges.GetSize(); e++)
+                {
+                  SmTArray<SmFace*> sAt;
+                  sFaceEdges[e]->GetFaces( sAt );
+                  for (ULONG k=0; k<sAt.GetSize(); k++)
+                    {
+                      if ( sAt[k] != pFace && sSupports.count( sAt[k] )
+                           && SmFilletSolver::IsTangentEdge( sFaceEdges[e], dTangency ))
+                        {
+                          GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, _T("Fillet Error: a rail leaves the face it rolls on across a tangent edge, onto a face it would cut (the blend is larger than the face allows)") );
+                          return SM_ERR;
+                        }
+                    }
+                }
               lFaces++;
               pOnly = pFace->GetSurface();
             }
