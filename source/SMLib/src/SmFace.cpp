@@ -18988,6 +18988,29 @@ SmStatus SmFace::ShrinkGeometry()
   if (sSurfDomain.GetMax().x - sMax.x < dTol) { sMax.x = sSurfDomain.GetMax().x ; }
   if (sSurfDomain.GetMax().y - sMax.y < dTol) { sMax.y = sSurfDomain.GetMax().y ; }
 
+  // SolidCraft change: a bound within rounding of one of the surface's knots (64 ulp of the
+  // knot's magnitude) is that knot. A computed end parameter (a trim curve's end control point
+  // made by knot insertion, say) lands a rounding step either side of the knot it stands for;
+  // TrimWithDomain would space a bound just past a knot off it by its snapping tolerance and keep
+  // a sliver span past the knot.
+  if (pSurface->IsKindOf(SmBSplineSurface_TYPE))
+    {
+      const SmBSplineSurface *pBSS = (const SmBSplineSurface *)pSurface;
+      for (int iDir = 0; iDir < 2; iDir++)
+        {
+          SmTArray<double> sKnots;
+          SER( pBSS->GetKnots(iDir == 0 ? SM_SP_U : SM_SP_V, sKnots) );
+          double &rLo = (iDir == 0) ? sMin.x : sMin.y;
+          double &rHi = (iDir == 0) ? sMax.x : sMax.y;
+          for (ULONG k = 0; k < sKnots.GetSize(); k++)
+            {
+              const double dRound = 64.0 * DBL_EPSILON * smos_Fabs(sKnots[k]);
+              if (smos_Fabs(rLo - sKnots[k]) <= dRound) { rLo = sKnots[k]; }
+              if (smos_Fabs(rHi - sKnots[k]) <= dRound) { rHi = sKnots[k]; }
+            }
+        }
+    }
+
   // set the (revised) face domain
   // note: there is no test here if the face domain is greater than
   // the surface domain

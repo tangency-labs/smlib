@@ -5100,10 +5100,11 @@ void section_twisted_wedge_g2_equal_area()
     g.fitted = true;
     g.size = 3.0;
     // certified span by span at a tenth of the tolerance, the rows' remainder with the jets' (one
-    // thumbweight for the edge, -0.5, takes 197): 275, where the feet's own order-2 jets took 288.
+    // thumbweight for the edge, -0.5, takes 197): 274, where the feet's own order-2 jets took 288
+    // (the face's trim at x = 30 a rounding step off the knot there, 274 with no sliver span kept).
     // Those carried the top's third partials, which in the twist change along x; the jet of order 2
     // takes its second partials only, whose fourth s-derivatives are smaller over the twist
-    g.spans = 275;
+    g.spans = 274;
     // its definition carries the equal area rule and resolves w at every point from its own
     // station's wedge, as the net's stations did: the net within its certified bound of it
     g = counted(g, 39000, 13200);
@@ -6507,7 +6508,7 @@ void round_on_a_c2_face_is_its_definition()
         const int graded = circle_definitions(r, size, circle, net, spans);
         std::printf("  %d round(s) by definition, %d spans: sections off the ball's circle by %.3g, the net at %.3g of its bound\n", graded, spans,
                     circle, net);
-        CHECK(graded == 1 && spans == 190 && circle <= 1e-11 && net <= 1.0);
+        CHECK(graded == 1 && spans == 189 && circle <= 1e-11 && net <= 1.0);
     }
     smlib_brep_free(r);
     smlib_brep_free(below);
@@ -6613,7 +6614,7 @@ void round_chain_on_a_c2_face_is_its_definition()
                     spans, circle, net);
         // the front's, the arc's and the side's: the side and the top there (a = -tan 30) are planes,
         // but the solver's centre line is a cubic, not the line the circles' sweep is told by
-        CHECK(graded == 3 && spans == 279 && circle <= 1e-11 && net <= 1.0);
+        CHECK(graded == 3 && spans == 278 && circle <= 1e-11 && net <= 1.0);
     }
     smlib_brep_free(r);
     smlib_brep_free(below);
@@ -6897,8 +6898,7 @@ void shrink_plane()
 // Each kind of surface a face is shrunk on, and why each that fails today fails.
 const TangentEndCase SHRINK_CASES[] = {
     {"bspline_patch", shrink_bspline_patch, nullptr},
-    {"bound_a_rounding_step_past_a_knot", shrink_bound_a_rounding_step_past_a_knot,
-     "the face's bound one rounding step past the knot at 0.5 is spaced off it, and its surface keeps a sliver span [0.5, 0.500015]"},
+    {"bound_a_rounding_step_past_a_knot", shrink_bound_a_rounding_step_past_a_knot, nullptr},
     {"cylinder_along_its_axis", shrink_cylinder_along_its_axis, nullptr},
     {"cylinder_in_its_angle", shrink_cylinder_in_its_angle, nullptr},
     {"torus_along_its_generator", shrink_torus_along_its_generator, nullptr},
