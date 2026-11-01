@@ -2982,9 +2982,15 @@ SmStatus SmFilletExecutive::BuildLawCorners
         }
     }
 
-  // unstitch the round's faces (they come back as new faces)
-  SmTArray<SmFace*> sBefore, sAfter;
+  // unstitch the round's faces: they are deleted and come back as new faces, which may take the
+  // old ones' addresses, so the new ones are those not among the faces that stayed
+  SmTArray<SmFace*> sBefore, sStayed, sAfter;
   m_pTargetBrep->GetFaces(sBefore);
+  for (ULONG i=0; i<sBefore.GetSize(); i++)
+    {
+      if (!sOf.IsIn(sBefore[i]))
+        { sStayed.Add(sBefore[i]); }
+    }
   SmTArray<SmFace*> sUnstitch(sOf);
   SER(m_pTargetBrep->UnStitch(&sUnstitch));
   m_pTargetBrep->GetFaces(sAfter);
@@ -2992,7 +2998,7 @@ SmStatus SmFilletExecutive::BuildLawCorners
     { sOf[k] = NULL; }
   for (ULONG i=0; i<sAfter.GetSize(); i++)
     {
-      if (sBefore.IsIn(sAfter[i]))
+      if (sStayed.IsIn(sAfter[i]))
         { continue; }
       ULONG lPiece = lPieces;
       SER(sm_PieceOfFace(sAfter[i], crKept, lPiece));
