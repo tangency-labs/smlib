@@ -220,6 +220,8 @@ public:
   SmBoolean IsCalcAsConstRad()                 const { return m_bCalcAsConstRad; }
 //cbi551 ???  SmBoolean IsEdgeuseSolverEU(SmEdgeuse * pEU) const;
   virtual SmBoolean IsTangentCorner()          const { return FALSE; }
+  // SolidCraft change: a Join of one closed blended edge meeting itself (SmBlendCorner)
+  virtual SmBoolean IsClosedJoin()             const { return FALSE; }
 
   // utilities
   void RecordFilletError(SmFilletErrorType  eErrorType,
@@ -239,65 +241,6 @@ public:
 } ; // end class SmFilletCorner
 
 // GWC:BIND_TEMPLATE_MOVE     SM_TARRAY_TEMPLATE_PREDECLARATION(SmFilletCorner*) ;
-
-/*******************************************************************//**
-PURPOSE: Create a 1x1 corner. Typically, when only one (closed & non-
-    lamina) edge is connected to this corner vertex such that it separates
-    two adjacent surfaces, a closed-fillet surface can be defined by rolling
-    along this edge. (e.g. when two tori form an '8' shape, only one
-    vertex and one edge are defined at the intersection)
-
-NOTES: Will only handle the tangency cases for now.
-***********************************************************************/
-class SM_EXPORT SmFillet1x1Corner : public SmFilletCorner
-{
-public:
-    SmFillet1x1Corner(const SmContext      & crContext,
-                      const SmVertex       * cpVertex,
-                      SmTArray<SmEdgeuse*> * pSolverEUs,
-                      SmTArray<SmEdgeuse*> * pAllEUs,
-                      SmFilletExecutive    * pExec,
-                      double                 dApproxTol3d,
-                      double                 dTangencyTolRadians);
-
-    virtual SmFilletCornerType GetCornerType() const { return SM_FCR_1_x_1; }
-
-    virtual void GetName(TCHAR * pcMyName, size_t lMyNameAllocLen) const {smos_WStrCpy(pcMyName, lMyNameAllocLen, _T("SmFillet1x1Corner")); }
-
-    virtual SmFilletSolver * GetTangentFilletSolver( const SmFilletSolver *pFS );
-
-    virtual SmStatus MakeCornerTopology();
-
-} ; // end class SmFillet1x1Corner
-
-/*******************************************************************//**
-PURPOSE: Create a 2x2 corner. When two edges are connected to this
-    corner vertex with G1-continuity, a cross section can be defined to
-    separate two G1-continuous fillets at this corner
-
-NOTES: Will only handle the tangency cases for now.
-***********************************************************************/
-class SM_EXPORT
-SmFillet2x2Corner : public SmFillet1x1Corner
-{
-public:
-    SmFillet2x2Corner(const SmContext      & crContext,
-                      const SmVertex       * cpVertex,
-                      SmTArray<SmEdgeuse*> * pSolverEUs,
-                      SmTArray<SmEdgeuse*> * pAllEUs,
-                      SmFilletExecutive    * pExec,
-                      double                 dApproxTol3d,
-                      double                 dTangencyTolRadians);
-
-    virtual SmFilletCornerType GetCornerType() const { return SM_FCR_2_x_2; }
-
-    virtual void GetName(TCHAR * pcMyName, size_t lMyNameAllocLen) const { smos_WStrCpy(pcMyName, lMyNameAllocLen, _T("SmFillet2x2Corner")); }
-
-    virtual SmFilletSolver * GetTangentFilletSolver( const SmFilletSolver *pFS );
-
-    virtual SmStatus MakeCornerTopology();
-
-} ; // end class SmFillet2x2Corner
 
 /*******************************************************************//**
 PURPOSE: Create a Nx1 closed corner. Typically, this might happen when we

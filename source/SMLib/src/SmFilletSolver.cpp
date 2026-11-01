@@ -7088,7 +7088,7 @@ NOTES: At an end the fillet stops in one of two ways, and its rail leaves the fa
     - The face ends there in its side edge (the edge before or after the filleted edge in the
       face's loop, at the end's vertex), where the end face meets it: the end face cuts the
       fillet off. A square end face does so in the cross section at the end (the plane
-      normal to the edge there, SmFilletVertex::CalcVertOnCrossSection); one sloped either
+      normal to the edge there); one sloped either
       way, or curved, before or beyond it. The rail leaves across that side edge, or through
       one of its vertices (through the side edge's far corner).
     - The face goes on past the end (a concave corner, or a short side edge that the rail
@@ -8584,7 +8584,7 @@ iDebugLevel = DebugLevel();
 
       // These are the only types we can do:
       if (   eCornerType != SM_FCR_N_x_1_CLOSED
-          && eCornerType != SM_FCR_1_x_1)
+          && !pCorner->IsClosedJoin() )
         {
           SER_MSG(SM_ERR, _T("ProcessRollOver(): Unimplemented Roll-Over Case"));
         }

@@ -415,58 +415,6 @@ static ULONG lDebugCount = 0 ;
 } // end sm_TwoPntsIntersection
 
 /*******************************************************************//**
-PURPOSE: Determine where the guess UV's are for 'PointOnPlaneSolve'
-
-NOTES:
-***********************************************************************/
-static SmStatus sm_FindStepoffUV
-  (SmFilletSolver * pFilSolver,
-   double dCurveParam,     // in : must be a a param in the pFilSolver->GetEdgeuse(0 or 1)->GetInterval()
-   double dStepoffDist,
-   SmVector2d sUVs[2])
-{
-    for (ULONG i=0; i<2; i++) {
-        SmEdgeuse * pEdgeuse = pFilSolver->GetEdgeuse(i);
-        SmSurface *pSurface = pEdgeuse->GetFace()->GetSurface();
-        // Step off the edge along the binormal direction
-        SmPoint3d sSurfPnt;
-        SmVector3d sBinVec;
-        SER(pEdgeuse->EvaluateBinormalStepOff(dCurveParam,
-            smos_Fabs(dStepoffDist),sSurfPnt,sBinVec));
-        double dTol = pFilSolver->GetThisApproxTol3d();
-        SmSolution sData[64];
-        SmSolutionArray sSolutions(64,sData);
-        // Make the surface think that it is a standalone surface
-        SmSurfaceCache *pSC = smsurf_GetSurfaceCache(pSurface); NER(pSC);
-        SmCacheCheckOutIn sCheckIO(pSC);
-        {
-          // Make the surface think that it is a standalone surface.
-          // Turn on boundary curve processing to force LocalSolve to look for drop points
-          //   on boundary curves. This will find solutions where the curve comes close
-          //   to the surface but does not actually intersect it.
-          SmTemporaryChangeValue<SmBoolean> sChange1(pSC->m_bPointTestEnabled,FALSE);
-          SmTemporaryChangeValue<SmBoolean> sChange2(pSC->m_bProcessBoundaryCurves,TRUE);
-          SER(pSurface->GlobalPointSolve(pEdgeuse->GetFace()->GetUVDomain(),
-              SM_SO_MINIMIZE,sSurfPnt,dTol,NULL,
-              SM_SR_SINGLE,sSolutions));
-        }
-        if (sSolutions.GetSize() < 1) SER(SM_ERR);
-        sUVs[i] = SmPoint2d(sSolutions[0].m_vStart[0],sSolutions[0].m_vStart[1]);
-#ifdef SM_DEBUG_CODE
-        if ( pFilSolver->DebugLevel() > 0 ) {
-            smgfx_SetLook(2,4, 0,0,1); pEdgeuse->Draw(); sm_GraphicsLoop();
-            smgfx_SetLook(1,6, 1,0,0); sSurfPnt.Draw(); sm_GraphicsLoop();
-            smgfx_SetLook(3,6, 0,1,0); sBinVec.Draw(&sSurfPnt); sm_GraphicsLoop();
-            sm_GraphicsLoop();
-        }
-#endif // SM_DEBUG_CODE
-    }
-
-    return SM_SUCCESS;
-
-} // end sm_FindStepoffUV
-
-/*******************************************************************//**
 PURPOSE: Decide which of two Faces contains a 3d point.
 
 NOTES: This is like SmFace::Point3DClassify() but optimized for our situation:
@@ -1737,6 +1685,11 @@ void SmFilletVertex::GetName
             smos_WStrCpy(pcMyName,lMyNameAllocSize,_T("SM_FV_ON_CROSS_SECTION"));
             break;
         }
+    case SM_FV_JOIN_SECTION:
+        {
+            smos_WStrCpy(pcMyName,lMyNameAllocSize,_T("SM_FV_JOIN_SECTION"));
+            break;
+        }
     case SM_FV_SETBACK:
         {
             smos_WStrCpy(pcMyName,lMyNameAllocSize,_T("SM_FV_SETBACK"));
@@ -1776,8 +1729,8 @@ SmStatus SmFilletVertex::CalcCornerVertGeom()
       case SM_FV_FILLET_X_FILLET        : return CalcFilletIntFillet();
       case SM_FV_RAIL_X_EXTENDED_EDGEUSE: return CalcRailIntExtendedEdgeuse();
       case SM_FV_FILLET_X2_FILLETS      : return CalcFilletInt2Fillets();
-      case SM_FV_ON_CROSS_SECTION       : return CalcVertOnCrossSection();
       case SM_FV_SETBACK                : return CalcSetBackVert();
+      case SM_FV_JOIN_SECTION           : return CalcJoinSection();
       case SM_FV_MATE                   : return CalcMateGeom();
       case SM_FV_FILLET_X_EDGEUSE       :
       default                           : break;
@@ -3350,204 +3303,6 @@ iDebugLevel = DebugLevel();
   return SM_SUCCESS;
 
 } // end SmFilletVertex::CalcRailIntExtendedEdgeuse
-
-/*******************************************************************//**
-PURPOSE: Calculate vertex geometry of type SM_FV_ON_CROSS_SECTION,
-    such as in corner case SmFillet1x1Corner. The vertex is on the cross-
-    sectional plane at the filleted vertex.
-
-NOTES:
-***********************************************************************/
-SmStatus SmFilletVertex::CalcVertOnCrossSection
-  (double * pOptEdgeParam)
-{
-    NER(m_cpCorner);
-    const SmVertex * cpVertex = m_cpCorner->GetFilletedVertex();
-
-    // Determine where the cross-sectional plane is
-    SmTArray<SmFilletGeom*> sGeoms;
-    GetFilletGeoms(sGeoms);
-    ULONG lTotalGeoms = sGeoms.GetSize();
-    if (lTotalGeoms < 1) SER(SM_ERR);
-    SmFilletGeom * pFilletGeom1 = sGeoms[0];
-    SmFilletSolver * pFilSolver1 = pFilletGeom1->GetFilletSolver();
-    NER(pFilSolver1);
-    SmEdgeuse * pEU = pFilSolver1->GetEdgeuse(0);
-    SmEdge * pEdge = pEU->GetEdge();
-    SmExtent1d sIvl = pEdge->GetInterval();
-    SmBoolean bVertAtEdgeStart = TRUE;
-    double dParam = sIvl.GetMin();
-    if (pOptEdgeParam) {
-        dParam = *pOptEdgeParam;
-    }
-    else if (pEdge->GetStartVertex() != cpVertex) {
-        dParam = sIvl.GetMax();
-        bVertAtEdgeStart =  FALSE;
-    }
-    SmVector3d sPV[2];
-    SmCurve * pCurve = pEdge->GetCurve(); NER(pCurve);
-    SER(pCurve->Evaluate(dParam,1,TRUE,sPV));
-#ifdef SM_DEBUG_CODE
-    if ( DebugLevel() > 0 ) {
-        smgfx_SetColor(1,0,0);
-        pEU->Draw();
-        sm_GraphicsLoop();
-        smgfx_SetPointSize(6);
-        sPV[0].Draw();
-        sPV[1].Draw(&sPV[0]);
-        sm_GraphicsLoop();
-    }
-#endif // SM_DEBUG_CODE
-    SmPoint3d  sPlaneOrig = sPV[0];
-    SmVector3d sPlaneNormal = sPV[1];
-    SmFilletVertexuse * pVU1 = GetVUAtRailEnd(pFilletGeom1);
-    SmTsectPnt & rTsectPnt = pVU1->GetTsectPnt();
-
-    SmTArray<SmVertexuse*> sVertexuses;
-    cpVertex->GetVertexuses(sVertexuses);
-    SmVector2d sUVs[2];
-    for (ULONG i=0; i<2; i++) {
-        SmFace * pFace = pFilSolver1->GetEdgeuse(i)->GetFace();
-        SmBoolean bFound = FALSE;
-        for (ULONG jj=0; jj<sVertexuses.GetSize() && !bFound; jj++) {
-            SmVertexuse * pVU = sVertexuses[jj];
-            if (pVU->GetFaceuse()->GetFace() == pFace) {
-                bFound = TRUE;
-                SER( pVU->ComputeUVPoint(sUVs[i]) );
-            }
-        }
-    }
-
-    // Determine if we need to step off the edge to avoid
-    // convergence problems (some surfaces may have colinear dU & dV)
-    SmOffsetSurface * pOffsetSurf = pFilSolver1->GetSurface(0);
-    double dStepoffDist = smos_Fabs(pOffsetSurf->GetOffsetDistance());
-    double dCurveStepoffDist = dStepoffDist;
-    double dCurveLen = pCurve->ApproximateLength(sIvl,10);
-    SM_ASSERT(dCurveLen > SM_EFF_ZERO);
-    double dMaxStepoffDist = dCurveLen*0.15;
-    if (dCurveStepoffDist > dMaxStepoffDist) {
-        dCurveStepoffDist = dMaxStepoffDist;
-    }
-    if (!bVertAtEdgeStart) {
-        dCurveStepoffDist = -dCurveStepoffDist;
-    }
-
-    for (ULONG j=0; j<2; j++) {
-        SmSurface * pSurf = pFilSolver1->GetSurface(j);
-        NER(pSurf);
-        SmVector3d sDU, sDV;
-        SmVector3d sMat[2][2];
-        SER(pSurf->Evaluate(sUVs[j],1,1,TRUE,TRUE,TRUE,sMat[0]));
-        sDU = sMat[1][0];
-        sDV = sMat[0][1];
-        double dDeg;
-        SER(sDU.AngleBetween(sDV,dDeg));
-        dDeg = SM_RAD2DEG(dDeg);
-        if (dDeg < 30 || dDeg > 150.0) {
-            // May lead to potential failures, step off the boundary
-            // Step off the vertex along the edge first
-            SER(pCurve->FindParameterAtArcLength(dParam,
-                2.0*dCurveStepoffDist,dParam));
-            // Then step off the boundary edge
-            SER(sm_FindStepoffUV(pFilSolver1,dParam,
-                dStepoffDist,sUVs));
-            break;
-        }
-    }
-
-    SmExtent2d sDomain1 = pFilSolver1->GetSurface(0)->GetNaturalUVDomain();
-    SmExtent2d sDomain2 = pFilSolver1->GetSurface(1)->GetNaturalUVDomain();
-    SmBoolean bFoundSolution = FALSE;
-
-    // If the solver doesn't succeed the first time, try stepping off
-    // the vertex along the edge.  Loop a couple of times.
-    for (ULONG k=0; k<3; k++)
-      {
-        // find filletPoint on given plane that satisfies geometry requirements
-        // implemented in derived SmFilletSolver class
-        SER( pFilSolver1->PointOnPlaneSolve(
-                sPlaneOrig, sPlaneNormal, sDomain1, sDomain2, sUVs[0], sUVs[1],
-                bFoundSolution, rTsectPnt ));
-        if ( bFoundSolution )
-            break;
-
-        // No solution found there, step off the vertex along the edge
-        // and try again.
-        SER( pCurve->FindParameterAtArcLength( dParam,
-            dCurveStepoffDist, dParam ));
-
-        // Then step off the boundary edge
-        SER( sm_FindStepoffUV( pFilSolver1, dParam,
-            dStepoffDist, sUVs ));
-      }
-
-    if ( !bFoundSolution )
-    {
-        SetStatus( SM_FV_SOLVER_NOT_CONVERGE );
-        return SM_SUCCESS;
-    }
-
-    SmFace * pFace1 = (SmFace*)GetPointClassObject();
-    ULONG lRailIndex = 0;
-    if (pEU->GetFace() != pFace1) {
-        lRailIndex = 1;
-    }
-    SmVector2d sUV1 = rTsectPnt.UVPos(lRailIndex);
-    SmPoint3d sPnt1;
-    SER(pFace1->GetSurface()->EvaluatePoint(sUV1,sPnt1));
-    SetOriginalUV(sUV1);
-    SetPoint(sPnt1);
-    SetStatus(SM_FIL_PROCESSED);
-
-    ULONG lOtherRailIndex = 0;
-    SmFilletVertexuse * pVU2 = NULL;
-    if (lTotalGeoms ==1 ) {
-        pVU2 = GetVUAtRailEnd(pFilletGeom1,pVU1);
-        lOtherRailIndex = lRailIndex;
-    }
-    else {
-        SmFilletGeom * pFilletGeom2 = sGeoms[1];
-        pVU2 = GetVUAtRailEnd(pFilletGeom2,pVU1);
-        SmEdgeuse * pEU2 = pFilletGeom2->GetFilletSolver()->GetEdgeuse(0);
-        if (pEU2->GetFace() != pFace1) {
-            lOtherRailIndex = 1;
-        }
-    }
-    if (pVU2) {
-        SmTsectPnt & rTsectPnt2 = pVU2->GetTsectPnt();
-        rTsectPnt2.UVPos(lOtherRailIndex) = rTsectPnt.UVPos(lRailIndex);
-        rTsectPnt2.UVPos(1-lOtherRailIndex) = rTsectPnt.UVPos(1-lRailIndex);
-    }
-    // Calculate Mate if needed
-    SmFilletVertex * pMate = GetMate(0);
-    if (pMate == NULL) return SM_SUCCESS;
-    SmFilletVertexuse * pVU = pMate->GetVUAtRailEnd(pFilletGeom1);
-    if (!pVU) return SM_SUCCESS;
-    SmFace * pFace2 = (SmFace*)pMate->GetPointClassObject();
-    SmVector2d sUV2 = rTsectPnt.UVPos(1-lRailIndex);
-    SmPoint3d sPnt2;
-    SER(pFace2->GetSurface()->EvaluatePoint(sUV2,sPnt2));
-    pMate->SetOriginalUV(sUV2);
-    pMate->SetPoint(sPnt2);
-    pMate->SetStatus(SM_FIL_PROCESSED);
-#ifdef SM_DEBUG_CODE
-    if ( DebugLevel() > 0 ) {
-        smgfx_SetColor(1,0,0);
-        smgfx_SetPointSize(6);
-        Draw();
-        sm_GraphicsLoop();
-        smgfx_SetColor(0,0,1);
-        pMate->Draw();
-        smgfx_SetColor(0,0,0);
-        cpVertex->GetBrep()->Draw();
-        sm_GraphicsLoop();
-    }
-#endif // SM_DEBUG_CODE
-
-    return SM_SUCCESS;
-
-} // end SmFilletVertex::CalcVertOnCrossSection
 
 /*******************************************************************//**
 PURPOSE: Calculate vertex geometry of type SM_FV_SETBACK.
@@ -5908,10 +5663,12 @@ iDebugLevel = DebugLevel();
             switch (pCorner->GetCornerType())
             {
             case SM_FCR_BLEND:
-                bAtStartOfGeom1 = ( pFilSolver1->GetVertex(0) == cpVertex );
-
-                bAtStartOfGeom2 = ( pFilSolver2->GetVertex(0) == cpVertex );
-
+                // a closed Join's one blend: its start meets its end
+                if ( !pCorner->IsClosedJoin() )
+                  {
+                    bAtStartOfGeom1 = ( pFilSolver1->GetVertex(0) == cpVertex );
+                    bAtStartOfGeom2 = ( pFilSolver2->GetVertex(0) == cpVertex );
+                  }
                 bCheckConnectivity = TRUE;
                 break;
 
@@ -5974,7 +5731,7 @@ iDebugLevel = DebugLevel();
 
     // Need to create two UV curves when we had a closed-tangent fillet surface
     if (    pCorner != NULL
-         && pCorner->GetCornerType() == SM_FCR_N_x_1_CLOSED
+         && ( pCorner->GetCornerType() == SM_FCR_N_x_1_CLOSED || pCorner->IsClosedJoin() )
          && pFilletGeom1 == pFilletGeom2
          && pCorner->IsBlendingCorner() )
     {
@@ -6086,7 +5843,7 @@ iDebugLevel = DebugLevel();
 
     // Need second UV curve when we had a closed fillet surface
     if (    pCorner != NULL
-         && pCorner->GetCornerType() == SM_FCR_N_x_1_CLOSED
+         && ( pCorner->GetCornerType() == SM_FCR_N_x_1_CLOSED || pCorner->IsClosedJoin() )
          && pFilletGeom1 == pFilletGeom2 )
     {
         NER(pUVCurve2);
@@ -13767,7 +13524,7 @@ SmStatus SmFilletGeom::TopologySplit     // eff: split a single parent filletGeo
         // no work - no Edge or Edge not connected to filletCorner or
         if (pE == NULL) continue;
         if (pE->GetFilletCorner() != pFilletCorner) continue;
-        if ((eCornerType == SM_FCR_N_x_1_CLOSED || eCornerType == SM_FCR_1_x_1)
+        if ((eCornerType == SM_FCR_N_x_1_CLOSED || pFilletCorner->IsClosedJoin())
           && pEU == pE->GetPrimaryEdgeuse())
             { continue; }
 

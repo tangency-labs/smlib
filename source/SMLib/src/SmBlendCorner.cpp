@@ -1418,28 +1418,28 @@ SmStatus SmBlendCorner::MakeCornerTopology()
 {
   if ( IsBall() )
     { return MakeBallTopology(); }
-  if ( IsJoinSection() )
+  if ( m_eEvent == SM_BCE_JOIN )
     { return MakeJoinTopology(); }
   return IsSwept() ? MakeSweptTopology() : IsMitreTurn() ? MakeMitreTopology() : MakeTwoBlendTopology();
 }
 
 SmStatus SmBlendCorner::AdjustTopology()
 {
-  if ( IsBall() || IsJoinSection() )
+  if ( IsBall() || m_eEvent == SM_BCE_JOIN )
     { return SM_SUCCESS; }
   return IsSwept() ? SM_SUCCESS : IsMitreTurn() ? AdjustMitreTopology() : AdjustTwoBlendTopology();
 }
 
 SmStatus SmBlendCorner::AdjustTangentCorner()
 {
-  return ( IsBall() || IsJoinSection() || IsSwept() || IsMitreTurn() ) ? SM_SUCCESS : AdjustTwoBlendTangentCorner();
+  return ( IsBall() || m_eEvent == SM_BCE_JOIN || IsSwept() || IsMitreTurn() ) ? SM_SUCCESS : AdjustTwoBlendTangentCorner();
 }
 
 SmStatus SmBlendCorner::CreateCornerPatch()
 {
   if ( IsBall() )
     { return CreateBallPatch(); }
-  if ( IsJoinSection() )
+  if ( m_eEvent == SM_BCE_JOIN )
     { return SM_SUCCESS; }
   return IsSwept() ? CreateSweptPatch() : IsMitreTurn() ? CreateMitrePatch() : CreateTwoBlendPatch();
 }
@@ -1824,6 +1824,9 @@ NOTES:
 ***********************************************************************/
 SmFilletSolver * SmBlendCorner::GetTangentFilletSolver( const SmFilletSolver *pFS )
 {
+  // a closed Join's one blend continues itself
+  if ( IsClosedJoin() )
+    { return ( m_pExecutive->GetFilletSolverOfEdgeuse( (*m_pSolverEUs)[0] ) == pFS ) ? SM_CONST_CAST( SmFilletSolver*, pFS ) : NULL; }
   if ( m_pSolverEUs->GetSize() != 2 )  { SM_ASSERT_ERR; return NULL; }
 
   // We have to test its continuity.

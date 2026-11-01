@@ -1200,24 +1200,29 @@ static int iDebugLevel = 0; // Note: Can't call DebugLevel() from a static metho
                   // Corner with one 'closed' edge filleted
                   switch (lTotalEUs)
                     {
-                      case 1: // Need to be G1-closed
-                          if (sm_TestG1Continuity(cpVertex,pEdge,pEdge, dTanTolDeg,NULL, iDebugLevel )) 
-                            {
-                              pNewCorner = new(crContext) SmFillet1x1Corner(crContext,
-                                                                            cpVertex,
-                                                                            pSolverEUs,
-                                                                            pAllEUs,
-                                                                            pExec,
-                                                                            dApproxTol3d,
-                                                                            dTangencyTolRadians);
-                            }
-                          else 
-                            {
-                              MSG(_T("Corner Case Not Implemented"));
-                            }
-                          break;
+                      case 1:
                       case 2:
                       case 3:
+                          // SolidCraft change: a closed edge meeting itself G1 is the blend corner's
+                          // Join (its shared section)
+                          if (sm_TestG1Continuity(cpVertex,pEdge,pEdge, dTanTolDeg,NULL, iDebugLevel ))
+                            {
+                              pNewCorner = new(crContext) SmBlendCorner(crContext,
+                                                                        cpVertex,
+                                                                        pSolverEUs,
+                                                                        pAllEUs,
+                                                                        pExec,
+                                                                        dApproxTol3d,
+                                                                        dTangencyTolRadians,
+                                                                        SM_BCE_JOIN,
+                                                                        SM_BT_MITRE);
+                              break;
+                            }
+                          if (lTotalEUs == 1)
+                            {
+                              MSG(_T("Corner Case Not Implemented"));
+                              break;
+                            }
                           pNewCorner = new(crContext) SmFilletNx1ClosedCorner(crContext,
                                                                               cpVertex,
                                                                               pSolverEUs,
@@ -4389,257 +4394,6 @@ SmDisplayList * SmFilletCorner::Draw
   return(pRtn) ;
 
 }  // end SmFilletCorner::Draw()
-
-/*******************************************************************//**
-PURPOSE: Create a 1x1 corner. Typically, when only one (closed & non-
-    lamina) edge is connected to this corner vertex such that it separates
-    two adjacent surfaces, a closed-fillet surface can be defined by rolling
-    along this edge. (e.g. when two tori form an '8' shape, only one
-    vertex and one edge are defined at the intersection)
-
-NOTES: Will only handle the tangency cases for now.
-***********************************************************************/
-SmFillet1x1Corner::SmFillet1x1Corner
-  (const SmContext      & crContext,
-   const SmVertex       * cpVertex,
-   SmTArray<SmEdgeuse*> * pSolverEUs,
-   SmTArray<SmEdgeuse*> * pAllEUs,
-   SmFilletExecutive    * pExec,
-   double                 dApproxTol3d,
-   double                 dTangencyTolRadians)
- : SmFilletCorner(crContext,
-                  cpVertex,
-                  pSolverEUs,
-                  pAllEUs,
-                  pExec,
-                  dApproxTol3d,
-                  dTangencyTolRadians)
-{
-
-} // end SmFillet1x1Corner::SmFillet1x1Corner
-
-/*******************************************************************//**
-PURPOSE: Create 1x1 corner by creating its boundary FilletCurves
-         and FilletPoints in m_pPseudoBrep. 
-
-NOTES: The topology of a 1x1 corner consists of only one fillet edge.
-***********************************************************************/
-SmStatus SmFillet1x1Corner::MakeCornerTopology
-  ()
-{
-  // locals
-  SmEdgeuse          * pFilEdgeuse = (*m_pSolverEUs)[0] ;
-  SmFilletSolver     * pFilSolver  = GetFilletExecutive()->GetFilletSolverOfEdgeuse(pFilEdgeuse); NER(pFilSolver) ;
-  SmFilletEdge       * pFilletEdge = NULL ;
-  SmFilletEdgeuse    * pNewEdgeuse = NULL ;
-  SmTArray<SmEdgeuse*> sFilEdgeuses ;
-
-  // Create a fillet vertex on one side of the edge
-  SmFilletVertex * pFV0   = new (m_pPseudoBrep) SmFilletVertex(this);
-  SmFace         * pFace0 = pFilEdgeuse->GetFace();
-  pFV0->SetPointClass(SM_PC_FACE, pFace0);
-  pFV0->SetFilletVertexType(SM_FV_ON_CROSS_SECTION);
-  m_vVertices.Add(pFV0);
-
-  // Create another fillet vertex on the other side of the edge
-  SmFilletVertex * pFV1   = new (m_pPseudoBrep) SmFilletVertex(this);
-  SmFace         * pFace1 = pFilEdgeuse->GetRadial()->GetFace();
-  pFV1->SetPointClass(SM_PC_FACE, pFace1);
-  pFV1->SetFilletVertexType(SM_FV_MATE);
-  pFV1->SetMate(0, pFV0);
-  pFV0->SetMate(0, pFV1);
-  m_vVertices.Add(pFV1);
-
-  // Corner consists of one fillet edge only (joining pFV0 & pFV1)
-  SER(SmFilletEdge::MakeFilletEdge(m_pPseudoBrep,    // in : target Brep to receive new topology objects
-                                   pFV0,             // in : start of new FilletEdge
-                                   pFV1,             // in : end   of new FilletEdge
-                                   pFilletEdge,      // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                   this));           // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                     //      NULL to ignore, default:[NULL]
-  pFilletEdge->SetFilletEdgeType(SM_FE_CROSS_SECTION);
-
-  //
-  SER( pFilletEdge->GetEdgeuses(sFilEdgeuses) );
-  if (sFilEdgeuses.GetSize() != 2) 
-    { SER(SM_ERR); }
-
-  //
-  SmFilletEdgeuse * pPrimEU     = (SmFilletEdgeuse*) pFilletEdge->GetPrimaryEdgeuse();
-  SmFilletGeom    * pFilletGeom = pFilSolver->GetFirstFilletGeom();
-  SmFilletEdgeuse * pMateEU     = (SmFilletEdgeuse*)pPrimEU->GetMate();
-  pPrimEU->SetFilletGeom(pFilletGeom);
-  pMateEU->SetFilletGeom(pFilletGeom);
-  m_vEdges.Add(pFilletEdge);
-
-  // Setup rails of fillet
-  ULONG lRailIndex = pFilSolver->FindIndexOfRailOnFace(pFace0);
-
-  // Need two edgeuses for each (closed-)rail
-  SER(pFilletGeom->MakeRailEdgeuse(m_pPseudoBrep, lRailIndex,   pFV0, pNewEdgeuse, SM_OT_SAME));
-  SER(pFilletGeom->MakeRailEdgeuse(m_pPseudoBrep, lRailIndex,   pFV0, pNewEdgeuse, SM_OT_OPPOSITE));
-
-  SER(pFilletGeom->MakeRailEdgeuse(m_pPseudoBrep, 1-lRailIndex, pFV1, pNewEdgeuse, SM_OT_SAME));
-  SER(pFilletGeom->MakeRailEdgeuse(m_pPseudoBrep, 1-lRailIndex, pFV1, pNewEdgeuse, SM_OT_OPPOSITE));
-
-  //
-  m_bBlending = TRUE;
-
-  // all done
-  return SM_SUCCESS;
-
-} // end SmFillet1x1Corner::MakeCornerTopology
-
-/*******************************************************************//**
-PURPOSE: If this FilletCorner has exactly two FilletSolvers, and their Edges
-   meet with G1 continuity, return the other one than the passed-in argument.
-
-NOTES:
-   If the passed-in FilletSolver is not one of ours, return Null with an error.
-   If there is only one FilletSolver, and it is the one passed in, return it.
-
-   This class of FilletCorner has only one FilletSolver, and it is G1 closed.
-***********************************************************************/
-SmFilletSolver * SmFillet1x1Corner::GetTangentFilletSolver( const SmFilletSolver *pFS )
-{
-  if ( m_pSolverEUs->GetSize() != 1 ) { SM_ASSERT_ERR; return NULL; }
-
-  SmEdgeuse      * pEU  = (*m_pSolverEUs)[0];
-  SmFilletSolver *pMyFS = m_pExecutive->GetFilletSolverOfEdgeuse( pEU );
-
-  if ( pMyFS != pFS ) { SM_ASSERT_ERR; return NULL; }
-
-  return pMyFS;
-
-} // end SmFillet1x1Corner::GetTangentFilletSolver
-
-/*******************************************************************//**
-PURPOSE: Create a 2x2 corner. When two edges are connected to this
-    corner vertex with G1-continuity, a cross section can be defined to
-    separate two G1-continuous fillets at this corner
-
-NOTES: Will only handle the tangency cases for now.
-***********************************************************************/
-SmFillet2x2Corner::SmFillet2x2Corner
-  (const SmContext      & crContext,
-   const SmVertex       * cpVertex,
-   SmTArray<SmEdgeuse*> * pSolverEUs,
-   SmTArray<SmEdgeuse*> * pAllEUs,
-   SmFilletExecutive    * pExec,
-   double                 dApproxTol3d,
-   double                 dTangencyTolRadians)
- : SmFillet1x1Corner(crContext,
-                     cpVertex,
-                     pSolverEUs,
-                     pAllEUs,
-                     pExec,
-                     dApproxTol3d,
-                     dTangencyTolRadians)
-{
-
-} // end SmFillet2x2Corner::SmFillet2x2Corner
-
-/*******************************************************************//**
-PURPOSE: Create 2x2 corner by specifying its boundary FilletCurves
-    and FilletPoints.
-
-NOTES:  The topology of a 2x2 corner consists of only one
-    fillet edge.
-***********************************************************************/
-SmStatus SmFillet2x2Corner::MakeCornerTopology()
-{
-  SmEdgeuse * pBaseEdgeuse1 = (*m_pSolverEUs)[0];
-  SmEdgeuse * pBaseEdgeuse2 = (*m_pSolverEUs)[1];
-  SmFilletSolver * pFilSolver1 = GetFilletExecutive()->
-      GetFilletSolverOfEdgeuse(pBaseEdgeuse1);
-  SmFilletSolver * pFilSolver2 = GetFilletExecutive()->
-      GetFilletSolverOfEdgeuse(pBaseEdgeuse2);
-  NER(pFilSolver1); NER(pFilSolver2);
-#ifdef SM_DEBUG_CODE
-  if (FALSE) {
-      smgfx_SetLook(1,2, 1,0,0); pBaseEdgeuse1->Draw(); sm_GraphicsLoop();
-      smgfx_SetLook(1,2, 1,0,0); pBaseEdgeuse2->Draw(); sm_GraphicsLoop();
-      sm_GraphicsLoop();
-  }
-#endif // SM_DEBUG_CODE
-
-  // Create a fillet vertex on one side of the edge
-  SmFilletVertex * pFV0 = new (m_pPseudoBrep) SmFilletVertex(this);
-  SmFace * pFace0 = pBaseEdgeuse1->GetFace();
-  pFV0->SetPointClass(SM_PC_FACE, pFace0);
-  pFV0->SetFilletVertexType(SM_FV_ON_CROSS_SECTION);
-  m_vVertices.Add(pFV0);
-  // Create another fillet vertex on the other side of the edge
-  SmFilletVertex * pFV1 = new (m_pPseudoBrep) SmFilletVertex(this);
-  SmFace * pFace1 = pBaseEdgeuse1->GetRadial()->GetFace();
-  pFV1->SetPointClass(SM_PC_FACE, pFace1);
-  pFV1->SetFilletVertexType(SM_FV_MATE);
-  pFV1->SetMate(0, pFV0);
-  pFV0->SetMate(0, pFV1);
-  m_vVertices.Add(pFV1);
-
-  // Corner consists of one fillet edge only (joining pFV0 & pFV1)
-  SmFilletEdge * pFilletEdge = NULL;
-  SER(SmFilletEdge::MakeFilletEdge(m_pPseudoBrep, // in : target Brep to receive new topology objects
-                                   pFV0,          // in : start of new FilletEdge
-                                   pFV1,          // in : end   of new FilletEdge
-                                   pFilletEdge,   // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                   this));        // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                  //      NULL to ignore, default:[NULL]
-  pFilletEdge->SetFilletEdgeType(SM_FE_CROSS_SECTION);
-  SmFilletEdgeuse * pPrimEU = (SmFilletEdgeuse*)
-      pFilletEdge->GetPrimaryEdgeuse();
-  SmFilletGeom * pFilletGeom1 = pFilSolver1->GetFirstFilletGeom();
-  pPrimEU->SetFilletGeom(pFilletGeom1);
-  SmFilletEdgeuse * pMateEU = (SmFilletEdgeuse*)pPrimEU->GetMate();
-  SmFilletGeom * pFilletGeom2 = pFilSolver2->GetFirstFilletGeom();
-  pMateEU->SetFilletGeom(pFilletGeom2);
-  m_vEdges.Add(pFilletEdge);
-
-  // Setup rails of fillet
-  SmFilletEdgeuse * pNewEdgeuse = NULL;
-  ULONG lRailIndex = pFilSolver1->FindIndexOfRailOnFace(pFace0);
-  SER(pFilletGeom1->MakeRailEdgeuse(m_pPseudoBrep,
-      lRailIndex,pFV0,pNewEdgeuse));
-  SER(pFilletGeom1->MakeRailEdgeuse(m_pPseudoBrep,
-      1-lRailIndex,pFV1,pNewEdgeuse));
-  ULONG lOtherRailIndex = pFilSolver2->FindIndexOfRailOnFace(pFace0);
-  SER(pFilletGeom2->MakeRailEdgeuse(m_pPseudoBrep,
-      lOtherRailIndex,pFV0,pNewEdgeuse));
-  SER(pFilletGeom2->MakeRailEdgeuse(m_pPseudoBrep,
-      1-lOtherRailIndex,pFV1,pNewEdgeuse));
-
-  m_bBlending = TRUE;
-
-  return SM_SUCCESS;
-
-} // end SmFillet2x2Corner::MakeCornerTopology
-
-/*******************************************************************//**
-PURPOSE: If this FilletCorner has exactly two FilletSolvers, and their Edges
-   meet with G1 continuity, return the other one than the passed-in argument.
-
-NOTES:
-   If the passed-in FilletSolver is not one of ours, return Null with an error.
-   If there is only one FilletSolver, and it is the one passed in, return it.
-
-   This class of FilletCorner has two FilletSolvers, and they meet with G1 continuity.
-***********************************************************************/
-SmFilletSolver * SmFillet2x2Corner::GetTangentFilletSolver( const SmFilletSolver *pFS )
-{
-  if ( m_pSolverEUs->GetSize() != 2 )  { SM_ASSERT_ERR; return NULL; }
-
-  SmFilletSolver * pFS1 = m_pExecutive->GetFilletSolverOfEdgeuse( (*m_pSolverEUs)[0] );
-  SmFilletSolver * pFS2 = m_pExecutive->GetFilletSolverOfEdgeuse( (*m_pSolverEUs)[1] );
-
-  if ( pFS1 == pFS )
-    { return pFS2; }
-  if ( pFS2 == pFS )
-    { return pFS1; }
-
-  SM_ASSERT_ERR; return NULL;
-
-} // end SmFillet2x2Corner::GetTangentFilletSolver
 
 /*******************************************************************//**
 PURPOSE: A 3x2 corner whose two filleted edges has different edge convexity

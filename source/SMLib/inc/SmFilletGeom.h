@@ -144,6 +144,7 @@ enum SmFilletVertexType
   SM_FV_RAIL_X_VERTEX,            //
   SM_FV_RAIL_X_EXTENDED_EDGEUSE,  //
   SM_FV_SETBACK,                  //
+  SM_FV_JOIN_SECTION,             // SolidCraft change: a Join's shared section, its end on the first blend's side (SmBlendCornerJoin.cpp)
   SM_FV_UNKNOWN
 };
 
@@ -242,10 +243,10 @@ public:
   SmStatus         CalcRailIntEdgeuse        (SmFilletGeom * pOptFG = NULL);
   SmStatus         CalcRailIntExtendedEdgeuse();
   SmStatus         CalcRailIntEndSurface     (); // SmBlendCornerEnd.cpp: an End's rail end on the end face's surface
+  SmStatus         CalcJoinSection           (); // SmBlendCornerJoin.cpp: a Join's shared section, both its ends
   SmStatus         CalcRailIntRail           ();
   SmStatus         CalcSetBackVert           ();
   SmStatus         CalcVertOnVert            ();
-  SmStatus         CalcVertOnCrossSection    (double * pOptEdgeParam = NULL);
   SmStatus         CalcMateGeom              ();
   
   // gwc: I think pSideSurface no longer has to be a BBSplineSurface - replace 1 line

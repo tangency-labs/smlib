@@ -108,9 +108,7 @@ protected:
   void     DeleteSweptSurface();
   SmStatus CreateSweptPatch();
 
-  // the Join on one shared section, where nothing but seams of their faces stands between the two
-  // blends (SmBlendCornerJoin.cpp)
-  SmBoolean IsJoinSection() const;
+  // the Join: the blends end on one shared section (SmBlendCornerJoin.cpp)
   SmStatus  MakeJoinTopology();
 
   // the Join, and a corner of four edges: the two blends end on one common section (blending), or
@@ -166,6 +164,7 @@ public:
 
   virtual SmFilletSolver * GetTangentFilletSolver( const SmFilletSolver *pFS );
   virtual SmBoolean        IsTangentCorner() const { return m_bG1Case; }
+  virtual SmBoolean        IsClosedJoin() const;
 
   SmBlendCornerEvent GetEvent() const { return m_eEvent; }
   SmBlendTurn        GetTurn()  const { return m_eTurn; }
