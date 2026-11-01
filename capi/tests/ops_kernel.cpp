@@ -5592,12 +5592,102 @@ void scenario_three_unequal_rounds_at_a_corner()
     smlib_brep_free(b);
 }
 
+// An equilateral prism (side 20, 10 tall), the upright edge at its 60 degree corner at the
+// origin blended by the chord width c = 3 (SMLIB_BLEND_CHORD). Between faces at the angle alpha
+// the ball of radius r touches each r cot(alpha/2) from the edge, and the chord between its
+// contacts is 2 r cos(alpha/2): at 60 degrees r = c / sqrt 3 = sqrt 3, the contacts 3 from the
+// edge, the centre (3, sqrt 3). It takes r^2 (cot(alpha/2) - (pi - alpha)/2) = 3 (sqrt 3 - pi/3)
+// off the corner: 1000 sqrt 3 less 10 times that, 970 sqrt 3 + 10 pi. (A size read as the
+// radius would take three times as much.)
+void scenario_chord_on_a_60_degree_edge()
+{
+    const double h = 10.0 * std::sqrt(3.0), r = std::sqrt(3.0);
+    Profile p;
+    p.line(0, 0, 20, 0, 0).line(20, 0, 10, h, 0).line(10, h, 0, 0, 0);
+    smlib_brep *prism = p.extrude(10.0);
+    SectionGrade g;
+    g.volume = 970.0 * std::sqrt(3.0) + 10.0 * PI;
+    g.volume_rel = 1e-9;
+    g.off = [r](const SmPoint3d &x) { return std::fabs(std::hypot(x.x - 3.0, x.y - r) - r); };
+    g.off_tol = 1e-9;
+    g.faces = {{ExactFace::PLANE, {0, 0, 0}, {0, 1, 0}, 0},
+               {ExactFace::PLANE, {0, 0, 0}, {-std::sqrt(3.0) / 2.0, 0.5, 0}, 0},
+               {ExactFace::PLANE, {20, 0, 0}, {std::sqrt(3.0) / 2.0, 0.5, 0}, 0},
+               {ExactFace::PLANE, {0, 0, 0}, {0, 0, 1}, 0},
+               {ExactFace::PLANE, {0, 0, 10}, {0, 0, 1}, 0}};
+    g.rails = {0, 1};
+    g.order = 1;
+    g.fitted = false;
+    g.size = r;
+    section_blend(
+        [prism](smlib_brep **out)
+        {
+            const double at[3] = {0, 0, 5}, chord = 3.0;
+            const int32_t s = prism == nullptr ? SMLIB_ERR_ARG : smlib_blend(prism, SMLIB_BLEND_CHORD, at, &chord, 1, 0.1, out, nullptr);
+            smlib_brep_free(prism);
+            return s;
+        },
+        g);
+}
+
+// A variable round 0 -> 4 (linear) along the top edge x = 20, z = 20 of a 20 x 30 x 20 box,
+// nothing at y = 0: the round fades out at the corner. Its balls (radius k s, k = 4/30, centred
+// 4 s / 30 in from both faces at s along the edge) envelop a cone with its apex at the corner,
+// axis (-k, 1, -k) and half-angle asin(k / sqrt(1 + 2 k^2)); it touches the faces along the lines
+// from the corner through (20 - 4, 30, 20) and (20, 30, 16). Cone and faces all pass through the
+// corner, so the region taken is the cone over its section at y = 30 with its apex there:
+// 30 A / 3. With a = 20 - x, b = 20 - z there, m = 30 + k a, the cone's near branch is
+// b(a) = m k - sqrt((1 + k^2)(m^2 - 30^2 - a^2)) for a in [0, 4], and A = Int b(a) da (a = u^2:
+// smooth). 34.1367 taken (the balls' great circles would take 34.3363). Fitted: to 1e-5.
+void scenario_variable_round_from_zero_at_a_corner()
+{
+    const double k = 4.0 / 30.0, L = 30.0, n = std::sqrt(1.0 + 2.0 * k * k);
+    const double area = simpson(
+        [=](double u)
+        {
+            const double a = u * u, m = L + k * a;
+            return (m * k - std::sqrt(1.0 + k * k) * u * std::sqrt(2.0 * k * L + (k * k - 1.0) * a)) * 2.0 * u;
+        },
+        0.0, std::sqrt(k * L), 4000);
+    SectionGrade g;
+    g.volume = 12000.0 - L * area / 3.0;
+    g.volume_rel = 1e-5;
+    const double ax[3] = {-k / n, 1.0 / n, -k / n}, sphi = k / n, cphi = std::sqrt(1.0 + k * k) / n;
+    g.off = [=](const SmPoint3d &x)
+    {
+        const double w[3] = {x.x - 20.0, x.y, x.z - 20.0};
+        const double along = w[0] * ax[0] + w[1] * ax[1] + w[2] * ax[2];
+        const double across = std::sqrt(std::max(0.0, w[0] * w[0] + w[1] * w[1] + w[2] * w[2] - along * along));
+        return std::fabs(across * cphi - along * sphi);
+    };
+    smlib_brep *body = box(0, 0, 0, 20, 30, 20);
+    g.off_tol = 100.0 * static_cast<double>(body->p->GetTolerance());
+    g.faces = {{ExactFace::PLANE, {0, 0, 0}, {1, 0, 0}, 0}, {ExactFace::PLANE, {20, 0, 0}, {1, 0, 0}, 0},
+               {ExactFace::PLANE, {0, 0, 0}, {0, 1, 0}, 0}, {ExactFace::PLANE, {0, 30, 0}, {0, 1, 0}, 0},
+               {ExactFace::PLANE, {0, 0, 0}, {0, 0, 1}, 0}, {ExactFace::PLANE, {0, 0, 20}, {0, 0, 1}, 0}};
+    g.rails = {1, 5};
+    g.order = 1;
+    g.fitted = true;
+    g.size = 1.0;
+    section_blend(
+        [body](smlib_brep **out)
+        {
+            const double at[3] = {20, 15, 20}, from[3] = {20, 0, 20}, knots[4] = {0, 0, 1, 1}, radii[2] = {0, 4};
+            const int32_t s = smlib_fillet_variable(body, at, 0.1, from, 1, knots, 4, radii, 2, out);
+            smlib_brep_free(body);
+            return s;
+        },
+        g);
+}
+
 // The scenario cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--scenarios-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SCENARIO_CASES[] = {
+    {"chord_on_a_60_degree_edge", scenario_chord_on_a_60_degree_edge, nullptr},
     {"three_unequal_rounds_at_a_corner", scenario_three_unequal_rounds_at_a_corner, nullptr},
     {"unequal_rounds_at_a_concave_turn", scenario_unequal_rounds_at_a_concave_turn, nullptr},
     {"unequal_rounds_at_a_convex_turn", scenario_unequal_rounds_at_a_convex_turn, nullptr},
+    {"variable_round_from_zero_at_a_corner", scenario_variable_round_from_zero_at_a_corner, nullptr},
 };
 
 int scenario_cases(bool known_failing, const char *only)
