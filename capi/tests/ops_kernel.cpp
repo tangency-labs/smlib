@@ -9851,7 +9851,7 @@ void setback_g1_fill_keeps_the_body_convex()
         }
         SmBlendSetback::Fill fill;
         CHECK(SmBlendSetback::FillHole(ctx, box_corner_faces(), in, 1, 1e-9, fill) == SM_SUCCESS && fill.m_vPatches.size() == 6);
-        CHECK(fill_keeps_the_body_convex(fill, c.radii, c.what));
+        CHECK(fill.m_vPatches.size() == 6 && fill_keeps_the_body_convex(fill, c.radii, c.what));
         for (SmBSplineSurface *q : rounds)
         {
             delete q;
