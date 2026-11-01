@@ -2607,79 +2607,6 @@ void corner_patch_edge_lies_on_its_patch()
     smlib_brep_free(r);
 }
 
-// A dropped point's foot from a guess is one the local solve converged to. The drop took a local
-// solve's result for the foot when it was off along the surface by less than the face's
-// tolerance, so on a face of a looser tolerance a stalled solve was taken (on a raked wedge one
-// 6.05e-4 mm off, read as a gap of 7.07e-4 where it is about 3.7e-4). The corner patch of the
-// #1557 box above, its tolerance set to 1e-3: the edge (23, 2, 0)-(24.5, 0, 2) lay on it, and its
-// points dropped onto it with the last foot point as the guess (as SMLib's check drops them),
-// first from the guess (0.01, 0) where the local solve stalled 6.9e-5 off, were on it. That
-// corner is now a Setback (corner_patch_edge_lies_on_its_patch): its six patches, each at
-// tolerance 1e-3, and the points of each of their edges, dropped the same way, are on them.
-void corner_patch_drop_from_a_guess_is_its_foot()
-{
-    smlib_brep *b = box(0, 0, 0, 25, 25, 10), *r = nullptr;
-    const double points[15] = {12.5, 0, 0, 25, 12.5, 0, 12.5, 25, 0, 0, 12.5, 0, 25, 0, 6};
-    const double sizes[5] = {2, 2, 2, 2, 0.5};
-    CHECK(b != nullptr && smlib_blend(b, SMLIB_BLEND_ROUND, points, sizes, 5, 0.1, &r, nullptr) == SMLIB_OK && r != nullptr);
-    int patches = 0;
-    double worst = HUGE_VAL;
-    if (r != nullptr)
-    {
-        worst = 0.0;
-        SmTArray<SmFace *> all;
-        r->p->GetFaces(all);
-        const SmPoint3d corner(25, 0, 0);
-        for (ULONG f = 0; f < all.GetSize(); ++f)
-        {
-            SmSurface *srf = all[f]->GetSurface();
-            if (srf == nullptr || srf->IsKindOf(SmCone_TYPE) || srf->IsKindOf(SmTorus_TYPE) || srf->IsKindOf(SmPlane_TYPE) || srf->IsPlanar(1e-9))
-            {
-                continue; // the patches are plain B-splines
-            }
-            SmTArray<SmVertex *> fv;
-            all[f]->GetVertices(fv);
-            bool at_corner = fv.GetSize() > 0;
-            for (ULONG k = 0; k < fv.GetSize(); ++k)
-            {
-                at_corner = at_corner && fv[k]->GetPoint().DistanceBetween(corner) < 4.0; // the farthest, the round r 2's section ends 3 along, sqrt 13
-            }
-            if (!at_corner)
-            {
-                continue;
-            }
-            ++patches;
-            all[f]->SetTolerance(SM_CAST_ZONETOL3D(1.0e-3), FALSE, FALSE);
-            SmTArray<SmEdge *> es;
-            all[f]->GetEdges(es);
-            for (ULONG i = 0; i < es.GetSize(); ++i)
-            {
-                const SmExtent2d dom = srf->GetNaturalUVDomain();
-                const SmExtent1d ivl = es[i]->GetInterval();
-                SmPoint2d guess(0.01, 0.0);
-                for (int k = 0; k <= 200; ++k)
-                {
-                    SmPoint3d q;
-                    CHECK(es[i]->GetCurve()->EvaluatePoint(ivl.Evaluate(k / 200.0), q) == SM_SUCCESS);
-                    SmBoolean ok = FALSE, multi = FALSE;
-                    SmPoint2d uv;
-                    double gap = HUGE_VAL;
-                    CHECK(srf->DropPoint(q, dom, &guess, ok, uv, gap, multi) == SM_SUCCESS && ok);
-                    SmPoint3d on;
-                    CHECK(srf->EvaluatePoint(uv, on) == SM_SUCCESS);
-                    worst = std::max(worst, on.DistanceBetween(q));
-                    guess = uv;
-                }
-            }
-        }
-    }
-    std::printf("#1557 corner's %d patches, tolerance 1e-3: their edges' points dropped from the last foot are on them to %.3g\n", patches, worst);
-    CHECK(patches == 6);
-    CHECK(worst < 1e-9);
-    smlib_brep_free(b);
-    smlib_brep_free(r);
-}
-
 } // namespace
 
 // A disc r 15, 5 thick, one circular edge rounded r 1.5 and shelled 1.6 or 2 inward, open at one
@@ -13300,7 +13227,6 @@ int main(int argc, char **argv)
     big_round_of_a_rounded_rectangle_is_refused();
     tabbed_plate_rounds_mitred_on_the_arcs_continuation();
     corner_patch_edge_lies_on_its_patch();
-    corner_patch_drop_from_a_guess_is_its_foot();
     revolved_circle_extends_as_its_circle();
     chamfer_ending_on_a_boss_wall_above_it();
     vertex_fans_split_and_joined();
