@@ -6737,11 +6737,12 @@ int shrink_cases(bool known_failing, const char *only)
 
 double spandrel(double r);
 
-// The corner's sphere face of `r`: exactly one face on an SmSphere, centre `c`, radius `rad`, its
-// surface on that sphere, its three vertices `v`, its edges on the sphere, G1 across all three
-// edges (the rounds' end sections). Its normal points out of the body: away from `c` at a convex
-// corner, towards it at a concave one.
-void ball_corner_sphere(const smlib_brep *r, const SmPoint3d &c, double rad, const SmPoint3d (&v)[3], bool convex)
+// The corner's face of `r`: exactly one face with the three vertices `v`, on an SmSphere of centre
+// `c` and radius `rad` (`analytic`), or else a rational B-spline patch: its surface on the sphere
+// about `c` of radius `rad`, its edges on it, G1 across all three edges (the rounds' end
+// sections). Its normal points out of the body: away from `c` at a convex corner, towards it at a
+// concave one.
+void ball_corner_sphere(const smlib_brep *r, const SmPoint3d &c, double rad, const SmPoint3d (&v)[3], bool convex, bool analytic = true)
 {
     SmTArray<SmFace *> faces;
     r->p->GetFaces(faces);
@@ -6749,18 +6750,30 @@ void ball_corner_sphere(const smlib_brep *r, const SmPoint3d &c, double rad, con
     for (ULONG f = 0; f < faces.GetSize(); ++f)
     {
         SmSurface *srf = faces[f]->GetSurface();
-        if (srf == nullptr || srf->GetType() != SmSphere_TYPE)
+        SmTArray<SmVertex *> fv;
+        faces[f]->GetVertices(fv);
+        if (srf == nullptr || fv.GetSize() != 3 || vertex_at(fv, v[0]) < 0 || vertex_at(fv, v[1]) < 0 || vertex_at(fv, v[2]) < 0)
         {
             continue;
         }
         spheres++;
-        SmSphere *sphere = SM_CAST_PTR(SmSphere, srf);
-        SmAxis2Placement frame;
-        double radius = 0.0;
-        CHECK(sphere != nullptr && sphere->GetCanonical(frame, radius) == SM_SUCCESS);
-        const SmPoint3d o = frame.GetOrigin();
-        std::printf("  sphere face %lu: centre (%.15g, %.15g, %.15g), radius %.15g\n", static_cast<unsigned long>(f), o.x, o.y, o.z, radius);
-        CHECK((o - c).Length() <= 1e-12 && std::fabs(radius - rad) <= 1e-12);
+        if (analytic)
+        {
+            SmSphere *sphere = srf->GetType() == SmSphere_TYPE ? SM_CAST_PTR(SmSphere, srf) : nullptr;
+            SmAxis2Placement frame;
+            double radius = 0.0;
+            CHECK(sphere != nullptr && sphere->GetCanonical(frame, radius) == SM_SUCCESS);
+            const SmPoint3d o = frame.GetOrigin();
+            std::printf("  sphere face %lu: centre (%.15g, %.15g, %.15g), radius %.15g\n", static_cast<unsigned long>(f), o.x, o.y, o.z, radius);
+            CHECK((o - c).Length() <= 1e-12 && std::fabs(radius - rad) <= 1e-12);
+        }
+        else
+        {
+            const SmBSplineSurface *bss = SM_CAST_PTR(SmBSplineSurface, srf);
+            std::printf("  corner face %lu: type %d, rational %d\n", static_cast<unsigned long>(f), static_cast<int>(srf->GetType()),
+                        bss != nullptr ? static_cast<int>(bss->IsRational()) : -1);
+            CHECK(bss != nullptr && bss->IsRational());
+        }
         // the surface on the sphere about c, its normal out of the body
         double surf_off = 0.0, edge_off = 0.0, normal_off = 0.0;
         const SmExtent2d dom = srf->GetNaturalUVDomain();
@@ -6806,9 +6819,6 @@ void ball_corner_sphere(const smlib_brep *r, const SmPoint3d &c, double rad, con
                 edge_off = std::max(edge_off, std::fabs((p - c).Length() - rad));
             }
         }
-        SmTArray<SmVertex *> vs;
-        faces[f]->GetVertices(vs);
-        CHECK(vs.GetSize() == 3 && vertex_at(vs, v[0]) >= 0 && vertex_at(vs, v[1]) >= 0 && vertex_at(vs, v[2]) >= 0);
         int seams = 0;
         const double angle = worst_seam_angle(faces[f], seams);
         std::printf("    surface off the sphere by %.3g, edges by %.3g, normal off outward by %.3g; %d seams, worst angle %.3g rad\n", surf_off,
@@ -6934,6 +6944,97 @@ void ball_prism_corner()
     smlib_brep_free(prism);
 }
 
+// A corner of three planes none square to another, through V = 0 with outward normals n_1, n_2,
+// n_3 along (1, 0.2, 0), (0, 1, 0.2), (0.2, 0, 1), its edges e_ij (along n_i x n_j, into the body)
+// each 20 long, cut square at their far ends: the three edges at V rounded r 2 in one call. The
+// ball about C (n_i . C = -r) touches plane i at P_i = C + r n_i. Removed (as the prism's): the
+// spandrel of each edge's dihedral angle a, r^2 (cot(a/2) - (pi - a)/2), along its 20 less the
+// distance from V to C's foot on it, and at C the region between the three planes and the three
+// planes through C of the end sections (a hexahedron: V, the feet, the contacts, C) less the
+// ball's sector there, r^3 / 3 times the solid angle of the normals' spherical triangle. No plane
+// is square to the other two: the corner's face is a rational patch on the sphere. Counts as the
+// box's.
+void ball_oblique_corner()
+{
+    using V3 = std::array<double, 3>;
+    auto dot = [](const V3 &a, const V3 &b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+    auto cross = [](const V3 &a, const V3 &b) { return V3{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]}; };
+    auto scaled = [](const V3 &a, double k) { return V3{a[0] * k, a[1] * k, a[2] * k}; };
+    auto plus = [](const V3 &a, const V3 &b) { return V3{a[0] + b[0], a[1] + b[1], a[2] + b[2]}; };
+    auto minus = [](const V3 &a, const V3 &b) { return V3{a[0] - b[0], a[1] - b[1], a[2] - b[2]}; };
+    auto unit = [&](const V3 &a) { return scaled(a, 1.0 / std::sqrt(dot(a, a))); };
+    const double rad = 2.0, len = 20.0;
+    const V3 n[3] = {unit({1, 0.2, 0}), unit({0, 1, 0.2}), unit({0.2, 0, 1})};
+    V3 e[3]; // e[i]: the edge between planes i and i + 1
+    for (int i = 0; i < 3; ++i)
+    {
+        e[i] = unit(cross(n[i], n[(i + 1) % 3]));
+        if (dot(e[i], n[(i + 2) % 3]) > 0)
+        {
+            e[i] = scaled(e[i], -1.0);
+        }
+    }
+    // C = -r (n_1 x n_2 + n_2 x n_0 + n_0 x n_1) / (n_0 . n_1 x n_2)
+    const double det = dot(n[0], cross(n[1], n[2]));
+    const V3 c = scaled(plus(plus(cross(n[1], n[2]), cross(n[2], n[0])), cross(n[0], n[1])), -rad / det);
+    V3 p[3], foot[3];
+    double removed = 0.0;
+    for (int i = 0; i < 3; ++i)
+    {
+        p[i] = plus(c, scaled(n[i], rad));
+        foot[i] = scaled(e[i], dot(c, e[i]));
+        const double a = std::acos(-dot(n[i], n[(i + 1) % 3]));
+        removed += rad * rad * (1.0 / std::tan(a / 2.0) - (PI - a) / 2.0) * (len - dot(c, e[i]));
+    }
+    // the hexahedron from C: over the quadrilaterals V, foot on edge i - 1, P_i, foot on edge i
+    double hexa = 0.0;
+    const V3 zero = {0, 0, 0};
+    for (int i = 0; i < 3; ++i)
+    {
+        const V3 &fa = foot[(i + 2) % 3], &fb = foot[i];
+        hexa += std::fabs(dot(minus(zero, c), cross(minus(fa, c), minus(p[i], c)))) / 6.0;
+        hexa += std::fabs(dot(minus(zero, c), cross(minus(p[i], c), minus(fb, c)))) / 6.0;
+    }
+    const double omega = 2.0 * std::atan2(std::fabs(dot(n[0], cross(n[1], n[2]))), 1.0 + dot(n[0], n[1]) + dot(n[1], n[2]) + dot(n[2], n[0]));
+    removed += hexa - rad * rad * rad * omega / 3.0;
+
+    smlib_brep *body = box(-40, -40, -40, 80, 80, 80);
+    for (int i = 0; i < 3; ++i)
+    {
+        body = combined(body, cutter({0, 0, 0}, n[i]), SMLIB_BOOLEAN_SUBTRACT);
+        body = combined(body, cutter(scaled(e[i], len), e[i]), SMLIB_BOOLEAN_SUBTRACT);
+    }
+    int64_t sharp[3] = {0, 0, 0};
+    CHECK(body != nullptr && smlib_brep_counts(body, sharp) == SMLIB_OK && sharp[0] == 6 && sharp[1] == 12 && sharp[2] == 8);
+    const double want = exact_volume_of(body) - removed;
+    double points[9];
+    for (int i = 0; i < 3; ++i)
+    {
+        for (int k = 0; k < 3; ++k)
+        {
+            points[3 * i + k] = e[i][k] * len / 2.0;
+        }
+    }
+    const double sizes[3] = {rad, rad, rad};
+    smlib_brep *r = nullptr;
+    CHECK(body != nullptr && smlib_blend(body, SMLIB_BLEND_ROUND, points, sizes, 3, 0.1, &r, nullptr) == SMLIB_OK && r != nullptr);
+    if (r != nullptr)
+    {
+        const double v = exact_volume_of(r);
+        std::printf("  volume %.12f, want %.12f (%.3g relative)\n", v, want, std::fabs(v - want) / want);
+        CHECK(near(v, want, 1e-11));
+        int64_t counts[3] = {0, 0, 0};
+        CHECK(smlib_brep_counts(r, counts) == SMLIB_OK);
+        std::printf("  %lld faces, %lld edges, %lld vertices\n", static_cast<long long>(counts[0]), static_cast<long long>(counts[1]),
+                    static_cast<long long>(counts[2]));
+        CHECK(counts[0] == 10 && counts[1] == 21 && counts[2] == 13);
+        const SmPoint3d v3[3] = {SmPoint3d(p[0][0], p[0][1], p[0][2]), SmPoint3d(p[1][0], p[1][1], p[1][2]), SmPoint3d(p[2][0], p[2][1], p[2][2])};
+        ball_corner_sphere(r, SmPoint3d(c[0], c[1], c[2]), rad, v3, true, false);
+        done(r);
+    }
+    smlib_brep_free(body);
+}
+
 // The box corner's sphere face turned round by SmFace::SwapUV, as SmBrep::OrientTrimmedSurfaces
 // turns a face, then the body oriented outward again: the face stays the sphere it was, bounded on
 // it, G1 to the rounds, the body sound at its volume.
@@ -6975,6 +7076,8 @@ const TangentEndCase BALL_CASES[] = {
     {"box_corner", ball_box_corner, nullptr},
     {"pocket_corner", ball_pocket_corner, nullptr},
     {"prism_corner", ball_prism_corner, nullptr},
+    {"oblique_corner", ball_oblique_corner,
+     "no plane square to the other two: SmFilletConvexNxNCorner's sphere (CreateSphereFromArcs) is trimmed by fitted curves, its seams 2.0e-6 rad off G1, the volume 2.7e-10 off"},
     {"sphere_turned_round", ball_sphere_turned_round, nullptr},
 };
 
