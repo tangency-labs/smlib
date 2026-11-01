@@ -2805,8 +2805,10 @@ SmStatus SmGnSectionFSG::CircleSurface
                 if (!(dRadius > dThisApproxTol3d) || pConstant->GetFilletRadius(1) != dRadius)
                     { bDefinition = FALSE; }
             }
-            else if (bDefinition && pVariable != NULL)
+            else if (bDefinition && pVariable != NULL && pVariable->GetEdgeuse(0) != NULL)
             {
+                // (an edge's round: a variable ball a corner rolls about its own curve stays the
+                // corner's, step 4's)
                 const SmBSplineCurve * pEdge = SM_CAST_PTR(SmBSplineCurve, pVariable->GetBaseCurve());
                 if (pEdge == NULL || crFilletPoints.GetSize() < 2)
                     { bDefinition = FALSE; }
