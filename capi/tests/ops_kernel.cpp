@@ -5014,9 +5014,10 @@ void turn_swept_sharp_pocket_refused()
 // smoothly across, missing the law past it; now the trace stops there and the face is split
 // there). Its round is the union of the balls: in each plane square to the edge, the corner cut
 // off by rays from the corner, each meeting the union first at the least entry over the balls,
-// integrated along the edge. Where the law peaks the ball there shows between the touch circles
-// of its two sides (a zone of its sphere); where it dips, the two sides' rounds cross and each
-// ends where they do. The balls' great circles, (1 - pi/4) r^2 per unit length, take more.
+// integrated along the edge. Where the law dips the ball there shows between the touch circles
+// of its two sides (a zone of its sphere, the circles meeting at the rails); where it peaks, the
+// two sides' rounds cross and each ends where they do. The balls' great circles, (1 - pi/4) r^2
+// per unit length, take more.
 
 // 2 -> w -> 2 (degree 1, a corner at the middle) on the top edge along y of a 10 x 20 x 30 box:
 // 21.799882, 27.093683, 29.389966 and 39.541034 removed for w 2.5, 3, 3.2 and 4. Corners in the
@@ -5070,7 +5071,8 @@ void section_variable_round_law_dip()
     smlib_brep_free(cube);
 }
 
-// 4, 2, 4, 2 at 0, 0.25, 0.75, 1 on the 20 cube's edge y = z = 20: two dips, 38.818277 removed.
+// 4, 2, 4, 2 at 0, 0.25, 0.75, 1 on the 20 cube's edge y = z = 20: a dip, then a peak, 38.818277
+// removed.
 void section_variable_round_law_dips()
 {
     smlib_brep *cube = box(0, 0, 0, 20, 20, 20);
@@ -5128,11 +5130,11 @@ const TangentEndCase SECTION_CASES[] = {
     {"pipe_on_plate_g2", section_pipe_on_plate_g2, nullptr},
     {"pipe_on_plate_g2_thumbweight_half", section_pipe_on_plate_g2_thumbweight_half, nullptr},
     {"variable_round_law_dip", section_variable_round_law_dip,
-     "the two sides' rounds end on their own touch circles at the law's corner, not where they cross: 39.6456 removed against 39.5421"},
+     "the two sides' rounds are joined from their own end circles at the law's corner; the ball's sphere between its two touch circles is not built: 39.6456 removed against 39.5421"},
     {"variable_round_law_dips", section_variable_round_law_dips,
-     "the sides' rounds end on their own touch circles at the law's corners, not where they cross: 39.0780 removed against 38.8183"},
+     "at the dip the ball's sphere between the touch circles is not built, at the peak the sides' rounds end on their own end circles, not where they cross: 39.0780 removed against 38.8183"},
     {"variable_round_law_peak", section_variable_round_law_peak,
-     "the ball's sphere between its two sides' touch circles at the law's corner is not built: 39.8302 removed against 39.5410 (w 4)"},
+     "the two sides' rounds are joined from their own end circles at the law's corner, not where they cross: 39.8302 removed against 39.5410 (w 4)"},
     {"variable_round_on_its_cone", section_variable_round_on_its_cone, nullptr},
     {"variable_round_spline_folds", section_variable_round_spline_folds, nullptr},
 };
