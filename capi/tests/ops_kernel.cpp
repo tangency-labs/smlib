@@ -28,6 +28,7 @@
 #include <SmOffsetGeometryCreation.h>
 #include <SmOffsetSurface.h>
 #include <SmPlane.h>
+#include <SmProceduralBlend.h>
 #include <SmRegion.h>
 #include <SmAxis2Placement.h>
 #include <SmSolutionArray.h>
@@ -4494,6 +4495,12 @@ struct SectionGrade
     double size;                                  // the blend's size, for the seam's steps
     int spans = -1;                               // a certified blend: its surface's spans in all, exactly (-1: not graded)
     std::function<void(const SmSurface *)> also;  // further checks on each blend face's surface (null: none)
+    bool definition = false;                      // a G^n blend: its surface is its definition, its net within the bound of it
+    double definition_tol = 1e-11;                // the definition's points off the exact blend: rounding
+    unsigned long long most_evaluations = 0;      // the definition's evaluations the operation may make (a count, not a time),
+    unsigned long long most_solves = 0;           // the station solves they may take,
+    unsigned long long most_newton_steps = 2;     // and the Newton steps any one solve may take (seeded within the bound)
+    bool net_graded = true;                       // a definition's net graded against its certified bound of it
 };
 
 // Builds a blend by `build` and grades it by `g`: status, SMLib's check, volume, every point of
@@ -4504,8 +4511,17 @@ struct SectionGrade
 void section_blend(const std::function<int32_t(smlib_brep **)> &build, const SectionGrade &g)
 {
     smlib_brep *b = nullptr;
+    SmProceduralBlend::ResetCounts();
     const int32_t s = build(&b);
+    const SmBlendCounts counts = SmProceduralBlend::GetCounts();
     std::printf("  status %d\n", static_cast<int>(s));
+    std::printf("  definition: %llu evaluations, %llu station solves, %llu Newton steps, at most %llu in one solve\n", counts.lEvaluations,
+                counts.lSolves, counts.lNewtonSteps, counts.lMostNewtonSteps);
+    if (g.definition)
+    {
+        CHECK(counts.lEvaluations <= g.most_evaluations && counts.lSolves <= g.most_solves);
+        CHECK(counts.lMostNewtonSteps <= g.most_newton_steps);
+    }
     CHECK(s == SMLIB_OK && b != nullptr);
     if (b == nullptr)
     {
@@ -4541,19 +4557,49 @@ void section_blend(const std::function<int32_t(smlib_brep **)> &build, const Sec
         }
         blends++;
         const SmExtent2d dom = srf->GetNaturalUVDomain();
-        if (g.off != nullptr)
+        // a G^n blend is its definition: its points on the exact blend to rounding, its net (the
+        // B-spline every bound and seed uses) on it within the net's tolerance and within the
+        // certified bound of the definition
+        const SmProceduralBlend *pb = dynamic_cast<const SmProceduralBlend *>(srf);
+        CHECK(g.definition == (pb != nullptr));
+        double worst = 0.0, worst_net = 0.0, gap = 0.0;
+        for (int a = 0; a <= 16; a++)
         {
-            double worst = 0.0;
-            for (int a = 0; a <= 16; a++)
+            for (int c = 0; c <= 16; c++)
             {
-                for (int c = 0; c <= 16; c++)
+                SmPoint3d x, y;
+                const SmPoint2d uv(dom.GetMin().x + (dom.GetMax().x - dom.GetMin().x) * a / 16.0,
+                                   dom.GetMin().y + (dom.GetMax().y - dom.GetMin().y) * c / 16.0);
+                const bool here = srf->EvaluatePoint(uv, x) == SM_SUCCESS;
+                if (g.off != nullptr)
                 {
-                    SmPoint3d x;
-                    const SmPoint2d uv(dom.GetMin().x + (dom.GetMax().x - dom.GetMin().x) * a / 16.0,
-                                       dom.GetMin().y + (dom.GetMax().y - dom.GetMin().y) * c / 16.0);
-                    worst = std::max(worst, srf->EvaluatePoint(uv, x) == SM_SUCCESS ? g.off(x) : HUGE_VAL);
+                    worst = std::max(worst, here ? g.off(x) : HUGE_VAL);
+                }
+                if (pb != nullptr)
+                {
+                    const bool net = pb->SmBSplineSurface::EvaluatePoint(uv, y) == SM_SUCCESS;
+                    if (g.off != nullptr)
+                    {
+                        worst_net = std::max(worst_net, net ? g.off(y) : HUGE_VAL);
+                    }
+                    gap = std::max(gap, here && net ? x.DistanceBetween(y) : HUGE_VAL);
                 }
             }
+        }
+        if (pb != nullptr)
+        {
+            std::printf("  blend face %lu: the net off the definition by %.3g, within its certified bound %.3g\n", static_cast<unsigned long>(i), gap,
+                        pb->GetBound());
+            CHECK(!g.net_graded || gap <= pb->GetBound());
+        }
+        if (g.off != nullptr && pb != nullptr)
+        {
+            std::printf("  blend face %lu: its definition off the exact blend by %.3g (allowed %.3g), its net by %.3g (allowed %.3g)\n",
+                        static_cast<unsigned long>(i), worst, g.definition_tol, worst_net, g.off_tol);
+            CHECK(worst <= g.definition_tol && worst_net <= g.off_tol);
+        }
+        else if (g.off != nullptr)
+        {
             std::printf("  blend face %lu: off the exact blend by %.3g (allowed %.3g)\n", static_cast<unsigned long>(i), worst, g.off_tol);
             CHECK(worst <= g.off_tol);
         }
@@ -4651,6 +4697,16 @@ void section_blend(const std::function<int32_t(smlib_brep **)> &build, const Sec
     done(b);
 }
 
+// A G^n grade with its counts: the operation's evaluations of the blend's definition and its
+// station solves at most (each about 5% over the count measured on Linux; a station
+// solve is skipped where the station was just solved, the same s for another t).
+SectionGrade counted(SectionGrade g, unsigned long long evaluations, unsigned long long solves)
+{
+    g.most_evaluations = evaluations;
+    g.most_solves = solves;
+    return g;
+}
+
 // smlib_blend_order on one edge of `body` (consumed).
 std::function<int32_t(smlib_brep **)> by_order(smlib_brep *body, std::array<double, 3> pick, int order, double w, double size)
 {
@@ -4696,6 +4752,7 @@ SectionGrade box_edge_grade(int order, double w, double cut)
         { return distance_to_curve([&](double t) { return gn_section(order, w, BOX_TOP_JETS, BOX_BACK_JETS, t); }, {x.y, x.z}); };
     }
     g.off_tol = 1e-9;
+    g.definition = order >= 2;
     g.faces = BOX_40_30_20;
     g.rails = {5, 3};
     g.order = order >= 2 ? order + 1 : order;
@@ -4718,7 +4775,7 @@ void section_box_edge_round()
 // corner (Green's theorem on the section).
 void section_box_edge_g2_thumbweight_zero()
 {
-    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, 0.0, 3.0), box_edge_grade(2, 0.0, 0.154192655384275));
+    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, 0.0, 3.0), counted(box_edge_grade(2, 0.0, 0.154192655384275), 13800, 3100));
 }
 
 // The area the order-n section between the box's top and back cuts off the edge's corner, over s^2:
@@ -4763,7 +4820,7 @@ void section_box_edge_g2_equal_area()
     // whose truncation grows with ((1 - w) / r)^k: 1.3e-5 at this w (1e-5 is G3's bar), 7.5e-7 at
     // half the step (a cubic term would not halve), where round-off takes over at other stations.
     // So the grade asks G2 at least and G3 at most, the measure's limit here, not the section's.
-    SectionGrade g = box_edge_grade(2, w, 1.0 - PI / 4);
+    SectionGrade g = counted(box_edge_grade(2, w, 1.0 - PI / 4), 16400, 3600);
     g.order = 2;
     g.order_max = 3;
     section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, SMLIB_BLEND_THUMBWEIGHT, 3.0), g);
@@ -4833,7 +4890,7 @@ smlib_surface *twisted_top()
     return s;
 }
 
-void section_twisted_wedge_g2_equal_area()
+void twisted_wedge_g2_equal_area(bool net_graded)
 {
     smlib_surface *top = twisted_top();
     smlib_brep *below = nullptr, *above = nullptr;
@@ -4864,6 +4921,11 @@ void section_twisted_wedge_g2_equal_area()
     // certified span by span at a tenth of the tolerance, the rows' remainder with the jets' (one
     // thumbweight for the edge, -0.5, takes 197)
     g.spans = 288;
+    // its definition carries the equal area rule and resolves w at every point from its own
+    // station's wedge, as the net's stations did: the net within its certified bound of it
+    g = counted(g, 39000, 13200);
+    g.definition = true;
+    g.net_graded = net_graded;
     int stations = 0;
     g.also = [&stations](const SmSurface *srf)
     {
@@ -4921,14 +4983,25 @@ const double W_STAR = 0.034293402266607321;
 
 void section_box_edge_g2_thumbweight_w_star()
 {
-    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, W_STAR, 3.0), box_edge_grade(2, W_STAR, 113.0 / 756.0));
+    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, W_STAR, 3.0), counted(box_edge_grade(2, W_STAR, 113.0 / 756.0), 14100, 3300));
 }
+
+void section_twisted_wedge_g2_equal_area() { twisted_wedge_g2_equal_area(false); }
+
+// The same blend's net against its definition. The top is a cubic spline in x, C2 across its knot
+// lines; the order-2 section's jets take the top's third partials (c_2 = F''(1) / 2, F the feet of
+// the points at distance tau r from both faces), so the definition jumps across each knot line the
+// rail crosses (by 0.0115 at x = 20.69). The net takes the station on the line from one side for
+// both its spans, and is off the definition on the other by that jump, decaying to 0 at the
+// span's far station: 0.0122 against the certified bound 4e-6. They agree at every station
+// (7e-14): the thumbweight rule is the builder's.
+void section_twisted_wedge_g2_equal_area_net_on_definition() { twisted_wedge_g2_equal_area(true); }
 
 // The thumbweight pulls the section towards the edge: its middle (1 - w) / (2 (2 - w)) s off each
 // face, s / 4 at 0, s / 6 at 1/2, and the area it cuts off from 0.1541927 s^2 to 0.0744373 s^2.
 void section_box_edge_g2_thumbweight_half()
 {
-    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, 0.5, 3.0), box_edge_grade(2, 0.5, 0.0744372522086925));
+    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, 0.5, 3.0), counted(box_edge_grade(2, 0.5, 0.0744372522086925), 15400, 3400));
 }
 
 // A plate 60 x 40 x 10 and a boss R 8, 10 tall, at (30, 20) on it; the boss's root rounded at size
@@ -4970,6 +5043,7 @@ SectionGrade boss_root_grade(int order, double volume)
         { return distance_to_curve([&](double t) { return gn_section(order, 0.0, plate, wall, t); }, rho_z(x)); };
     }
     g.off_tol = order >= 2 ? 4e-6 : 1e-9;
+    g.definition = order >= 2;
     g.faces = {{ExactFace::PLANE, {0, 0, 0}, {1, 0, 0}, 0},   {ExactFace::PLANE, {60, 0, 0}, {1, 0, 0}, 0},
                {ExactFace::PLANE, {0, 0, 0}, {0, 1, 0}, 0},   {ExactFace::PLANE, {0, 40, 0}, {0, 1, 0}, 0},
                {ExactFace::PLANE, {0, 0, 0}, {0, 0, 1}, 0},   {ExactFace::PLANE, {0, 0, 10}, {0, 0, 1}, 0},
@@ -4997,8 +5071,13 @@ void section_boss_root_round()
 void section_boss_root_g2()
 {
     // certified span by span at a tenth of the tolerance: 227 spans along the root
-    SectionGrade g = boss_root_grade(2, 26043.0880831714);
+    SectionGrade g = counted(boss_root_grade(2, 26043.0880831714), 14000, 6950);
     g.spans = 227;
+    // the G^n section is taken in the leader's planes, as its certificate is: the leader is the
+    // fitted centre line, whose planes tilt off the meridians by its tangent's error, and that
+    // moves the definition's section 5.8e-11 off the meridian section graded here (1.8e-14 where
+    // the spine is straight)
+    g.definition_tol = 1e-10;
     section_blend(by_order(boss_on_plate(), {30 + 4 * std::sqrt(2.0), 20 + 4 * std::sqrt(2.0), 10}, 2, 0.0, 2.0), g);
 }
 
@@ -5045,6 +5124,7 @@ SectionGrade pipe_on_plate_grade(int order, double w, double d, double volume)
         { return distance_to_curve([&](double t) { return gn_section(order, w, plate, pipe, t); }, {x.y, x.z}); };
     }
     s.off_tol = 1e-9;
+    s.definition = order >= 2;
     s.faces = {{ExactFace::PLANE, {0, 0, 0}, {1, 0, 0}, 0},    {ExactFace::PLANE, {60, 0, 0}, {1, 0, 0}, 0},
                {ExactFace::PLANE, {0, 0, 0}, {0, 1, 0}, 0},    {ExactFace::PLANE, {0, 40, 0}, {0, 1, 0}, 0},
                {ExactFace::PLANE, {0, 0, 0}, {0, 0, 1}, 0},    {ExactFace::PLANE, {0, 0, 10}, {0, 0, 1}, 0},
@@ -5069,12 +5149,12 @@ void section_pipe_on_plate_round()
 void section_pipe_on_plate_g2()
 {
     section_blend(by_order(pipe_on_plate(), {30, 28, 10}, 2, 0.0, 2.0),
-                  pipe_on_plate_grade(2, 0.0, 2.0, 40258.5435962825));
+                  counted(pipe_on_plate_grade(2, 0.0, 2.0, 40258.5435962825), 10700, 2000));
 }
 
 void section_pipe_on_plate_g2_thumbweight_half()
 {
-    section_blend(by_order(pipe_on_plate(), {30, 28, 10}, 2, 0.5, 2.0), pipe_on_plate_grade(2, 0.5, 2.0, 40216.5022652017));
+    section_blend(by_order(pipe_on_plate(), {30, 28, 10}, 2, 0.5, 2.0), counted(pipe_on_plate_grade(2, 0.5, 2.0, 40216.5022652017), 12000, 2350));
 }
 
 // A variable round: the top back edge (y = 30, z = 20) of a box 20 x 30 x 20, its radius r = 1 + x/5
@@ -5532,6 +5612,349 @@ void section_variable_round_spline_folds()
     smlib_brep_free(block);
 }
 
+// A blend by its definition (SmProceduralBlend) built directly: the supports, the ball, the section,
+// the leader and the feet's seeds, on a placeholder net. Each case checks the definition's points
+// and partials against a surface known in closed form, to rounding.
+SmBSplineSurface *def_patch(const SmPoint3d &o, const SmVector3d &du, const SmVector3d &dv)
+{
+    SmBSplineSurface *s = nullptr;
+    CHECK(SmBSplineSurface::CreateBilinearSurface(*SmApiGetOrCreateContext(), o, o + du, o + dv, o + du + dv, s) == SM_SUCCESS);
+    return s;
+}
+
+// A polyline through `pts` (dimension 2 or 3) over the parameters `at` (one knot each).
+SmBSplineCurve *def_polyline(ULONG dim, const std::vector<SmPoint3d> &pts, const std::vector<double> &at)
+{
+    SmTArray<SmPoint3d> cps;
+    SmTArray<ULONG> mult;
+    SmTArray<double> knots;
+    for (size_t i = 0; i < pts.size(); i++)
+    {
+        cps.Add(pts[i]);
+        knots.Add(at[i]);
+        mult.Add(i == 0 || i + 1 == pts.size() ? 2 : 1);
+    }
+    SmBSplineCurve *c = nullptr;
+    CHECK(SmBSplineCurve::CreateCanonical(*SmApiGetOrCreateContext(), dim, 1, cps, SM_CF_UNSPECIFIED, mult, knots, SM_KT_UNSPECIFIED, nullptr,
+                                          nullptr, c) == SM_SUCCESS);
+    return c;
+}
+
+// The rational quadratic arc about c from angle a0 to a1 (degrees) of radius r in the plane x = x0,
+// (y, z) about (c.y, c.z), over [0, 1]: the leader of a round whose spine is that circle.
+SmBSplineCurve *def_arc(double x0, double cy, double cz, double r, double a0, double a1)
+{
+    const double h = 0.5 * (a1 - a0) * PI / 180.0, m = 0.5 * (a0 + a1) * PI / 180.0;
+    SmTArray<SmPoint3d> cps;
+    cps.Add(SmPoint3d(x0, cy + r * std::cos(a0 * PI / 180.0), cz + r * std::sin(a0 * PI / 180.0)));
+    cps.Add(SmPoint3d(x0, cy + r / std::cos(h) * std::cos(m), cz + r / std::cos(h) * std::sin(m)));
+    cps.Add(SmPoint3d(x0, cy + r * std::cos(a1 * PI / 180.0), cz + r * std::sin(a1 * PI / 180.0)));
+    SmTArray<double> w, knots;
+    w.Add(1.0);
+    w.Add(std::cos(h));
+    w.Add(1.0);
+    knots.Add(0.0);
+    knots.Add(1.0);
+    SmTArray<ULONG> mult;
+    mult.Add(3);
+    mult.Add(3);
+    SmBSplineCurve *c = nullptr;
+    CHECK(SmBSplineCurve::CreateCanonical(*SmApiGetOrCreateContext(), 3, 2, cps, SM_CF_UNSPECIFIED, mult, knots, SM_KT_UNSPECIFIED, &w, nullptr,
+                                          c) == SM_SUCCESS);
+    return c;
+}
+
+// The net a definition is put on here: the bilinear patch over (s, t) in [s0, s1] x [0, 1] through
+// four points (its shape is not graded; the bound claimed for it is).
+SmBSplineSurface *def_net(double s0, double s1, const SmPoint3d (&p)[4])
+{
+    SmTArray<SmPoint3d> cps;
+    for (int i = 0; i < 4; i++)
+    {
+        cps.Add(p[i]);
+    }
+    SmTArray<ULONG> m;
+    m.Add(2);
+    m.Add(2);
+    SmTArray<double> uk, vk;
+    uk.Add(s0);
+    uk.Add(s1);
+    vk.Add(0.0);
+    vk.Add(1.0);
+    SmBSplineSurface *s = nullptr;
+    CHECK(SmBSplineSurface::CreateCanonical(*SmApiGetOrCreateContext(), 1, 1, cps, SM_SF_UNSPECIFIED, m, m, uk, vk, SM_KT_UNSPECIFIED, nullptr,
+                                            nullptr, s) == SM_SUCCESS);
+    return s;
+}
+
+SmProceduralBlend *def_blend(const SmBSplineSurface *net, const SmSurface *s1, const SmSurface *s2, double r, const SmBSplineCurve *law,
+                             const SmBSplineCurve *leader, const SmBSplineCurve *seed1, const SmBSplineCurve *seed2)
+{
+    const SmSurface *sup[2] = {s1, s2};
+    const SmBSplineCurve *seeds[2] = {seed1, seed2};
+    const double side[2] = {1.0, 1.0}, off[2] = {r, r};
+    SmProceduralBlend *b = nullptr;
+    const SmStatus st = net == nullptr || leader == nullptr || seed1 == nullptr || seed2 == nullptr
+                            ? SM_ERR
+                            : SmProceduralBlend::Create(*SmApiGetOrCreateContext(), *net, sup, side, off, law, 1, 0.0, *leader, seeds, 1e-9, b);
+    CHECK(st == SM_SUCCESS && b != nullptr);
+    return b;
+}
+
+// The square corner of the planes z = 0 (normal +z) and y = 0 (normal +y), rounded r = 3 by the
+// ball's circle: the cylinder of axis (x, 3, 3). The leader is a line off the spine and tilted to
+// it, so s is not x: the spine point is solved in the leader's plane, the section is the circle
+// square to the spine all the same. Its rational quadratic arc (weights 1, cos 45 deg, 1) has its
+// middle at (x, 3 - 3/sqrt 2, 3 - 3/sqrt 2) and d/dt 2 cos 45 (corner - rail) = 3 sqrt 2 (0, -1, 0)
+// at t = 0; d/ds is along the axis.
+void definition_circle_is_the_cylinder()
+{
+    SmBSplineSurface *top = def_patch({-10, -10, 0}, {40, 0, 0}, {0, 40, 0}), *back = def_patch({-10, 0, -10}, {0, 0, 40}, {40, 0, 0});
+    SmBSplineCurve *leader = def_polyline(3, {{0, 3.1, 2.9}, {20, 3.2, 3.0}}, {0, 20});
+    SmBSplineCurve *seed1 = def_polyline(2, {{10.0 / 40, 13.0 / 40, 0}, {30.0 / 40, 13.0 / 40, 0}}, {0, 20});
+    SmBSplineCurve *seed2 = def_polyline(2, {{13.0 / 40, 10.0 / 40, 0}, {13.0 / 40, 30.0 / 40, 0}}, {0, 20});
+    SmBSplineSurface *net = def_net(0, 20, {{0, 3, 0}, {0, 0, 3}, {20, 3, 0}, {20, 0, 3}});
+    SmProceduralBlend *b = def_blend(net, top, back, 3.0, nullptr, leader, seed1, seed2);
+    if (b != nullptr)
+    {
+        double worst = 0.0;
+        for (int i = 0; i <= 8; i++)
+        {
+            for (int j = 0; j <= 8; j++)
+            {
+                SmVector3d d[9];
+                CHECK(b->EvaluateDefinition(20.0 * i / 8, j / 8.0, 2, 2, d) == SM_SUCCESS);
+                worst = std::max(worst, std::fabs(std::hypot(d[0].y - 3, d[0].z - 3) - 3));
+                // d/ds along the axis, d/dt square to the radius
+                worst = std::max(worst, std::hypot(d[3].y, d[3].z) + std::fabs(d[1].x) + std::fabs(d[1].y * (d[0].y - 3) + d[1].z * (d[0].z - 3)));
+                if (j == 0)
+                {
+                    worst = std::max(worst, std::fabs(d[0].z) + std::fabs(d[0].y - 3) + (d[1] - SmVector3d(0, -3 * std::sqrt(2.0), 0)).Length());
+                }
+                if (j == 4)
+                {
+                    worst = std::max(worst, std::fabs(d[0].y - 3 + 3 / std::sqrt(2.0)) + std::fabs(d[0].z - 3 + 3 / std::sqrt(2.0)));
+                }
+            }
+        }
+        std::printf("  circle on two square planes: off the cylinder by %.3g\n", worst);
+        CHECK(worst <= 1e-12);
+    }
+    for (SmObject *o : std::initializer_list<SmObject *>{top, back, leader, seed1, seed2, net, b})
+    {
+        delete o;
+    }
+}
+
+// The same corner rounded by a ball whose radius runs r(s) = 2 + s / 10 along the spine
+// c(s) = (s, r, r), the leader: the canal surface of the balls is a circular cone, and the round's
+// section at s is the circle along which the ball at s touches it, |P - c| = r and
+// (P - c) . c' + r r' = 0 (not the ball's great circle). Its ends are the ball's feet (s, r, 0) and
+// (s, 0, r).
+void definition_linear_law_is_the_cone()
+{
+    SmBSplineSurface *top = def_patch({-10, -10, 0}, {40, 0, 0}, {0, 40, 0}), *back = def_patch({-10, 0, -10}, {0, 0, 40}, {40, 0, 0});
+    SmBSplineCurve *leader = def_polyline(3, {{0, 2, 2}, {20, 4, 4}}, {0, 20});
+    SmBSplineCurve *law = def_polyline(3, {{2, 0, 0}, {4, 0, 0}}, {0, 20});
+    SmBSplineCurve *seed1 = def_polyline(2, {{10.0 / 40, 12.0 / 40, 0}, {30.0 / 40, 14.0 / 40, 0}}, {0, 20});
+    SmBSplineCurve *seed2 = def_polyline(2, {{12.0 / 40, 10.0 / 40, 0}, {14.0 / 40, 30.0 / 40, 0}}, {0, 20});
+    SmBSplineSurface *net = def_net(0, 20, {{0, 2, 0}, {0, 0, 2}, {20, 4, 0}, {20, 0, 4}});
+    SmProceduralBlend *b = def_blend(net, top, back, 0.0, law, leader, seed1, seed2);
+    if (b != nullptr)
+    {
+        double worst = 0.0;
+        for (int i = 0; i <= 8; i++)
+        {
+            const double s = 20.0 * i / 8, r = 2 + s / 10;
+            const SmVector3d c(s, r, r), dc(1, 0.1, 0.1);
+            for (int j = 0; j <= 8; j++)
+            {
+                SmVector3d d[4];
+                CHECK(b->EvaluateDefinition(s, j / 8.0, 1, 1, d) == SM_SUCCESS);
+                const SmVector3d q = d[0] - c;
+                worst = std::max(worst, std::fabs(q.Length() - r) + std::fabs(q.Dot(dc) + r * 0.1));
+                // d/dt stays on the touch circle: square to the radius there and to c'
+                worst = std::max(worst, std::fabs(d[1].Dot(q)) + std::fabs(d[1].Dot(dc)));
+                if (j == 0 || j == 8)
+                {
+                    worst = std::max(worst, (d[0] - (j == 0 ? SmVector3d(s, r, 0) : SmVector3d(s, 0, r))).Length());
+                }
+            }
+        }
+        std::printf("  linear law between square planes: off the cone's touch circles by %.3g\n", worst);
+        CHECK(worst <= 1e-12);
+    }
+    for (SmObject *o : std::initializer_list<SmObject *>{top, back, leader, law, seed1, seed2, net, b})
+    {
+        delete o;
+    }
+}
+
+// A round on a round: the cylinder round of definition_circle_is_the_cylinder (its leader on the
+// axis now, s = x) is the support of a ball r = 1 rolling on its outside and on the plane x = 2
+// (normal +x). The plane is square to the cylinder's axis, so the outer round is the torus about
+// that axis, tube 1, centre circle of radius 4 in x = 3: the ball's centre on the arc from 200 to
+// 250 degrees about (3, 3) in (y, z), the leader. The feet on the inner round are solved on its
+// definition, not its net. Nesting stops at three definitions deep.
+void definition_round_on_a_round_is_the_torus()
+{
+    SmBSplineSurface *top = def_patch({-10, -10, 0}, {40, 0, 0}, {0, 40, 0}), *back = def_patch({-10, 0, -10}, {0, 0, 40}, {40, 0, 0});
+    SmBSplineCurve *axis = def_polyline(3, {{0, 3, 3}, {20, 3, 3}}, {0, 20});
+    SmBSplineCurve *seed1 = def_polyline(2, {{10.0 / 40, 13.0 / 40, 0}, {30.0 / 40, 13.0 / 40, 0}}, {0, 20});
+    SmBSplineCurve *seed2 = def_polyline(2, {{13.0 / 40, 10.0 / 40, 0}, {13.0 / 40, 30.0 / 40, 0}}, {0, 20});
+    SmBSplineSurface *inner_net = def_net(0, 20, {{0, 3, 0}, {0, 0, 3}, {20, 3, 0}, {20, 0, 3}});
+    SmProceduralBlend *inner = def_blend(inner_net, top, back, 3.0, nullptr, axis, seed1, seed2);
+    SmBSplineSurface *wall = def_patch({2, -10, -10}, {0, 40, 0}, {0, 0, 40});
+    SmBSplineCurve *leader = def_arc(3, 3, 3, 4, 200, 250);
+    // the feet: on the inner round at x = 3, its arc's t at the spine's angle a (the arc from 270
+    // to 180 degrees, tan((225 - a) / 2) = tan(22.5) (2 t - 1)); on the wall, the spine point's (y, z)
+    std::vector<SmPoint3d> on_inner, on_wall;
+    std::vector<double> at;
+    for (int k = 0; k <= 8; k++)
+    {
+        const double s = k / 8.0, a = 225 + 2 * std::atan(std::tan(12.5 * PI / 180) * (2 * s - 1)) * 180 / PI;
+        const double t = 0.5 * (std::tan(0.5 * (225 - a) * PI / 180) / std::tan(22.5 * PI / 180) + 1);
+        on_inner.push_back({3, t, 0});
+        on_wall.push_back({(3 + 4 * std::cos(a * PI / 180) + 10) / 40, (3 + 4 * std::sin(a * PI / 180) + 10) / 40, 0});
+        at.push_back(s);
+    }
+    SmBSplineCurve *seed3 = def_polyline(2, on_inner, at), *seed4 = def_polyline(2, on_wall, at);
+    SmBSplineSurface *outer_net = def_net(0, 1, {{3, 0, 0}, {2, 0, 0}, {3, 1, 1}, {2, 1, 1}});
+    SmProceduralBlend *outer = inner == nullptr ? nullptr : def_blend(outer_net, inner, wall, 1.0, nullptr, leader, seed3, seed4);
+    if (outer != nullptr)
+    {
+        CHECK(outer->GetDepth() == 2);
+        double worst = 0.0;
+        for (int i = 0; i <= 8; i++)
+        {
+            for (int j = 0; j <= 8; j++)
+            {
+                SmVector3d d[4];
+                CHECK(outer->EvaluateDefinition(i / 8.0, j / 8.0, 1, 1, d) == SM_SUCCESS);
+                const double rho = std::hypot(d[0].y - 3, d[0].z - 3);
+                worst = std::max(worst, std::fabs(std::hypot(rho - 4, d[0].x - 3) - 1));
+                if (j == 0)
+                {
+                    worst = std::max(worst, std::fabs(rho - 3) + std::fabs(d[0].x - 3)); // on the inner round
+                }
+                if (j == 8)
+                {
+                    worst = std::max(worst, std::fabs(d[0].x - 2)); // on the wall
+                }
+            }
+        }
+        std::printf("  round on a round and a square plane: off the torus by %.3g\n", worst);
+        CHECK(worst <= 1e-12);
+        // three definitions deep is the most
+        SmProceduralBlend *third = def_blend(outer_net, outer, wall, 1.0, nullptr, leader, seed3, seed4);
+        CHECK(third != nullptr && third->GetDepth() == 3);
+        const SmSurface *sup[2] = {third, wall};
+        const SmBSplineCurve *seeds[2] = {seed3, seed4};
+        const double side[2] = {1.0, 1.0}, off[2] = {1.0, 1.0};
+        SmProceduralBlend *fourth = nullptr;
+        CHECK(third != nullptr &&
+              SmProceduralBlend::Create(*SmApiGetOrCreateContext(), *outer_net, sup, side, off, nullptr, 1, 0.0, *leader, seeds, 1e-9, fourth) ==
+                  SM_ERR_INVALID_INPUT &&
+              fourth == nullptr);
+        delete third;
+    }
+    for (SmObject *o : std::initializer_list<SmObject *>{top, back, axis, seed1, seed2, inner_net, inner, wall, leader, seed3, seed4, outer_net,
+                                                         outer})
+    {
+        delete o;
+    }
+}
+
+// A body with a G^n round written and read back: its face's surface is still the blend by its
+// definition, equal to the one written, and evaluates bit for bit the same (binary), or to the
+// file's sixteen digits (ASCII). A record whose order or bound is out of range is refused on load.
+void definition_round_trip()
+{
+    smlib_brep *body = box(0, 0, 0, 40, 30, 20), *r = nullptr;
+    const double pick[3] = {20, 30, 20}, size = 3.0;
+    CHECK(smlib_blend_order(body, 2, 0.0, pick, &size, 1, 0.1, &r, nullptr) == SMLIB_OK);
+    smlib_brep_free(body);
+    auto blend_of = [](const smlib_brep *b) -> const SmProceduralBlend *
+    {
+        SmTArray<SmFace *> faces;
+        if (b != nullptr)
+        {
+            b->p->GetFaces(faces);
+        }
+        for (ULONG i = 0; i < faces.GetSize(); i++)
+        {
+            if (const SmProceduralBlend *pb = dynamic_cast<const SmProceduralBlend *>(faces[i]->GetSurface()))
+            {
+                return pb;
+            }
+        }
+        return nullptr;
+    };
+    const SmProceduralBlend *written = blend_of(r);
+    CHECK(written != nullptr);
+    const char *dir = std::getenv("TMPDIR");
+    for (int ascii = 0; ascii <= 1 && written != nullptr; ascii++)
+    {
+        const std::string path = std::string(dir != nullptr ? dir : "/tmp") + "/smlib-definition-round-trip" + (ascii ? ".txt" : ".smb");
+        CHECK(smlib_brep_write(r, path.c_str(), ascii) == SMLIB_OK);
+        smlib_brep *back = nullptr;
+        CHECK(smlib_brep_read(path.c_str(), ascii, &back) == SMLIB_OK);
+        const SmProceduralBlend *read = blend_of(back);
+        CHECK(read != nullptr && (ascii || *read == *written));
+        double worst = 0.0;
+        for (int i = 0; i <= 8 && read != nullptr; i++)
+        {
+            for (int j = 0; j <= 8; j++)
+            {
+                const SmExtent2d dom = written->GetNaturalUVDomain();
+                const SmPoint2d uv(dom.GetMin().x + (dom.GetMax().x - dom.GetMin().x) * i / 8, dom.GetMin().y + (dom.GetMax().y - dom.GetMin().y) * j / 8);
+                SmPoint3d p, q;
+                CHECK(written->EvaluatePoint(uv, p) == SM_SUCCESS && read->EvaluatePoint(uv, q) == SM_SUCCESS);
+                worst = std::max(worst, p.DistanceBetween(q));
+            }
+        }
+        std::printf("  written and read back (%s): the definition evaluates %.3g apart\n", ascii ? "ASCII" : "binary", worst);
+        CHECK(ascii ? worst <= 1e-12 : worst == 0.0);
+        smlib_brep_free(back);
+        if (ascii)
+        {
+            // the order, then the bound, out of range in the record: refused
+            std::ifstream in(path);
+            const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            const size_t at = text.find(" SmProceduralBlend order");
+            CHECK(at != std::string::npos);
+            for (int bad = 0; bad < 2 && at != std::string::npos; bad++)
+            {
+                std::string hostile = text;
+                const size_t line = hostile.rfind('\n', at) + 1;
+                if (bad == 0)
+                {
+                    hostile.replace(line, hostile.find(' ', line) - line, "7");
+                }
+                else
+                {
+                    // sides, offsets, thumbweight, then the bound: the sixth number of the next line
+                    size_t p = hostile.find('\n', at) + 1;
+                    for (int k = 0; k < 5; k++)
+                    {
+                        p = hostile.find(' ', hostile.find_first_not_of(' ', p)) + 1;
+                    }
+                    const size_t q = hostile.find_first_not_of(' ', p);
+                    hostile.replace(q, hostile.find(' ', q) - q, "-1");
+                }
+                const std::string bad_path = path + ".hostile";
+                std::ofstream(bad_path) << hostile;
+                smlib_brep *refused = nullptr;
+                CHECK(smlib_brep_read(bad_path.c_str(), 1, &refused) != SMLIB_OK && refused == nullptr);
+                smlib_brep_free(refused);
+                std::remove(bad_path.c_str());
+            }
+        }
+        std::remove(path.c_str());
+    }
+    smlib_brep_free(r);
+}
+
 // The section-order cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--section-orders-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SECTION_CASES[] = {
@@ -5541,6 +5964,10 @@ const TangentEndCase SECTION_CASES[] = {
     {"box_edge_g2_equal_area", section_box_edge_g2_equal_area, nullptr},
     {"box_edge_g2_thumbweight_w_star", section_box_edge_g2_thumbweight_w_star, nullptr},
     {"box_edge_g2_thumbweight_half", section_box_edge_g2_thumbweight_half, nullptr},
+    {"definition_circle_is_the_cylinder", definition_circle_is_the_cylinder, nullptr},
+    {"definition_linear_law_is_the_cone", definition_linear_law_is_the_cone, nullptr},
+    {"definition_round_on_a_round_is_the_torus", definition_round_on_a_round_is_the_torus, nullptr},
+    {"definition_round_trip", definition_round_trip, nullptr},
     {"boss_root_chamfer", section_boss_root_chamfer, nullptr},
     {"boss_root_round", section_boss_root_round, nullptr},
     {"boss_root_g2", section_boss_root_g2, nullptr},
@@ -5550,6 +5977,8 @@ const TangentEndCase SECTION_CASES[] = {
     {"pipe_on_plate_g2_thumbweight_half", section_pipe_on_plate_g2_thumbweight_half, nullptr},
     {"sharp_wedge_g2_equal_area", section_sharp_wedge_g2_equal_area, nullptr},
     {"twisted_wedge_g2_equal_area", section_twisted_wedge_g2_equal_area, nullptr},
+    {"twisted_wedge_g2_equal_area_net_on_definition", section_twisted_wedge_g2_equal_area_net_on_definition,
+     "the net is 0.0122 off its definition (certified bound 4e-6) after the top's knot lines: a C2 top gives the order-2 jets a jump there, and the net's knot station is one side's"},
     {"variable_round_law_dip", section_variable_round_law_dip, nullptr},
     {"variable_round_law_dips", section_variable_round_law_dips, nullptr},
     {"variable_round_law_peak", section_variable_round_law_peak, nullptr},
