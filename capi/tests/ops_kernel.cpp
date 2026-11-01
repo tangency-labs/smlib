@@ -9984,6 +9984,71 @@ void setback_g1_convex_notch() { setback_g1_fill_keeps_the_body_convex({1, 1.5, 
 // corner_setback's corner (60, 40, 20), r 5 set back 8, at the origin (p -> (60, 40, 20) - p).
 void setback_corner_setback_8() { setback_g1_fill_keeps_the_body_convex({5, 5, 5}, 8.0, "rounds 5 set back 8"); }
 
+// The G1 fill's base points lie on the spring conics' shoulders: on face m, between the end P of
+// one round's rail and the end Q of the other's, with X where the two rails cross, the base point
+// is the middle of the quadratic Bezier (P, X, Q), (P + 2 X + Q) / 4 (the parabola tangent to both
+// rails at their ends: inside the face's flat corner region, which a convex body's face is), and
+// both setback patches leave it along the chord Q - P (that parabola's tangent there). Today's
+// base points lie off that region: at r 5 set back 8, (0, 4.17, 4.17) on the face x = 0, whose
+// flat region starts at the rails y = 5, z = 5 (setback patch m's (1, 0) and patch m - 1's
+// (1, 1) are the base point; their u = 0 rows the rounds' ends, Pu there along the rails).
+void setback_g1_base_points_on_the_spring_conics()
+{
+    SmContext &ctx = *SmApiGetOrCreateContext();
+    struct Case
+    {
+        std::array<double, 3> radii;
+        double setback;
+    };
+    const Case cases[] = {{{2, 3, 4}, 0.0}, {{1, 1.5, 2}, 0.0}, {{5, 5, 5}, 8.0}};
+    for (const Case &c : cases)
+    {
+        std::vector<double> setbacks;
+        CHECK(SmBlendSetback::Distances(box_corner_faces(), box_corner_edges(c.radii), setbacks) == SM_SUCCESS && setbacks.size() == 3);
+        if (c.setback > 0.0)
+        {
+            setbacks.assign(3, c.setback);
+        }
+        std::vector<SmBSplineSurface *> rounds;
+        std::vector<SmBlendSetback::Round> in;
+        for (int a = 0; a < 3; a++)
+        {
+            rounds.push_back(box_corner_round(a, c.radii[static_cast<size_t>(a)], setbacks[static_cast<size_t>(a)], 10.0, 1));
+            in.push_back({rounds.back(), SM_SP_U, setbacks[static_cast<size_t>(a)], FALSE});
+        }
+        SmBlendSetback::Fill fill;
+        CHECK(SmBlendSetback::FillHole(ctx, box_corner_faces(), in, 1, 1e-9, fill) == SM_SUCCESS && fill.m_vPatches.size() == 6);
+        const double size = *std::max_element(setbacks.begin(), setbacks.end());
+        double off = 0.0, turn = 0.0;
+        for (size_t m = 0; m < 3 && fill.m_vPatches.size() == 6; m++)
+        {
+            const SmBSplineSurface *sp = fill.m_vPatches[m], *prev = fill.m_vPatches[(m + 2) % 3];
+            SmVector3d dp[4], dq[4], db[4], dc[4];
+            CHECK(sp->Evaluate(SmPoint2d(0, 0), 1, 1, TRUE, TRUE, FALSE, dp, FALSE) == SM_SUCCESS);
+            CHECK(prev->Evaluate(SmPoint2d(0, 1), 1, 1, TRUE, FALSE, FALSE, dq, FALSE) == SM_SUCCESS);
+            CHECK(sp->Evaluate(SmPoint2d(1, 0), 1, 1, FALSE, TRUE, FALSE, db, FALSE) == SM_SUCCESS);
+            CHECK(prev->Evaluate(SmPoint2d(1, 1), 1, 1, FALSE, FALSE, FALSE, dc, FALSE) == SM_SUCCESS);
+            // the rails P + s Tp, Q + t Tq cross at X (least squares; they meet)
+            const SmVector3d P = dp[0], Q = dq[0], Tp = dp[2], Tq = dq[2];
+            const double a11 = Tp.Dot(Tp), a12 = -Tp.Dot(Tq), a22 = Tq.Dot(Tq), b1 = Tp.Dot(Q - P), b2 = -Tq.Dot(Q - P);
+            const double det = a11 * a22 - a12 * a12, s = (b1 * a22 - a12 * b2) / det;
+            const SmVector3d X = P + Tp * s;
+            const SmVector3d want = (P + X * 2.0 + Q) * 0.25;
+            off = std::max({off, (db[0] - want).Length(), (dc[0] - want).Length()});
+            SmVector3d chord = P - Q, tb = db[2], tc = dc[2];
+            CHECK(chord.Unitize() == SM_SUCCESS && tb.Unitize() == SM_SUCCESS && tc.Unitize() == SM_SUCCESS);
+            turn = std::max({turn, (tb * chord).Length(), (tc * chord).Length()});
+        }
+        std::printf("  rounds %g, %g, %g set back %g, %g, %g: base points off the spring conics' shoulders by %.3g, their spring tangents off the chords by %.3g rad\n",
+                    c.radii[0], c.radii[1], c.radii[2], setbacks[0], setbacks[1], setbacks[2], off, turn);
+        CHECK(off <= 1e-12 * size && turn <= 1e-12);
+        for (SmBSplineSurface *q : rounds)
+        {
+            delete q;
+        }
+    }
+}
+
 // The setback corner's cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--setbacks-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SETBACK_CASES[] = {
@@ -10001,6 +10066,8 @@ const TangentEndCase SETBACK_CASES[] = {
     {"fill_is_the_geometry_s", setback_fill_is_the_geometry_s, nullptr},
     {"g1_convex_rounds_2_3_4", setback_g1_convex_rounds_2_3_4,
      "no construction is certified convex yet: the setback split's G1 fill curves against the material along its setback patches' rails' direction (l n - m^2 < 0 inside them) and stands out of a prism"},
+    {"g1_base_points_on_the_spring_conics", setback_g1_base_points_on_the_spring_conics,
+     "the base points are F's at the regular n-gon's vertices, off the faces' flat corner regions (r 5 set back 8: (0, 4.17, 4.17) on x = 0, the rails at y = z = 5)"},
     {"g1_convex_notch", setback_g1_convex_notch,
      "no construction is certified convex yet: the setback split's G1 fill curves against the void along its setback patches' rails' direction and stands out of a prism"},
     {"default_shrinks_to_fit", setback_default_shrinks_to_fit, nullptr},
