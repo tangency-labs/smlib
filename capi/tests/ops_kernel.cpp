@@ -4746,8 +4746,14 @@ void section_box_edge_g2_equal_area()
         if (box_edge_section_cut(2, mid) > 1.0 - PI / 4) { lo = mid; } else { hi = mid; }
     }
     const double w = 0.5 * (lo + hi);
-    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, SMLIB_BLEND_THUMBWEIGHT, 3.0),
-                  box_edge_grade(2, w, 1.0 - PI / 4));
+    // At w = 0 the section stands off each plane as c s^4 (G3); at this negative thumbweight its
+    // s^3 term no longer vanishes (the standoff's log ratio is 3.71 at s = 1e-3, 3.78 at 1e-4: a
+    // small c3 s^3), so it is G2 with the faces, as the order-2 section is built to be, and may
+    // read G3 where c3 is below the measure's tolerance.
+    SectionGrade g = box_edge_grade(2, w, 1.0 - PI / 4);
+    g.order = 2;
+    g.order_max = 3;
+    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, SMLIB_BLEND_THUMBWEIGHT, 3.0), g);
 }
 
 // The thumbweight at which the order-2 section between square planes, set back s, cuts 113/756 s^2
