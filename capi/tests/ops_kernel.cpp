@@ -6728,8 +6728,9 @@ int shrink_cases(bool known_failing, const char *only)
 // (a box's corner, a pocket's floor corner): the ball of radius r touching the three planes, its
 // centre C the point r off each, touches each round along that round's end section, a great
 // circle of the ball in the plane of its two contact normals. The corner's face is the ball's zone
-// between those three quarter circles, an octant of the sphere about C: exact, and tangent to each
-// round along its end section (both are tangent to the ball there).
+// between those three quarter circles, an octant of the sphere about C, as one rational patch on
+// it (the owner's ruling, every Ball): exact, and tangent to each round along its end section
+// (both are tangent to the ball there).
 //
 // Volume: each round takes (convex) or adds (concave) the spandrel A(r) along its edge outside the
 // cube of side r at the corner; inside that cube the body keeps (convex) or the rounds fill
@@ -6737,12 +6738,13 @@ int shrink_cases(bool known_failing, const char *only)
 
 double spandrel(double r);
 
-// The corner's face of `r`: exactly one face with the three vertices `v`, on an SmSphere of centre
-// `c` and radius `rad` (`analytic`), or else a rational B-spline patch: its surface on the sphere
-// about `c` of radius `rad`, its edges on it, G1 across all three edges (the rounds' end
-// sections). Its normal points out of the body: away from `c` at a convex corner, towards it at a
-// concave one.
-void ball_corner_sphere(const smlib_brep *r, const SmPoint3d &c, double rad, const SmPoint3d (&v)[3], bool convex, bool analytic = true)
+// The corner's face of `r`: exactly one face with the three vertices `v`, a rational B-spline
+// patch (the owner's ruling: the Ball's face is the rational patch, never the analytic SmSphere):
+// its surface on the sphere about `c` of radius `rad` (its centre and radius), its edges on it, G1
+// across all three edges (the rounds' end sections). Its normal points out of the body: away from
+// `c` at a convex corner, towards it at a concave one. `edge_tol` bounds its edges' distance from
+// the sphere.
+void ball_corner_sphere(const smlib_brep *r, const SmPoint3d &c, double rad, const SmPoint3d (&v)[3], bool convex, double edge_tol = 1e-12)
 {
     SmTArray<SmFace *> faces;
     r->p->GetFaces(faces);
@@ -6757,23 +6759,10 @@ void ball_corner_sphere(const smlib_brep *r, const SmPoint3d &c, double rad, con
             continue;
         }
         spheres++;
-        if (analytic)
-        {
-            SmSphere *sphere = srf->GetType() == SmSphere_TYPE ? SM_CAST_PTR(SmSphere, srf) : nullptr;
-            SmAxis2Placement frame;
-            double radius = 0.0;
-            CHECK(sphere != nullptr && sphere->GetCanonical(frame, radius) == SM_SUCCESS);
-            const SmPoint3d o = frame.GetOrigin();
-            std::printf("  sphere face %lu: centre (%.15g, %.15g, %.15g), radius %.15g\n", static_cast<unsigned long>(f), o.x, o.y, o.z, radius);
-            CHECK((o - c).Length() <= 1e-12 && std::fabs(radius - rad) <= 1e-12);
-        }
-        else
-        {
-            const SmBSplineSurface *bss = SM_CAST_PTR(SmBSplineSurface, srf);
-            std::printf("  corner face %lu: type %d, rational %d\n", static_cast<unsigned long>(f), static_cast<int>(srf->GetType()),
-                        bss != nullptr ? static_cast<int>(bss->IsRational()) : -1);
-            CHECK(bss != nullptr && bss->IsRational());
-        }
+        const SmBSplineSurface *bss = SM_CAST_PTR(SmBSplineSurface, srf);
+        std::printf("  corner face %lu: type %d, rational %d\n", static_cast<unsigned long>(f), static_cast<int>(srf->GetType()),
+                    bss != nullptr ? static_cast<int>(bss->IsRational()) : -1);
+        CHECK(srf->GetType() == SmBSplineSurface_TYPE && bss != nullptr && bss->IsRational());
         // the surface on the sphere about c, its normal out of the body
         double surf_off = 0.0, edge_off = 0.0, normal_off = 0.0;
         const SmExtent2d dom = srf->GetNaturalUVDomain();
@@ -6823,7 +6812,7 @@ void ball_corner_sphere(const smlib_brep *r, const SmPoint3d &c, double rad, con
         const double angle = worst_seam_angle(faces[f], seams);
         std::printf("    surface off the sphere by %.3g, edges by %.3g, normal off outward by %.3g; %d seams, worst angle %.3g rad\n", surf_off,
                     edge_off, normal_off, seams, angle);
-        CHECK(surf_off <= 1e-12 && edge_off <= 1e-12 && normal_off <= 1e-9);
+        CHECK(surf_off <= 1e-12 && edge_off <= edge_tol && normal_off <= 1e-9);
         // G1 to the three rounds
         CHECK(seams == 3 && angle <= 1e-9);
     }
@@ -6952,7 +6941,7 @@ void ball_prism_corner()
 // distance from V to C's foot on it, and at C the region between the three planes and the three
 // planes through C of the end sections (a hexahedron: V, the feet, the contacts, C) less the
 // ball's sector there, r^3 / 3 times the solid angle of the normals' spherical triangle. No plane
-// is square to the other two: the corner's face is a rational patch on the sphere. Counts as the
+// is square to the other two. Counts as the
 // box's.
 void ball_oblique_corner()
 {
@@ -7029,15 +7018,15 @@ void ball_oblique_corner()
                     static_cast<long long>(counts[2]));
         CHECK(counts[0] == 10 && counts[1] == 21 && counts[2] == 13);
         const SmPoint3d v3[3] = {SmPoint3d(p[0][0], p[0][1], p[0][2]), SmPoint3d(p[1][0], p[1][1], p[1][2]), SmPoint3d(p[2][0], p[2][1], p[2][2])};
-        ball_corner_sphere(r, SmPoint3d(c[0], c[1], c[2]), rad, v3, true, false);
+        ball_corner_sphere(r, SmPoint3d(c[0], c[1], c[2]), rad, v3, true);
         done(r);
     }
     smlib_brep_free(body);
 }
 
-// The box corner's sphere face turned round by SmFace::SwapUV, as SmBrep::OrientTrimmedSurfaces
-// turns a face, then the body oriented outward again: the face stays the sphere it was, bounded on
-// it, G1 to the rounds, the body sound at its volume.
+// The box corner's Ball patch turned round by SmFace::SwapUV, as SmBrep::OrientTrimmedSurfaces
+// turns a face, then the body oriented outward again: the patch stays on the sphere it was on,
+// bounded on it, G1 to the rounds, the body sound at its volume.
 void ball_sphere_turned_round()
 {
     const double rad = 3.0, want = ball_box_volume(rad);
@@ -7051,7 +7040,10 @@ void ball_sphere_turned_round()
         int turned = 0;
         for (ULONG f = 0; f < faces.GetSize(); ++f)
         {
-            if (faces[f]->GetSurface() != nullptr && faces[f]->GetSurface()->GetType() == SmSphere_TYPE)
+            SmTArray<SmVertex *> fv;
+            faces[f]->GetVertices(fv);
+            if (fv.GetSize() == 3 && vertex_at(fv, BALL_BOX_VERTICES[0]) >= 0 && vertex_at(fv, BALL_BOX_VERTICES[1]) >= 0 &&
+                vertex_at(fv, BALL_BOX_VERTICES[2]) >= 0)
             {
                 CHECK(faces[f]->SwapUV() == SM_SUCCESS);
                 turned++;
@@ -7073,12 +7065,16 @@ void ball_sphere_turned_round()
 // The Ball corner's cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--balls-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase BALL_CASES[] = {
-    {"box_corner", ball_box_corner, nullptr},
-    {"pocket_corner", ball_pocket_corner, nullptr},
-    {"prism_corner", ball_prism_corner, nullptr},
+    {"box_corner", ball_box_corner,
+     "the corner is the analytic SmSphere, not the rational patch every Ball is to be (the owner's ruling)"},
+    {"pocket_corner", ball_pocket_corner,
+     "the corner is the analytic SmSphere, not the rational patch every Ball is to be (the owner's ruling)"},
+    {"prism_corner", ball_prism_corner,
+     "the corner is the analytic SmSphere, not the rational patch every Ball is to be (the owner's ruling)"},
     {"oblique_corner", ball_oblique_corner,
      "the rounds' end circles 1.3e-12 off the sphere: each exact round's axis and span run between its trace's end sections as solved at the rails' crossings, not through the ball's centre"},
-    {"sphere_turned_round", ball_sphere_turned_round, nullptr},
+    {"sphere_turned_round", ball_sphere_turned_round,
+     "the corner is the analytic SmSphere, not the rational patch every Ball is to be (the owner's ruling)"},
 };
 
 int ball_cases(bool known_failing, const char *only)
