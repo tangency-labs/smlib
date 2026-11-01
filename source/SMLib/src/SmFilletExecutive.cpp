@@ -512,6 +512,7 @@ SmFilletExecutive::SmFilletExecutive
    m_bOverflowFirst(FALSE),
    m_bSweptTurns(FALSE),
    m_bClassifyOnly(FALSE),
+   m_bKeepFeatures(FALSE),
    m_bDoPiecewiseMerge(FALSE),
    m_bDoTopologyInsertion(TRUE),
    m_bDoGlobalMerge(FALSE),
@@ -4897,6 +4898,23 @@ SmBoolean bDebugMe = FALSE ;
     }
 
   SmTemporaryChangeValue<SmBoolean> sChange(m_pTargetBrep->m_bEditingEnabled,TRUE);
+
+  // SolidCraft change: a feature standing inside a round's band is kept (m_bKeepFeatures): the
+  // round is trimmed round it in place and sewn in instead of merged (SmFilletKeepFeatures.cpp).
+  if ( m_bKeepFeatures && !m_bCliffOverflow )
+    {
+      SmBoolean bKept = FALSE;
+      SmStatus  eKept = KeepFeaturesInBands( bKept );
+      if ( eKept != SM_SUCCESS || bKept )
+        {
+          if ( pOptFilletErrorInfo != NULL )
+            {
+              *pOptFilletErrorInfo = *( GetFilletErrorInfo() );
+            }
+          SER( eKept );
+          return SM_SUCCESS;
+        }
+    }
 
   // SolidCraft change: a cliff overflow closes the fillet faces into the region the blends
   // remove and subtracts it from the target, instead of merging the fillet faces in.

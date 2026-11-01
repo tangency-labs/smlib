@@ -603,6 +603,8 @@ int32_t round_edges(SmBrep *b, const std::vector<SmEdge *> &edges, const std::ve
     // each setback set on its corner between making the corners and filleting. The corners are
     // classified as they are made: a turn is Swept or Mitred from the start.
     exec.SetSweptTurns(section.turn == SMLIB_TURN_SWEPT ? TRUE : FALSE);
+    // A feature (a boss, a cut) standing inside a round's band stays, or the round takes it.
+    exec.SetKeepFeatures(section.keep_features ? TRUE : FALSE);
     s = status(exec.CreateFilletCorners());
     if (s != SMLIB_OK)
     {

@@ -731,8 +731,11 @@ int32_t smlib_blend_turn(const smlib_brep *brep, int32_t kind, int32_t turn, con
  * to its contact line) reaches the feature's footprint, the feature stays: the round is built
  * along its whole edge, and the feature's walls are carried down (a boss) or up (a cut) to the
  * round's surface and trimmed by it. Off, the round takes such a feature as if it were not
- * there. A feature the band does not reach stands as it was either way. Any other value of
- * `keep_features` is SMLIB_ERR_ARG. */
+ * there. A feature the band does not reach stands as it was either way. The round is trimmed in
+ * place along its creases with the walls (exact off a planar wall; otherwise fitted, certified
+ * within a tenth of the fillet's tolerance), its face split round the footprint. A kept boss's
+ * walls must be upright to a planar face it stands on, else SMLIB_ERR_NOT_EXACT for now. Any
+ * other value of `keep_features` is SMLIB_ERR_ARG. */
 int32_t smlib_blend_features(const smlib_brep *brep, int32_t kind, int32_t keep_features, const double *points, const double *sizes,
                              int64_t n_points, double tolerance, smlib_brep **out, int64_t *out_failed_point);
 

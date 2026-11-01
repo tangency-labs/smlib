@@ -254,6 +254,10 @@ protected:
   SmTArray<SmEdge*>         m_vOverflowEdges;       // SolidCraft change: the edges of the blends that overflow, when stopped so
   SmTArray<SmEdge*>         m_vMitredEdges;         // SolidCraft change: when stopped so, the edges of each two blends mitred at a
                                                     //   face's concave corner (SmBlendCorner::IsMitre), two by two
+  SmBoolean                 m_bKeepFeatures;        // SolidCraft change: TRUE = a feature (a boss, a cut) whose footprint is an inner
+                                                    //   loop of a face a round rolls on, and which the round's band reaches, stays: the
+                                                    //   round is trimmed by its walls, carried to the round (SmFilletKeepFeatures.cpp);
+                                                    //   FALSE = the round takes it (the merge drops it, as SMLib did)
 
   // gwc: Only one of m_bDoPiecewiseMerge, m_bDoTopologyInsertion, and m_bDoGlobalMerge should be TRUE in any SmFilletExecutive.
   //      They are 3 different ways to do the same thing; move m_pFilletBrep Topology and Geometry into m_pTargetBrep. 
@@ -441,6 +445,8 @@ public:
   void      SetOverflowFirst(SmBoolean bFirst) { m_bOverflowFirst = bFirst; }
   void      SetClassifyOnly(SmBoolean bOnly) { m_bClassifyOnly = bOnly; }
   void      SetSweptTurns(SmBoolean bSwept) { m_bSweptTurns = bSwept; }
+  void      SetKeepFeatures(SmBoolean bKeep) { m_bKeepFeatures = bKeep; } // SolidCraft change: keep features (SmFilletKeepFeatures.cpp)
+  SmStatus  KeepFeaturesInBands(SmBoolean & rbKept); // SolidCraft change: trim the rounds in place round the features their bands reach, sew them in
   SmBoolean GetSweptTurns() const { return m_bSweptTurns; }
   const SmTArray<SmEdge*> & GetOverflowEdges() const { return m_vOverflowEdges; }
   const SmTArray<SmEdge*> & GetMitredEdges() const { return m_vMitredEdges; }
