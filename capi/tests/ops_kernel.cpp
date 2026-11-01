@@ -1288,6 +1288,9 @@ void shelled_tapered_box_rounds()
 // them sampled, below the true hull) and lies within every plane tangent to it along the
 // sections, the three rounds' prisms: 512 - 225 (1 - pi/4) - 125 (sqrt 2 - 1), the corner cube
 // of r keeping the three cylinders' common octant, (2 - sqrt 2) r^3, in place of the sphere's.
+// The volume bound is a coarse check: alone it passed a non-convex fill (593a426's fitted patch,
+// certified out: a piece 0.009 r^2 out of a prism, a curvature sign negative); convexity is
+// certified by setback_g1_fill_keeps_the_body_convex.
 void corner_setback()
 {
     smlib_brep *part = box(0, 0, 0, 60, 40, 20);
