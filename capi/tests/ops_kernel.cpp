@@ -4030,7 +4030,7 @@ enum class RoundKind
 {
     RATIONAL, // a rational B-spline of the given degrees, either way round
     REVOLVED, // the ball's arc turned about the faces' common axis
-    FITTED    // a B-spline within the fillet's tolerance of the canal surface
+    FITTED    // not rational: the round by its definition, exact, on its certified net
 };
 
 // A primitive placed: its x, y and z axes onto `x`, `y`, `z`, then moved by `t` (consumes `b`).
@@ -4098,7 +4098,9 @@ void exact_round(smlib_brep *body, std::vector<double> points, double r, double 
         {
             continue;
         }
-        const bool spline = srf->GetType() == SmBSplineSurface_TYPE;
+        // a round whose spine is not rational is its definition (an SmProceduralBlend on its certified net)
+        const SmProceduralBlend *definition = dynamic_cast<const SmProceduralBlend *>(srf);
+        const bool spline = srf->GetType() == SmBSplineSurface_TYPE || definition != nullptr;
         const bool revolved = srf->GetType() == SmSurfOfRevolution_TYPE || srf->GetType() == SmTorus_TYPE;
         if (!spline && !revolved)
         {
@@ -4120,7 +4122,7 @@ void exact_round(smlib_brep *body, std::vector<double> points, double r, double 
             CHECK(revolved);
             break;
         case RoundKind::FITTED:
-            CHECK(spline);
+            CHECK(definition != nullptr && definition->GetOrder() == 1);
             break;
         }
         // the ball: every point of the round, moved r along its normal (either way), is at r from each face
@@ -4153,9 +4155,27 @@ void exact_round(smlib_brep *body, std::vector<double> points, double r, double 
                 worst = std::max(worst, best);
             }
         }
-        const double allowed = kind == RoundKind::FITTED ? fitted_tol : 1e-9;
+        // a definition is exact: its points on the ball to rounding, its net within its bound of them
+        const double allowed = (kind == RoundKind::FITTED && definition == nullptr) ? fitted_tol : 1e-9;
         std::printf("    off the ball's sphere by %.3g (allowed %.3g)\n", worst, allowed);
         CHECK(worst <= allowed);
+        if (definition != nullptr)
+        {
+            double gap = 0.0;
+            for (int a = 0; a <= 12; a++)
+            {
+                for (int c = 0; c <= 12; c++)
+                {
+                    SmPoint2d uv(dom.GetMin().x + (dom.GetMax().x - dom.GetMin().x) * a / 12.0,
+                                 dom.GetMin().y + (dom.GetMax().y - dom.GetMin().y) * c / 12.0);
+                    SmPoint3d x, y;
+                    CHECK(definition->EvaluatePoint(uv, x) == SM_SUCCESS && definition->SmBSplineSurface::EvaluatePoint(uv, y) == SM_SUCCESS);
+                    gap = std::max(gap, x.DistanceBetween(y));
+                }
+            }
+            std::printf("    its net off it by %.3g (its certified bound %.3g)\n", gap, definition->GetBound());
+            CHECK(gap <= definition->GetBound());
+        }
     }
     CHECK(rounds > 0);
     done(b);
@@ -4281,8 +4301,8 @@ void exact_class_cylinders_touching_at_a_point()
 
 // A tee: a branch R 8 about z from z = 0 to 40 standing on a pipe R 20 about x (x within 50),
 // joined; the saddle edge rounded r 3. The spine, where the cylinders R 23 and R 11 meet, is a
-// quartic with no node: not rational, so the round is a B-spline, within the fillet's tolerance
-// of the ball's surface. V0 = 129767.064584659383; the round adds 62.888321009560.
+// quartic with no node: not rational, so the round is its definition (an SmProceduralBlend of order
+// 1), on the ball's surface to rounding, its net within its certified bound. V0 = 129767.064584659383; the round adds 62.888321009560.
 void exact_class_tee_is_fitted()
 {
     const double c0[3] = {0, 0, 0};
