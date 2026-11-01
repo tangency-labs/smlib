@@ -228,6 +228,8 @@ protected:
 
   SmTArray<SmSurface*>      m_vRadiusCornerSurfaces; // SolidCraft change: copies of the fillet surfaces that turn where their radius
                                                      // has a corner, owned; their faces are split there after the merge
+  SmTArray<SmLawCornerPieces*> m_vRadiusCornerPieces; // SolidCraft change: per noted surface, its exact pieces where a law
+                                                     // corner is a dip or a peak (owned), else NULL
 
   SmBoolean                 m_bCliffOverflow;       // SolidCraft change: TRUE = a convex blend's rail leaves its face across a cliff;
                                                     //   the blend is built on its faces' continuations and the material it
@@ -451,6 +453,7 @@ public:
   SmStatus EaseSetBackSections();             // SolidCraft change: ease rounds into curvature-continuous sections before eased setbacks (SmFilletCorner::m_dEaseDist)
   SmStatus NoteRadiusCornerSurfaces();        // SolidCraft change: copy fillet surfaces that turn where the radius has a corner
   SmStatus SplitFilletFacesAtRadiusCorners(); // SolidCraft change: split those fillet faces where the radius turns
+  SmStatus BuildLawCorners(const SmTArray<SmFace*> & crFaces, const SmLawCornerPieces & crKept); // SolidCraft change: the exact round at a law's dips and peaks
   SmStatus RemoveTopoEdges           ();
   void     RemoveFromTopoEdges( SmFilletEdge * pTopoEdge )
   {

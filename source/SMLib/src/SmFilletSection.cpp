@@ -52,6 +52,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <memory>
 #include <vector>
 
 namespace
@@ -1793,6 +1794,9 @@ SmStatus SmGnSectionFSG::CircleSurface
 
     SmBSplineSurface * pJoined = NULL;
     SmObjDelete sDeleteJoined;
+    // a ball whose radius varies: the pieces are kept exact for the corners (SmLawCornerPieces)
+    std::unique_ptr<SmLawCornerPieces> sKept(bBallRadiusVaries ? new SmLawCornerPieces : NULL);
+    SmLawCornerPieces * pKept = sKept.get();
     for (ULONG i=0; i+1<sEnds.GetSize(); i++)
     {
         SmExtent1d sPiece(sEnds[i], sEnds[i+1]);
@@ -1814,22 +1818,73 @@ SmStatus SmGnSectionFSG::CircleSurface
             dThisApproxTol3d, bNeedG1Continuity, bBallRadiusVaries, pSurf1, pUV1, pSurf2, pUV2, pPiece));
         NER(pPiece);
         SmObjDelete sDeletePiece(pPiece);
+        if (pKept != NULL)
+        {
+            SmSurface * pCopy = NULL;
+            SER(pPiece->Copy(crContext, pCopy));
+            SmBSplineSurface * pExact = SM_CAST_PTR(SmBSplineSurface, pCopy);
+            if (pExact == NULL) { delete pCopy; return SM_ERR; }
+            pKept->m_vPieces.Add(pExact);
+        }
 
         if (pJoined == NULL)
         {
             sDeletePiece.Clear();
             pJoined = pPiece;
             sDeleteJoined.SetObj(pJoined);
-            continue;
         }
+        else
+        {
+            // join the piece on at its u-min side; no knot removal there, the surface turns
+            SmBSplineSurface * pNext = NULL;
+            SER(pJoined->JoinSurface(crContext, pPiece, SM_SP_U, 0.0, pNext));
+            NER(pNext);
+            delete pJoined;
+            pJoined = pNext;
+            sDeleteJoined.SetObj(pJoined);
+        }
+        if (pKept != NULL)
+            { pKept->m_vJoinedEnds.Add(pJoined->GetNaturalUVDomain().GetMax().x); }
+    }
 
-        // join the piece on at its u-min side; no knot removal there, the surface turns
-        SmBSplineSurface * pNext = NULL;
-        SER(pJoined->JoinSurface(crContext, pPiece, SM_SP_U, 0.0, pNext));
-        NER(pNext);
-        delete pJoined;
-        pJoined = pNext;
-        sDeleteJoined.SetObj(pJoined);
+    // Each corner: the corner ball (its centre on the centre line, through the rails) and how its
+    // two sides' touch circles lie. The side before ends on its circle at the corner, the side
+    // after starts on its own; both run through the rail points there. Along the rail, the circle
+    // after lies ahead of the one before where the law dips (the ball's sphere between them), and
+    // behind it where the law peaks (the sides cross).
+    if (pKept != NULL)
+    {
+        for (ULONG i=0; i+1<pKept->m_vPieces.GetSize(); i++)
+        {
+            const double dT = sEnds[i+1];
+            SmVector3d sCentPV[2], sRailPV[2];
+            SER(pCenterLine->Evaluate(dT, 1, TRUE, sCentPV));
+            SER(pRail1Curve->Evaluate(dT, 1, TRUE, sRailPV, FALSE));
+            SmPoint3d sCentre(sCentPV[0]);
+            SmVector3d sAlong = sRailPV[1];
+            if (sAlong.Length() <= SM_EFF_ZERO) { return SM_ERR; }
+            sAlong = sAlong / sAlong.Length();
+            SmPoint3d asMid[2];
+            for (ULONG j=0; j<2; j++)
+            {
+                const SmBSplineSurface * pSide = pKept->m_vPieces[i+j];
+                SmExtent2d sDomain = pSide->GetNaturalUVDomain();
+                SmPoint2d sUV(j == 0 ? sDomain.GetMax().x : sDomain.GetMin().x, 0.5 * (sDomain.GetMin().y + sDomain.GetMax().y));
+                SER(pSide->EvaluatePoint(sUV, asMid[j]));
+            }
+            const double dAhead = (asMid[1] - asMid[0]).Dot(sAlong);
+            pKept->m_vKinds.Add(dAhead > dThisApproxTol3d ? SmLawCornerPieces::SM_LC_DIP
+                              : dAhead < -dThisApproxTol3d ? SmLawCornerPieces::SM_LC_PEAK : SmLawCornerPieces::SM_LC_MATCHING);
+            pKept->m_vCentres.Add(sCentre);
+            pKept->m_vRadii.Add((SmPoint3d(sRailPV[0]) - sCentre).Length());
+        }
+        // the pieces' sections are the balls' circles within the skin's tolerance, and within the
+        // arcs' own where they are approximated (a share of the radius)
+        pKept->m_pJoined = pJoined;
+        pKept->m_dTol3d = dThisApproxTol3d;
+        for (ULONG i=0; i<pKept->m_vRadii.GetSize() && m_sArcs.bApproximateArcs; i++)
+            { pKept->m_dTol3d = smos_Max(pKept->m_dTol3d, 0.01 * m_sArcs.dTolPercentRadius * pKept->m_vRadii[i]); }
+        rFilletSolver.AddLawCornerPieces(sKept.release());
     }
 
     sDeleteJoined.Clear();

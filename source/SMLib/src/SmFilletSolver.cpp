@@ -93,7 +93,70 @@ SmFilletSolver::~SmFilletSolver
   if (m_pSurfaces[0]) { delete m_pSurfaces[0]; m_pSurfaces[0] = NULL ; }
   if (m_pSurfaces[1]) { delete m_pSurfaces[1]; m_pSurfaces[1] = NULL ; }
 
+  for (ULONG i=0; i<m_vLawCornerPieces.GetSize(); i++)
+    { delete m_vLawCornerPieces[i]; m_vLawCornerPieces[i] = NULL; }
+
 } // end SmFilletSolver::~SmFilletSolver destructor
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. The exact pieces kept for a surface joined at
+    law corners, NULL when none were kept for it.
+***********************************************************************/
+const SmLawCornerPieces * SmFilletSolver::FindLawCornerPieces
+  (const SmSurface * pJoined) const
+{
+  for (ULONG i=0; i<m_vLawCornerPieces.GetSize(); i++)
+    {
+      if (m_vLawCornerPieces[i] != NULL && m_vLawCornerPieces[i]->m_pJoined == pJoined)
+        { return m_vLawCornerPieces[i]; }
+    }
+  return NULL;
+
+} // end SmFilletSolver::FindLawCornerPieces
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. SmLawCornerPieces owns its pieces.
+***********************************************************************/
+SmLawCornerPieces::~SmLawCornerPieces()
+{
+  for (ULONG i=0; i<m_vPieces.GetSize(); i++)
+    { delete m_vPieces[i]; m_vPieces[i] = NULL; }
+
+} // end SmLawCornerPieces::~SmLawCornerPieces
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. A copy with copies of the pieces; the joined
+    surface pointer is copied as it is.
+***********************************************************************/
+SmStatus SmLawCornerPieces::Copy
+  (const SmContext     & crContext,  // in : context for the copies
+   SmLawCornerPieces *& rpCopy) const // out: new copy
+{
+  rpCopy = NULL;
+  SmLawCornerPieces * pCopy = new SmLawCornerPieces;
+  pCopy->m_pJoined     = m_pJoined;
+  pCopy->m_vJoinedEnds = m_vJoinedEnds;
+  pCopy->m_vKinds      = m_vKinds;
+  pCopy->m_vCentres    = m_vCentres;
+  pCopy->m_vRadii      = m_vRadii;
+  pCopy->m_dTol3d      = m_dTol3d;
+  for (ULONG i=0; i<m_vPieces.GetSize(); i++)
+    {
+      SmSurface * pPiece = NULL;
+      SmStatus eStatus = m_vPieces[i]->Copy(crContext, pPiece);
+      SmBSplineSurface * pBSpline = SM_CAST_PTR(SmBSplineSurface, pPiece);
+      if (eStatus != SM_SUCCESS || pBSpline == NULL)
+        {
+          delete pPiece;
+          delete pCopy;
+          return SM_ERR;
+        }
+      pCopy->m_vPieces.Add(pBSpline);
+    }
+  rpCopy = pCopy;
+  return SM_SUCCESS;
+
+} // end SmLawCornerPieces::Copy
 
 /*******************************************************************//**
 PURPOSE: Private method for base class, called by derived classes

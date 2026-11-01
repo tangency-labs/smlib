@@ -5039,6 +5039,9 @@ void section_variable_round_law_peak()
             std::printf("  peak %g: removed %.9f, want %.9f\n", w, 6000.0 - volume_of(r), removed);
             CHECK(near(6000.0 - volume_of(r), removed, 1e-4));
             CHECK(sound(r));
+            // the block's six faces and the two sides' rounds, meeting where they cross
+            int64_t counts[3] = {0, 0, 0};
+            CHECK(smlib_brep_counts(r, counts) == SMLIB_OK && counts[0] == 8);
             smlib_brep_free(r);
         }
     }
@@ -5065,6 +5068,9 @@ void section_variable_round_law_dip()
             std::printf("  dip %d: removed %.9f, want %.9f\n", k, 8000.0 - volume_of(r), removed);
             CHECK(near(8000.0 - volume_of(r), removed, 1e-4));
             CHECK(sound(r));
+            // the cube's six faces, the two sides' rounds and the corner ball's zone between them
+            int64_t counts[3] = {0, 0, 0};
+            CHECK(smlib_brep_counts(r, counts) == SMLIB_OK && counts[0] == 9);
             smlib_brep_free(r);
         }
     }
@@ -5085,6 +5091,9 @@ void section_variable_round_law_dips()
         std::printf("  dips: removed %.9f, want %.9f\n", 8000.0 - volume_of(r), 38.818277);
         CHECK(near(8000.0 - volume_of(r), 38.818277, 1e-4));
         CHECK(sound(r));
+        // the cube's six faces, three rounds and the zone at the dip
+        int64_t counts[3] = {0, 0, 0};
+        CHECK(smlib_brep_counts(r, counts) == SMLIB_OK && counts[0] == 10);
         smlib_brep_free(r);
     }
     smlib_brep_free(cube);
@@ -5129,12 +5138,9 @@ const TangentEndCase SECTION_CASES[] = {
     {"pipe_on_plate_round", section_pipe_on_plate_round, nullptr},
     {"pipe_on_plate_g2", section_pipe_on_plate_g2, nullptr},
     {"pipe_on_plate_g2_thumbweight_half", section_pipe_on_plate_g2_thumbweight_half, nullptr},
-    {"variable_round_law_dip", section_variable_round_law_dip,
-     "the two sides' rounds are joined from their own end circles at the law's corner; the ball's sphere between its two touch circles is not built: 39.6456 removed against 39.5421"},
-    {"variable_round_law_dips", section_variable_round_law_dips,
-     "at the dip the ball's sphere between the touch circles is not built, at the peak the sides' rounds end on their own end circles, not where they cross: 39.0780 removed against 38.8183"},
-    {"variable_round_law_peak", section_variable_round_law_peak,
-     "the two sides' rounds are joined from their own end circles at the law's corner, not where they cross: 39.8302 removed against 39.5410 (w 4)"},
+    {"variable_round_law_dip", section_variable_round_law_dip, nullptr},
+    {"variable_round_law_dips", section_variable_round_law_dips, nullptr},
+    {"variable_round_law_peak", section_variable_round_law_peak, nullptr},
     {"variable_round_on_its_cone", section_variable_round_on_its_cone, nullptr},
     {"variable_round_spline_folds", section_variable_round_spline_folds, nullptr},
 };

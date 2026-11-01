@@ -559,6 +559,10 @@ SmFilletExecutive::~SmFilletExecutive()
     {
       delete m_vRadiusCornerSurfaces[i] ; m_vRadiusCornerSurfaces[i] = NULL ;
     }
+  for (i=0; i<m_vRadiusCornerPieces.GetSize(); i++)
+    {
+      delete m_vRadiusCornerPieces[i] ; m_vRadiusCornerPieces[i] = NULL ;
+    }
 
   // delete filletCorners
   for (i=0; i<m_vFilletCorners.GetSize(); i++)
@@ -2727,6 +2731,414 @@ SmStatus SmFilletExecutive::EaseSetBackSections()
 } // end SmFilletExecutive::EaseSetBackSections
 
 /*******************************************************************//**
+PURPOSE: The zone of a sphere between two of its circles that cross at the
+   same two points (a law dip's corner ball between its two sides' touch
+   circles), as one rational biquadratic patch: u runs from the circle
+   through crOnFirst (u = 0) to the one through crOnSecond (u = 1), v from
+   crTwo (v = 0) to crOne (v = 1); both v ends are poles.
+
+NOTES: SolidCraft change. Inverted about crOne, the sphere is a plane and the
+   circles are lines through the image Q of crTwo; the zone is the wedge
+   between the rays from Q that hold the arcs. The ray turned by a rational
+   quadratic unit vector d(u) and run out by t = v / (1 - v), inverted back,
+   is quadratic in each parameter:
+     X - One = k2 (W (Q - One) (1-v)^2 + D v (1-v)) / (W |Q - One|^2 (1-v)^2 + 2 (Q - One).D v (1-v) + W v^2)
+   (D = W d, W the weight). The wedge must be under a half turn and the
+   middle weights positive; the zone is refused otherwise.
+***********************************************************************/
+static SmStatus sm_SphereZone
+  (const SmContext   & crContext,   // in : context for the new surface
+   const SmPoint3d   & crOne,       // in : one point both circles pass (v = 1)
+   const SmPoint3d   & crTwo,       // in : the other (v = 0)
+   const SmPoint3d   & crOnFirst,   // in : a point of the first circle's arc between them
+   const SmPoint3d   & crOnSecond,  // in : a point of the second circle's arc between them
+   SmBSplineSurface *& rpZone)      // out: the zone (new)
+{
+  rpZone = NULL;
+  const double dK2 = (crTwo - crOne).Dot(crTwo - crOne);
+  if (dK2 <= SM_EFF_ZERO)
+    { return SM_ERR; }
+  auto Invert = [&](const SmPoint3d & crX) { SmVector3d sD = crX - crOne; return crOne + sD * (dK2 / sD.Dot(sD)); };
+  const SmPoint3d sQ = Invert(crTwo);
+  SmVector3d sFirst = Invert(crOnFirst) - sQ, sSecond = Invert(crOnSecond) - sQ;
+  if (sFirst.Length() <= SM_EFF_ZERO || sSecond.Length() <= SM_EFF_ZERO)
+    { return SM_ERR; }
+  sFirst = sFirst / sFirst.Length();
+  sSecond = sSecond / sSecond.Length();
+  const double dCos = sFirst.Dot(sSecond);
+  if (dCos <= -1.0 + SM_EFF_ZERO_SQRT)
+    { return SM_ERR; }
+  // the unit vector's rational quadratic arc: its control points and weights
+  const SmVector3d asD[3] = { sFirst, (sFirst + sSecond) / (1.0 + dCos), sSecond };
+  const double adW[3] = { 1.0, std::sqrt(0.5 * (1.0 + dCos)), 1.0 };
+  const SmVector3d sQO = sQ - crOne;
+  SmTArray<SmPoint3d> sPoints;
+  SmTArray<double> sWeights;
+  for (ULONG i=0; i<3; i++)
+    {
+      const SmVector3d sDh = asD[i] * adW[i];
+      const double adDen[3] = { adW[i] * sQO.Dot(sQO), sQO.Dot(sDh), adW[i] };
+      const SmVector3d asNum[3] = { sQO * adW[i], sDh * 0.5, SmVector3d(0.0, 0.0, 0.0) };
+      for (ULONG j=0; j<3; j++)
+        {
+          if (adDen[j] <= SM_EFF_ZERO)
+            { return SM_ERR; }
+          sPoints.Add(crOne + asNum[j] * (dK2 / adDen[j]));
+          sWeights.Add(adDen[j]);
+        }
+    }
+  SmTArray<ULONG> sMults;
+  sMults.Add(3); sMults.Add(3);
+  SmTArray<double> sKnots;
+  sKnots.Add(0.0); sKnots.Add(1.0);
+  SER(SmBSplineSurface::CreateCanonical(crContext, 2, 2, sPoints, SM_SF_UNSPECIFIED, sMults, sMults, sKnots, sKnots,
+                                        SM_KT_UNSPECIFIED, &sWeights, NULL, rpZone));
+  NER(rpZone);
+  return SM_SUCCESS;
+
+} // end sm_SphereZone
+
+/*******************************************************************//**
+PURPOSE: A copy of a curve running from crFrom to crTo (reversed if it runs
+   the other way), NULL when its ends are not those points within dTol.
+***********************************************************************/
+static SmStatus sm_CurveBetween
+  (const SmContext & crContext,  // in : context for the copy
+   const SmCurve   & crCurve,    // in : the curve
+   const SmPoint3d & crFrom,     // in : where the copy starts
+   const SmPoint3d & crTo,       // in : where it ends
+   double            dTol,       // in : how near its ends must be
+   SmCurve        *& rpCopy)     // out: the copy (new), or NULL
+{
+  rpCopy = NULL;
+  SmExtent1d sIvl = crCurve.GetNaturalInterval();
+  SmPoint3d sStart, sEnd;
+  SER(crCurve.EvaluatePoint(sIvl.GetMin(), sStart));
+  SER(crCurve.EvaluatePoint(sIvl.GetMax(), sEnd));
+  const SmBoolean bForward = sStart.CloserThan(dTol, crFrom) && sEnd.CloserThan(dTol, crTo);
+  const SmBoolean bBackward = sStart.CloserThan(dTol, crTo) && sEnd.CloserThan(dTol, crFrom);
+  if (!bForward && !bBackward)
+    { return SM_SUCCESS; }
+  SmCurve * pCopy = NULL;
+  SER(crCurve.Copy(crContext, pCopy));
+  NER(pCopy);
+  if (!bForward)
+    {
+      SmExtent1d sReversed;
+      SmStatus eStatus = pCopy->ReverseParameterization(pCopy->GetNaturalInterval(), sReversed);
+      if (eStatus != SM_SUCCESS) { delete pCopy; return eStatus; }
+    }
+  rpCopy = pCopy;
+  return SM_SUCCESS;
+
+} // end sm_CurveBetween
+
+/*******************************************************************//**
+PURPOSE: Which of a law-cornered round's pieces a face of it lies on (by its
+   middle in the joined surface's u), or the piece count when none.
+***********************************************************************/
+static SmStatus sm_PieceOfFace
+  (SmFace                  * pFace,  // in : face on the joined surface (or a copy of it)
+   const SmLawCornerPieces & crKept, // in : the pieces
+   ULONG                   & rlPiece)// out: its piece
+{
+  rlPiece = crKept.m_vPieces.GetSize();
+  SmExtent2d sBox;
+  SER(pFace->CalculateUVDomainFromUVTrimCurves(sBox));
+  const double dMid = 0.5 * (sBox.GetMin().x + sBox.GetMax().x);
+  for (ULONG k=0; k<crKept.m_vJoinedEnds.GetSize(); k++)
+    {
+      if (dMid < crKept.m_vJoinedEnds[k])
+        { rlPiece = k; break; }
+    }
+  return SM_SUCCESS;
+
+} // end sm_PieceOfFace
+
+/*******************************************************************//**
+PURPOSE: The edge of a face between two given points, NULL when it has none.
+***********************************************************************/
+static SmEdge * sm_EdgeBetween(SmFace * pFace, const SmPoint3d & crA, const SmPoint3d & crB, double dTol)
+{
+  SmTArray<SmEdge*> sEdges;
+  pFace->GetEdges(sEdges);
+  for (ULONG i=0; i<sEdges.GetSize(); i++)
+    {
+      SmVertex * pStart = sEdges[i]->GetStartVertex();
+      SmVertex * pEnd = sEdges[i]->GetEndVertex();
+      if (pStart == NULL || pEnd == NULL)
+        { continue; }
+      const SmPoint3d sS = pStart->GetPoint(), sE = pEnd->GetPoint();
+      if ((sS.CloserThan(dTol, crA) && sE.CloserThan(dTol, crB)) || (sS.CloserThan(dTol, crB) && sE.CloserThan(dTol, crA)))
+        { return sEdges[i]; }
+    }
+  return NULL;
+
+} // end sm_EdgeBetween
+
+/*******************************************************************//**
+PURPOSE: The exact round at the corners of a radius law where it dips or
+   peaks, on the faces of one round split there (crFaces).
+
+NOTES: SolidCraft change. The round is the union of its balls. Each side of a
+   corner is its own piece, skinned exactly (crKept); the joined surface the
+   faces were made on took one boundary row at each corner, while the sides
+   end on the corner ball's touch circles of their own, through the same two
+   rail points. Where the law dips, the circle after lies ahead of the one
+   before and the ball's own sphere fills the zone between them: a face of its
+   own, its edges the two circles, its ends poles at the rail points. Where
+   the law peaks the sides run past each other and cross: each ends on their
+   crossing curve, an edge where they meet at an angle.
+
+   The faces are unstitched, given their pieces and their corner edges, the
+   zones added, and the lot stitched and oriented again (the C API's
+   smlib_stitch sequence: SmBrep::StitchFaces, then OrientTrimmedSurfaces).
+
+   G1 at a dip, G0 at a peak: that is the shape the law's corner gives.
+   TODO(G2): curvature continuity needs the law smoothed across the corner, an
+   option that changes the radius the user asked for (never the default).
+***********************************************************************/
+SmStatus SmFilletExecutive::BuildLawCorners
+  (const SmTArray<SmFace*>  & crFaces,  // in : the round's faces, split at its corners
+   const SmLawCornerPieces  & crKept)   // in : its exact pieces and corners
+{
+  NER(m_pTargetBrep);
+  const SmContext & crContext = *m_pTargetBrep->GetContext();
+  const ULONG lPieces = crKept.m_vPieces.GetSize();
+  if (lPieces < 2 || crKept.m_vKinds.GetSize() + 1 != lPieces || crKept.m_vJoinedEnds.GetSize() != lPieces)
+    { return SM_ERR; }
+  SmBoolean bAny = FALSE;
+  for (ULONG k=0; k+1<lPieces; k++)
+    { bAny = bAny || crKept.m_vKinds[k] != SmLawCornerPieces::SM_LC_MATCHING; }
+  if (!bAny)
+    { return SM_SUCCESS; }
+
+  // each piece's face
+  SmTArray<SmFace*> sOf;
+  for (ULONG k=0; k<lPieces; k++)
+    { sOf.Add(NULL); }
+  for (ULONG i=0; i<crFaces.GetSize(); i++)
+    {
+      ULONG lPiece = lPieces;
+      SER(sm_PieceOfFace(crFaces[i], crKept, lPiece));
+      if (lPiece >= lPieces || sOf[lPiece] != NULL)
+        { return SM_ERR; }
+      sOf[lPiece] = crFaces[i];
+    }
+
+  // each corner's rail points: the ends of the edge its two faces share
+  double dTol = crKept.m_dTol3d;
+  SmTArray<SmPoint3d> sStarts, sEnds;
+  for (ULONG k=0; k+1<lPieces; k++)
+    {
+      SmPoint3d sA, sB;
+      if (crKept.m_vKinds[k] != SmLawCornerPieces::SM_LC_MATCHING)
+        {
+          NER(sOf[k]); NER(sOf[k+1]);
+          SmTArray<SmEdge*> sEdges;
+          sOf[k]->GetEdges(sEdges);
+          SmEdge * pShared = NULL;
+          for (ULONG i=0; i<sEdges.GetSize() && pShared == NULL; i++)
+            {
+              SmTArray<SmFace*> sEdgeFaces;
+              sEdges[i]->GetFaces(sEdgeFaces);
+              if (sEdgeFaces.IsIn(sOf[k+1]))
+                { pShared = sEdges[i]; }
+            }
+          NER(pShared); NER(pShared->GetStartVertex()); NER(pShared->GetEndVertex());
+          sA = pShared->GetStartVertex()->GetPoint();
+          sB = pShared->GetEndVertex()->GetPoint();
+          const double dEdgeTol = pShared->GetTolerance();
+          dTol = smos_Max(dTol, dEdgeTol);
+        }
+      sStarts.Add(sA);
+      sEnds.Add(sB);
+    }
+
+  // the faces around the round, which it is stitched back to
+  SmTArray<SmFace*> sStitch;
+  for (ULONG k=0; k<lPieces; k++)
+    {
+      NER(sOf[k]);
+      SmTArray<SmEdge*> sEdges;
+      sOf[k]->GetEdges(sEdges);
+      for (ULONG i=0; i<sEdges.GetSize(); i++)
+        {
+          SmTArray<SmFace*> sEdgeFaces;
+          sEdges[i]->GetFaces(sEdgeFaces);
+          for (ULONG j=0; j<sEdgeFaces.GetSize(); j++)
+            {
+              if (!crFaces.IsIn(sEdgeFaces[j]) && !sStitch.IsIn(sEdgeFaces[j]))
+                { sStitch.Add(sEdgeFaces[j]); }
+            }
+        }
+    }
+
+  // unstitch the round's faces (they come back as new faces)
+  SmTArray<SmFace*> sBefore, sAfter;
+  m_pTargetBrep->GetFaces(sBefore);
+  SmTArray<SmFace*> sUnstitch(sOf);
+  SER(m_pTargetBrep->UnStitch(&sUnstitch));
+  m_pTargetBrep->GetFaces(sAfter);
+  for (ULONG k=0; k<lPieces; k++)
+    { sOf[k] = NULL; }
+  for (ULONG i=0; i<sAfter.GetSize(); i++)
+    {
+      if (sBefore.IsIn(sAfter[i]))
+        { continue; }
+      ULONG lPiece = lPieces;
+      SER(sm_PieceOfFace(sAfter[i], crKept, lPiece));
+      if (lPiece >= lPieces || sOf[lPiece] != NULL)
+        { return SM_ERR; }
+      sOf[lPiece] = sAfter[i];
+    }
+  for (ULONG k=0; k<lPieces; k++)
+    { NER(sOf[k]); sStitch.Add(sOf[k]); }
+
+  // each corner's edges, on the face before and the face after
+  SmTArray<SmFace*> sZones;
+  for (ULONG k=0; k+1<lPieces; k++)
+    {
+      const ULONG lKind = crKept.m_vKinds[k];
+      if (lKind == SmLawCornerPieces::SM_LC_MATCHING)
+        { continue; }
+      SmEdge * apEdge[2] = { sm_EdgeBetween(sOf[k], sStarts[k], sEnds[k], dTol), sm_EdgeBetween(sOf[k+1], sStarts[k], sEnds[k], dTol) };
+      NER(apEdge[0]); NER(apEdge[1]);
+
+      // the curve of each side's corner edge
+      SmCurve * apCurve[2] = { NULL, NULL };
+      SmObjDelete asDeleteCurve[2];
+      if (lKind == SmLawCornerPieces::SM_LC_DIP)
+        {
+          // each side's touch circle: its piece's end section at the corner
+          for (ULONG j=0; j<2; j++)
+            {
+              const SmBSplineSurface * pPiece = crKept.m_vPieces[k+j];
+              SmExtent2d sDomain = pPiece->GetNaturalUVDomain();
+              SmBSplineCurve * pIso = NULL;
+              SER(pPiece->CreateIsoParametricCurve(crContext, SM_SP_U, j == 0 ? sDomain.GetMax().x : sDomain.GetMin().x, 0.0, pIso));
+              NER(pIso);
+              apCurve[j] = pIso;
+              asDeleteCurve[j].SetObj(pIso);
+            }
+        }
+      else
+        {
+          // where the sides cross: the one curve from rail point to rail point
+          SmBoolean abEdges[2] = { TRUE, TRUE };
+          SmApproxTol3d sSSITol = crKept.m_dTol3d / 4.0;
+          double dAngTolRad = SM_DEG2RAD(20.0);
+          SmTArray<SmCurve*> s3D, sUV0, sUV1;
+          SmObjsDelete<SmCurve*> sClean3D(&s3D), sCleanUV0(&sUV0), sCleanUV1(&sUV1);
+          const SmBSplineSurface * pBefore = crKept.m_vPieces[k];
+          const SmBSplineSurface * pAfter = crKept.m_vPieces[k+1];
+          SER(pBefore->GlobalSurfaceIntersect(crContext, pBefore->GetNaturalUVDomain(), *pAfter, pAfter->GetNaturalUVDomain(),
+                                              abEdges, &sSSITol, &dAngTolRad, &s3D, &sUV0, &sUV1, NULL, NULL));
+          for (ULONG i=0; i<s3D.GetSize() && apCurve[0] == NULL; i++)
+            {
+              SmCurve * pFound = NULL;
+              SER(sm_CurveBetween(crContext, *s3D[i], sStarts[k], sEnds[k], dTol, pFound));
+              apCurve[0] = pFound;
+            }
+          NER(apCurve[0]);
+          asDeleteCurve[0].SetObj(apCurve[0]);
+          SER(apCurve[0]->Copy(crContext, apCurve[1]));
+          NER(apCurve[1]);
+          asDeleteCurve[1].SetObj(apCurve[1]);
+        }
+
+      // each runs from its edge's start vertex to its end vertex
+      for (ULONG j=0; j<2; j++)
+        {
+          SmCurve * pOriented = NULL;
+          SER(sm_CurveBetween(crContext, *apCurve[j], apEdge[j]->GetStartVertex()->GetPoint(), apEdge[j]->GetEndVertex()->GetPoint(), dTol, pOriented));
+          NER(pOriented);
+          SER(m_pTargetBrep->ReplaceCurve(apEdge[j], pOriented));
+        }
+
+      if (lKind != SmLawCornerPieces::SM_LC_DIP)
+        { continue; }
+
+      // the zone of the corner ball's sphere between the two circles, a face of its own: the
+      // sphere through both circles, which share their ends (the rails' points at the corner)
+      SmPoint3d asOn[2], sOne, sTwo;
+      for (ULONG j=0; j<2; j++)
+        {
+          SmExtent1d sIvl = apCurve[j]->GetNaturalInterval();
+          SER(apCurve[j]->EvaluatePoint(0.5 * (sIvl.GetMin() + sIvl.GetMax()), asOn[j]));
+          if (j == 0)
+            {
+              SER(apCurve[j]->EvaluatePoint(sIvl.GetMin(), sTwo));
+              SER(apCurve[j]->EvaluatePoint(sIvl.GetMax(), sOne));
+            }
+        }
+      SmBSplineSurface * pZone = NULL;
+      SER(sm_SphereZone(crContext, sOne, sTwo, asOn[0], asOn[1], pZone));
+      NER(pZone);
+      SmObjDelete sDeleteZone(pZone);
+      SmTArray<SmCurve*> s3D;
+      SmTArray<SmBSplineCurve*> sUV;
+      SmTArray<SmOrientType> sOrients;
+      SmObjsDelete<SmCurve*> sClean3D(&s3D);
+      SmObjsDelete<SmBSplineCurve*> sCleanUV(&sUV);
+      // outer loop, counterclockwise in (u, v): up the second circle (u = 1), down the first
+      const double adU[2] = { 1.0, 0.0 };
+      for (ULONG j=0; j<2; j++)
+        {
+          SmBSplineCurve * pIso = NULL;
+          SER(pZone->CreateIsoParametricCurve(crContext, SM_SP_U, adU[j], 0.0, pIso));
+          NER(pIso);
+          s3D.Add(pIso);
+          SmBSplineCurve * pLine = NULL;
+          SmExtent1d sIvl = pIso->GetNaturalInterval();
+          SER(SmBSplineCurve::CreateLineSegment(crContext, 2, SmPoint3d(adU[j], sIvl.GetMin(), 0.0), SmPoint3d(adU[j], sIvl.GetMax(), 0.0), pLine));
+          NER(pLine);
+          sUV.Add(pLine);
+          sOrients.Add(j == 0 ? SM_OT_SAME : SM_OT_OPPOSITE);
+        }
+      SmTArray<ULONG> sLoops;
+      sLoops.Add(2);
+      SmTArray<SmPoint3d> sNoPoints;
+      SmRegion * pNewRegion = NULL;
+      SmShell * pNewShell = NULL;
+      SmFace * pZoneFace = NULL;
+      sDeleteZone.Clear();
+      SmTArray<SmCurve*> s3DIn(s3D);
+      SmTArray<SmBSplineCurve*> sUVIn(sUV);
+      s3D.RemoveAll();
+      sUV.RemoveAll();
+      // MakeFaceWithCurves consumes the surface and the curves
+      SER(m_pTargetBrep->MakeFaceWithCurves(NULL, sLoops, &s3DIn, &sUVIn, sOrients, sNoPoints, pZone,
+                                            pZone->GetNaturalUVDomain(), SM_OT_SAME, pNewRegion, pNewShell, pZoneFace));
+      NER(pZoneFace);
+      sZones.Add(pZoneFace);
+      sStitch.Add(pZoneFace);
+    }
+
+  // each side its exact piece, cut down to the face (as the split cut the joined surface: a piece
+  // runs on past the edge's ends, where its law carries on)
+  for (ULONG k=0; k<lPieces; k++)
+    {
+      SmSurface * pCopy = NULL;
+      SER(crKept.m_vPieces[k]->Copy(crContext, pCopy));
+      NER(pCopy);
+      SER(m_pTargetBrep->ReplaceSurface(sOf[k], pCopy, FALSE));
+      SER(sOf[k]->ShrinkGeometry());
+    }
+
+  // stitched back into the solid, and oriented
+  ULONG lStitched = 0, lLamina = 0;
+  double dVertexGap = 0.0, dEdgeGap = 0.0;
+  SER(m_pTargetBrep->StitchFaces(dTol, lStitched, lLamina, dVertexGap, dEdgeGap, &sStitch));
+  if (lLamina != 0)
+    { return SM_ERR; }
+  SmBoolean bMaybeOpen = FALSE;
+  SER(m_pTargetBrep->OrientTrimmedSurfaces(TRUE, bMaybeOpen, FALSE));
+  return SM_SUCCESS;
+
+} // end SmFilletExecutive::BuildLawCorners
+
+/*******************************************************************//**
 PURPOSE: Keep copies of the fillet surfaces of solvers whose radius has a
    corner, where those surfaces turn (a C0 knot).
 
@@ -2761,6 +3173,28 @@ SmStatus SmFilletExecutive::NoteRadiusCornerSurfaces()
           SER(pSurface->Copy(*GetContext(), pCopy));
           NER(pCopy);
           m_vRadiusCornerSurfaces.Add(pCopy);
+          // the exact pieces where a law corner dips or peaks
+          SmLawCornerPieces * pPieces = NULL;
+          const SmLawCornerPieces * pKept = pFS->FindLawCornerPieces(pSurface);
+          if (pKept != NULL && (pKept->m_vKinds.IsIn(SmLawCornerPieces::SM_LC_DIP) || pKept->m_vKinds.IsIn(SmLawCornerPieces::SM_LC_PEAK)))
+            { SER(pKept->Copy(*GetContext(), pPieces)); }
+          m_vRadiusCornerPieces.Add(pPieces);
+        }
+      // a round whose law dips or peaks keeps its joined surface, or its corners cannot be built
+      for (ULONG j=0; j<pFS->m_vLawCornerPieces.GetSize(); j++)
+        {
+          const SmLawCornerPieces * pKept = pFS->m_vLawCornerPieces[j];
+          if (pKept == NULL || !(pKept->m_vKinds.IsIn(SmLawCornerPieces::SM_LC_DIP) || pKept->m_vKinds.IsIn(SmLawCornerPieces::SM_LC_PEAK)))
+            { continue; }
+          SmBoolean bKept = FALSE;
+          for (ULONG k=0; k<pFS->m_vFilletGeoms.GetSize() && !bKept; k++)
+            { bKept = pFS->m_vFilletGeoms[k] != NULL && pFS->m_vFilletGeoms[k]->GetFilletSurface() == pKept->m_pJoined; }
+          if (!bKept)
+            {
+              GetFilletErrorInfo()->NoteError(SM_FILERR_CORNER_UNSUPPORTED,
+                _T("Fillet Error: a round whose radius law has a corner cannot be eased into a corner of the edges yet"));
+              SER(SM_ERR);
+            }
         }
     }
   return SM_SUCCESS;
@@ -2777,6 +3211,7 @@ NOTES: SolidCraft change. Each face becomes faces that are smooth, with an
 SmStatus SmFilletExecutive::SplitFilletFacesAtRadiusCorners()
 {
   SmObjsDelete<SmSurface*> sDeleteCopies(&m_vRadiusCornerSurfaces);
+  SmObjsDelete<SmLawCornerPieces*> sDeletePieces(&m_vRadiusCornerPieces);
   if (m_vRadiusCornerSurfaces.GetSize() == 0)
     { return SM_SUCCESS; }
   NER(m_pTargetBrep);
@@ -2788,8 +3223,9 @@ SmStatus SmFilletExecutive::SplitFilletFacesAtRadiusCorners()
       // the merge gives the target an exact copy of each fillet surface
       SmSurface * pSurface = sFaces[i]->GetSurface();
       SmBoolean bFillet = FALSE;
+      ULONG lNoted = 0;
       for (ULONG j=0; j<m_vRadiusCornerSurfaces.GetSize() && pSurface != NULL && !bFillet; j++)
-        { bFillet = (*m_vRadiusCornerSurfaces[j] == *pSurface); }
+        { bFillet = (*m_vRadiusCornerSurfaces[j] == *pSurface); lNoted = j; }
       if (!bFillet)
         { continue; }
       SmTArray<SmFace*> sPieces;
@@ -2834,6 +3270,10 @@ SmStatus SmFilletExecutive::SplitFilletFacesAtRadiusCorners()
           for (ULONG k=0; k<sEdges.GetSize(); k++)
             { SER(sm_ReplaceIsoCrvOnSurf(m_pTargetBrep, sEdges[k])); }
         }
+
+      // where the law dips or peaks, the exact round there (the faces are rebuilt)
+      if (lNoted < m_vRadiusCornerPieces.GetSize() && m_vRadiusCornerPieces[lNoted] != NULL)
+        { SER(BuildLawCorners(sPieces, *m_vRadiusCornerPieces[lNoted])); }
     }
   return SM_SUCCESS;
 
