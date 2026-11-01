@@ -3846,14 +3846,6 @@ std::vector<double> peg_concave_end(double r)
     return {40 - std::sqrt(rho * rho - 64), 0, 10 + r - r * c};
 }
 
-void peg_rounds_together(double r)
-{
-    smlib_brep *b = peg_blend(tangent_peg(0), SMLIB_BLEND_ROUND, {20, 0, 10, 32, 8, 10}, {r, r});
-    peg_result(b, 0, true);
-}
-void tangent_end_rounds_together_r2() { peg_rounds_together(2); }
-void tangent_end_rounds_together_r5() { peg_rounds_together(5); }
-
 void peg_rounds_in_turn(double front, double concave, bool front_first)
 {
     smlib_brep *b = tangent_peg(0);
@@ -4128,11 +4120,6 @@ void tangent_end_concave_chamfer_d2()
     smlib_brep *b = peg_blend(tangent_peg(0), SMLIB_BLEND_CHAMFER, {32, 8, 10}, {2});
     peg_result(b, PEG_V0 + PEG_CONCAVE_CHAMFER_D2, true);
 }
-void tangent_end_chamfers_together_d2()
-{
-    smlib_brep *b = peg_blend(tangent_peg(0), SMLIB_BLEND_CHAMFER, {20, 0, 10, 32, 8, 10}, {2, 2});
-    peg_result(b, 0, true);
-}
 void tangent_end_drafted_front_round_r2()
 {
     const double d = 10.0 * std::tan(5.0 * PI / 180.0);
@@ -4199,12 +4186,6 @@ void tangent_end_drafted_peg_one_cone()
     CHECK(at_v == 3);
     smlib_brep_free(peg);
 }
-void tangent_end_drafted_rounds_together_r2()
-{
-    const double d = 10.0 * std::tan(5.0 * PI / 180.0);
-    smlib_brep *b = peg_blend(tangent_peg(5.0 * PI / 180.0), SMLIB_BLEND_ROUND, {20, d, 10, 32 + d, 8, 10}, {2, 2});
-    peg_result(b, 0, false);
-}
 
 // The tangent-end cases, and why each that fails today fails (null: it passes, and runs with
 // the others). `--tangent-ends-known-failing` runs the failing ones and fails if one passes, the
@@ -4216,24 +4197,16 @@ struct TangentEndCase
     const char *fails_today;
 };
 const TangentEndCase TANGENT_END_CASES[] = {
-    {"chamfers_together_d2", tangent_end_chamfers_together_d2,
-     "status 1001: SmFillet3x2MixedConvexityCorner, Vertex Computation Failure, where the two chamfers meet at the tangent seam (the corner, not the tangent ends: each chamfer alone passes)"},
     {"concave_chamfer_d2", tangent_end_concave_chamfer_d2, nullptr},
     {"concave_round_r3_then_front_round_r1_5", tangent_end_concave_round_r3_then_front_round_r1_5, nullptr},
     {"concave_round_then_front_round_r2", tangent_end_concave_round_then_front_round_r2, nullptr},
     {"drafted_front_round_r2", tangent_end_drafted_front_round_r2, nullptr},
     {"drafted_peg_one_cone", tangent_end_drafted_peg_one_cone, nullptr},
-    {"drafted_rounds_together_r2", tangent_end_drafted_rounds_together_r2,
-     "status 1001, Fillet Surface Computation Failure: V has its three edges now (smlib#108: the bar's arc wall and the disc's are one cone face), a corner of two blends of opposite convexity at a tangent seam, whose rounds' trace fails; the mixed corner (#82) is to build it"},
     {"front_chamfer_d2", tangent_end_front_chamfer_d2, nullptr},
     {"front_curvature_round_r2", tangent_end_front_curvature_round_r2, nullptr},
     {"front_round_r1_5_then_concave_round_r3", tangent_end_front_round_r1_5_then_concave_round_r3, nullptr},
     {"front_round_r2", tangent_end_front_round_r2, nullptr},
     {"front_round_then_concave_round_r2", tangent_end_front_round_then_concave_round_r2, nullptr},
-    {"rounds_together_r2", tangent_end_rounds_together_r2,
-     "the corner patch where the rounds meet stands 0.0374 out of the front face (box y min -0.0374099)"},
-    {"rounds_together_r5", tangent_end_rounds_together_r5,
-     "the corner patch where the rounds meet stands 0.128 out of the front face (box y min -0.1278205)"},
 };
 
 // Runs every case, those that fail today (`known_failing`) or the others; a known failure that
@@ -4271,6 +4244,337 @@ template <size_t N> int run_cases(const TangentEndCase (&cases)[N], const char *
 int tangent_end_cases(bool known_failing, const char *only)
 {
     return run_cases(TANGENT_END_CASES, "tangent end", known_failing, only);
+}
+
+// The mixed-convexity corner (smlib #82): the peg's front top edge (convex) and its concave arc,
+// blended together, meet where the front face runs tangent into the cylinder, at V = (40, 0, 10)
+// (SolidCraft rig fillets/report-peg-front-and-concave-*-together-*, report-fillet-concave-arc-
+// and-front-top-edge-together-*-solver-residues, report-drafted-peg-front-and-concave-rounds-
+// together-r2). The ring there has three edges: the two blended ones and the unblended tangent
+// seam x = 40 between the front face and the cylinder. On the top the blends' rails cross at
+// X = (40 - sqrt(32 s), s, 10) (the front rail y = s meets the concave rail, the circle of radius
+// 8 + s about the axis), and they meet there with no spring curve between them: a convex and a
+// concave blend meeting on a face meet at their rails' crossing, else the corner dips below the
+// faces between them whatever its representation. Graded on what a wrong corner changes:
+// - the body's exact box (SMLib's tight box): every flat face's plane, and the cylinder's top,
+//   bound the body, to the blends' tolerance 4e-5 (the rig's grade);
+// - X a vertex of the result, where at least three faces meet (the top's, the two blends');
+// - G1 at every seam's stations within a box B about the corner (rounds), to 1e-9 rad: the
+//   rounds are exact and the corner carries their exact jets;
+// - the result's faces: the peg's 7, the two blends, and the corner's two faces either side of
+//   its inflection X-V, 11 (each blend's End caps merge into the faces they lie on, as each
+//   blend alone leaves 8);
+// - the volume of the body less B against an independent measure: outside B each blend is its
+//   own section, so it is the concave blend alone less B (built and cut the same way: its End on
+//   the back face is certified, 7.3e-7 off the closed form for the round, -3.2e-6 for the chamfer,
+//   and is the same End here) less the front blend's section along the bar from its End on the
+//   left face to B, in closed form (the front blend alone less B meets that form to 1.5e-11).
+// Built on a peg placed by `PegFrame`: the bar's front left corner (ox, oy) and its length l (the
+// cylinder's axis at (ox + l, oy + 8)): the rig's sketch residues move these by 1e-10.
+struct PegFrame
+{
+    double ox, oy, l;
+};
+const PegFrame PEG_EXACT = {0.0, 0.0, 40.0};
+
+// The rig's residue peg (report-fillet-concave-arc-and-front-top-edge-together-solver-residues):
+// its sketch as SolidCraft's solver left it, every point as recorded (the front line's ends differ
+// by 3.0e-10 in y, the disc's centre is 5.7e-11 off the arc's).
+smlib_brep *residue_peg()
+{
+    const double up[3] = {0, 0, 1};
+    const double ax = 0.4892940775280783, ay = 0.05792545052986289, bx = 41.64971183161969, by = 0.05792545083296555;
+    const double cx = 41.64971183108453, cy = 8.057925450890195, ex = 41.649711830726524, ey = 16.05792545083297;
+    const double fx = 0.4892940775280783, fy = 16.057925450606035;
+    Profile bar, disc;
+    bar.line(ax, ay, bx, by, 0)
+        .arc(cx, cy, 0, 1, std::hypot(bx - cx, by - cy), std::atan2(by - cy, bx - cx), std::atan2(ey - cy, ex - cx))
+        .line(ex, ey, fx, fy, 0)
+        .line(fx, fy, ax, ay, 0);
+    disc.arc(41.64971183108453, 8.057925450832967, 10, 1, 8.000000000006473, 0, 2 * PI);
+    smlib_brep *a = nullptr, *b = nullptr, *peg = nullptr;
+    CHECK(smlib_extrude(bar.kinds.data(), static_cast<int64_t>(bar.kinds.size()), bar.reals.data(), static_cast<int64_t>(bar.reals.size()), up, 10.0,
+                        0.0, SMLIB_DRAFT_CORNER_CURVATURE, 1, &a, nullptr) == SMLIB_OK);
+    CHECK(smlib_extrude(disc.kinds.data(), static_cast<int64_t>(disc.kinds.size()), disc.reals.data(), static_cast<int64_t>(disc.reals.size()), up,
+                        10.0, 0.0, SMLIB_DRAFT_CORNER_CURVATURE, 1, &b, nullptr) == SMLIB_OK);
+    CHECK(a != nullptr && b != nullptr && smlib_boolean(a, b, SMLIB_BOOLEAN_UNION, &peg) == SMLIB_OK);
+    smlib_brep_free(a);
+    smlib_brep_free(b);
+    return peg;
+}
+const PegFrame PEG_RESIDUE = {0.4892940775280783, 0.05792545052986289, 41.64971183108453 - 0.4892940775280783};
+
+// Gauss-Legendre on [a, b] with n points (nodes by Newton on P_n, to rounding).
+double gauss_legendre(const std::function<double(double)> &f, double a, double b, int n)
+{
+    double sum = 0.0;
+    for (int i = 1; i <= n; ++i)
+    {
+        double x = std::cos(PI * (i - 0.25) / (n + 0.5)), dp = 0.0;
+        for (int it = 0; it < 100; ++it)
+        {
+            double p0 = 1.0, p1 = x;
+            for (int k = 2; k <= n; ++k)
+            {
+                const double p2 = ((2.0 * k - 1.0) * x * p1 - (k - 1.0) * p0) / k;
+                p0 = p1;
+                p1 = p2;
+            }
+            dp = n * (x * p1 - p0) / (x * x - 1.0);
+            const double dx = p1 / dp;
+            x -= dx;
+            if (std::fabs(dx) < 1e-16)
+            {
+                break;
+            }
+        }
+        const double w = 2.0 / ((1.0 - x * x) * dp * dp);
+        sum += w * f(0.5 * (a + b) + 0.5 * (b - a) * x);
+    }
+    return 0.5 * (b - a) * sum;
+}
+
+// The box B about the corner of blends of size s, in the peg's frame (the cylinder's axis at
+// x = 40): x from 31 - s (short of the concave blend's nearest point, 32 - s, and of X,
+// 40 - sqrt(32 s)) on past the part, y from below the front face to s + 1 (at most 8: past X,
+// the corner's other end on the concave blend, at y = s), z within 1 + s of the top.
+void peg_corner_box(double s, double &x0, double &y1, double &z0, double &z1)
+{
+    x0 = 31.0 - s;
+    y1 = std::min(8.0, s + 1.0);
+    z0 = 9.0 - s;
+    z1 = 11.0 + s;
+}
+
+double exact_volume_of(const smlib_brep *b);
+
+// The volume of `b` less B (blends of size s on the peg placed by `f`); -1 if the cut fails.
+double peg_outside_corner_volume(const smlib_brep *b, const PegFrame &f, double s)
+{
+    double x0, y1, z0, z1;
+    peg_corner_box(s, x0, y1, z0, z1);
+    const double o[3] = {f.ox + f.l - 40.0 + x0, f.oy - 1.0, z0}, size[3] = {60.0, y1 + 1.0, z1 - z0};
+    smlib_brep *cut = nullptr, *outside = nullptr;
+    CHECK(smlib_make_box(o, size, &cut) == SMLIB_OK);
+    CHECK(b != nullptr && cut != nullptr && smlib_boolean(b, cut, SMLIB_BOOLEAN_SUBTRACT, &outside) == SMLIB_OK && outside != nullptr);
+    double v = -1.0;
+    if (outside != nullptr)
+    {
+        CHECK(sound(outside));
+        v = exact_volume_of(outside);
+    }
+    smlib_brep_free(cut);
+    smlib_brep_free(outside);
+    return v;
+}
+
+// The largest angle (radians) between the faces either side of any edge of `b`, at 31 stations
+// inside each edge, over the stations within B (`f`, size s; the peg's frame shifted by
+// f.oy, and by `lean` per unit height for a drafted peg); `seams` counts the edges with one there.
+// HUGE_VAL where such an edge has no neighbour.
+double peg_corner_worst_seam(const smlib_brep *b, const PegFrame &f, double s, double lean, int &seams)
+{
+    double x0, y1, z0, z1;
+    peg_corner_box(s, x0, y1, z0, z1);
+    const double xlo = f.ox + f.l - 40.0 + x0;
+    SmTArray<SmEdge *> es;
+    b->p->GetEdges(es);
+    double worst = 0.0;
+    seams = 0;
+    for (ULONG k = 0; k < es.GetSize(); ++k)
+    {
+        SmEdge *e = es[k];
+        if (e->GetCurve() == nullptr || e->GetStartVertex() == e->GetEndVertex())
+        {
+            continue;
+        }
+        SmEdgeuse *a = e->GetPrimaryEdgeuse();
+        SmEdgeuse *o = a != nullptr ? a->GetRadial() : nullptr;
+        const SmExtent1d ivl = e->GetInterval();
+        bool counted = false;
+        for (int st = 1; st < 32; ++st)
+        {
+            SmPoint3d m;
+            CHECK(e->GetCurve()->EvaluatePoint(ivl.Evaluate(st / 32.0), m) == SM_SUCCESS);
+            if (m.x < xlo || m.y - f.oy - lean * m.z > y1 || m.z < z0 || m.z > z1)
+            {
+                continue;
+            }
+            if (!counted)
+            {
+                counted = true;
+                seams++;
+            }
+            SmPoint3d pa, pb;
+            SmVector3d ba, bb;
+            if (o == nullptr || o == a || a->EvaluateBinormal(ivl.Evaluate(st / 32.0), FALSE, pa, ba) != SM_SUCCESS ||
+                o->EvaluateBinormal(ivl.Evaluate(st / 32.0), FALSE, pb, bb) != SM_SUCCESS || ba.Unitize(FALSE) != SM_SUCCESS ||
+                bb.Unitize(FALSE) != SM_SUCCESS)
+            {
+                worst = HUGE_VAL;
+                continue;
+            }
+            // tangent faces' binormals (into each face, square to the edge) are opposed
+            worst = std::max(worst, std::atan2((ba * bb).Length(), -ba.Dot(bb)));
+        }
+    }
+    return worst;
+}
+
+// The blended peg's corner graded, as above (`order` 1 for rounds, 0 for chamfers; `faces` the
+// result's face count; `x_tol` how near X a vertex must be: rounding at the part's scale, 1e-12 x
+// 50, on the exact peg, the residues' 1e-9 on the rig's). Frees `r`.
+void peg_corner_graded(smlib_brep *&r, const PegFrame &f, double s, bool chamfer, int faces, double x_tol)
+{
+    if (r == nullptr)
+    {
+        return;
+    }
+    double lo[3], hi[3];
+    CHECK(smlib_brep_bounds(r, lo, hi) == SMLIB_OK);
+    std::printf("  box (%.7f %.7f %.7f) .. (%.7f %.7f %.7f)\n", lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+    const double want_lo[3] = {f.ox, f.oy, 0}, want_hi[3] = {f.ox + f.l + 8, f.oy + 16, 20};
+    for (int k = 0; k < 3; k++)
+    {
+        CHECK(lo[k] >= want_lo[k] - 4e-5 && hi[k] <= want_hi[k] + 4e-5);
+    }
+    int64_t solids = 0;
+    CHECK(smlib_brep_solid_count(r, &solids) == SMLIB_OK && solids == 1);
+    const int n = static_cast<int>(r->p->GetNumFaces());
+    std::printf("  %d faces, want %d\n", n, faces);
+    CHECK(n == faces);
+    // X, where the rails cross on the top
+    const double cx = f.ox + f.l, cy = f.oy + 8.0;
+    const SmPoint3d X(cx - std::sqrt((8.0 + s) * (8.0 + s) - (cy - f.oy - s) * (cy - f.oy - s)), f.oy + s, 10.0);
+    {
+        SmTArray<SmVertex *> vs;
+        r->p->GetVertices(vs);
+        double best = HUGE_VAL;
+        SmVertex *at = nullptr;
+        for (ULONG k = 0; k < vs.GetSize(); ++k)
+        {
+            const double d = (vs[k]->GetPoint() - X).Length();
+            if (d < best)
+            {
+                best = d;
+                at = vs[k];
+            }
+        }
+        SmTArray<SmFace *> around;
+        if (at != nullptr)
+        {
+            at->GetFaces(around);
+        }
+        std::printf("  nearest vertex %.3g from X = (%.12f, %.12f, 10), %lu faces there\n", best, X.x, X.y, static_cast<unsigned long>(around.GetSize()));
+        CHECK(best <= x_tol && around.GetSize() >= 3);
+    }
+    // G1 at every seam within B (rounds)
+    if (!chamfer)
+    {
+        int seams = 0;
+        const double worst = peg_corner_worst_seam(r, f, s, 0.0, seams);
+        std::printf("  %d seams within the corner's box, worst angle %.3g rad\n", seams, worst);
+        CHECK(seams > 0 && worst <= 1e-9);
+    }
+    // the volume outside B: the concave blend alone's, less the front blend's section from the
+    // left face to B
+    {
+        smlib_brep *alone = peg_blend(f.oy == 0.0 ? tangent_peg(0) : residue_peg(), chamfer ? SMLIB_BLEND_CHAMFER : SMLIB_BLEND_ROUND,
+                                      {f.ox + f.l - 8.0, f.oy + 8.0, 10.0}, {s});
+        double x0, y1, z0, z1;
+        peg_corner_box(s, x0, y1, z0, z1);
+        const double section = chamfer ? 0.5 * s * s : (1.0 - PI / 4.0) * s * s;
+        const double got = peg_outside_corner_volume(r, f, s), want = peg_outside_corner_volume(alone, f, s) - section * (f.l - 40.0 + x0);
+        std::printf("  volume outside the corner's box %.10f, want %.10f\n", got, want);
+        CHECK(near(got, want, 1e-11));
+        smlib_brep_free(alone);
+    }
+    done(r);
+}
+
+// The drafted peg (5 deg inward): no closed form. Graded: built, one sound solid, inside the plane
+// of its drafted front face (the cone it runs tangent into, and the disc's cone above, lie on one
+// side of it: the body turned so that plane is y = 0 keeps y >= -4e-5), G1 at every seam's
+// stations within B leant with the walls, and its faces: the drafted peg's 7, as the straight
+// one's, the two blends and the corner's two (11).
+void peg_drafted_corner_graded(smlib_brep *&r, int faces)
+{
+    if (r == nullptr)
+    {
+        return;
+    }
+    int64_t solids = 0;
+    CHECK(smlib_brep_solid_count(r, &solids) == SMLIB_OK && solids == 1);
+    const double c = std::cos(5.0 * PI / 180.0), sn = std::sin(5.0 * PI / 180.0);
+    const double m[4][4] = {{1, 0, 0, 0}, {0, c, sn, 0}, {0, -sn, c, 0}, {0, 0, 0, 1}};
+    smlib_brep *turned = nullptr;
+    CHECK(smlib_brep_transform(r, m, &turned) == SMLIB_OK && turned != nullptr);
+    if (turned != nullptr)
+    {
+        double lo[3], hi[3];
+        CHECK(smlib_brep_bounds(turned, lo, hi) == SMLIB_OK);
+        std::printf("  least distance into the drafted front face's plane %.7f\n", lo[1]);
+        CHECK(lo[1] >= -4e-5);
+        smlib_brep_free(turned);
+    }
+    const int n = static_cast<int>(r->p->GetNumFaces());
+    std::printf("  %d faces, want %d\n", n, faces);
+    CHECK(n == faces);
+    int seams = 0;
+    const double worst = peg_corner_worst_seam(r, PEG_EXACT, 2.0, std::tan(5.0 * PI / 180.0), seams);
+    std::printf("  %d seams near the corner, worst angle %.3g rad\n", seams, worst);
+    CHECK(seams > 0 && worst <= 1e-9);
+    done(r);
+}
+
+void mixed_rounds_together(double r, int faces)
+{
+    smlib_brep *b = peg_blend(tangent_peg(0), SMLIB_BLEND_ROUND, {20, 0, 10, 32, 8, 10}, {r, r});
+    peg_corner_graded(b, PEG_EXACT, r, false, faces, 5e-11);
+}
+void mixed_rounds_together_r2() { mixed_rounds_together(2, 11); }
+void mixed_rounds_together_r5() { mixed_rounds_together(5, 11); }
+void mixed_chamfers_together_d2()
+{
+    smlib_brep *b = peg_blend(tangent_peg(0), SMLIB_BLEND_CHAMFER, {20, 0, 10, 32, 8, 10}, {2, 2});
+    peg_corner_graded(b, PEG_EXACT, 2, true, 11, 5e-11);
+}
+void mixed_residue_rounds_together(double r, int faces)
+{
+    smlib_brep *b = peg_blend(residue_peg(), SMLIB_BLEND_ROUND, {33.65, 8.058, 10, 21.07, 0.0579, 10}, {r, r});
+    peg_corner_graded(b, PEG_RESIDUE, r, false, faces, 1e-9);
+}
+void mixed_residue_rounds_together_r2() { mixed_residue_rounds_together(2, 11); }
+void mixed_residue_rounds_together_r5() { mixed_residue_rounds_together(5, 11); }
+void mixed_residue_rounds_together_r7() { mixed_residue_rounds_together(7, 11); }
+void mixed_drafted_rounds_together_r2()
+{
+    const double d = 10.0 * std::tan(5.0 * PI / 180.0);
+    smlib_brep *b = peg_blend(tangent_peg(5.0 * PI / 180.0), SMLIB_BLEND_ROUND, {20, d, 10, 32 + d, 8, 10}, {2, 2});
+    peg_drafted_corner_graded(b, 11);
+}
+// The mixed-convexity corner cases (smlib #82), held as the other lists are: `--mixed-corners-
+// known-failing` runs the failing ones and fails if one passes.
+const TangentEndCase MIXED_CORNER_CASES[] = {
+    {"chamfers_together_d2", mixed_chamfers_together_d2,
+     "status 1001: SmFillet3x2MixedConvexityCorner, Vertex Computation Failure, where the two chamfers meet at the tangent seam (each chamfer alone builds)"},
+    {"drafted_rounds_together_r2", mixed_drafted_rounds_together_r2,
+     "status 1001 before any geometry: the corner where the front top edge runs tangent into the concave arc, on the cone, is of no kind SMLib's blend corners take"},
+    {"residue_rounds_together_r2", mixed_residue_rounds_together_r2,
+     "SmFillet3x2MixedConvexityCorner's one collapsed-side patch stands 0.0374 out of the front face (box y min 0.0205155, the face at 0.0579255), folds over at X (a seam at 3.14 rad), 10 faces"},
+    {"residue_rounds_together_r5", mixed_residue_rounds_together_r5,
+     "SmFillet3x2MixedConvexityCorner's one collapsed-side patch stands 0.128 out of the front face (box y min -0.0698950, the face at 0.0579255), folds over at X (a seam at 3.14 rad), 10 faces"},
+    {"residue_rounds_together_r7", mixed_residue_rounds_together_r7,
+     "SmFillet3x2MixedConvexityCorner's one collapsed-side patch stands 0.230 out of the front face (box y min -0.1723259, the face at 0.0579255), folds over at X (a seam at 3.14 rad), 10 faces"},
+    {"rounds_together_r2", mixed_rounds_together_r2,
+     "SmFillet3x2MixedConvexityCorner's one collapsed-side patch stands 0.0374 out of the front face (box y min -0.0374099), folds over at X (a seam at 3.14 rad), 10 faces"},
+    {"rounds_together_r5", mixed_rounds_together_r5,
+     "SmFillet3x2MixedConvexityCorner's one collapsed-side patch stands 0.128 out of the front face (box y min -0.1278205), folds over at X (a seam at 3.14 rad), 10 faces"},
+};
+
+int mixed_corner_cases(bool known_failing, const char *only)
+{
+    return run_cases(MIXED_CORNER_CASES, "mixed corner", known_failing, only);
 }
 
 // Constant rounds whose rolling ball's centre line (the spine, where the faces' offsets by the
@@ -11064,6 +11368,15 @@ int main(int argc, char **argv)
     {
         return corner_child(argv[2], argv[3]);
     }
+    if (argc == 2 && std::strcmp(argv[1], "--mixed-corners-known-failing") == 0)
+    {
+        return mixed_corner_cases(true, nullptr) == 0 ? 0 : 1;
+    }
+    if (argc == 3 && std::strcmp(argv[1], "--mixed-corner") == 0)
+    {
+        smlib_set_log([](void *, int32_t level, const char *line) { std::fprintf(stderr, "log %d %s\n", static_cast<int>(level), line); }, nullptr);
+        return mixed_corner_cases(false, argv[2]) == 0 ? 0 : 1;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--tangent-ends-known-failing") == 0)
     {
         return tangent_end_cases(true, nullptr) == 0 ? 0 : 1;
@@ -14574,6 +14887,7 @@ int main(int argc, char **argv)
     concave_chamfers_at_a_vertex_the_body_touches_itself_at();
     chamfer_of_a_shelled_box_corner_ending_under_its_lip();
     failures += tangent_end_cases(false, nullptr);
+    failures += mixed_corner_cases(false, nullptr);
     failures += exact_class_cases(false, nullptr);
     failures += section_cases(false, nullptr);
     failures += turn_cases(false, nullptr);
