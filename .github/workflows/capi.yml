@@ -1,8 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 SolidCraft contributors
 # SPDX-License-Identifier: Apache-2.0
 #
-# Builds the static library and its C header (capi/) on every desktop target SolidCraft ships,
-# and runs the C smoke test where the target can run.
+# Builds the static library and its C header (capi/) and runs the C tests on Linux x86_64, for
+# speed. Every target SolidCraft ships is still built, and tested where it can run, by
+# prebuilt.yml on each push to the release branch.
 name: C API
 
 on:
@@ -28,14 +29,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Blacksmith runners for everything but Windows ARM64, which stays on GitHub's (Blacksmith has
-        # none).
         include:
           - { name: Linux x86_64, runner: blacksmith-4vcpu-ubuntu-2404 }
-          - { name: Linux aarch64, runner: blacksmith-4vcpu-ubuntu-2404-arm }
-          - { name: macOS universal, runner: blacksmith-6vcpu-macos-15, cmake: '"-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0' }
-          - { name: Windows x64 (MSVC), runner: blacksmith-8vcpu-windows-2025, cmake: '-A x64' }
-          - { name: Windows ARM64 (MSVC), runner: windows-11-arm, cmake: '-A ARM64' }
     steps:
       - uses: actions/checkout@v4
       - name: Configure
@@ -49,7 +44,4 @@ jobs:
         run: ctest --test-dir build -C Release --output-on-failure
       - name: Library size
         shell: bash
-        run: ls -l build/*.a build/Release/*.lib 2>/dev/null || true
-      - name: 'macOS: both architectures in the archive'
-        if: runner.os == 'macOS'
-        run: lipo -info build/libsmlib.a
+        run: ls -l build/*.a
