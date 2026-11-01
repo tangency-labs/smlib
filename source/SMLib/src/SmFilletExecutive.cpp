@@ -13,6 +13,7 @@
 #include <SmPlane.h>
 #include <SmBlendSetback.h>
 #endif
+#include <map>
 #include <set>
 
 #ifndef __SMFILLETSTANDARDSOLVER_H__
@@ -2026,6 +2027,192 @@ SmStatus SmFilletExecutive::FacesOutlastTheirBlends
 } // end SmFilletExecutive::FacesOutlastTheirBlends
 
 /*******************************************************************//**
+PURPOSE: SolidCraft change. Note a refusal's open bound as the largest size
+    that builds, less the fit margin (FitMargin), where it is the least so far.
+
+NOTES: For a factor on two unequal offsets the margin is taken off the larger
+    offset: the factor less the margin over it.
+***********************************************************************/
+SmStatus SmFilletExecutive::NoteOpenFit
+  (SmBoolean        bFound,   // in : TRUE = dLimit bounds the size
+   double           dLimit,   // in : the bound
+   ULONG            lKind,    // in : what it sizes (SM_FIT_RADIUS, SM_FIT_SCALE, SM_FIT_CHORD)
+   SmFilletSolver & rSolver)  // in : the blend
+{
+  if (!bFound || rSolver.GetEdgeuse(0) == NULL || rSolver.GetEdgeuse(0)->GetEdge() == NULL)
+    { return SM_SUCCESS; }
+  SmEdge * pEdge = rSolver.GetEdgeuse(0)->GetEdge();
+  double dPerUnit = 1.0;
+  if (lKind == SM_FIT_SCALE)
+    {
+      NER(rSolver.GetSurface(0)); NER(rSolver.GetSurface(1));
+      dPerUnit = smos_Max(smos_Fabs(rSolver.GetSurface(0)->GetOffsetDistance()), smos_Fabs(rSolver.GetSurface(1)->GetOffsetDistance()));
+      if (!(dPerUnit > 0.0))
+        { return SM_SUCCESS; }
+    }
+  const double dFit = smos_Max(0.0, dLimit - FitMargin(*pEdge) / dPerUnit);
+  if (GetFitRadius() < 0.0 || dFit < GetFitRadius())
+    { NoteFitRadius(dFit, pEdge, lKind); }
+  return SM_SUCCESS;
+} // end SmFilletExecutive::NoteOpenFit
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. For blends that take the whole of a face: the
+    largest size that leaves some of it, where the face is a plane bounded by
+    straight edges each blended with a constant ball (a box's top with all
+    its edges chamfered or rounded): its point deepest in the balls' terms.
+
+NOTES: The ball of edge i touching the face at q, its other face a plane, has
+    radius t_i d_i(q), d_i the distance from q to the edge's line in the face
+    and t_i fixed (tan of half the dihedral angle there; read off the blend's
+    own ball touching the face a little way in, SmFilletSolver::BallThrough).
+    A band reaches q once the radius passes t_i d_i(q), so the face lasts while
+    the radius is below max over q of min over i of t_i d_i(q): a linear
+    programme in (q, rho) whose optimum lies where three of the constraints
+    hold with equality. Each triple of edges is solved and kept where every
+    constraint holds; the bound is open (at it the face is a point or a line),
+    so it is noted less the fit margin (NoteOpenFit).
+***********************************************************************/
+SmStatus SmFilletExecutive::NoteFitOfPolygonsTakenWhole()
+{
+  // the faces the blends roll on
+  std::map<SmFace*, std::vector<std::pair<SmFilletSolver*, ULONG>>> mOn;
+  for (ULONG i=0; i<m_vFilletSolvers.GetSize(); i++)
+    {
+      SmFilletSolver * pFS = m_vFilletSolvers[i];
+      SmBoolean bLaw = FALSE;
+      if ( !pFS->RollsABall( bLaw ) || bLaw )
+        { continue; }
+      for (ULONG k=0; k<2; k++)
+        {
+          if ( pFS->GetEdgeuse(k) != NULL && pFS->GetEdgeuse(k)->GetFace() != NULL )
+            { mOn[pFS->GetEdgeuse(k)->GetFace()].push_back( std::make_pair( pFS, k )); }
+        }
+    }
+  for (const auto & rOn : mOn)
+    {
+      SmFace * pFace = rOn.first;
+      SmPoint3d sAt;
+      SmVector3d sNormal;
+      if ( pFace->GetSurface() == NULL || !pFace->GetSurface()->IsPlanar( SM_EFF_ZERO, &sAt, &sNormal ))
+        { continue; }
+      SmTArray<SmEdge*> sEdges;
+      pFace->GetEdges( sEdges );
+      if ( sEdges.GetSize() < 3 || sEdges.GetSize() != rOn.second.size() )
+        { continue; } // not every edge of the face blended
+      // the face's plane frame, and each edge's line: a point and its unit direction
+      SmVector3d sX, sY;
+      SER( sNormal.Unitize() );
+      sX = ( smos_Fabs( sNormal.x ) < 0.9 ) ? SmVector3d( 1, 0, 0 ) * sNormal : SmVector3d( 0, 1, 0 ) * sNormal;
+      SER( sX.Unitize() );
+      sY = sNormal * sX;
+      SmPoint3d sMiddle( 0, 0, 0 );
+      std::vector<SmPoint3d> vEnds;
+      for (ULONG e=0; e<sEdges.GetSize(); e++)
+        {
+          SmPoint3d sA, sB;
+          SER( sEdges[e]->GetCurve()->EvaluatePoint( sEdges[e]->GetInterval().GetMin(), sA ));
+          SER( sEdges[e]->GetCurve()->EvaluatePoint( sEdges[e]->GetInterval().GetMax(), sB ));
+          vEnds.push_back( sA );
+          vEnds.push_back( sB );
+          sMiddle = sMiddle + ( sA + sB ) * ( 0.5 / sEdges.GetSize() );
+        }
+      struct Line { double ax, ay, b, t; };   // t (ax x + ay y + b) is edge i's ball radius at (x, y)
+      std::vector<Line> vLines;
+      SmBoolean bAll = TRUE;
+      for (ULONG e=0; e<sEdges.GetSize() && bAll; e++)
+        {
+          const SmPoint3d & crA = vEnds[2*e];
+          const SmPoint3d & crB = vEnds[2*e+1];
+          SmPoint3d sHalf;
+          SER( sEdges[e]->GetCurve()->EvaluatePoint( sEdges[e]->GetInterval().Evaluate( 0.5 ), sHalf ));
+          // straight: its middle on the chord
+          const SmVector3d sChord = crB - crA;
+          const double dLength = sChord.Length();
+          if ( !( dLength > SM_EFF_ZERO ) || ( ( sHalf - crA ) * sChord ).Length() / dLength > sEdges[e]->GetTolerance().val )
+            { bAll = FALSE; break; }
+          // the in-plane unit normal of the line, toward the face's middle
+          double dx = sChord.Dot( sX ) / dLength, dy = sChord.Dot( sY ) / dLength;
+          double ax = -dy, ay = dx;
+          const double px = ( crA - sAt ).Dot( sX ), py = ( crA - sAt ).Dot( sY );
+          double b = -( ax * px + ay * py );
+          const double mx = ( sMiddle - sAt ).Dot( sX ), my = ( sMiddle - sAt ).Dot( sY );
+          if ( ax * mx + ay * my + b < 0.0 )
+            { ax = -ax; ay = -ay; b = -b; }
+          // t: the blend's ball touching the face a little way in from the edge's middle
+          SmFilletSolver * pFS = NULL;
+          ULONG lK = 0;
+          for (const auto & rBlend : rOn.second)
+            {
+              if ( rBlend.first->GetEdgeuse(0)->GetEdge() == sEdges[e] )
+                {
+                  pFS = rBlend.first;
+                  lK = rBlend.second;
+                }
+            }
+          if ( pFS == NULL )
+            { bAll = FALSE; break; }
+          const double dIn = 1.0e-3 * dLength;
+          const SmPoint3d sQ = sHalf + ( sX * ax + sY * ay ) * dIn;
+          SmBoolean bFound = FALSE;
+          double dRho = 0.0;
+          SER( pFS->BallThrough( lK, sQ, smos_Fabs( pFS->GetSurface(0)->GetOffsetDistance() ), bFound, dRho ));
+          if ( !bFound )
+            { bAll = FALSE; break; }
+          vLines.push_back( Line{ ax, ay, b, dRho / dIn } );
+        }
+      if ( !bAll )
+        { continue; }
+      // max rho with rho <= t_i (a_i . q + b_i): the best vertex of the programme
+      double dBest = -1.0;
+      const size_t n = vLines.size();
+      for (size_t i=0; i<n; i++)
+        for (size_t j=i+1; j<n; j++)
+          for (size_t k=j+1; k<n; k++)
+            {
+              // t (ax x + ay y + b) - rho = 0 for the three
+              const Line * apL[3] = { &vLines[i], &vLines[j], &vLines[k] };
+              double adM[3][3], adR[3];
+              for (int r=0; r<3; r++)
+                {
+                  adM[r][0] = apL[r]->t * apL[r]->ax;
+                  adM[r][1] = apL[r]->t * apL[r]->ay;
+                  adM[r][2] = -1.0;
+                  adR[r]    = -apL[r]->t * apL[r]->b;
+                }
+              const double dDet =   adM[0][0] * ( adM[1][1] * adM[2][2] - adM[1][2] * adM[2][1] )
+                                  - adM[0][1] * ( adM[1][0] * adM[2][2] - adM[1][2] * adM[2][0] )
+                                  + adM[0][2] * ( adM[1][0] * adM[2][1] - adM[1][1] * adM[2][0] );
+              if ( !( smos_Fabs( dDet ) > SM_EFF_ZERO ))
+                { continue; }
+              double adX[3];
+              for (int c=0; c<3; c++)
+                {
+                  double adC[3][3];
+                  for (int r=0; r<3; r++)
+                    for (int q=0; q<3; q++)
+                      { adC[r][q] = ( q == c ) ? adR[r] : adM[r][q]; }
+                  adX[c] = (   adC[0][0] * ( adC[1][1] * adC[2][2] - adC[1][2] * adC[2][1] )
+                             - adC[0][1] * ( adC[1][0] * adC[2][2] - adC[1][2] * adC[2][0] )
+                             + adC[0][2] * ( adC[1][0] * adC[2][1] - adC[1][1] * adC[2][0] )) / dDet;
+                }
+              SmBoolean bFeasible = ( adX[2] > 0.0 ) ? TRUE : FALSE;
+              for (size_t m=0; m<n && bFeasible; m++)
+                {
+                  const Line & crL = vLines[m];
+                  if ( adX[2] > crL.t * ( crL.ax * adX[0] + crL.ay * adX[1] + crL.b ) * ( 1.0 + 1.0e-12 ) + 1.0e-12 )
+                    { bFeasible = FALSE; }
+                }
+              if ( bFeasible && adX[2] > dBest )
+                { dBest = adX[2]; }
+            }
+      if ( dBest > 0.0 )
+        { SER( NoteOpenFit( TRUE, dBest, SM_FIT_RADIUS, *rOn.second[0].first )); }
+    }
+  return SM_SUCCESS;
+} // end SmFilletExecutive::NoteFitOfPolygonsTakenWhole
+
+/*******************************************************************//**
 PURPOSE: SolidCraft change. Whether the band each blend takes off a face
    stays clear of the rails of the other blends on that face.
 
@@ -3455,6 +3642,12 @@ SmStatus SmFilletExecutive::CreateFilletBrep
             const double dOpen = ( sWorst.m_lCheck == SmBallStation::SM_BS_NOT_ENCLOSED ) ? 0.0 : FitMargin( *pEdge );
             NoteFitRadius( sWorst.m_dWorks > 0.0 ? smos_Max( 0.0, sWorst.m_dWorks - dOpen ) : 0.0, pEdge );
           }
+        // two unequal constant offsets (a chamfer of two distances): the factor on both at which
+        // the folding face's offset reaches its radius of curvature; open (the offset there
+        // reaches the face's centre of curvature, a point: a cylinder's axis), so less the margin
+        else if ( pWorst != NULL && !sWorst.m_bBall && !sWorst.m_bLaw && pWorst->GetSolverType() == SM_FS_CONST_RADIUS
+                  && sWorst.m_dRadius > 0.0 && sWorst.m_dWorks > 0.0 && sWorst.m_dWorks < SM_BIG_DOUBLE )
+          { SER( NoteOpenFit( TRUE, sWorst.m_dWorks / sWorst.m_dRadius, SM_FIT_SCALE, *pWorst )); }
         return SM_ERR;
       }
   }
@@ -3896,10 +4089,9 @@ SmStatus SmFilletExecutive::CreateFilletBrep
                     { continue; }
                   SmBoolean bFound = FALSE;
                   double dLimit = 0.0;
-                  SER( m_vFilletSolvers[k]->LargestRadiusOnItsFaces( bFound, dLimit ));
-                  const double dFit = smos_Max( 0.0, dLimit - FitMargin( *vOverflowing[i] ));
-                  if ( bFound && ( GetFitRadius() < 0.0 || dFit < GetFitRadius() ))
-                    { NoteFitRadius( dFit, vOverflowing[i] ); }
+                  ULONG lKind = SM_FIT_RADIUS;
+                  SER( m_vFilletSolvers[k]->LargestSizeOnItsFaces( NULL, bFound, dLimit, lKind ));
+                  SER( NoteOpenFit( bFound, dLimit, lKind, *m_vFilletSolvers[k] ));
                 }
             }
           return SM_ERR;
@@ -3914,10 +4106,11 @@ SmStatus SmFilletExecutive::CreateFilletBrep
   if ( !bOutlast )
     {
       GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, _T("Fillet Error: the blends take the whole of a face they roll on, some at an angle to it (the blend is larger than the faces allow)") );
+      SER( NoteFitOfPolygonsTakenWhole() );
       // the largest radius that leaves some of the face, where the face is a plane bounded by
       // one blended circle (a cylinder's top): the band reaches the circle's centre at the
       // radius of the ball touching the face there (the bound is open: at it the face is a
-      // point), so less the fit margin; other faces taken whole are not sized
+      // point), so less the fit margin
       for (ULONG i=0; i<m_vFilletSolvers.GetSize(); i++)
         {
           SmFilletSolver * pFS = m_vFilletSolvers[i];

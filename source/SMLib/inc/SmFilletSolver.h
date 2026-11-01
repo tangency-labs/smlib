@@ -126,6 +126,9 @@ NOTES: m_dEnclosed is the least over the two faces of 1 - r k, k the face's
     (the largest that is regular there, or for a radius law the radius where
     the law first stops being regular).
 ***********************************************************************/
+// SolidCraft change: what a refusal's largest size that builds sizes (SmFilletExecutive::NoteFitRadius)
+enum { SM_FIT_RADIUS = 0, SM_FIT_SCALE = 1, SM_FIT_CHORD = 2 };
+
 struct SmBallStation
 {
   enum { SM_BS_UNJUDGED = 0, SM_BS_REGULAR, SM_BS_NOT_ENCLOSED, SM_BS_REGRESSIVE };
@@ -418,9 +421,10 @@ public:
   // SolidCraft change: whether this convex blend would take all of the part between its rails
   // somewhere, cutting it into pieces, and the largest radius (and its setback) that does not
   SmStatus     BandCutsThePart(const SmBrep & crBody, SmBoolean & rbCuts, double & rdRadius, double & rdSetback);
-  // SolidCraft change: the largest radius at which this constant ball's rails stay on their faces
-  // (where a boundary of a face first meets a rail as the radius grows)
-  SmStatus     LargestRadiusOnItsFaces(SmBoolean & rbFound, double & rdRadius);
+  // SolidCraft change: the largest size at which this blend's rails stay on their faces (pOnly:
+  // on that one), where a boundary of a face first meets a rail as the size grows; rlKind what
+  // the size is (SM_FIT_RADIUS, SM_FIT_SCALE, SM_FIT_CHORD)
+  SmStatus     LargestSizeOnItsFaces(const SmFace * pOnly, SmBoolean & rbFound, double & rdRadius, ULONG & rlKind);
   // SolidCraft change: the radius of the ball touching face lK at crQ and the other face, up to dMax
   SmStatus     BallThrough(ULONG lK, const SmPoint3d & crQ, double dMax, SmBoolean & rbFound, double & rdRho);
   // SolidCraft change: the common radius at which this blend's rail on a face first reaches into

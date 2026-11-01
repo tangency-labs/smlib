@@ -1113,6 +1113,28 @@ SmStatus SmFilletExecutive::CutFilletAtOpenEnd
 
 
 /*******************************************************************//**
+PURPOSE: SolidCraft change. For a blend refused because a rail runs past the
+    boundary of crFace (onto a face it would cut, into the material): the
+    largest size at which every blend's rails stay on that face
+    (SmFilletSolver::LargestSizeOnItsFaces), its bound open, noted as the
+    refusal's fit (NoteOpenFit).
+***********************************************************************/
+SmStatus SmFilletExecutive::NoteFitOnFace
+  (const SmFace * pFace)  // in : the face a rail runs past the boundary of
+{
+  NER(pFace);
+  for (ULONG i=0; i<m_vFilletSolvers.GetSize(); i++)
+    {
+      SmBoolean bFound = FALSE;
+      double    dLimit = 0.0;
+      ULONG     lKind  = SM_FIT_RADIUS;
+      SER( m_vFilletSolvers[i]->LargestSizeOnItsFaces( pFace, bFound, dLimit, lKind ));
+      SER( NoteOpenFit( bFound, dLimit, lKind, *m_vFilletSolvers[i] ));
+    }
+  return SM_SUCCESS;
+} // end SmFilletExecutive::NoteFitOnFace
+
+/*******************************************************************//**
 PURPOSE: SolidCraft change. How far along the blended edge pEdge, per unit of
     radius, the corner at its vertex pV takes it: a convex corner of three
     planar faces whose three edges are all blended at one radius ends its
@@ -1351,6 +1373,7 @@ SmStatus SmFilletExecutive::TrimAtCreases()
                            && SmFilletSolver::IsTangentEdge( sFaceEdges[e], dTangency ))
                         {
                           GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, _T("Fillet Error: a rail leaves the face it rolls on across a tangent edge, onto a face it would cut (the blend is larger than the face allows)") );
+                          SER( NoteFitOnFace( sAt[k] ));
                           return SM_ERR;
                         }
                     }
@@ -1465,6 +1488,7 @@ SmStatus SmFilletExecutive::TrimAtCreases()
       if ( eStat != SM_SUCCESS && cWhy != NULL )
         {
           GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, cWhy );
+          SER( NoteFitOnFace( sTargetFaces[f] ));
           return SM_ERR;
         }
       SER( eStat );

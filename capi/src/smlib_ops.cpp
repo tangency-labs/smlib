@@ -297,13 +297,17 @@ std::string g_blend_reason;
 double g_blend_fit = -1.0;
 int32_t g_blend_fit_what = SMLIB_FIT_SIZE;
 
-// How the running call's blend sizes map to the executive's radii, for a refusal's fit: a round's
-// size is its radius; an equal chamfer's is its distance, the radius chamfer_radius gives for it
-// (linear in it); other blends (a radius law, unequal or chord-width sizes) have no single size.
+// How the running call's blend sizes map to the executive's fit, for a refusal: a round's size is
+// its radius; an equal chamfer's is its distance, the radius chamfer_radius gives for it (linear in
+// it); a chamfer of two distances is sized by the factor on both (SMLIB_FIT_SCALE); a chord-width
+// blend by its width; a round on a radius law has no single size.
 enum class FitSize
 {
     radius,
     chamfer_distance,
+    chamfer_pair,
+    chord,
+    law,
     none
 };
 FitSize g_fit_size = FitSize::none;
@@ -314,7 +318,7 @@ void note_fit(double size, int32_t what)
     g_blend_fit = size;
     g_blend_fit_what = what;
     char text[160];
-    const char *of = what == SMLIB_FIT_SETBACK ? "setback" : "size";
+    const char *of = what == SMLIB_FIT_SETBACK ? "setback" : what == SMLIB_FIT_SCALE ? "factor on both sizes" : "size";
     if (size > 0.0)
     {
         std::snprintf(text, sizeof text, " (the largest %s that builds is %.9g)", of, size);
@@ -357,15 +361,28 @@ int32_t blend_failure(SmFilletExecutive &exec, int32_t s)
         // the cause's largest radius that builds, as the call's size
         const double radius = exec.GetFitRadius();
         SmEdge *edge = exec.GetFitEdge();
-        if (radius == 0.0 && g_fit_size != FitSize::none)
+        const ULONG kind = exec.GetFitKind();
+        if (g_fit_size == FitSize::law)
+        {
+            g_blend_reason += " (no single size: the round follows a radius law, whose shape, not one size, does not fit)";
+        }
+        else if (radius == 0.0 && g_fit_size != FitSize::none)
         {
             note_fit(0.0, SMLIB_FIT_SIZE);
         }
-        else if (radius > 0.0 && g_fit_size == FitSize::radius)
+        else if (radius > 0.0 && kind == SM_FIT_SCALE && g_fit_size == FitSize::chamfer_pair)
+        {
+            note_fit(radius, SMLIB_FIT_SCALE);
+        }
+        else if (radius > 0.0 && kind == SM_FIT_CHORD && g_fit_size == FitSize::chord)
         {
             note_fit(radius, SMLIB_FIT_SIZE);
         }
-        else if (radius > 0.0 && g_fit_size == FitSize::chamfer_distance && edge != nullptr)
+        else if (radius > 0.0 && kind == SM_FIT_RADIUS && g_fit_size == FitSize::radius)
+        {
+            note_fit(radius, SMLIB_FIT_SIZE);
+        }
+        else if (radius > 0.0 && kind == SM_FIT_RADIUS && g_fit_size == FitSize::chamfer_distance && edge != nullptr)
         {
             double per = 0.0;
             if (chamfer_radius(edge, 1.0, per))
@@ -392,7 +409,7 @@ int32_t blend_failure(SmFilletExecutive &exec, int32_t s)
 // alone and is gone before the caller hands `b` on or frees it.
 int32_t chamfer_offsets(SmBrep *b, const std::vector<SmEdge *> &edges, const std::vector<double> &first, const std::vector<double> &second)
 {
-    g_fit_size = first == second ? FitSize::chamfer_distance : FitSize::none;
+    g_fit_size = first == second ? FitSize::chamfer_distance : FitSize::chamfer_pair;
     SmTArray<SmEdge *> es;
     SmTArray<SmFilletSurfaceGeneratorType> kinds;
     SmTArray<SmFilletSolverType> solvers;
@@ -647,7 +664,7 @@ int32_t round_edges(SmBrep *b, const std::vector<SmEdge *> &edges, const std::ve
     {
         return SMLIB_ERR_ARG;
     }
-    g_fit_size = (laws.empty() && kind != SMLIB_BLEND_CHORD) ? FitSize::radius : FitSize::none;
+    g_fit_size = !laws.empty() ? FitSize::law : kind == SMLIB_BLEND_CHORD ? FitSize::chord : FitSize::radius;
     mark_faces(b);
     SmFilletExecutive exec(*SmApiGetOrCreateContext(), b);
     int32_t s = status(exec.SetFilletParameters(b, es, sections, solvers, values, laws.empty() ? nullptr : &law_array, -1.0, -1.0,

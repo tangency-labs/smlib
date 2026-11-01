@@ -6712,15 +6712,18 @@ NOTES: h(rho) = <c - f, n'> - rho, f the foot of c on the other face's
     the solver's radius r.
 ***********************************************************************/
 static SmStatus sm_BallThrough
-  (SmFilletSolver  & rSolver,  // in : the solver (a constant ball, at its radius)
+  (SmFilletSolver  & rSolver,  // in : the solver (its offsets at their own distances)
    ULONG             lK,       // in : the face crQ lies on (0 or 1)
    const SmPoint3d & crQ,      // in : the point
-   double            dMax,     // in : the largest radius looked for
+   double            dMax,     // in : the largest rho looked for
    SmBoolean       & rbFound,  // out: TRUE = a ball touches both faces with its contact on face lK at crQ
-   double          & rdRho)    // out: its radius
+   double          & rdRho,    // out: its rho
+   const double    * pdRatio = NULL, // in : the faces' offsets per unit rho ([0], [1]), NULL: both 1 (a ball of radius rho)
+   double          * pdChord = NULL) // out: the distance between its two contacts (a chord-width blend's size)
 {
   rbFound = FALSE;
   rdRho = 0.0;
+  const double adRatio[2] = { pdRatio != NULL ? pdRatio[0] : 1.0, pdRatio != NULL ? pdRatio[1] : 1.0 };
   SmOffsetSurface * apOffset[2] = { rSolver.GetSurface(0), rSolver.GetSurface(1) };
   NER(apOffset[0]); NER(apOffset[1]);
   const SmSurface * apBase[2] = { apOffset[0]->GetBaseSurface(), apOffset[1]->GetBaseSurface() };
@@ -6729,8 +6732,8 @@ static SmStatus sm_BallThrough
   rSolver.SetupOffsetExtension(apBase[0], asDomain[0]);
   rSolver.SetupOffsetExtension(apBase[1], asDomain[1]);
   const ULONG lJ = 1 - lK;
-  const double dR = smos_Fabs(apOffset[lK]->GetOffsetDistance());
-  if (!(dR > SM_EFF_ZERO))
+  const double adR[2] = { smos_Fabs(apOffset[0]->GetOffsetDistance()), smos_Fabs(apOffset[1]->GetOffsetDistance()) };
+  if (!(adR[0] > SM_EFF_ZERO) || !(adR[1] > SM_EFF_ZERO))
     { return SM_SUCCESS; }
   // the normal toward the ball at a point of face k's surface: (offset - base) / r
   auto Toward = [&](ULONG k, const SmPoint2d & crUV, SmPoint3d & rOn, SmVector3d & rN) -> SmStatus
@@ -6742,7 +6745,7 @@ static SmStatus sm_BallThrough
     if (   !apBase[k]->GetNaturalUVDomain().ContainsPoint2d(crUV)
         && pExtended != NULL && pExtended->GetNaturalUVDomain().ContainsPoint2d(crUV))
       { SER(pExtended->EvaluatePoint(crUV, rOn)); }
-    rN = (sOff - rOn) / dR;
+    rN = (sOff - rOn) / adR[k];
     return SM_SUCCESS;
   };
   SmBoolean bDropped = FALSE, bMulti = FALSE;
@@ -6756,10 +6759,11 @@ static SmStatus sm_BallThrough
   SER(Toward(lK, sUV, sOn, sN));
   SmPoint2d sGuess;
   SmBoolean bGuess = FALSE;
+  SmPoint3d sFootAt;
   auto H = [&](double dRho, SmBoolean & rbOk, double & rdH) -> SmStatus
   {
     rbOk = FALSE;
-    const SmPoint3d sC = crQ + sN * dRho;
+    const SmPoint3d sC = crQ + sN * (dRho * adRatio[lK]);
     SmBoolean bOn = FALSE, bMany = FALSE;
     SmPoint2d sFoot;
     double dDist = 0.0;
@@ -6771,7 +6775,8 @@ static SmStatus sm_BallThrough
     SmPoint3d sF;
     SmVector3d sNJ;
     SER(Toward(lJ, sFoot, sF, sNJ));
-    rdH = (sC - sF).Dot(sNJ) - dRho;
+    rdH = (sC - sF).Dot(sNJ) - dRho * adRatio[lJ];
+    sFootAt = sF;
     rbOk = TRUE;
     return SM_SUCCESS;
   };
@@ -6808,6 +6813,12 @@ static SmStatus sm_BallThrough
             { dB = dMid; }
         }
       rdRho = 0.5 * (dA + dB);
+      if (pdChord != NULL)
+        {
+          double dHAt = 0.0;
+          SER(H(rdRho, bOk, dHAt));
+          *pdChord = crQ.DistanceBetween(sFootAt);
+        }
       // the ball's centre square to the filleted edge within it, not past an end
       const SmEdge  * pEdge  = rSolver.GetEdgeuse(0)->GetEdge();
       const SmCurve * pCurve = (pEdge != NULL) ? pEdge->GetCurve() : NULL;
@@ -6815,7 +6826,7 @@ static SmStatus sm_BallThrough
       const SmExtent1d sIvl = pEdge->GetInterval();
       SmBoolean bOnEdge = FALSE;
       double dT = 0.0, dToEdge = 0.0;
-      SER(pCurve->DropPoint(sIvl, crQ + sN * rdRho, NULL, SM_EFF_ZERO, NULL, bOnEdge, dT, dToEdge));
+      SER(pCurve->DropPoint(sIvl, crQ + sN * (rdRho * adRatio[lK]), NULL, SM_EFF_ZERO, NULL, bOnEdge, dT, dToEdge));
       const double dEnds = 1.0e-9 * (1.0 + sIvl.GetLength());
       rbFound = (bOnEdge && (pEdge->IsClosed() || (dT > sIvl.GetMin() + dEnds && dT < sIvl.GetMax() - dEnds))) ? TRUE : FALSE;
       return SM_SUCCESS;
@@ -6840,11 +6851,16 @@ SmStatus SmFilletSolver::BallThrough
 } // end SmFilletSolver::BallThrough
 
 /*******************************************************************//**
-PURPOSE: SolidCraft change. The largest radius at which this constant
-    ball's rails stay on the faces it rolls on: the least radius of a ball
-    that touches one face at a point of that face's boundary (an edge not
-    the filleted one nor at its ends: a wall's top, a feature's footprint,
-    the far side of a face) and the other face (sm_BallThrough).
+PURPOSE: SolidCraft change. The largest size at which this blend's rails
+    stay on the faces it rolls on (pOnly: on that face only): the least size
+    of a ball, or of the solver's two offsets, that touches one face at a
+    point of that face's boundary (an edge not the filleted one nor at its
+    ends: a wall's top, a feature's footprint, the far side of a face) and
+    the other face (sm_BallThrough). rlKind says what the size is:
+    SM_FIT_RADIUS a constant ball's radius, SM_FIT_SCALE the factor on two
+    unequal constant offsets (a chamfer of two distances), SM_FIT_CHORD a
+    chord-width blend's width (the distance between that ball's contacts).
+    A radius law has no single size (rbFound FALSE).
 
 NOTES: For a blend refused because a rail leaves its face (the rail meets
     that boundary there first as the radius grows). Each such edge is
@@ -6852,23 +6868,48 @@ NOTES: For a blend refused because a rail leaves its face (the rail meets
     refined by golden section over the steps either side. rbFound FALSE where
     no boundary point has such a ball up to the solver's radius.
 ***********************************************************************/
-SmStatus SmFilletSolver::LargestRadiusOnItsFaces
-  (SmBoolean & rbFound,  // out: TRUE = a boundary point bounds the radius
-   double    & rdRadius) // out: the least such radius
+SmStatus SmFilletSolver::LargestSizeOnItsFaces
+  (const SmFace * pOnly,    // in : the face whose boundary bounds it, NULL: either face's
+   SmBoolean    & rbFound,  // out: TRUE = a boundary point bounds the size
+   double       & rdRadius, // out: the least such size
+   ULONG        & rlKind)   // out: what it sizes (SM_FIT_RADIUS, SM_FIT_SCALE, SM_FIT_CHORD)
 {
   rbFound  = FALSE;
   rdRadius = 0.0;
+  rlKind   = SM_FIT_RADIUS;
+  if (GetEdgeuse(0) == NULL || GetEdgeuse(1) == NULL || GetSurface(0) == NULL || GetSurface(1) == NULL)
+    { return SM_SUCCESS; }
+  const double adOff[2] = { smos_Fabs(GetSurface(0)->GetOffsetDistance()), smos_Fabs(GetSurface(1)->GetOffsetDistance()) };
   SmBoolean bOnEdge = FALSE;
-  if (!RollsABall(bOnEdge) || bOnEdge || GetEdgeuse(0) == NULL || GetEdgeuse(1) == NULL)
+  double adRatio[2] = { 1.0, 1.0 };
+  double dMax = adOff[0];
+  const SmFilletSolverType eType = GetSolverType();
+  if (RollsABall(bOnEdge))
+    {
+      if (bOnEdge)
+        { return SM_SUCCESS; } // a radius law: no single size
+    }
+  else if (eType == SM_FS_CONST_DIST)
+    {
+      rlKind = SM_FIT_CHORD; // a ball of any radius, sized by its chord
+      dMax = 20.0 * smos_Max(adOff[0], adOff[1]);
+    }
+  else if (eType == SM_FS_CONST_RADIUS && adOff[0] > 0.0 && adOff[1] > 0.0)
+    {
+      rlKind = SM_FIT_SCALE; // both offsets scaled together
+      adRatio[0] = adOff[0];
+      adRatio[1] = adOff[1];
+      dMax = 1.0;
+    }
+  else
     { return SM_SUCCESS; }
   SmEdge * pBlended = GetEdgeuse(0)->GetEdge();
   NER(pBlended);
   const SmVertex * apEnds[2] = { pBlended->GetVertex(), pBlended->GetOtherVertex(pBlended->GetVertex()) };
-  const double dMax = smos_Fabs(GetSurface(0)->GetOffsetDistance());
   for (ULONG k=0; k<2; k++)
     {
       SmFace * pFace = GetEdgeuse(k)->GetFace();
-      if (pFace == NULL)
+      if (pFace == NULL || (pOnly != NULL && pFace != pOnly))
         { continue; }
       SmTArray<SmEdge*> sEdges;
       pFace->GetEdges(sEdges);
@@ -6889,10 +6930,10 @@ SmStatus SmFilletSolver::LargestRadiusOnItsFaces
             SmPoint3d sQ;
             SER(pCurve->EvaluatePoint(sIvl.Evaluate(smos_Max(0.0, smos_Min(1.0, dT))), sQ));
             SmBoolean bFound = FALSE;
-            double dRho = 0.0;
-            SER(sm_BallThrough(*this, k, sQ, dMax, bFound, dRho));
+            double dRho = 0.0, dChord = 0.0;
+            SER(sm_BallThrough(*this, k, sQ, dMax, bFound, dRho, adRatio, &dChord));
             if (bFound)
-              { rdRho = dRho; }
+              { rdRho = (rlKind == SM_FIT_CHORD) ? dChord : dRho; }
             return SM_SUCCESS;
           };
           const ULONG lSteps = 32;
@@ -6938,7 +6979,7 @@ SmStatus SmFilletSolver::LargestRadiusOnItsFaces
         }
     }
   return SM_SUCCESS;
-} // end SmFilletSolver::LargestRadiusOnItsFaces
+} // end SmFilletSolver::LargestSizeOnItsFaces
 
 /*******************************************************************//**
 PURPOSE: SolidCraft change. The radius at which this constant ball's rail on

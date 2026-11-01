@@ -264,6 +264,8 @@ protected:
                                                     //   radius (the solver's, of a constant ball) that builds: > 0, 0 = none does, < 0
                                                     //   = not known (a radius law, unequal offsets, a cause with no size)
   SmEdge                  * m_pFitEdge = NULL;      // SolidCraft change: the blended edge m_dFitRadius is for
+  ULONG                     m_lFitKind = 0;         // SolidCraft change: what m_dFitRadius sizes: SM_FIT_RADIUS (a constant ball's
+                                                    //   radius), SM_FIT_SCALE (the factor on two unequal offsets), SM_FIT_CHORD (a width)
 
   // gwc: Only one of m_bDoPiecewiseMerge, m_bDoTopologyInsertion, and m_bDoGlobalMerge should be TRUE in any SmFilletExecutive.
   //      They are 3 different ways to do the same thing; move m_pFilletBrep Topology and Geometry into m_pTargetBrep. 
@@ -453,7 +455,16 @@ public:
   void      SetSweptTurns(SmBoolean bSwept) { m_bSweptTurns = bSwept; }
   void      SetKeepFeatures(SmBoolean bKeep) { m_bKeepFeatures = bKeep; } // SolidCraft change: keep features (SmFilletKeepFeatures.cpp)
   // SolidCraft change: a refusal's largest radius that builds (m_dFitRadius), for the blend of pEdge
-  void      NoteFitRadius(double dRadius, SmEdge * pEdge) { m_dFitRadius = dRadius; m_pFitEdge = pEdge; }
+  void      NoteFitRadius(double dRadius, SmEdge * pEdge, ULONG lKind = 0) { m_dFitRadius = dRadius; m_pFitEdge = pEdge; m_lFitKind = lKind; }
+  ULONG     GetFitKind() const { return m_lFitKind; }
+  // SolidCraft change: a cause's open bound dLimit (rbFound) on pSolver's blend, of kind lKind,
+  // noted less the fit margin (for a factor on two offsets, the margin over the larger), where it
+  // is the least so far
+  SmStatus  NoteOpenFit(SmBoolean bFound, double dLimit, ULONG lKind, SmFilletSolver & rSolver);
+  // SolidCraft change: the fit of a refusal for a rail running past pFace's boundary
+  SmStatus  NoteFitOnFace(const SmFace * pFace);
+  // SolidCraft change: the fit of blends taking the whole of a planar face bounded by straight blended edges
+  SmStatus  NoteFitOfPolygonsTakenWhole();
   double    GetFitRadius() const { return m_dFitRadius; }
   // SolidCraft change: how far under an open bound (a size at which the blend leaves a face, an
   // edge or a part's bridge of no extent) the largest size that builds lies: a thousand of the

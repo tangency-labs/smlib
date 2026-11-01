@@ -107,18 +107,24 @@ Where the law has a corner the round turns and is split into faces there; a law 
 zero inside the edge (the round would pinch to a point) is `SMLIB_ERR_UNSUPPORTED`.
 `smlib_blend_reason` gives the last blend's failure in SMLib's words (a fold, a swept turn at a
 sharp concave side edge), naming the radius. When SMLib refused the blend as too large
-(`SMLIB_ERR_NO_ROOM`), `smlib_blend_fit_size` gives the largest size that builds (0: none does), or
-for a set-back corner the largest setback (`SMLIB_FIT_SETBACK`). The size comes from the
-refusal's cause, never from building again. Where the cause's bound is open, the size is the bound
-less a thousand of the edge's tolerances. Sized so far:
+(`SMLIB_ERR_NO_ROOM`), `smlib_blend_fit_size` gives the largest size that builds (0: none does).
+Its unit depends on the call:
+- a round's radius or an equal chamfer's distance;
+- a chord-width blend's width;
+- for a chamfer of two distances, the factor on both (`SMLIB_FIT_SCALE`);
+- for a set-back corner, the largest setback (`SMLIB_FIT_SETBACK`).
+The size comes from the refusal's cause, never from building again; where the cause's bound is
+open it is the bound less a thousand of the edge's tolerances. Sized so far:
 - a ball that does not fit its face's curve (closed) or folds (open);
+- unequal offsets that fold (open);
 - a blend that would cut the part in two;
-- rails that leave their faces;
+- rails that leave their faces, onto a tangent face, or past a boundary into the material;
 - bands that meet on a shared face (closed);
 - a corner that takes the whole edge;
-- a cylinder's top taken whole;
+- a planar face taken whole, bounded by one circle or by straight blended edges;
 - a setback longer than an edge;
 - a swept turn at a sharp concave side edge (none).
+A round on a radius law has no single size: `SMLIB_ERR_EMPTY`, and the reason says so.
 
 `smlib_merge_faces` removes a body's topological edges and vertices
 (`SmBrep::RemoveTopologicalEdgesAndVertices`): faces on one surface that meet along an edge
