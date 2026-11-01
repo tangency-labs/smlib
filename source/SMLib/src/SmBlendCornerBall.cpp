@@ -351,9 +351,8 @@ PURPOSE: The Ball's sphere and its loop (see the file's head), from the
     triple offset point, solved from them; the rounds' balls at the
     contacts are checked to be it.
 ***********************************************************************/
-SmStatus SmBlendCorner::BuildBallSurface()
+SmStatus SmBlendCorner::BallCentre(SmPoint3d & rCentre, double & rdRadius, SmPoint3d asContact[3]) const
 {
-  DeleteBallSurface();
   NER( m_pAllEUs );
   if ( m_vVertices.GetSize() != 3 || m_vEdges.GetSize() != 3 || m_pAllEUs->GetSize() != 3 )
     { SER( SM_ERR ); }
@@ -379,7 +378,7 @@ SmStatus SmBlendCorner::BuildBallSurface()
   if ( sOn[0].DistanceBetween( sOn[1] ) > dTol )
     { SER( SM_ERR ); } // the section's offset points are its ball's centre
   const SmPoint3d sBall = sOn[0];
-  const double dRadius = smos_Fabs( pFG0->GetOffsetSurface( 0 )->GetOffsetDistance() );
+  rdRadius = smos_Fabs( pFG0->GetOffsetSurface( 0 )->GetOffsetDistance() );
 
   // the planes, and the centre r from each on the ball's side: n_i . C = n_i . p_i + s_i r
   SmFace * apFace[3];
@@ -395,7 +394,7 @@ SmStatus SmBlendCorner::BuildBallSurface()
         { SER( SM_ERR ); } // ClassifyBall took the faces to be planes
       SER( asNormal[ii].Unitize() );
       adSide[ii] = ( asNormal[ii].Dot( sBall - sOnPlane ) >= 0.0 ) ? 1.0 : -1.0;
-      adRhs[ii]  = asNormal[ii].x * sOnPlane.x + asNormal[ii].y * sOnPlane.y + asNormal[ii].z * sOnPlane.z + adSide[ii] * dRadius;
+      adRhs[ii]  = asNormal[ii].x * sOnPlane.x + asNormal[ii].y * sOnPlane.y + asNormal[ii].z * sOnPlane.z + adSide[ii] * rdRadius;
     }
   // Cramer's rule: C = (rhs_0 n_1 x n_2 + rhs_1 n_2 x n_0 + rhs_2 n_0 x n_1) / (n_0 . n_1 x n_2)
   const double dDet = asNormal[0].Dot( asNormal[1] * asNormal[2] );
@@ -403,19 +402,75 @@ SmStatus SmBlendCorner::BuildBallSurface()
     { SER( SM_ERR ); }
   const SmVector3d sC = ( asNormal[1] * asNormal[2] ) * ( adRhs[0] / dDet ) + ( asNormal[2] * asNormal[0] ) * ( adRhs[1] / dDet )
                        + ( asNormal[0] * asNormal[1] ) * ( adRhs[2] / dDet );
-  const SmPoint3d sCentre( sC.x, sC.y, sC.z );
-  if ( sCentre.DistanceBetween( sBall ) > dTol )
+  rCentre = SmPoint3d( sC.x, sC.y, sC.z );
+  if ( rCentre.DistanceBetween( sBall ) > dTol )
     { SER( SM_ERR ); } // the rounds' ball is the planes' triple offset point
-  SmPoint3d asContact[3];
   for (ULONG ii=0; ii<3; ii++)
     {
-      asContact[ii] = sCentre - asNormal[ii] * ( adSide[ii] * dRadius );
+      asContact[ii] = rCentre - asNormal[ii] * ( adSide[ii] * rdRadius );
       if ( asContact[ii].DistanceBetween( m_vVertices[ii]->GetPoint() ) > dTol )
         { SER( SM_ERR ); } // vertex i is the ball's contact with face i
-      // the contact in closed form, not as the rails' crossing was solved: the rounds' end
-      // sections are made through it (SmFilletEdge::CalcCrossSection)
-      m_vVertices[ii]->SetPoint( asContact[ii] );
     }
+  return SM_SUCCESS;
+
+} // end SmBlendCorner::BallCentre
+
+/*******************************************************************//**
+PURPOSE: The Ball's contacts as they are in closed form, not as the rails'
+    crossings were solved: each vertex at its contact, and each round's
+    section there (its vertexuse's tsect point, which the round's trace ends
+    on) at the ball's centre on both its offset surfaces. The exact round
+    (SmFilletSolver::CalcLineSpineFilletGeom) runs its axis and span to that
+    section, so its end circle is the ball's.
+***********************************************************************/
+SmStatus SmBlendCorner::PlaceBallContacts()
+{
+  SmPoint3d sCentre, asContact[3];
+  double    dRadius = 0.0;
+  SER( BallCentre( sCentre, dRadius, asContact ));
+  const double dTol = GetThisApproxTol3d();
+  for (ULONG ii=0; ii<3; ii++)
+    {
+      SmFilletVertex * pFV = m_vVertices[ii];
+      pFV->SetPoint( asContact[ii] );
+      // every round's section there: the tsect point of each vertexuse of a round's rail
+      SmTArray<SmVertexuse*> sVUs;
+      pFV->GetVertexuses( sVUs );
+      for (ULONG u=0; u<sVUs.GetSize(); u++)
+        {
+          SmFilletVertexuse * pVU = (SmFilletVertexuse*)sVUs[u];
+          SmFilletEdgeuse   * pEU = pVU != NULL ? (SmFilletEdgeuse*)pVU->GetEdgeuse() : NULL;
+          SmFilletGeom      * pFG = pEU != NULL ? pEU->GetFilletGeom() : NULL;
+          if ( pFG == NULL || ((SmFilletEdge*)pEU->GetEdge())->GetFilletEdgeType() != SM_FE_RAIL )
+            { continue; }
+          SmTsectPnt & rTsect = pVU->GetTsectPnt();
+          for (ULONG k=0; k<2; k++)
+            {
+              SmOffsetSurface * pOffset = pFG->GetOffsetSurface( k );
+              NER( pOffset );
+              SmBoolean  bFound = FALSE;
+              SmSolution sSolution;
+              SER( pOffset->LocalPointSolve( pOffset->GetNaturalUVDomain(), SM_SO_MINIMIZE, sCentre, rTsect.UVPos( k ), bFound, sSolution ));
+              const SmPoint2d sUV( sSolution.m_vStart[0], sSolution.m_vStart[1] );
+              SmPoint3d sAt;
+              SER( pOffset->EvaluatePoint( sUV, sAt ));
+              if ( !bFound || sAt.DistanceBetween( sCentre ) > dTol )
+                { SER( SM_ERR ); }
+              rTsect.UVPos( k ) = sUV;
+            }
+        }
+    }
+  return SM_SUCCESS;
+
+} // end SmBlendCorner::PlaceBallContacts
+
+SmStatus SmBlendCorner::BuildBallSurface()
+{
+  DeleteBallSurface();
+  SmPoint3d sCentre, asContact[3];
+  double    dRadius = 0.0;
+  SER( BallCentre( sCentre, dRadius, asContact ));
+  const double dTol = GetThisApproxTol3d();
 
   // The face's normal is its surface's (SmBrep::OrientTrimmedSurfaces turns a face the other way
   // by swapping its surface's parameters): out of the material, towards the centre where the

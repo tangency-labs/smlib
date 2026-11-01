@@ -81,6 +81,8 @@ protected:
   SmStatus  MakeBallTopology();
   SmStatus  BuildBallSurface();  // m_pBallSurface and its loop, from the planes and the processed contacts
   void      DeleteBallSurface();
+  SmStatus  BallCentre(SmPoint3d & rCentre, double & rdRadius, SmPoint3d asContact[3]) const; // the planes' triple offset point, the contacts
+  SmStatus  PlaceBallContacts(); // the contacts and the rounds' sections there in closed form
   SmStatus  CreateBallPatch();
 
   SmBoolean IsSwept() const { return ( m_eEvent == SM_BCE_TURN && m_eTurn == SM_BT_SWEPT ) ? TRUE : FALSE; }
@@ -153,6 +155,7 @@ public:
   virtual SmStatus MakeCornerTopology();
   virtual SmStatus AdjustTopology();
   virtual SmStatus AdjustTangentCorner();
+  virtual SmStatus CalcCornerVertGeom();
   virtual SmStatus CalcCornerEdgeGeom();
   virtual SmStatus CreateCornerPatch();
 

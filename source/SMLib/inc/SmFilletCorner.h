@@ -139,7 +139,7 @@ public:
 
   // key SmFilletCorner methods driven by SmFilletExecutive::CreateFilletBrep() to Fillet a Brep
   virtual SmStatus MakeCornerTopology   ()=0 ;                 // 1st : Add FilletVertices (topo only) connected by FilletEdges (topo only)
-  SmStatus         CalcCornerVertGeom   () ;                   // 2nd : Set FilletVertex point positions
+  virtual SmStatus CalcCornerVertGeom   () ;                   // 2nd : Set FilletVertex point positions
   SmBoolean        CheckAndFixDegeneracy() ;                   // 3rd : check for and deal with degenerate corner
   virtual SmStatus AdjustTopology       (){return SM_SUCCESS;} // 4th : Adjust topo for NonDegenerate cases depending on part geometry
                                                                // 5th : SmFilletSolver::CalcFilletGeom()

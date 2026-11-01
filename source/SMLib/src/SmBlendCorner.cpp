@@ -705,6 +705,12 @@ PURPOSE: The corner's edges: the arc A-B is the torus's (its iso-curve at
     A's tube angle, from A to B); the end sections are the rounds' own
     cross-sections (SmFilletEdge::CalcCrossSection).
 ***********************************************************************/
+SmStatus SmBlendCorner::CalcCornerVertGeom()
+{
+  SER( SmFilletCorner::CalcCornerVertGeom() );
+  return IsBall() ? PlaceBallContacts() : SM_SUCCESS;
+}
+
 SmStatus SmBlendCorner::CalcCornerEdgeGeom()
 {
   if ( IsMitreTurn() )

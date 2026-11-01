@@ -7074,7 +7074,7 @@ const TangentEndCase BALL_CASES[] = {
     {"pocket_corner", ball_pocket_corner, nullptr},
     {"prism_corner", ball_prism_corner, nullptr},
     {"oblique_corner", ball_oblique_corner,
-     "the rounds' end circles 1.3e-12 off the sphere: each exact round's axis and span run between its trace's end sections as solved at the rails' crossings, not through the ball's centre"},
+     "one round's end circle 1.05e-12 off the sphere: its SmCone's frame is re-derived from its net (CopyAndAddAnalytics in CalcLineSpineFilletGeom, then SmCone::RebuildSTEPFromNURBParameters when the orienter turns its face), its axis 1.06e-12 off the ball's centre"},
     {"sphere_turned_round", ball_sphere_turned_round, nullptr},
 };
 
