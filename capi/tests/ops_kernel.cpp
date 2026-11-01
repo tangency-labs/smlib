@@ -4975,8 +4975,7 @@ const TangentEndCase SECTION_CASES[] = {
     {"pipe_on_plate_round", section_pipe_on_plate_round, nullptr},
     {"pipe_on_plate_g2", section_pipe_on_plate_g2, nullptr},
     {"pipe_on_plate_g2_thumbweight_half", section_pipe_on_plate_g2_thumbweight_half, nullptr},
-    {"variable_round_on_its_cone", section_variable_round_on_its_cone,
-     "the round's sections are the balls' great circles, not the circles the balls' envelope touches them along: 0.0166 off the cone, volume 11955.6466 against 11956.2224"},
+    {"variable_round_on_its_cone", section_variable_round_on_its_cone, nullptr},
 };
 
 int section_cases(bool known_failing, const char *only)

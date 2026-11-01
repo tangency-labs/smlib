@@ -1989,9 +1989,22 @@ SmBoolean bDebugMe=FALSE;
               SER(rRail1Curve.EvaluatePoint(dT,sP1));
               SER(rRail2Curve.EvaluatePoint(dT,sP2));
 
-              // get sample Point gaps
+              // SolidCraft change: the section is the circle along which the balls' envelope
+              // touches the ball, in the plane square to the centre line through the rail points
+              // (the ball's touch points, so both lie in it). Its centre is the ball's centre moved
+              // along the centre line by the rails' projection on it: zero for a constant radius,
+              // -r r'/|c'| for a varying one, where the great circle through the rails would leave
+              // the envelope.
               SmVector3d sV1 = sP1 - sCentPV[0];
               SmVector3d sV2 = sP2 - sCentPV[0];
+              SmVector3d sAlong = sCentPV[1];
+              if (sAlong.Length() > SM_EFF_ZERO)
+                {
+                  SER(sAlong.Unitize());
+                  sCentPV[0] += sAlong * (0.5 * (sV1.Dot(sAlong) + sV2.Dot(sAlong)));
+                  sV1 = sP1 - sCentPV[0];
+                  sV2 = sP2 - sCentPV[0];
+                }
               SmBSplineCurve * pArc = NULL;
 
 #ifdef SM_DEBUG_CODE
