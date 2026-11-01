@@ -1378,6 +1378,30 @@ static int iDebugLevel = 0; // Note: Can't call DebugLevel() from a static metho
                 MSG(_T("Corner Case Not Implemented"));
                 break;
               }
+            // SolidCraft change: a corner the blend corner sets back and fills
+            // (SmBlendCorner::ClassifySetBack); the others as before
+            if (bIsChamferCorner == FALSE)
+              {
+                SmBlendCornerEvent eEvent = SM_BCE_NONE;
+                ULONG              lOrder = 1;
+                if ( SmBlendCorner::ClassifySetBack( cpVertex, *pSolverEUs, *pAllEUs, pExec, dTanTolDeg, eEvent, lOrder ) != SM_SUCCESS )
+                  { break; }
+                if ( eEvent == SM_BCE_SETBACK )
+                  {
+                    SmBlendCorner * pSetBack = new(crContext) SmBlendCorner(crContext,
+                                                                            cpVertex,
+                                                                            pSolverEUs,
+                                                                            pAllEUs,
+                                                                            pExec,
+                                                                            dApproxTol3d,
+                                                                            dTangencyTolRadians,
+                                                                            SM_BCE_SETBACK,
+                                                                            SM_BT_MITRE);
+                    pSetBack->SetFillOrder( lOrder );
+                    pNewCorner = pSetBack;
+                    break;
+                  }
+              }
             SmTArray<SmEdgeuse*> sConcaveEUs;
             if (bIsChamferCorner == FALSE) 
               {
@@ -1964,6 +1988,7 @@ SmStatus SmFilletCorner::CreateCornerPatch()
                       case SM_FV_RAIL_X_VERTEX    :
                       case SM_FV_RAIL_X_EXTENDED_EDGEUSE:
                       case SM_FV_SETBACK          :
+                      case SM_FV_PRECOMPUTED      :
                       case SM_FV_UNKNOWN          : break;
 
                     } // end switch on corner->VertexType

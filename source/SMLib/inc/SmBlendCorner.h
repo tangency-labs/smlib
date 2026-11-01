@@ -20,6 +20,12 @@
 #include <SmFilletCorner.h>
 #endif
 
+#ifndef __SMBLENDSETBACK_H__
+#include <SmBlendSetback.h>
+#endif
+
+#include <vector>
+
 class SmTorus;
 
 /*******************************************************************//**
@@ -31,7 +37,8 @@ enum SmBlendCornerEvent
   SM_BCE_TURN, // two blends turn at the unblended side edge(s) between their faces
   SM_BCE_JOIN, // two blends whose edges continue each other (G1) at the vertex
   SM_BCE_BALL, // three rounds of one radius and convexity, the common ball's sphere between them (SmBlendCornerBall.cpp)
-  SM_BCE_END   // one blend ends at the vertex, its side faces there not blended
+  SM_BCE_END,    // one blend ends at the vertex, its side faces there not blended
+  SM_BCE_SETBACK // three or more blends, every edge there blended, each set back and the hole filled (SmBlendSetback)
 };
 
 // How an End ends (SmBlendCornerEnd.cpp).
@@ -80,6 +87,13 @@ protected:
   SmTArray<SmCurve*>        m_vTurn3d;      // Swept: its loop's 3D curves (natural iso-curves, the pole at S left out)
   SmTArray<SmBSplineCurve*> m_vTurnUV;      // and their uv lines
   SmTArray<SmOrientType>    m_vTurnOrients; // and their orientations in the loop
+  // Setback: each blended edge's setback (in m_pAllEUs's order), the fill's order (1: G1, 2: G2),
+  // whether the corner's edges are convex, and the fill (from CalcCornerEdgeGeom until
+  // CreateCornerPatch hands its patches to faces)
+  std::vector<double>       m_vSetBacks;
+  ULONG                     m_lFillOrder;
+  SmBoolean                 m_bConvexSetBack;
+  SmBlendSetback::Fill    * m_pFill;
 
   // the Ball (SmBlendCornerBall.cpp)
   SmSurface               * m_pBallSurface; // the corner's face's sphere, from CalcCornerEdgeGeom until CreateCornerPatch hands it to its face
@@ -95,6 +109,7 @@ protected:
   SmStatus  PlaceBallContacts(); // the contacts and the rounds' sections there in closed form
   SmStatus  CreateBallPatch();
 
+  SmBoolean IsSetBack() const { return ( m_eEvent == SM_BCE_SETBACK ) ? TRUE : FALSE; }
   SmBoolean IsSwept() const { return ( m_eEvent == SM_BCE_TURN && m_eTurn == SM_BT_SWEPT ) ? TRUE : FALSE; }
   SmBoolean IsMitreTurn() const { return ( m_eEvent == SM_BCE_TURN && m_eTurn == SM_BT_MITRE && m_pAllEUs != NULL && m_pAllEUs->GetSize() == 3 ) ? TRUE : FALSE; }
 
@@ -127,6 +142,15 @@ protected:
   SmStatus  MakeEndRunningOut();
   SmStatus  CalcEndEdgeGeom();
   SmStatus  CreateEndPatchOfEnd();
+
+  // the Setback (SmBlendCornerSetback.cpp): per face at the vertex, the rail ends of the two
+  // rounds beside it (the one before's SM_FV_MATE, the one after's SM_FV_SETBACK) and the
+  // fill's base point between them (SM_FV_PRECOMPUTED), the two halves of the face's spring
+  // curve (SM_FE_PRECOMPUTED) and each round's end section (SM_FE_CROSS_SECTION)
+  SmStatus MakeSetBackTopology();
+  SmStatus BuildSetBackFill();     // the fill, its base points and the spring curves, from the processed rail ends and the rounds' surfaces
+  SmStatus CreateSetBackPatches(); // the fill's patches as faces
+  SmStatus SetBackNotBuilt(const TCHAR * cpWhy);
 
   // the Join, and a corner of four edges: the two blends end on one common section (blending), or
   // run on to their intersection (bevel); moved from SmFilletNx2Corner.
@@ -171,6 +195,21 @@ public:
                                const SmTArray<SmEdgeuse*> & crAllEUs,
                                SmFilletExecutive          * pExec,
                                SmBlendCornerEvent         & reEvent);
+  // Whether the corner of a filleted vertex where every edge is blended (crSolverEUs, crAllEUs,
+  // three or more) is a Setback, which SmBlendSetback builds: every face there a plane, every edge
+  // a straight line, no two edges tangent, all of one convexity, each blend a constant round of
+  // one radius (SM_FSG_CIRCULAR) or the curvature-continuous section (SM_FSG_BLEND_CURVE), and
+  // either set back on request (SmFilletExecutive::GetSetBackFill), or G2 (curvature-continuous
+  // sections), or rounds of unequal radii, which no one ball touches (owner, 2026-11-01). Equal
+  // circular rounds stay where they were (no event: SM_BCE_NONE). The fill's order in rlOrder:
+  // 2 for curvature-continuous sections or a setback with an ease, else 1.
+  static SmStatus ClassifySetBack(const SmVertex             * cpVertex,
+                                  const SmTArray<SmEdgeuse*> & crSolverEUs,
+                                  const SmTArray<SmEdgeuse*> & crAllEUs,
+                                  SmFilletExecutive          * pExec,
+                                  double                       dTangencyTolDeg,
+                                  SmBlendCornerEvent         & reEvent,
+                                  ULONG                      & rlOrder);
 
   virtual SmStatus MakeCornerTopology();
   virtual SmStatus AdjustTopology();
@@ -188,6 +227,9 @@ public:
   void SetEnd( SmBlendEnd eEnd ) { m_eEnd = eEnd; }
   // whether a round ending at cpCornerVert runs out there: its side faces continue each other
   static SmBoolean EndRunsOut( const SmVertex * pCornerVert, SmEdgeuse * pFilEdgeuse );
+
+  virtual double   GetSetBackDistAlong(const SmEdge * pEdge);
+  void             SetFillOrder(ULONG lOrder) { m_lFillOrder = lOrder; }
 
   SmBlendCornerEvent GetEvent() const { return m_eEvent; }
   SmBlendTurn        GetTurn()  const { return m_eTurn; }

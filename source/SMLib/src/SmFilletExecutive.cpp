@@ -2371,7 +2371,6 @@ SmStatus SmFilletExecutive::EaseSetBackSections()
       SmFilletCorner * pCorner = m_vFilletCorners[c];
       if (pCorner == NULL || !(pCorner->GetSetBackDist() > 0.0) || !(pCorner->GetEaseDist() > 0.0))
         { continue; }
-      double dAt = pCorner->GetSetBackDist() + pCorner->GetEaseDist();
       const SmVertex * cpVertex = pCorner->GetFilletedVertex(); NER(cpVertex);
       SmTArray<SmFilletVertex*> sFVs;
       pCorner->GetFilletVertices(sFVs);
@@ -2411,6 +2410,7 @@ SmStatus SmFilletExecutive::EaseSetBackSections()
           // w = 0 where the plane square to the edge, the ease farther from the vertex,
           // meets the rail (as SmFilletVertex::CalcSetBackVert finds the setback's)
           SmEdge * pE = pFS->GetEdgeuse(0)->GetEdge();
+          const double dAt = pCorner->GetSetBackDistAlong(pE) + pCorner->GetEaseDist();
           SmCurve * pEdgeCurve = pE->GetCurve(); NER(pEdgeCurve);
           SmExtent1d sEdgeIvl = pE->GetInterval();
           SmBoolean bFromStart = (pE->GetStartVertex() == cpVertex);
@@ -3727,11 +3727,14 @@ SmStatus SmFilletExecutive::CreateFilletBrep
       //    FilletEdge->FilletEdgeuse->FilletVertexuse->FilletVertex sequences.
       //    The shape of new filletEdges will be computed later
       //    by the FilletSolver.
+      const SmFilletErrorType eTopologyNotedBefore = GetFilletErrorInfo()->GetErrorCode();
       if(SM_SUCCESS != pCorner->MakeCornerTopology())
         {
           // SolidCraft change: a corner refused as one the blends cannot pass (SM_FILERR_NO_ROOM,
-          // noted by the corner) keeps that reason
-          if ( GetFilletErrorInfo()->GetErrorCode() == SM_FILERR_NO_ROOM )
+          // noted by the corner), or one it does not build with its reason, keeps that reason
+          if (   GetFilletErrorInfo()->GetErrorCode() == SM_FILERR_NO_ROOM
+              || (   GetFilletErrorInfo()->GetErrorCode() == SM_FILERR_CORNER_UNSUPPORTED
+                  && eTopologyNotedBefore != SM_FILERR_CORNER_UNSUPPORTED ))
             { SER( SM_ERR ); }
           // when MakeCornerTopology failed - note the error
           pCorner->GetName( sBuff, SM_TBLOCK_SIZE );
@@ -4279,8 +4282,13 @@ SmStatus SmFilletExecutive::CreateFilletBrep
       // some already done as side effects of CalcCornerVertGeom()
       // Also, again, some undone due to adjustments.
       //   [cbi532 probably handle it down in this call:]
+      const SmFilletErrorType eNotedBefore = GetFilletErrorInfo()->GetErrorCode();
       if(SM_SUCCESS != pCorner->CalcCornerEdgeGeom())
         {
+          // SolidCraft change: a corner that noted why it refused (a setback corner's fill,
+          // SmBlendCorner) keeps that reason
+          if ( GetFilletErrorInfo()->GetErrorCode() != eNotedBefore )
+            { SER( SM_ERR ); }
           // when CalcCornerEdgeGeom failed - note the error
           pCorner->GetName( sBuff, SM_TBLOCK_SIZE );
           NoteFilletError( SM_FILERR_VERTEX_PROBLEM, pCorner->GetCornerType(),
