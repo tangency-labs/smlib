@@ -25,8 +25,10 @@
 * bilinear map of a quarter of the n-gon onto the unit square: the interior
 * parts meet each other as one surface (no conditions between them, at their
 * centre neither). A setback patch, of degree 2k + 1 across the hole (k the
-* order), takes its first k + 1 rows from the round's own homogeneous
-* derivatives at its end section and its last k + 1 from F's derivatives
+* order), takes its first k + 1 rows from the round's homogeneous derivatives
+* at its end section, taken of its geometry and not of its parameters (its
+* coordinates over its rails' mean weight, by its rails' mean arc length along
+* it: two parameters of one round give one fill) and its last k + 1 from F's derivatives
 * across the n-gon's edge, F composed with the map (u, v) -> e(v) + (1 - u)
 * d(v) (e the edge, d a field of directions out of the n-gon along it, the
 * two fields at an n-gon vertex opposite): it meets the round to order k in
