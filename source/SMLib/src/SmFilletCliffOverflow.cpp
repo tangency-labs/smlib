@@ -691,9 +691,12 @@ PURPOSE: SolidCraft change. Whether a variable round on planar faces holds
     its radius law, between the filleted edge's ends.
 
 NOTES: For SubtractRemovalRegion. A rolling ball of radius r between two
-    planes meeting at the interior angle a stands off the edge by
-    r (1 / sin(a/2) - 1) where its section (the circle about the ball's
-    centre through its two contacts) crosses the wedge's bisector. The fillet
+    planes meeting at the interior angle a has its centre r / sin(a/2) off
+    the edge on the wedge's bisector. The round touches it along the circle
+    square to the centres' line, its centre moved along that line by
+    -r dr/ds (s the centres' arc length) and its radius r sqrt(1 - (dr/ds)^2)
+    (a constant radius: the great circle); that circle's point in the
+    bisector plane, on the edge's side, lies on the round. The fillet
     surface is traced on the faces' continuations; a trace that went wrong
     past them (clamped, or run into the law's continuation where it shrinks
     to nothing) gives a surface that does not, though it is a valid face
@@ -736,13 +739,18 @@ static SmStatus sm_HoldsItsLaw
   double dTol = 20.0 * pSolver->GetThisApproxTol3d();
   for (ULONG i=1; i<8 && rbHolds; i++)
     {
-      double    dT = pEdge->GetInterval().Evaluate( i / 8.0 );
-      SmPoint3d sPnt;
-      SER( pEdge->GetCurve()->EvaluatePoint( dT, sPnt ));
-      double dRadius = smos_Fabs( pVRFS->GetFilletRadius( dT ));
-      // The section's middle: along the wedge's bisector, r (1 / sin(a/2) - 1) off the edge.
-      // The planes' normals are both outward (or inward), the bisector along their sum and the
-      // angle pi less theirs, or one of each, the bisector along their difference.
+      double     dT = pEdge->GetInterval().Evaluate( i / 8.0 );
+      SmVector3d asEdge[2];
+      SER( pEdge->GetCurve()->Evaluate( dT, 1, TRUE, asEdge, FALSE ));
+      SmPoint3d  sPnt( asEdge[0] );
+      double     adLaw[3];
+      SER( pVRFS->GetFilletLaw()->Evaluate( dT, pVRFS->GetFilletLawInterval(), pVRFS->GetFilletLawOrientation(), adLaw ));
+      double dRadius = smos_Fabs( adLaw[0] );
+      double dSlope  = ( adLaw[0] < 0.0 ) ? -adLaw[1] : adLaw[1]; // d|r|/dT
+      // The ball's centre on the wedge's bisector, r / sin(a/2) off the edge, and the touch
+      // circle's point on the bisector plane toward the edge. The planes' normals are both
+      // outward (or inward), the bisector along their sum and the angle pi less theirs, or one of
+      // each, the bisector along their difference.
       SmBoolean bFits = FALSE;
       for (ULONG c=0; c<4 && !bFits; c++)
         {
@@ -751,8 +759,22 @@ static SmStatus sm_HoldsItsLaw
           double     dLen      = sBisector.Length();
           if ( dLen <= SM_EFF_ZERO_SQRT || dAngle <= SM_EFF_ZERO_SQRT )
             { continue; }
-          double    dStandOff = dRadius * ( 1.0 / sin( dAngle / 2.0 ) - 1.0 );
-          SmPoint3d sMiddle   = sPnt + sBisector * ( (( c % 2 ) ? -1.0 : 1.0 ) * dStandOff / dLen );
+          SmVector3d sOut      = sBisector * ( (( c % 2 ) ? -1.0 : 1.0 ) / dLen ); // edge to centre
+          double     dOff      = 1.0 / sin( dAngle / 2.0 );
+          SmPoint3d  sCentre   = sPnt + sOut * ( dRadius * dOff );
+          SmVector3d sAlong    = asEdge[1] + sOut * ( dSlope * dOff );           // dC/dT
+          double     dSpeed    = sAlong.Length();
+          if ( dSpeed <= SM_EFF_ZERO )
+            { continue; }
+          sAlong = sAlong / dSpeed;
+          double     dRate     = dSlope / dSpeed;                                 // dr/ds
+          if ( smos_Fabs( dRate ) >= 1.0 )
+            { continue; }
+          SmVector3d sToEdge   = -sOut - sAlong * ( -sOut ).Dot( sAlong );
+          double     dToEdge   = sToEdge.Length();
+          if ( dToEdge <= SM_EFF_ZERO )
+            { continue; }
+          SmPoint3d sMiddle = sCentre + sAlong * ( -dRadius * dRate ) + sToEdge * ( dRadius * sqrt( 1.0 - dRate * dRate ) / dToEdge );
           SmBoolean bDropped = FALSE, bMulti = FALSE;
           SmPoint2d sUV;
           double    dGap = SM_BIG_DOUBLE;
