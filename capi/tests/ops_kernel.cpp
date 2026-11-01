@@ -4756,6 +4756,32 @@ void section_box_edge_g2_thumbweight_w_star()
 void section_box_edge_g2_thumbweight_half()
 {
     section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, 0.5, 3.0), box_edge_grade(2, 0.5, 0.0744372522086925));
+// An equilateral prism, side 40 and 10 tall, its edge at the origin (a 60 degree wedge) blended
+// at size 3 by the order-2 section at the equal area thumbweight: the section takes off the
+// ball's circle's area, r^2 (cot(alpha/2) - (pi - alpha)/2) = 9 (sqrt 3 - pi/3) = 6.163679 per mm.
+// That thumbweight is below -1 (the circle takes off more than any w > -1 does, 0.527 of the
+// rails' triangle against 0.509), and was refused while w was kept to (-1, 1).
+void section_sharp_wedge_g2_equal_area()
+{
+    Profile p;
+    const double h = 20.0 * std::sqrt(3.0);
+    p.line(0, 0, 40, 0, 0).line(40, 0, 20, h, 0).line(20, h, 0, 0, 0);
+    smlib_brep *prism = p.extrude(10.0);
+    const double pick[3] = {0, 0, 5}, size = 3.0;
+    smlib_brep *r = nullptr;
+    CHECK(prism != nullptr && smlib_blend_order(prism, 2, SMLIB_BLEND_THUMBWEIGHT, pick, &size, 1, 0.1, &r, nullptr) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        const double removed = 10.0 * (0.25 * std::sqrt(3.0) * 1600.0) - volume_of(r);
+        const double want = 10.0 * 9.0 * (std::sqrt(3.0) - PI / 3.0);
+        std::printf("  sharp wedge: removed %.9f, want %.9f\n", removed, want);
+        CHECK(near(removed, want, 1e-6));
+        CHECK(sound(r));
+        smlib_brep_free(r);
+    }
+    smlib_brep_free(prism);
+}
+
 }
 
 // A plate 60 x 40 x 10 and a boss R 8, 10 tall, at (30, 20) on it; the boss's root rounded at size
@@ -5155,6 +5181,7 @@ int section_cases(bool known_failing, const char *only)
 const TangentEndCase TURN_CASES[] = {
     {"mitre_boss_base", turn_mitre_boss_base, nullptr},
     {"swept_boss_base", turn_swept_boss_base,
+    {"sharp_wedge_g2_equal_area", section_sharp_wedge_g2_equal_area, nullptr},
      "status 1001, Fillet Face Creation Error: the two rounds' sections end at two points on the plate, joined by the torus's quarter arc, but the corner gives both rails one face vertex"},
     {"swept_sharp_pocket_refused", turn_swept_sharp_pocket_refused, nullptr},
 };

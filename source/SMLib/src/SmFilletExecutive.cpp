@@ -616,7 +616,7 @@ SmStatus SmFilletExecutive::SetFilletParameters // same type fillet on all edges
   double                       dXSectTol,      // default (if <= 0): 0.05
   ULONG                        lContinuity,    // n, 2 to SM_GN_MAX_ORDER, of a G^n section
                                                // Used only when eXSectType == SM_FSG_BLEND_CURVE
-  double                       dThumbweight)   // the G^n section's thumbweight, in [0, 1)
+  double                       dThumbweight)   // the G^n section's thumbweight, below 1
                                                // Used only when eXSectType == SM_FSG_BLEND_CURVE
 {
   m_bIsInitialized = FALSE;
@@ -775,7 +775,7 @@ SmStatus SmFilletExecutive::SetFilletParameters
   double                       dXSectTol,        // default (if <= 0): 0.05
   ULONG                        lContinuity,      // n, 2 to SM_GN_MAX_ORDER, of a G^n section
                                                  // Used only when eXSectType == SM_FSG_BLEND_CURVE
-  double                       dThumbweight)     // the G^n section's thumbweight, in [0, 1)
+  double                       dThumbweight)     // the G^n section's thumbweight, below 1
                                                  // Used only when eXSectType == SM_FSG_BLEND_CURVE
 {
   m_bIsInitialized = FALSE;
@@ -835,7 +835,7 @@ SmStatus SmFilletExecutive::SetFilletParameters
           if ( !SmGnSectionFSG::IsValid( lContinuity, dThumbweight ) )
             {
               GetFilletErrorInfo()->NoteError( SM_FILERR_INVALID_INPUT,
-                         _T("SetFilletParameters: a G^n section's order must be 2 to 4 and its thumbweight in [0, 1).") );
+                         _T("SetFilletParameters: a G^n section's order must be 2 to 4 and its thumbweight below 1.") );
               return SM_ERR_INVALID_INPUT;
             }
           pFSG = new (*pContext) SmGnSectionFSG( lContinuity, dThumbweight );
@@ -1031,7 +1031,7 @@ SmStatus SmFilletExecutive::SetFilletParameters
           if ( !SmGnSectionFSG::IsValid( lContinuity, dThumbweight ) )
             {
               GetFilletErrorInfo()->NoteError( SM_FILERR_INVALID_INPUT,
-                         _T("SetFilletParameters: a G^n section's order must be 2 to 4 and its thumbweight in [0, 1).") );
+                         _T("SetFilletParameters: a G^n section's order must be 2 to 4 and its thumbweight below 1.") );
               return SM_ERR_INVALID_INPUT;
             }
           pFSG = new (*pContext) SmGnSectionFSG( lContinuity, dThumbweight );
@@ -1149,7 +1149,7 @@ SmStatus SmFilletExecutive::SetFilletParameters
           if ( !SmGnSectionFSG::IsValid( lContinuity, dThumbweight ) )
             {
               GetFilletErrorInfo()->NoteError( SM_FILERR_INVALID_INPUT,
-                         _T("SetFilletParameters: a G^n section's order must be 2 to 4 and its thumbweight in [0, 1).") );
+                         _T("SetFilletParameters: a G^n section's order must be 2 to 4 and its thumbweight below 1.") );
               return SM_ERR_INVALID_INPUT;
             }
           pFSG = new (*pContext) SmGnSectionFSG( lContinuity, dThumbweight );

@@ -1439,7 +1439,7 @@ SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
 
 /*******************************************************************//**
 PURPOSE: A blend's section of order lOrder (0 to SM_GN_MAX_ORDER) and
-    thumbweight dThumbweight (-1 < w < 1, or SM_GN_THUMBWEIGHT_EQUAL_AREA, used from order 2). Order 1's
+    thumbweight dThumbweight (w < 1, or SM_GN_THUMBWEIGHT_EQUAL_AREA, used from order 2). Order 1's
     circles are built as SmArcSection's defaults say.
 ***********************************************************************/
 SmGnSectionFSG::SmGnSectionFSG(ULONG lOrder, double dThumbweight)
@@ -1492,9 +1492,12 @@ NOTES: With e1, e2 the rails' points from the edge (|e_i| = d = r cot(alpha/2)),
     a b' - a' b (sm_GnSectionAreaIntegral), and the circle r^2 (cot(alpha/2)
     - (pi - alpha)/2). So I(w) = (cot(alpha/2) - (pi - alpha)/2) /
     (cot(alpha/2) cos^2(alpha/2)), a target that depends on alpha only. I
-    falls as w rises, so the root is bisected on (-1, 1). A target past
-    what the range reaches (a wedge so open or so shut the circle takes off
-    next to nothing, or nearly the chord's area) is an error naming it.
+    falls as w rises (to 0 as w nears 1) and nears the chord's 1 as w falls,
+    so the root is bisected on a bracket whose lower end steps down from -1
+    until it holds it: a sharp wedge's circle takes off nearly the chord's
+    area, and its w is well below -1. A target the bracket does not reach by
+    w = -1000 (a wedge so open or so shut that the circle takes off next to
+    nothing, or all but the chord's area) is an error naming it.
 ***********************************************************************/
 SmStatus SmGnSectionFSG::EqualAreaThumbweight(ULONG lOrder, double dAlpha, double & rdW)
 {
@@ -1504,11 +1507,17 @@ SmStatus SmGnSectionFSG::EqualAreaThumbweight(ULONG lOrder, double dAlpha, doubl
   const double dHalf = 0.5 * dAlpha;
   const double dCot = smos_Cosine(dHalf) / smos_Sine(dHalf);
   const double dTarget = (dCot - 0.5 * (SM_PI - dAlpha)) / (dCot * smos_Cosine(dHalf) * smos_Cosine(dHalf));
-  double dLo = -1.0 + 1.0e-9, dHi = 1.0 - 1.0e-9;
-  const double dILo = sm_GnSectionAreaIntegral(lOrder, dLo), dIHi = sm_GnSectionAreaIntegral(lOrder, dHi);
-  if (!(dTarget <= dILo && dTarget >= dIHi))
+  double dLo = -1.0, dHi = 1.0 - 1.0e-9;
+  SmBoolean bHeld = (dTarget >= sm_GnSectionAreaIntegral(lOrder, dHi)) ? TRUE : FALSE;
+  while (bHeld && sm_GnSectionAreaIntegral(lOrder, dLo) < dTarget)
+    {
+      dHi = dLo;
+      dLo = 2.0 * dLo - 1.0;
+      bHeld = (dLo >= -1.0e3) ? TRUE : FALSE;
+    }
+  if (!bHeld)
     { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmGnSectionFSG: no thumbweight gives this wedge's section the ball's circle's area")); }
-  for (int it=0; it<200 && dHi - dLo > 1.0e-15; it++)
+  for (int it=0; it<200 && dHi - dLo > 1.0e-15 * (1.0 - dLo); it++)
     {
       const double dMid = 0.5 * (dLo + dHi);
       if (sm_GnSectionAreaIntegral(lOrder, dMid) > dTarget) { dLo = dMid; } else { dHi = dMid; }
@@ -2833,7 +2842,7 @@ SmStatus SmGnSectionFSG::Build
   NER(pFace1); NER(pFace2); NER(pUV1); NER(pUV2);
   const ULONG n = m_lOrder;
   if (!IsValid(n, m_dThumbweight))
-    { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmGnSectionFSG: the order must be 2 to 4 and the thumbweight in (-1, 1)")); }
+    { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmGnSectionFSG: the order must be 2 to 4 and the thumbweight below 1")); }
   const SmSurface * apFace[2] = { pFace1, pFace2 };
   SmBSplineCurve * apRail[2] = { &rRail1Curve, &rRail2Curve };
   SmBSplineCurve * apUV[2] = { pUV1, pUV2 };

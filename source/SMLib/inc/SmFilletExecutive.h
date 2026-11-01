@@ -322,7 +322,7 @@ public:
     double                        dXSectTol,                      ///< [in] : default (if <= 0): 0.05                             <br>
     ULONG                         lContinuity=2,                  ///< [in] : n of a G^n section, 2 to SM_GN_MAX_ORDER                     <br>
                                                                   ///< [in] : Used only when eXSectType == SM_FSG_BLEND_CURVE     <br>
-    double                        dThumbweight=SM_GN_DEFAULT_THUMBWEIGHT ///< [in] : its thumbweight, in [0, 1); used only when eXSectType == SM_FSG_BLEND_CURVE     <br>
+    double                        dThumbweight=SM_GN_DEFAULT_THUMBWEIGHT ///< [in] : its thumbweight, below 1; used only when eXSectType == SM_FSG_BLEND_CURVE     <br>
   ); 
 
   // Different parameters on each edge.
@@ -340,7 +340,7 @@ public:
     double                                     dXSectTol,         ///< [in] : default (if <= 0): 0.05                              <br>
     ULONG                                      lContinuity=2,     ///< [in] : n of a G^n section, 2 to SM_GN_MAX_ORDER                      <br>
                                                                   ///< [in] : Used only when eXSectType == SM_FSG_BLEND_CURVE      <br>
-    double                                     dThumbweight=SM_GN_DEFAULT_THUMBWEIGHT, ///< [in] : its thumbweight, in [0, 1); used only when eXSectType == SM_FSG_BLEND_CURVE      <br>
+    double                                     dThumbweight=SM_GN_DEFAULT_THUMBWEIGHT, ///< [in] : its thumbweight, below 1; used only when eXSectType == SM_FSG_BLEND_CURVE      <br>
     SmTArray< double >                       * pOptSecondRadii=NULL ///< [in] : SM_FS_CONST_RADIUS only: per edge, the offset of   <br>
                                                                   ///<        the second edgeuse's surface (unequal chamfers)     <br>
   );  
@@ -360,7 +360,7 @@ public:
     double                       dXSectTol,                       ///< [in] : default (if <= 0): 0.05                               <br>
     ULONG                        lContinuity=2,                   ///< [in] : n of a G^n section, 2 to SM_GN_MAX_ORDER                       <br>
                                                                   ///< [in] : Used only when eXSectType == SM_FSG_BLEND_CURVE       <br>
-    double                       dThumbweight=SM_GN_DEFAULT_THUMBWEIGHT ///< [in] : its thumbweight, in [0, 1); used only when eXSectType == SM_FSG_BLEND_CURVE       <br>
+    double                       dThumbweight=SM_GN_DEFAULT_THUMBWEIGHT ///< [in] : its thumbweight, below 1; used only when eXSectType == SM_FSG_BLEND_CURVE       <br>
   );     
 
   // Different parameters on each edge, taking edge numbers instead of pointers.
@@ -378,7 +378,7 @@ public:
     double                                     dXSectTol,         ///< [in] : default (if <= 0): 0.05                               <br>
     ULONG                                      lContinuity=2,     ///< [in] : n of a G^n section, 2 to SM_GN_MAX_ORDER                       <br>
                                                                   ///< [in] : Used only when eXSectType == SM_FSG_BLEND_CURVE       <br>
-    double                                     dThumbweight=SM_GN_DEFAULT_THUMBWEIGHT ///< [in] : its thumbweight, in [0, 1); used only when eXSectType == SM_FSG_BLEND_CURVE       <br>
+    double                                     dThumbweight=SM_GN_DEFAULT_THUMBWEIGHT ///< [in] : its thumbweight, below 1; used only when eXSectType == SM_FSG_BLEND_CURVE       <br>
   ); 
 
 private:

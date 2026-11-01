@@ -671,9 +671,9 @@ int32_t smlib_chamfer(const smlib_brep *brep, const double *points, int64_t n_po
  * area. Each blend's section then takes off, on the same contact lines, the area the ball's
  * circle does (between two planes at the angle alpha, r^2 (cot(alpha/2) - (pi - alpha)/2)), so a
  * curvature round of a radius takes off what the round of that radius does: the thumbweight is
- * resolved per blend from the angle of the faces at the middle of its path. A value outside
- * (-1, 1). */
-#define SMLIB_BLEND_THUMBWEIGHT (-2.0)
+ * resolved per blend from the angle of the faces at the middle of its path. A value of 1 or
+ * more, outside the thumbweights (w < 1). */
+#define SMLIB_BLEND_THUMBWEIGHT (2.0)
 
 /* A new body: `brep` with the selected edges blended by a cross-section of contact order `order`
  * with each face, between the lines where the rolling ball of the point's size touches the two
@@ -687,7 +687,7 @@ int32_t smlib_chamfer(const smlib_brep *brep, const double *points, int64_t n_po
  *      distance d from both faces, and T_i(u) the order-n Taylor polynomial of F_i(u r) at u = 1.
  *      The section is S(t) = f(t) T1(1 - p1(t)) + (1 - f(t)) T2(p2(t)), t from 0 to 1, with
  *      f(t) = (1-t)^(n+1) / ((1-t)^(n+1) + t^(n+1)), p1(t) = t / (1 - w + w t) and
- *      p2(t) = t (1 - w) / (1 - w t), w the `thumbweight` (-1 < w < 1, or
+ *      p2(t) = t (1 - w) / (1 - w t), w the `thumbweight` (w < 1, or
  *      SMLIB_BLEND_THUMBWEIGHT for the equal area one; raising it pulls the section towards the
  *      edge, lowering it towards the chord). `thumbweight` shapes only these sections.
  * Selection, sizes and the rest as for smlib_blend. */
