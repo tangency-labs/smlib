@@ -4487,6 +4487,7 @@ struct SectionGrade
     int order_max = -1;                           // a fitted blend: the most it may read, -1: order
     bool fitted;                                  // a fitted blend: within 1 degree, 0.01 / mm, 0.001 / mm^2, 0.0001 / mm^3
     double size;                                  // the blend's size, for the seam's steps
+    int spans = -1;                               // a certified blend: its surface's spans in all, exactly (-1: not graded)
 };
 
 // Builds a blend by `build` and grades it by `g`: status, SMLib's check, volume, every point of
@@ -4547,6 +4548,16 @@ void section_blend(const std::function<int32_t(smlib_brep **)> &build, const Sec
         }
         std::printf("  blend face %lu: off the exact blend by %.3g (allowed %.3g)\n", static_cast<unsigned long>(i), worst, g.off_tol);
         CHECK(worst <= g.off_tol);
+        // the surface's spans: a count, not a time, that a looser certificate or a finer fit changes
+        const SmBSplineSurface *bs = dynamic_cast<const SmBSplineSurface *>(srf);
+        SmTArray<double> uk, vk;
+        if (bs != nullptr && bs->GetKnots(SM_SP_U, uk) == SM_SUCCESS && bs->GetKnots(SM_SP_V, vk) == SM_SUCCESS)
+        {
+            const int spans = static_cast<int>((uk.GetSize() - 1) * (vk.GetSize() - 1));
+            std::printf("  blend face %lu: %lu x %lu spans\n", static_cast<unsigned long>(i), static_cast<unsigned long>(uk.GetSize() - 1),
+                        static_cast<unsigned long>(vk.GetSize() - 1));
+            CHECK(g.spans < 0 || spans == g.spans);
+        }
 
         SmTArray<SmEdge *> es;
         all[i]->GetEdges(es);
@@ -4732,30 +4743,19 @@ void section_box_edge_g2_equal_area()
         if (box_edge_section_cut(2, mid) > 1.0 - PI / 4) { lo = mid; } else { hi = mid; }
     }
     const double w = 0.5 * (lo + hi);
-    // At w = 0 the section stands off each plane as c s^4 (G3); at this negative thumbweight its
-    // s^3 term no longer vanishes (the standoff's log ratio is 3.71 at s = 1e-3, 3.78 at 1e-4: a
-    // small c3 s^3), so it is G2 with the faces, as the order-2 section is built to be, and may
-    // read G3 where c3 is below the measure's tolerance.
+    // G3 with the planes at any thumbweight: off a plane the section stands r (1 - f) p2(t), whose
+    // first term is r (1 - w) t^4, at b = r t / (1 - w) + O(t^2) along it, so c b^4 + O(b^5),
+    // c = (1 - w)^5 / r^3 = 0.306 here (the seam's fourth derivatives differ by 24 c = 7.35; read
+    // 7.33). The seam's third derivative is read off a degree-7 fit of seven points 0.012 apart,
+    // whose truncation grows with ((1 - w) / r)^k: 1.3e-5 at this w (1e-5 is G3's bar), 7.5e-7 at
+    // half the step (a cubic term would not halve), where round-off takes over at other stations.
+    // So the grade asks G2 at least and G3 at most, the measure's limit here, not the section's.
     SectionGrade g = box_edge_grade(2, w, 1.0 - PI / 4);
     g.order = 2;
     g.order_max = 3;
     section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, SMLIB_BLEND_THUMBWEIGHT, 3.0), g);
 }
 
-// The thumbweight at which the order-2 section between square planes, set back s, cuts 113/756 s^2
-// off the corner (the root of that area's equation in w, by quadrature).
-const double W_STAR = 0.034293402266607321;
-
-void section_box_edge_g2_thumbweight_w_star()
-{
-    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, W_STAR, 3.0), box_edge_grade(2, W_STAR, 113.0 / 756.0));
-}
-
-// The thumbweight pulls the section towards the edge: its middle (1 - w) / (2 (2 - w)) s off each
-// face, s / 4 at 0, s / 6 at 1/2, and the area it cuts off from 0.1541927 s^2 to 0.0744373 s^2.
-void section_box_edge_g2_thumbweight_half()
-{
-    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, 0.5, 3.0), box_edge_grade(2, 0.5, 0.0744372522086925));
 // An equilateral prism, side 40 and 10 tall, its edge at the origin (a 60 degree wedge) blended
 // at size 3 by the order-2 section at the equal area thumbweight: the section takes off the
 // ball's circle's area, r^2 (cot(alpha/2) - (pi - alpha)/2) = 9 (sqrt 3 - pi/3) = 6.163679 per mm.
@@ -4782,6 +4782,20 @@ void section_sharp_wedge_g2_equal_area()
     smlib_brep_free(prism);
 }
 
+// The thumbweight at which the order-2 section between square planes, set back s, cuts 113/756 s^2
+// off the corner (the root of that area's equation in w, by quadrature).
+const double W_STAR = 0.034293402266607321;
+
+void section_box_edge_g2_thumbweight_w_star()
+{
+    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, W_STAR, 3.0), box_edge_grade(2, W_STAR, 113.0 / 756.0));
+}
+
+// The thumbweight pulls the section towards the edge: its middle (1 - w) / (2 (2 - w)) s off each
+// face, s / 4 at 0, s / 6 at 1/2, and the area it cuts off from 0.1541927 s^2 to 0.0744373 s^2.
+void section_box_edge_g2_thumbweight_half()
+{
+    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, 0.5, 3.0), box_edge_grade(2, 0.5, 0.0744372522086925));
 }
 
 // A plate 60 x 40 x 10 and a boss R 8, 10 tall, at (30, 20) on it; the boss's root rounded at size
@@ -4849,7 +4863,10 @@ void section_boss_root_round()
 
 void section_boss_root_g2()
 {
-    section_blend(by_order(boss_on_plate(), {30 + 4 * std::sqrt(2.0), 20 + 4 * std::sqrt(2.0), 10}, 2, 0.0, 2.0), boss_root_grade(2, 26043.0880831714));
+    // certified span by span at a tenth of the tolerance: 227 spans along the root
+    SectionGrade g = boss_root_grade(2, 26043.0880831714);
+    g.spans = 227;
+    section_blend(by_order(boss_on_plate(), {30 + 4 * std::sqrt(2.0), 20 + 4 * std::sqrt(2.0), 10}, 2, 0.0, 2.0), g);
 }
 
 // A plate 60 x 40 x 10 and a pipe R 10 along x (0 to 60), its axis at (y, z) = (20, 16), joined:
@@ -5164,6 +5181,7 @@ const TangentEndCase SECTION_CASES[] = {
     {"pipe_on_plate_round", section_pipe_on_plate_round, nullptr},
     {"pipe_on_plate_g2", section_pipe_on_plate_g2, nullptr},
     {"pipe_on_plate_g2_thumbweight_half", section_pipe_on_plate_g2_thumbweight_half, nullptr},
+    {"sharp_wedge_g2_equal_area", section_sharp_wedge_g2_equal_area, nullptr},
     {"variable_round_law_dip", section_variable_round_law_dip, nullptr},
     {"variable_round_law_dips", section_variable_round_law_dips, nullptr},
     {"variable_round_law_peak", section_variable_round_law_peak, nullptr},
@@ -5181,7 +5199,6 @@ int section_cases(bool known_failing, const char *only)
 const TangentEndCase TURN_CASES[] = {
     {"mitre_boss_base", turn_mitre_boss_base, nullptr},
     {"swept_boss_base", turn_swept_boss_base,
-    {"sharp_wedge_g2_equal_area", section_sharp_wedge_g2_equal_area, nullptr},
      "status 1001, Fillet Face Creation Error: the two rounds' sections end at two points on the plate, joined by the torus's quarter arc, but the corner gives both rails one face vertex"},
     {"swept_sharp_pocket_refused", turn_swept_sharp_pocket_refused, nullptr},
 };
