@@ -252,13 +252,12 @@ PURPOSE: Create a Nx1 closed corner. Typically, this might happen when we
     have a corner with 2 or 3 edges (such as in cylindrical solids)
     and one 'closed' edge is filleted.
 
-NOTES: Will only handle the tangency cases for now.
+NOTES: The closed edge meets itself at an angle (SmFilletCorner::Create
+    makes a G1-closed edge the blend corner's Join).
 ***********************************************************************/
 class SM_EXPORT SmFilletNx1ClosedCorner : public SmFilletCorner
 {
 public:
-    SmBoolean  m_bG1Case;  // Is the closed edge also G1?
-
     SmFilletNx1ClosedCorner(const SmContext      & crContext,
                             const SmVertex       * cpVertex,
                             SmTArray<SmEdgeuse*> * pSolverEUs,
@@ -266,12 +265,6 @@ public:
                             SmFilletExecutive    * pExec,
                             double                 dApproxTol3d,
                             double                 dTangencyTolRadians);
-
-    virtual SmStatus AdjustTangentCorner();
-
-    virtual SmFilletSolver * GetTangentFilletSolver( const SmFilletSolver *pFS );
-
-    virtual SmBoolean IsTangentCorner() const { return m_bG1Case; }
 
     virtual SmFilletCornerType GetCornerType() const { return SM_FCR_N_x_1_CLOSED; }
 
