@@ -5747,58 +5747,65 @@ SmStatus SmFilletSolver::JudgeBallAt
   double adR[3] = { 0.0, 0.0, 0.0 };
   SmVector3d asC[4];
   SER(GetBallLaw(crPnt, bBall, bOnEdge, adR, asC));
-  if (!bBall)
-    { return SM_SUCCESS; }
   SmOffsetSurface * apOffset[2] = { GetSurface(0), GetSurface(1) };
   NER(apOffset[0]); NER(apOffset[1]);
   const SmSurface * apBase[2] = { apOffset[0]->GetBaseSurface(), apOffset[1]->GetBaseSurface() };
   NER(apBase[0]); NER(apBase[1]);
-  rStation.m_bLaw = bOnEdge;
+  rStation.m_bLaw  = bOnEdge;
+  rStation.m_bBall = bBall;
 
-  // the centre: the first face's offset at the station's radius
+  // each face's offset point at the station's offsets: the ball's centre (both the same), or
+  // where no ball rolls (unequal offsets) each face's own
   const SmBoolean bRadiusChanges = OffsetRadiiCanChange();
   if (bRadiusChanges)
     { SER(SetupOffsetValues(crPnt)); }
-  SmPoint3d sCentre;
-  const SmStatus eCentre = apOffset[0]->EvaluatePoint(crPnt.m_vUVCurvePV[0][0], sCentre);
+  SmPoint3d asOn[2];
+  SmStatus eOn = SM_SUCCESS;
+  for (ULONG k=0; k<2 && eOn == SM_SUCCESS; k++)
+    { eOn = apOffset[k]->EvaluatePoint(crPnt.m_vUVCurvePV[k][0], asOn[k]); }
   if (bRadiusChanges)
     { ReloadSurfaceOffsets(); }
-  SER(eCentre);
-  const SmVector3d sC(sCentre);
+  SER(eOn);
+  const SmVector3d sC(asOn[0]);
 
   // each face's surface as its offset evaluates it there: the base, or past the base's domain
   // its extension (made by the offset's own evaluation, which the trace solves on)
   sm_FaceJet asJet[2];
+  double adOffset[2] = { 0.0, 0.0 };
   for (ULONG k=0; k<2; k++)
     {
       const SmPoint2d & crUV = crPnt.m_vUVCurvePV[k][0];
-      SmPoint3d sOn;
-      SER(apOffset[k]->EvaluatePoint(crUV, sOn));
       const SmSurface * pActing = apBase[k];
       const SmSurface * pExtended = apOffset[k]->GetExtendedBaseSurface();
       if (   !apBase[k]->GetNaturalUVDomain().ContainsPoint2d(crUV)
           && pExtended != NULL && pExtended->GetNaturalUVDomain().ContainsPoint2d(crUV))
         { pActing = pExtended; }
       SmBoolean bJudged = FALSE;
-      SER(sm_FaceJetAt(*pActing, crUV, sC, asJet[k], bJudged));
+      SER(sm_FaceJetAt(*pActing, crUV, asOn[k], asJet[k], bJudged));
       if (!bJudged)
         { return SM_SUCCESS; }
+      adOffset[k] = (asOn[k] - asJet[k].s).Length();
     }
-  const double dR = (sC - asJet[0].s).Length();
+  const double dR = adOffset[0];
   const SmVector3d sChord = asJet[1].s - asJet[0].s;
-  rStation.m_dRadius = dR;
-  if (!(dR > SM_EFF_ZERO))
+  rStation.m_dRadius = bBall ? dR : smos_Max(adOffset[0], adOffset[1]);
+  if (!(rStation.m_dRadius > SM_EFF_ZERO))
     { return SM_SUCCESS; }
 
-  // 1. each face encloses the ball
+  // 1. each face encloses the ball: 1 - d k > 0 for its offset d (the ball's radius), the
+  // offset not folded (where no ball rolls, each face's own offset)
   const double dFocal = 1.0e-6;
   rStation.m_dEnclosed = SM_BIG_DOUBLE;
   for (ULONG k=0; k<2; k++)
     {
       const double dK = sm_LargestCurvatureTowardBall(asJet[k]);
-      const double dMargin = 1.0 - dR * dK;
+      const double dMargin = 1.0 - adOffset[k] * dK;
       if (dMargin < rStation.m_dEnclosed)
-        { rStation.m_dEnclosed = dMargin; }
+        {
+          rStation.m_dEnclosed = dMargin;
+          if (!bBall)
+            { rStation.m_dRadius = adOffset[k]; }
+        }
       if (dK > 0.0 && 1.0 / dK < rStation.m_dFits)
         { rStation.m_dFits = 1.0 / dK; }
     }
@@ -5808,6 +5815,8 @@ SmStatus SmFilletSolver::JudgeBallAt
       return SM_SUCCESS;
     }
   rStation.m_lCheck = SmBallStation::SM_BS_REGULAR;
+  if (!bBall)
+    { return SM_SUCCESS; } // no ball: its spine and section are not a rolling ball's
   // a focal station, or contacts that meet (the faces tangent there: a tangent end, an event of
   // its own), judge nothing further
   if (rStation.m_dEnclosed <= dFocal || !(sChord.Length() > GetThisApproxTol3d()))
@@ -6006,13 +6015,16 @@ static SmStatus sm_RegularAt
   double dOwn = 0.0;
   if (dRadius > 0.0)
     {
+      SmBoolean bOnEdge = FALSE;
+      if (!rSolver.RollsABall(bOnEdge) || bOnEdge)
+        { return SM_SUCCESS; }
       SmTsectPnt sAny;
-      SmBoolean bBall = FALSE, bOnEdge = FALSE;
+      SmBoolean bBall = FALSE;
       double adR[3] = { 0.0, 0.0, 0.0 };
       SmVector3d asC[4];
       SER(rSolver.GetBallLaw(sAny, bBall, bOnEdge, adR, asC));
       dOwn = adR[0];
-      if (!bBall || bOnEdge || !rSolver.SetBallRadius(dRadius))
+      if (!rSolver.SetBallRadius(dRadius))
         { return SM_SUCCESS; }
     }
   SmTsectPnt sPnt;
@@ -6065,6 +6077,9 @@ SmStatus SmFilletSolver::BallIsRegular
   const SmEdge  * pEdge  = GetEdgeuse(0)->GetEdge();  NER(pEdge);
   const SmCurve * pCurve = pEdge->GetCurve();         NER(pCurve);
   const SmExtent1d sIvl  = pEdge->GetInterval();
+  // a solver that rolls no ball (unequal offsets) has only its offsets judged (check 1)
+  SmBoolean bLawBall = FALSE;
+  const SmBoolean bRollsABall = RollsABall(bLawBall);
   const ULONG lSteps = 32;
   const ULONG lBisections = 40;
   std::vector<SmTsectPnt> vSections(lSteps);  // each step's section, the guess about it (vFound: one was found)
@@ -6102,6 +6117,17 @@ SmStatus SmFilletSolver::BallIsRegular
           {
             rFirst = sOnset;
             rFirst.m_dWorks = sOnset.m_dRadius;
+          }
+        return SM_SUCCESS;
+      }
+    if (!bRollsABall)
+      {
+        // unequal offsets: the offset that folds must stay below the face's radius of curvature
+        if (crFail.m_lCheck == SmBallStation::SM_BS_NOT_ENCLOSED
+            && (rFirst.m_lCheck == SmBallStation::SM_BS_REGULAR || crFail.m_dFits < rFirst.m_dWorks))
+          {
+            rFirst = crFail;
+            rFirst.m_dWorks = crFail.m_dFits;
           }
         return SM_SUCCESS;
       }
@@ -6377,9 +6403,11 @@ NOTES: For CreateFilletBrep, before the corners. At the same sections as
     BallIsRegular (the middles of 32 equal steps of the edge), with the
     body's edges crossing each section's plane found once. A section where
     no material lies behind the blend's section (sm_KeepsMaterialBehind) is
-    a cut. The limit is then found at each cutting section by bisection on
-    the ball's radius, the section solved again at each, the least over the
-    sections: rdRadius the ball's radius there, rdSetback the distance from
+    a cut where sections either side of its run along the edge keep material
+    (a run reaching an end of the edge, a tip thinner than the band, blends
+    that end away). The limit is then found at each cutting section by
+    bisection on the ball's radius, the section solved again at each, the
+    least over the sections: rdRadius the ball's radius there, rdSetback the distance from
     the edge to the first rail (a chamfer's size). A constant ball only.
 ***********************************************************************/
 SmStatus SmFilletSolver::BandCutsThePart
@@ -6395,13 +6423,14 @@ SmStatus SmFilletSolver::BandCutsThePart
   const SmEdge  * pEdge  = GetEdgeuse(0)->GetEdge();  NER(pEdge);
   const SmCurve * pCurve = pEdge->GetCurve();         NER(pCurve);
   const SmExtent1d sIvl  = pEdge->GetInterval();
+  SmBoolean bOnEdge = FALSE;
+  if (!RollsABall(bOnEdge) || bOnEdge)
+    { return SM_SUCCESS; } // a constant ball only
   SmTsectPnt sProbe;
-  SmBoolean bBall = FALSE, bOnEdge = FALSE;
+  SmBoolean bBall = FALSE;
   double adR[3] = { 0.0, 0.0, 0.0 };
   SmVector3d asC[4];
   SER(GetBallLaw(sProbe, bBall, bOnEdge, adR, asC));
-  if (!bBall || bOnEdge)
-    { return SM_SUCCESS; }
   const SmBoolean bChord = (m_pFSG != NULL && m_pFSG->GetFilletSurfaceGeneratorType() == SM_FSG_LINEAR) ? TRUE : FALSE;
 
   // at the edge's dT with the ball's radius dTrial (0: the solver's): whether material is kept
@@ -6448,60 +6477,93 @@ SmStatus SmFilletSolver::BandCutsThePart
 
   const ULONG lSteps = 32;
   const ULONG lBisections = 40;
+  // each section: its parameter, plane crossings and section found near, and whether it keeps
+  // material behind it (0), takes all of the part between the rails (1), or is not judged (2)
+  std::vector<double>              vT(lSteps, 0.0);
+  std::vector<SmTArray<SmPoint3d>> vCrossings(lSteps);
+  std::vector<SmTsectPnt>          vNear(lSteps);
+  std::vector<int>                 vState(lSteps, 2);
   SmTsectPnt sNear;
   SmBoolean  bNear = FALSE;
   for (ULONG j=0; j<lSteps; j++)
     {
       const double dT = sIvl.Evaluate((j + 0.5) / lSteps);
+      vT[j] = dT;
       SmVector3d sPV[2];
       SER(pCurve->Evaluate(dT, 1, TRUE, sPV));
       if (!(sPV[1].Length() > SM_EFF_ZERO))
         { continue; }
       SER(sPV[1].Unitize());
-      SmTArray<SmPoint3d> sCrossings;
-      SER(sm_EdgesCrossingPlane(crBody, sPV[0], sPV[1], sCrossings));
+      SER(sm_EdgesCrossingPlane(crBody, sPV[0], sPV[1], vCrossings[j]));
       SmBoolean bJudged = FALSE, bKeeps = TRUE;
       double dSetback = 0.0;
-      SER(Keeps(dT, 0.0, sCrossings, sNear, bNear, bJudged, bKeeps, dSetback));
-      if (!bJudged || bKeeps)
+      SER(Keeps(dT, 0.0, vCrossings[j], sNear, bNear, bJudged, bKeeps, dSetback));
+      vNear[j] = sNear;
+      if (bJudged)
+        { vState[j] = bKeeps ? 0 : 1; }
+    }
+
+  // a run of sections that take all of the part cuts it in two only where sections either side
+  // of the run along the edge keep material: a run that reaches an end of the edge (a tip, where
+  // the part runs out thinner than the band) blends that end away and leaves the part whole
+  for (ULONG j=0; j<lSteps; j++)
+    {
+      if (vState[j] != 1)
         { continue; }
-      // the largest radius that keeps material behind its section here
-      SmTsectPnt sAt = sNear;
-      SmBoolean  bAt = bNear;
-      const double dRadius = adR[0];
-      double dLo = 0.0, dHi = dRadius, dLoSetback = 0.0;
-      for (double dTry = 0.5 * dRadius; dTry > 1.0e-6 * dRadius; dTry *= 0.5)
+      ULONG lFirst = j, lLast = j;
+      while (lLast + 1 < lSteps && vState[lLast+1] != 0)
+        { lLast++; }
+      j = lLast;
+      SmBoolean bKeptBefore = FALSE, bKeptAfter = FALSE;
+      for (ULONG k=0; k<lFirst; k++)
+        if (vState[k] == 0) { bKeptBefore = TRUE; }
+      for (ULONG k=lLast+1; k<lSteps; k++)
+        if (vState[k] == 0) { bKeptAfter = TRUE; }
+      if (!bKeptBefore || !bKeptAfter)
+        { continue; }
+      for (ULONG m=lFirst; m<=lLast; m++)
         {
-          SmBoolean bTryJudged = FALSE, bTryKeeps = TRUE;
-          double dTrySetback = 0.0;
-          SER(Keeps(dT, dTry, sCrossings, sAt, bAt, bTryJudged, bTryKeeps, dTrySetback));
-          if (bTryJudged && bTryKeeps)
+          if (vState[m] != 1)
+            { continue; }
+          const double dT = vT[m];
+          // the largest radius that keeps material behind its section here
+          SmTsectPnt sAt = vNear[m];
+          SmBoolean  bAt = TRUE;
+          const double dRadius = adR[0];
+          double dLo = 0.0, dHi = dRadius, dLoSetback = 0.0;
+          for (double dTry = 0.5 * dRadius; dTry > 1.0e-6 * dRadius; dTry *= 0.5)
             {
-              dLo = dTry;
-              dLoSetback = dTrySetback;
-              break;
+              SmBoolean bTryJudged = FALSE, bTryKeeps = TRUE;
+              double dTrySetback = 0.0;
+              SER(Keeps(dT, dTry, vCrossings[m], sAt, bAt, bTryJudged, bTryKeeps, dTrySetback));
+              if (bTryJudged && bTryKeeps)
+                {
+                  dLo = dTry;
+                  dLoSetback = dTrySetback;
+                  break;
+                }
+              dHi = dTry;
             }
-          dHi = dTry;
-        }
-      for (ULONG i=0; i<lBisections && dLo > 0.0; i++)
-        {
-          const double dMid = 0.5 * (dLo + dHi);
-          SmBoolean bMidJudged = FALSE, bMidKeeps = TRUE;
-          double dMidSetback = 0.0;
-          SER(Keeps(dT, dMid, sCrossings, sAt, bAt, bMidJudged, bMidKeeps, dMidSetback));
-          if (bMidJudged && bMidKeeps)
+          for (ULONG i=0; i<lBisections && dLo > 0.0; i++)
             {
-              dLo = dMid;
-              dLoSetback = dMidSetback;
+              const double dMid = 0.5 * (dLo + dHi);
+              SmBoolean bMidJudged = FALSE, bMidKeeps = TRUE;
+              double dMidSetback = 0.0;
+              SER(Keeps(dT, dMid, vCrossings[m], sAt, bAt, bMidJudged, bMidKeeps, dMidSetback));
+              if (bMidJudged && bMidKeeps)
+                {
+                  dLo = dMid;
+                  dLoSetback = dMidSetback;
+                }
+              else
+                { dHi = dMid; }
             }
-          else
-            { dHi = dMid; }
-        }
-      if (!rbCuts || dLo < rdRadius)
-        {
-          rbCuts    = TRUE;
-          rdRadius  = dLo;
-          rdSetback = dLoSetback;
+          if (!rbCuts || dLo < rdRadius)
+            {
+              rbCuts    = TRUE;
+              rdRadius  = dLo;
+              rdSetback = dLoSetback;
+            }
         }
     }
   return SM_SUCCESS;

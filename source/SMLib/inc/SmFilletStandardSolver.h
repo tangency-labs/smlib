@@ -57,6 +57,9 @@ public:
     // SolidCraft change: one ball when both radii are equal, of constant radius
     virtual SmStatus GetBallLaw(const SmTsectPnt & crPnt, SmBoolean & rbBall, SmBoolean & rbOnEdge,
                                 double adR[3], SmVector3d asC[4]);
+    virtual SmBoolean RollsABall(SmBoolean & rbOnEdge) const
+      { rbOnEdge = FALSE;
+        return ( m_dFilletRadii[0] > 0.0 && smos_Fabs( m_dFilletRadii[1] - m_dFilletRadii[0] ) <= SM_EFF_ZERO * ( 1.0 + m_dFilletRadii[0] )) ? TRUE : FALSE; }
     virtual SmBoolean SetBallRadius(double dRadius)
       { m_dFilletRadii[0] = m_dFilletRadii[1] = dRadius;
         GetSurface(0)->SetOffsetDistance(dRadius*m_dOrientations[0]);
@@ -364,6 +367,8 @@ public:
     virtual SmStatus  GetRadiusCornerParameters(SmTArray<double> & rParams);
     virtual SmBoolean IsAtRadiusCorner(const SmTsectPnt & crTsectPnt);
     virtual SmBoolean GetRadiusParameter(const SmTsectPnt & crTsectPnt, double & rdParam);
+    // SolidCraft change: one ball, its radius the law's
+    virtual SmBoolean RollsABall(SmBoolean & rbOnEdge) const { rbOnEdge = TRUE; return m_rLaw != NULL ? TRUE : FALSE; }
     // SolidCraft change: the law's ball, its centre in the plane square to the edge at C(t)
     virtual SmStatus GetBallLaw(const SmTsectPnt & crPnt, SmBoolean & rbBall, SmBoolean & rbOnEdge,
                                 double adR[3], SmVector3d asC[4]);

@@ -137,6 +137,7 @@ struct SmBallStation
   double    m_dWorks    = 0.0;
   double    m_dFits     = SM_BIG_DOUBLE; // the least over the faces of 1 / k: the radius h(r) first reaches 0 at
   SmBoolean m_bLaw      = FALSE;          // the radius follows a law along the edge
+  SmBoolean m_bBall     = TRUE;           // one ball rolls on both faces (FALSE: unequal offsets, check 1 only)
 };
 
 /*******************************************************************//**
@@ -429,6 +430,9 @@ public:
   // takes them), for the room checks' bisections, which set it back after; FALSE where the
   // solver has no constant ball
   virtual SmBoolean SetBallRadius(double dRadius) { SM_REF1(dRadius); return FALSE; }
+  // SolidCraft change: whether the solver rolls one ball on both faces, and whether its radius
+  // follows a law along the edge (rbOnEdge)
+  virtual SmBoolean RollsABall(SmBoolean & rbOnEdge) const { rbOnEdge = FALSE; return FALSE; }
   static SmBoolean IsKnifeEdge(SmEdge * pEdge, double dTangencyTolRad); // SolidCraft change: faces tangent along the edge and folded back on each other
   static SmStatus IsConcaveEdge(const SmEdge & crEdge, SmBoolean & rbConcave); // SolidCraft change: whether the body's material wedge at the edge exceeds a half turn
   SmStatus     LeavesPastAnEnd(const SmFace & crFace, const SmCurve & crRail, double dRailParam, const SmPointClassification & crLeave, SmBoolean & rbPastAnEnd, const SmVertex ** ppEnd = NULL, SmBoolean * pbBySide = NULL) const; // SolidCraft change: whether a rail leaves its face past an end of the filleted edge, and which

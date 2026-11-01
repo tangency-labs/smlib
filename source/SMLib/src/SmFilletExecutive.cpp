@@ -3430,7 +3430,9 @@ SmStatus SmFilletExecutive::CreateFilletBrep
           { smos_sprintf( cWorks, _T(": a radius below %.7g fits"), sWorst.m_dWorks ); }
         else
           { smos_sprintf( cWorks, _T(": no smaller ball fits there either") ); }
-        if ( sWorst.m_bLaw && sWorst.m_lCheck == SmBallStation::SM_BS_REGRESSIVE )
+        if ( !sWorst.m_bBall )
+          { smos_sprintf( cWhy, _T("Fillet Error: a face curves tighter than the blend's offset of %.7g along it, which folds there: an offset below %.7g fits"), sWorst.m_dRadius, sWorst.m_dWorks ); }
+        else if ( sWorst.m_bLaw && sWorst.m_lCheck == SmBallStation::SM_BS_REGRESSIVE )
           { smos_sprintf( cWhy, _T("Fillet Error: the round's balls fold over one another where its radius is %.7g: the radius changes faster there than a rolling ball can follow"), sWorst.m_dWorks ); }
         else if ( sWorst.m_bLaw && sWorst.m_lCheck == SmBallStation::SM_BS_NOT_ENCLOSED )
           { smos_sprintf( cWhy, _T("Fillet Error: a face curves tighter than the round's ball where its radius reaches %.7g: the ball does not fit the face past there"), sWorst.m_dWorks ); }
