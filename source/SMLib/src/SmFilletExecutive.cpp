@@ -4986,7 +4986,7 @@ SmBoolean bDebugMe = FALSE ;
   // remove and subtracts it from the target, instead of merging the fillet faces in.
   if ( m_bCliffOverflow )
     {
-      SmStatus eSubtracted = SubtractRemovalRegion();
+      SmStatus eSubtracted = TrimAtCreases();
       if ( eSubtracted != SM_SUCCESS )
         {
           // the error the subtraction noted stands (SM_FILERR_NO_ROOM only where it found no room)
