@@ -5387,12 +5387,6 @@ iDebugLevel = DebugLevel();
                 break;
 
             case SM_FCR_N_x_1_CLOSED:
-                if ( pCorner->IsBlendingCorner() )
-                {
-                    bCheckConnectivity = TRUE;
-                }
-                break;
-
             case SM_FCR_UNKNOWN:
             case SM_FCR_OPEN:
             case SM_FCR_DEGENERATE:
@@ -5443,9 +5437,9 @@ iDebugLevel = DebugLevel();
     SmBSplineCurve * pUVCurve2 = NULL;
     SmBoolean bCreateTwoBoundaryCurves = FALSE;
 
-    // Need to create two UV curves when we had a closed-tangent fillet surface
+    // Need to create two UV curves when we had a closed-tangent fillet surface (a closed Join)
     if (    pCorner != NULL
-         && ( pCorner->GetCornerType() == SM_FCR_N_x_1_CLOSED || pCorner->IsClosedJoin() )
+         && pCorner->IsClosedJoin()
          && pFilletGeom1 == pFilletGeom2
          && pCorner->IsBlendingCorner() )
     {
@@ -5555,9 +5549,9 @@ iDebugLevel = DebugLevel();
       }
 #endif // SM_DEBUG_CODE
 
-    // Need second UV curve when we had a closed fillet surface
+    // Need second UV curve when we had a closed fillet surface (a closed Join)
     if (    pCorner != NULL
-         && ( pCorner->GetCornerType() == SM_FCR_N_x_1_CLOSED || pCorner->IsClosedJoin() )
+         && pCorner->IsClosedJoin()
          && pFilletGeom1 == pFilletGeom2 )
     {
         NER(pUVCurve2);
