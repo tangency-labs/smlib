@@ -5497,6 +5497,30 @@ std::string last_blend_reason()
     return why;
 }
 
+// Whether some number written in `why` is within `tol` of `limit`.
+bool names_size(const std::string &why, double limit, double tol)
+{
+    const char *p = why.c_str();
+    while (*p != '\0')
+    {
+        char *end = nullptr;
+        const double x = std::strtod(p, &end);
+        if (end != p)
+        {
+            if (std::fabs(x - limit) <= tol)
+            {
+                return true;
+            }
+            p = end;
+        }
+        else
+        {
+            p++;
+        }
+    }
+    return false;
+}
+
 // smlib_blend of `kind` on `body` (consumed) at the points' edges, each at its size, graded: built,
 // sound, one solid, of volume `want` (to `rel`), with `faces` faces (-1: not graded).
 void scenario_blend(smlib_brep *body, int32_t kind, std::vector<double> points, std::vector<double> sizes, double want, double rel, int faces)
@@ -5519,6 +5543,27 @@ void scenario_blend(smlib_brep *body, int32_t kind, std::vector<double> points, 
     CHECK(near(v, want, rel));
     CHECK(faces < 0 || n == faces);
     done(r);
+}
+
+// A blend that would leave the part in pieces: refused, built nothing, its reason naming the
+// largest size that keeps it whole (`limit`).
+void scenario_refused(smlib_brep *body, int32_t kind, std::vector<double> points, double size, double limit)
+{
+    smlib_brep *r = nullptr;
+    const int32_t s = body == nullptr ? SMLIB_ERR_ARG : smlib_blend(body, kind, points.data(), &size, 1, 0.1, &r, nullptr);
+    const std::string why = last_blend_reason();
+    std::printf("  status %d: %s\n", static_cast<int>(s), why.c_str());
+    CHECK(s != SMLIB_OK && r == nullptr);
+    CHECK(names_size(why, limit, 1e-3));
+    if (r != nullptr)
+    {
+        int64_t solids = 0;
+        CHECK(smlib_brep_solid_count(r, &solids) == SMLIB_OK);
+        std::printf("  built instead: %lld solid(s), volume %.9f, %lu faces, sound %d\n", static_cast<long long>(solids), volume_of(r),
+                    static_cast<unsigned long>(r->p->GetNumFaces()), sound(r) ? 1 : 0);
+    }
+    smlib_brep_free(r);
+    smlib_brep_free(body);
 }
 
 // The spandrel a round of radius r takes off a square corner, (1 - pi/4) r^2.
@@ -5700,10 +5745,62 @@ void scenario_square_bar_rounded_to_a_rod()
     scenario_blend(box(0, 0, 0, 20, 4, 4), SMLIB_BLEND_ROUND, {10, 0, 0, 10, 4, 0, 10, 0, 4, 10, 4, 4}, {2, 2, 2, 2}, 80.0 * PI, 1e-9, 6);
 }
 
+// A 20 x 4 x 10 block with a slot 4 wide (x 8 to 12) cut through it from below to 1 under its
+// top: two pillars joined by a bridge 1 thick (656). Its top front edge (y = 0, z = 10, the whole
+// 20) is blended. In the section square to the edge, coordinates y (in from the front) and z,
+// the slot leaves only z in [9, 10] over x in [8, 12].
+smlib_brep *bridged_block()
+{
+    return combined(box(0, 0, 0, 20, 4, 10), box(8, -1, -1, 4, 6, 10), SMLIB_BOOLEAN_SUBTRACT);
+}
+
+// Rounded r 6: wider than the 4 deep top, so its contact line on the top lies past the back
+// (a cliff), and the one on the front, at z = 4, crosses the slot's opening. The round keeps its
+// radius; the back's top edge moves down to where the round meets the back. The round takes
+// y < d(z) = 6 - sqrt(36 - (z - 4)^2), at most the depth 4 (reached at z = 4 + sqrt 32): with
+// G(t) = Int_0^t (6 - sqrt(36 - s^2)) ds = 6 t - (t/2) sqrt(36 - t^2) - 18 asin(t/6), the full
+// section loses G(sqrt 32) + 4 (6 - sqrt 32) and the bridge's that less G(5) (its z < 9 is the
+// slot), over 16 and 4 of the length. The bridge keeps a strip, the part one piece.
+void scenario_round_past_the_rim_over_an_opening()
+{
+    auto G = [](double t) { return 6.0 * t - 0.5 * t * std::sqrt(36.0 - t * t) - 18.0 * std::asin(t / 6.0); };
+    const double q = std::sqrt(32.0), full = G(q) + 4.0 * (6.0 - q), bridge = full - G(5.0);
+    scenario_blend(bridged_block(), SMLIB_BLEND_ROUND, {2, 0, 10}, {6}, 656.0 - (16.0 * full + 4.0 * bridge), 1e-7, -1);
+}
+
+// Chamfered 4.5: past the 4 deep top too (the ruling: a chamfer past a rim builds). The plane
+// y + (10 - z) = 4.5 takes the triangle of legs 4.5 less its 0.5 past the back, 10, off the full
+// section, and off the bridge's (z in [9, 10]) Int_0^1 min(4.5 - t, 4) dt = 3.875: 656 - 160 -
+// 15.5 = 480.5.
+void scenario_chamfer_past_the_rim_over_an_opening()
+{
+    scenario_blend(bridged_block(), SMLIB_BLEND_CHAMFER, {2, 0, 10}, {4.5}, 480.5, 1e-9, -1);
+}
+
+// Rounded r 9: the round takes y < d(9) = r - sqrt(2 r - 1) >= 4 at the bridge's underside, all
+// of the bridge, and would leave the pillars apart. Refused, naming the largest radius that
+// keeps the part whole, where d(9) = 4: r^2 - 10 r + 17 = 0, r = 5 + 2 sqrt 2.
+void scenario_round_cutting_a_bridge_refused()
+{
+    scenario_refused(bridged_block(), SMLIB_BLEND_ROUND, {2, 0, 10}, 9.0, 5.0 + 2.0 * std::sqrt(2.0));
+}
+
+// Chamfered 6: the plane takes y < d - 1 >= 4 at the bridge's underside. Refused, naming 5.
+void scenario_chamfer_cutting_a_bridge_refused()
+{
+    scenario_refused(bridged_block(), SMLIB_BLEND_CHAMFER, {2, 0, 10}, 6.0, 5.0);
+}
+
 // The scenario cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--scenarios-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SCENARIO_CASES[] = {
+    {"chamfer_cutting_a_bridge_refused", scenario_chamfer_cutting_a_bridge_refused,
+     "status 0, no refusal naming 5: the chamfer is built through the bridge, two solids (384, the pillars less their chamfers)"},
+    {"chamfer_past_the_rim_over_an_opening", scenario_chamfer_past_the_rim_over_an_opening, nullptr},
     {"chord_on_a_60_degree_edge", scenario_chord_on_a_60_degree_edge, nullptr},
+    {"round_cutting_a_bridge_refused", scenario_round_cutting_a_bridge_refused,
+     "status 0, no refusal naming 5 + 2 sqrt 2: the round is built through the bridge, two solids (400.851)"},
+    {"round_past_the_rim_over_an_opening", scenario_round_past_the_rim_over_an_opening, nullptr},
     {"square_bar_rounded_to_a_rod", scenario_square_bar_rounded_to_a_rod,
      "status 0, but one of the four rounds is left out: 268.4956 (320 less three rounds of 20 A(2)) and 7 faces, not the rod's 80 pi and 6"},
     {"three_unequal_rounds_at_a_corner", scenario_three_unequal_rounds_at_a_corner, nullptr},
