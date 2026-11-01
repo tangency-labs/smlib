@@ -93,6 +93,7 @@ protected:
   std::vector<double>       m_vSetBacks;
   ULONG                     m_lFillOrder;
   SmBoolean                 m_bConvexSetBack;
+  SmBoolean                 m_bSetBackOverflows; // the rule's setbacks do not fit: the blends overflow (refused if the corner is built)
   SmBlendSetback::Fill    * m_pFill;
 
   // the Ball (SmBlendCornerBall.cpp)
