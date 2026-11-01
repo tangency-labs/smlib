@@ -5589,25 +5589,52 @@ void section_variable_round_law_dips()
     smlib_brep_free(cube);
 }
 
-// A cubic law 2, 2, 40, 3, 2 (knots 0, 0, 0, 0, 0.5, 1, 1, 1, 1; up to 21.25) on the top edge
-// x = 10, z = 30 of a 10 x 20 x 30 box. The balls' envelope folds over itself at the peak: for
-// the balls' family F(x, p) = |p - c(x)|^2 - r(x)^2 the touch arc there has F_xx down to -8.88
-// (regressive), where the touch circles move back along the edge. The
-// round is refused (SMLIB_ERR_NO_ROOM), never built folded (the balls' great circles, which
-// never fold, used to build it to 726.53 removed against the union's 332.2). The law 2, 2, 6,
-// 3, 0 on the same edge is progressive all along (F_xx at least 0.816) and builds.
+// The number the last blend's reason gives after `phrase` (printing the reason), or -1 when the
+// reason does not say it.
+double blend_reason_number(const char *phrase)
+{
+    char why[1024];
+    int64_t length = 0;
+    if (smlib_blend_reason(why, sizeof why, &length) != SMLIB_OK || length <= 0)
+    {
+        return -1.0;
+    }
+    std::printf("  reason: %s\n", why);
+    const char *at = std::strstr(why, phrase);
+    return at == nullptr ? -1.0 : std::strtod(at + std::strlen(phrase), nullptr);
+}
+
+// A cubic law 2, 2, c, 3, 2 (knots 0, 0, 0, 0, 0.5, 1, 1, 1, 1) on the top edge x = 10, z = 30 of
+// a 10 x 20 x 30 box, the law's position s = y / 20. The ball's centre is c(y) = (10 - r, y,
+// 30 - r); for the balls' family f(y, p) = (|p - c|^2 - r^2) / 2, f_yy = |c'|^2 - r'^2 - r r'' -
+// <p - c, c''> must be positive on the whole touch arc (no point folds back). It is
+// least at the law's peak, s = 0.5, where r'' < 0 and the arc's middle leans out along (1, 0, 1):
+// it reaches 0 at c = 12.9757151 (f_yy in closed form on the arc, its least over s by golden
+// section, c by bisection). Past it the envelope folds over itself and the round is
+// refused (SMLIB_ERR_NO_ROOM), never built folded (the balls' great circles, which never fold,
+// used to build c = 40 to 726.53 removed against the union's 332.2), smlib_blend_reason naming
+// the radius where the balls first fold along the edge from s = 0: 19.6356317 at c = 40 (f_yy /
+// |c'|^2 down to -8.809 at the peak), 7.8386732 at c = 13.2. Just inside, c = 12.8 (f_yy /
+// |c'|^2 at least 0.0278) builds, and so does the law 2, 2, 6, 3, 0 (at least 0.4997).
 void section_variable_round_spline_folds()
 {
     smlib_brep *block = box(0, 0, 0, 10, 20, 30);
     const double at[3] = {10, 10, 30}, from[3] = {10, 0, 30};
-    const double knots[9] = {0, 0, 0, 0, 0.5, 1, 1, 1, 1}, folds[5] = {2, 2, 40, 3, 2}, holds[5] = {2, 2, 6, 3, 0};
+    const double knots[9] = {0, 0, 0, 0, 0.5, 1, 1, 1, 1};
+    const double folds[5] = {2, 2, 40, 3, 2}, past[5] = {2, 2, 13.2, 3, 2}, inside[5] = {2, 2, 12.8, 3, 2}, holds[5] = {2, 2, 6, 3, 0};
     smlib_brep *r = nullptr;
     CHECK(smlib_fillet_variable(block, at, 0.1, from, 3, knots, 9, folds, 5, &r) == SMLIB_ERR_NO_ROOM && r == nullptr);
-    CHECK(smlib_fillet_variable(block, at, 0.1, from, 3, knots, 9, holds, 5, &r) == SMLIB_OK);
-    if (r != nullptr)
+    CHECK(near(blend_reason_number("where its radius is "), 19.6356317, 1e-6));
+    CHECK(smlib_fillet_variable(block, at, 0.1, from, 3, knots, 9, past, 5, &r) == SMLIB_ERR_NO_ROOM && r == nullptr);
+    CHECK(near(blend_reason_number("where its radius is "), 7.8386732, 1e-6));
+    for (const double *law : {inside, holds})
     {
-        CHECK(sound(r));
-        smlib_brep_free(r);
+        CHECK(smlib_fillet_variable(block, at, 0.1, from, 3, knots, 9, law, 5, &r) == SMLIB_OK);
+        if (r != nullptr)
+        {
+            CHECK(sound(r));
+            smlib_brep_free(r);
+        }
     }
     smlib_brep_free(block);
 }
@@ -8390,12 +8417,31 @@ int main(int argc, char **argv)
     // after it with its generic error). At R = 2 the ball's centre is on the axis: the
     // hemispherical end, pi 4 8 + (2/3) pi 8.
     {
+        // The side curves toward the ball by 1 / R, the top not at all: the ball fits while
+        // 1 - r / R > 0 (h(r) > 0), and smlib_blend_reason names R as the radius below
+        // which it fits. Just inside, r1.49 in the pin of radius 1.5 builds, taking off the rim's
+        // (1 - pi/4) r^2 turned about the axis at its centroid R - r (10 - 3 pi) / (12 - 3 pi).
         for (double R : {1.99, 1.5, 1.0})
         {
             smlib_brep *pin = cylinder(0, 0, 0, R, 10);
             const double rim[3] = {0, R, 10};
             smlib_brep *rounded = nullptr;
             CHECK(smlib_fillet(pin, rim, 1, 0.1, 2.0, &rounded, nullptr) == SMLIB_ERR_NO_ROOM && rounded == nullptr);
+            CHECK(near(blend_reason_number("a radius below "), R, 1e-6));
+            smlib_brep_free(pin);
+        }
+        {
+            const double R = 1.5, d = 1.49;
+            smlib_brep *pin = cylinder(0, 0, 0, R, 10);
+            const double rim[3] = {0, R, 10};
+            smlib_brep *rounded = nullptr;
+            CHECK(smlib_fillet(pin, rim, 1, 0.1, d, &rounded, nullptr) == SMLIB_OK);
+            if (rounded != nullptr)
+            {
+                const double off = 2.0 * PI * (R - d * (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI)) * (1.0 - PI / 4.0) * d * d;
+                CHECK(near(volume_of(rounded), PI * R * R * 10.0 - off, 1e-7));
+                done(rounded);
+            }
             smlib_brep_free(pin);
         }
         smlib_brep *pin = cylinder(0, 0, 0, 2, 10);
@@ -8468,10 +8514,13 @@ int main(int argc, char **argv)
         const double rounded = volume_of(both);
         CHECK(rounded < volume_of(top) - 35.0 * 9.0 * quarter && rounded > volume_of(top) - 40.0 * 9.0 * quarter);
         const double up[9] = {60, 40, 7.5, 60, 35.0 + std::sqrt(24.0), 16, 58.931891825700852, 37.55984948554854, 19.294016994391871};
+        // smlib_blend_reason names the radius below which the ball fits: 3, the r3 round's (the
+        // least over the three edges' sections, the r5 round's 5 the vertical edge's).
         for (double radius : {3.1, 4.0, 5.0, 7.0})
         {
             smlib_brep *corner = nullptr;
             CHECK(smlib_fillet(both, up, 3, 0.1, radius, &corner, nullptr) == SMLIB_ERR_NO_ROOM && corner == nullptr);
+            CHECK(near(blend_reason_number("a radius below "), 3.0, 1e-6));
         }
         for (double radius : {1.0, 2.0, 2.5, 2.9})
         {
