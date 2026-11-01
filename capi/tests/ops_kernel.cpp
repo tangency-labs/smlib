@@ -5450,6 +5450,7 @@ void turn_mitre_corners(const smlib_brep *r)
                 continue;
             }
             mitres[c]++;
+            const double ends = std::max(std::min((a - s).Length(), (a - x).Length()), std::min((b - s).Length(), (b - x).Length()));
             double plane = 0.0, cyl = 0.0;
             SmExtent1d ivl = es[k]->GetInterval();
             for (int t = 0; t <= 64; ++t)
@@ -5464,8 +5465,8 @@ void turn_mitre_corners(const smlib_brep *r)
                 cyl = std::max(cyl, std::fabs(std::hypot(p.x - (cx + ox), p.z - 11.0) - 1.0));
                 cyl = std::max(cyl, std::fabs(std::hypot(p.y - (cy + oy), p.z - 11.0) - 1.0));
             }
-            std::printf("  mitre at (%g, %g): off the bisector plane by %.3g, off the cylinders by %.3g\n", cx, cy, plane, cyl);
-            CHECK(plane <= 1e-12 && cyl <= 1e-12);
+            std::printf("  mitre at (%g, %g): its ends off X and S by %.3g, off the bisector plane by %.3g, off the cylinders by %.3g\n", cx, cy, ends, plane, cyl);
+            CHECK(ends <= 1e-12 && plane <= 1e-12 && cyl <= 1e-12);
         }
     }
     for (int c = 0; c < 4; ++c)
@@ -6161,7 +6162,7 @@ int section_cases(bool known_failing, const char *only)
 // fails today fails (null: it passes). As TANGENT_END_CASES.
 const TangentEndCase TURN_CASES[] = {
     {"mitre_boss_base", turn_mitre_boss_base,
-     "the mitre is the rounds' marched intersection, fitted to the fillet's tolerance, not their exact plane section"},
+     "the mitre is the rounds' marched intersection, fitted to the fillet's tolerance (1.39e-5 off the cylinders), not their exact plane section"},
     {"swept_boss_base", turn_swept_boss_base, nullptr},
     {"swept_sharp_pocket_refused", turn_swept_sharp_pocket_refused, nullptr},
     {"swept_tori_turned_round", turn_swept_tori_turned_round, nullptr},

@@ -265,6 +265,7 @@ double sm_MeridianAngleDeg(const SmVector3d & w, const SmVector3d & crX, const S
   return SM_RAD2DEG( atan2( w.Dot( crZ ), w.Dot( crX )));
 }
 
+
 } // namespace
 
 /*******************************************************************//**
@@ -340,9 +341,13 @@ SmStatus SmBlendCorner::Classify
   SmEdgeuse * pEU2 = crSolverEUs[1];
   NER( pEU1 );
   NER( pEU2 );
-  if ( sm_TestG1Continuity( cpVertex, pEU1->GetEdge(), pEU2->GetEdge(), dTangencyTolDeg, NULL, 0 ))
+  // a Join: the blends continue each other, or, at a face corner of the other convexity, meet at
+  // 5 degrees or less (they blend there: no mitre so thin)
+  double dAngleDeg = 90.0;
+  const SmBoolean bG1 = sm_TestG1Continuity( cpVertex, pEU1->GetEdge(), pEU2->GetEdge(), dTangencyTolDeg, &dAngleDeg, 0 );
+  if ( bG1 || ( dAngleDeg <= 5.0 && sm_CheckFaceComplimentaryCornerConcavity( cpVertex, pEU1, pEU2, NULL, 0 )))
     {
-      reEvent = SM_BCE_JOIN; // the blends continue each other
+      reEvent = SM_BCE_JOIN;
       return SM_SUCCESS;
     }
   reEvent = SM_BCE_TURN;
@@ -734,27 +739,313 @@ SmStatus SmBlendCorner::CreateSweptPatch()
 } // end SmBlendCorner::CreateSweptPatch
 
 /*******************************************************************//**
+PURPOSE: The Mitre turn's topology: the side vertex S, where both rounds'
+    rails on their other faces meet the side edge, the vertex X where their
+    rails on the common face cross, and the mitre X-S between the two rounds,
+    each round traced on past the vertex (a bevel corner) to meet the other.
+***********************************************************************/
+SmStatus SmBlendCorner::MakeMitreTopology()
+{
+  NER( m_pSolverEUs );
+  NER( m_pAllEUs );
+  if ( !IsMitreTurn() || m_pSolverEUs->GetSize() != 2 )
+    { SER( SM_ERR ); }
+  SmEdgeuse * apEU[2] = { (*m_pSolverEUs)[0], (*m_pSolverEUs)[1] };
+  NER( apEU[0] );
+  NER( apEU[1] );
+  SmEdgeuse * pRingEU = NULL;
+  for (ULONG ii=0; ii<m_pAllEUs->GetSize(); ii++)
+    {
+      if ( (*m_pAllEUs)[ii] != apEU[0] && (*m_pAllEUs)[ii] != apEU[1] )
+        { pRingEU = (*m_pAllEUs)[ii]; }
+    }
+  NER( pRingEU );
+  SmEdgeuse * pSideEU = sm_FindSideEdgeuse( apEU[0], pRingEU, 0 );
+  NER( pSideEU );
+  SmFace * pCommon = sm_GetFaceByTwoEdgeuses( apEU[0], apEU[1], pSideEU );
+  NER( pCommon );
+
+  // the rounds' face corner on the common face: concave where the rounds meet beyond the side
+  // edge's faces (a pocket's rim, a boss's base), the mitre at the face's concave corner
+  m_bMitre = sm_CheckFaceComplimentaryCornerConcavity( m_cpVertex, apEU[0], apEU[1], NULL, 0 );
+  m_bBevel    = TRUE;
+  m_bBlending = FALSE;
+
+  SmFilletGeom * apFG[2];
+  ULONG          alSide[2], alFace[2];
+  SmEdgeuse    * apSideEU[2] = { pSideEU, pSideEU->GetRadial() };
+  for (ULONG ii=0; ii<2; ii++)
+    {
+      SmFilletSolver * pFS = GetFilletExecutive()->GetFilletSolverOfEdgeuse( apEU[ii] );
+      NER( pFS );
+      apFG[ii] = pFS->GetFirstFilletGeom();
+      NER( apFG[ii] );
+      alSide[ii] = pFS->FindIndexOfRailXSideEdgeuse( apSideEU[ii] );
+      alFace[ii] = pFS->FindIndexOfRailOnFace( pCommon );
+      if ( alSide[ii] == alFace[ii] )
+        { SER( SM_ERR ); }
+    }
+
+  SmFilletEdgeuse * pNewEU = NULL;
+  SmFilletVertex  * pS     = new (m_pPseudoBrep) SmFilletVertex( this );
+  NER( pS );
+  pS->SetPointClass( SM_PC_EDGEUSE, pSideEU );
+  pS->SetFilletVertexType( SM_FV_RAIL_X_EDGEUSE );
+  m_vVertices.Add( pS );
+  SmFilletVertex * pX = new (m_pPseudoBrep) SmFilletVertex( this );
+  NER( pX );
+  pX->SetPointClass( SM_PC_FACE, pCommon );
+  pX->SetFilletVertexType( SM_FV_RAIL_X_RAIL );
+  m_vVertices.Add( pX );
+  for (ULONG ii=0; ii<2; ii++)
+    {
+      SER( apFG[ii]->MakeRailEdgeuse( m_pPseudoBrep, alSide[ii], pS, pNewEU ));
+      SER( apFG[ii]->MakeRailEdgeuse( m_pPseudoBrep, alFace[ii], pX, pNewEU ));
+    }
+
+  SmFilletEdge * pMitre = NULL;
+  SER( SmFilletEdge::MakeFilletEdge( m_pPseudoBrep, pS, pX, pMitre, this ));
+  NER( pMitre );
+  SmFilletEdgeuse * pPrimEU = (SmFilletEdgeuse*)pMitre->GetPrimaryEdgeuse();
+  NER( pPrimEU );
+  SmFilletEdgeuse * pMateEU = (SmFilletEdgeuse*)pPrimEU->GetMate();
+  NER( pMateEU );
+  pPrimEU->SetFilletGeom( apFG[0] );
+  pMateEU->SetFilletGeom( apFG[1] );
+  pMitre->SetFilletEdgeType( SM_FE_FILLET_X_FILLET );
+  m_vEdges.Add( pMitre );
+  return SM_SUCCESS;
+
+} // end SmBlendCorner::MakeMitreTopology
+
+/*******************************************************************//**
+PURPOSE: Where the two rounds' rails meet the side edge at two places, the
+    side vertex splits (SplitMitreSideVertex): the larger round (the one
+    meeting the edge farther from the vertex) meets the smaller one's side
+    face between them.
+***********************************************************************/
+SmStatus SmBlendCorner::AdjustMitreTopology()
+{
+  if ( m_vVertices.GetSize() != 2 || m_vEdges.GetSize() != 1 )
+    { SER( SM_ERR ); }
+  SmFilletVertex * pS = m_vVertices[0];
+  NER( pS );
+  SmTArray<SmFilletGeom*> sGeoms;
+  pS->GetFilletGeoms( sGeoms );
+  if ( sGeoms.GetSize() != 2 )
+    { SER( SM_ERR ); }
+  SmEdgeuse         * pSideEU = (SmEdgeuse*)pS->GetPointClassObject();
+  NER( pSideEU );
+  SmFilletVertexuse * pVU1    = pS->GetVUAtRailEnd( sGeoms[0] );
+  NER( pVU1 );
+  SmFilletVertexuse * pVU2    = pS->GetVUAtRailEnd( sGeoms[1], pVU1 );
+  NER( pVU2 );
+  SmCurve * pSideCurve = pSideEU->GetEdge()->GetCurve();
+  NER( pSideCurve );
+  SmPoint3d sPnt1, sPnt2;
+  SER( pSideCurve->EvaluatePoint( pVU1->GetTsectPnt().m_dCurveParameter, sPnt1 ));
+  SER( pSideCurve->EvaluatePoint( pVU2->GetTsectPnt().m_dCurveParameter, sPnt2 ));
+  if ( sPnt1.DistanceBetween( sPnt2 ) < m_dThisApproxTol3d )
+    { return SM_SUCCESS; } // both rails meet the side edge at S
+  // at a concave face corner the larger round runs on past the smaller one's side face, onto
+  // its continuation
+  return SplitMitreSideVertex( pS, m_bMitre );
+
+} // end SmBlendCorner::AdjustMitreTopology
+
+/*******************************************************************//**
+PURPOSE: The side vertex S split where the two rounds' rails meet the side
+    edge at two places: L, the larger round's (farther from the vertex), and
+    the smaller round's, Sm.
+
+NOTES: The larger round meets the smaller one's side face F along the curve
+   from L down to where it meets the mitre (P):
+   - at a convex face corner on F itself: P is where the smaller round's
+     rail meets the edge, and the mitre runs P-X (edges L-P, P-X);
+   - at a concave face corner on F's continuation past the edge: P is where
+     the mitre meets that continuation, and the gap P-L-Sm between the side
+     edge, the larger round and the smaller round's rail run on (P-Sm) is a
+     patch of F's extended surface (edges X-P, P-L, L-Sm, Sm-P).
+***********************************************************************/
+SmStatus SmBlendCorner::SplitMitreSideVertex
+  (SmFilletVertex * pS,                 // in : the side vertex
+   SmBoolean        bGapOnContinuation) // in : the larger round meets the side face's continuation
+{
+  NER( pS );
+  SmTArray<SmFilletGeom*> sGeoms;
+  pS->GetFilletGeoms( sGeoms );
+  if ( sGeoms.GetSize() != 2 )
+    { SER( SM_ERR ); }
+  SmEdgeuse         * pSideEU = (SmEdgeuse*)pS->GetPointClassObject();
+  NER( pSideEU );
+  SmFilletVertexuse * apVU[2];
+  apVU[0] = pS->GetVUAtRailEnd( sGeoms[0] );
+  NER( apVU[0] );
+  apVU[1] = pS->GetVUAtRailEnd( sGeoms[1], apVU[0] );
+  NER( apVU[1] );
+  SmCurve * pSideCurve = pSideEU->GetEdge()->GetCurve();
+  NER( pSideCurve );
+  double    adParam[2];
+  SmPoint3d asPnt[2];
+  for (ULONG ii=0; ii<2; ii++)
+    {
+      adParam[ii] = apVU[ii]->GetTsectPnt().m_dCurveParameter;
+      SER( pSideCurve->EvaluatePoint( adParam[ii], asPnt[ii] ));
+    }
+  // the larger round: the one meeting the edge farther from the vertex. The smaller one's side face
+  // is that of its side edgeuse: pSideEU's for the first round, its radial's for the second.
+  const SmPoint3d sVertPnt = m_cpVertex->GetPoint();
+  const ULONG     lLarge   = ( asPnt[0].DistanceBetween( sVertPnt ) < asPnt[1].DistanceBetween( sVertPnt )) ? 1 : 0;
+  const ULONG     lSmall   = 1 - lLarge;
+  SmFace        * pSideFace = ( lSmall == 0 ) ? pSideEU->GetFace() : pSideEU->GetRadial()->GetFace();
+  NER( pSideFace );
+  SmFilletVertex * pX = m_vVertices[1];
+  NER( pX );
+  SmFilletEdge * pMitre = m_vEdges[0];
+  NER( pMitre );
+  m_bTopologyAdjusted = TRUE;
+
+  if ( !bGapOnContinuation )
+    {
+      // S becomes L; the smaller round's rail end moves to P, on F where its rail meets the edge
+      pS->SetPoint( asPnt[lLarge] );
+      pS->SetOriginalTParam( adParam[lLarge] );
+      pS->SetStatus( SM_FIL_PROCESSED );
+      SmFilletVertex * pP = new (m_pPseudoBrep) SmFilletVertex( this );
+      NER( pP );
+      SmObjDelete sCleanP( pP );
+      pP->SetPoint( asPnt[lSmall] );
+      pP->SetPointClass( SM_PC_FACE, pSideFace );
+      pP->SetFilletVertexType( SM_FV_FILLET_X_FILLET );
+      SER( pS->Remove( apVU[lSmall] ));
+      SER( pP->PostInsert( apVU[lSmall] ));
+      m_vVertices.InsertAt( 1, pP );
+      sCleanP.Clear();
+
+      SmFilletEdge * pOnFace = NULL;
+      SER( SmFilletEdge::MakeFilletEdge( m_pPseudoBrep, pS, pP, pOnFace, this ));
+      NER( pOnFace );
+      pOnFace->SetFilletEdgeType( SM_FE_FILLET_X_SIDE_FACE );
+      pOnFace->SetOriginalFace( pSideFace );
+      ((SmFilletEdgeuse*)pOnFace->GetPrimaryEdgeuse())->SetFilletGeom( sGeoms[lLarge] );
+
+      SmFilletEdge * pNewMitre = NULL;
+      SER( SmFilletEdge::MakeFilletEdge( m_pPseudoBrep, pP, pX, pNewMitre, this ));
+      NER( pNewMitre );
+      pNewMitre->SetFilletEdgeType( SM_FE_FILLET_X_FILLET );
+      SmFilletEdgeuse * pPrimEU = (SmFilletEdgeuse*)pNewMitre->GetPrimaryEdgeuse();
+      pPrimEU->SetFilletGeom( sGeoms[lLarge] );
+      ((SmFilletEdgeuse*)pPrimEU->GetMate())->SetFilletGeom( sGeoms[lSmall] );
+
+      m_vEdges.RemoveAt( 0 );
+      delete pMitre;
+      m_vEdges.Add( pOnFace );
+      m_vEdges.Add( pNewMitre );
+      return SM_SUCCESS;
+    }
+
+  // S becomes P, where the mitre meets F's continuation (found with the mitre); the rails' ends on
+  // the edge are L and Sm
+  SmFilletVertex * apEnd[2];
+  for (ULONG ii=0; ii<2; ii++)
+    {
+      apEnd[ii] = new (m_pPseudoBrep) SmFilletVertex( this );
+      NER( apEnd[ii] );
+      apEnd[ii]->SetFilletVertexType( SM_FV_RAIL_X_EDGEUSE );
+      m_vVertices.Add( apEnd[ii] );
+    }
+  SmFilletVertex * pL = apEnd[0], * pSm = apEnd[1];
+  pL->SetPoint( asPnt[lLarge] );
+  pL->SetOriginalTParam( adParam[lLarge] );
+  pL->SetStatus( SM_FIL_PROCESSED );
+  pSm->SetPoint( asPnt[lSmall] );
+  pSm->SetOriginalTParam( adParam[lSmall] );
+  pSm->SetStatus( SM_FIL_PROCESSED );
+  pS->SetFilletVertexType( SM_FV_FILLET_X_FILLET );
+  pS->SetStatus( SM_FIL_UNPROCESSED );
+  SER( pS->Remove( apVU[lLarge] ));
+  SER( pL->PostInsert( apVU[lLarge] ));
+  SER( pS->Remove( apVU[lSmall] ));
+  SER( pSm->PostInsert( apVU[lSmall] ));
+
+  // F's continuation, where the larger round meets it and the gap's patch lies
+  SmSurface * pExtended = NULL;
+  NER( pSideFace->GetSurface() );
+  SER( pSideFace->GetSurface()->CreateExtendedSurface( m_crContext, 10.0 * asPnt[0].DistanceBetween( asPnt[1] ), SM_CT_G1, pExtended ));
+  NER( pExtended );
+  SmObjDelete sCleanExtended( pExtended );
+  SmSurface * pAnalytic = NULL;
+  SER( pExtended->CopyAndAddAnalytics( m_crContext, pAnalytic ));
+  AddExtendedOriginalSurface( pSideFace, pAnalytic );
+
+  SmFilletEdge * pPL = NULL, * pLSm = NULL, * pSmP = NULL;
+  SER( SmFilletEdge::MakeFilletEdge( m_pPseudoBrep, pS, pL, pPL, this ));
+  NER( pPL );
+  pPL->SetFilletEdgeType( SM_FE_FILLET_X_SIDE_FACE );
+  pPL->SetOriginalFace( pSideFace );
+  ((SmFilletEdgeuse*)pPL->GetPrimaryEdgeuse())->SetFilletGeom( sGeoms[lLarge] );
+  SER( SmFilletEdge::MakeFilletEdge( m_pPseudoBrep, pL, pSm, pLSm, this ));
+  NER( pLSm );
+  pLSm->SetFilletEdgeType( SM_FE_ON_EDGE );
+  pLSm->SetOriginalEdge( pSideEU->GetEdge() );
+  pLSm->SetOriginalFace( pSideFace );
+  SER( SmFilletEdge::MakeFilletEdge( m_pPseudoBrep, pSm, pS, pSmP, this ));
+  NER( pSmP );
+  pSmP->SetFilletEdgeType( SM_FE_RAIL_EXTENSION );
+  pSmP->SetOriginalFace( pSideFace );
+  ((SmFilletEdgeuse*)pSmP->GetPrimaryEdgeuse())->SetFilletGeom( sGeoms[lSmall] );
+  m_vEdges.Add( pPL );
+  m_vEdges.Add( pLSm );
+  m_vEdges.Add( pSmP );
+  m_bBevelGapPatch = TRUE;
+  return SM_SUCCESS;
+
+} // end SmBlendCorner::SplitMitreSideVertex
+
+/*******************************************************************//**
+PURPOSE: The Mitre turn's patch: none where the rounds meet on the side
+    edge's faces; where they meet on a side face's continuation, the gap
+    there (the edges after the mitre) as a patch of that continuation.
+***********************************************************************/
+SmStatus SmBlendCorner::CreateMitrePatch()
+{
+  if ( !m_bBevelGapPatch )
+    { return SM_SUCCESS; }
+  if ( m_vEdges.GetSize() != 4 )
+    { SER( SM_ERR ); }
+  SmTArray<SmFilletEdge*> sAll;
+  sAll.Append( m_vEdges );
+  m_vEdges.RemoveAt( 0 );
+  SmStatus eGap = SmFilletCorner::CreateEndPatch();
+  m_vEdges.ReSet();
+  m_vEdges.Append( sAll );
+  SER( eGap );
+  return SM_SUCCESS;
+
+} // end SmBlendCorner::CreateMitrePatch
+
+/*******************************************************************//**
 PURPOSE: The executive's corner phases, by the corner's event: the Swept
     turn's own construction, or the two blends' (Mitre turn, Join).
 ***********************************************************************/
 SmStatus SmBlendCorner::MakeCornerTopology()
 {
-  return IsSwept() ? MakeSweptTopology() : MakeTwoBlendTopology();
+  return IsSwept() ? MakeSweptTopology() : IsMitreTurn() ? MakeMitreTopology() : MakeTwoBlendTopology();
 }
 
 SmStatus SmBlendCorner::AdjustTopology()
 {
-  return IsSwept() ? SM_SUCCESS : AdjustTwoBlendTopology();
+  return IsSwept() ? SM_SUCCESS : IsMitreTurn() ? AdjustMitreTopology() : AdjustTwoBlendTopology();
 }
 
 SmStatus SmBlendCorner::AdjustTangentCorner()
 {
-  return IsSwept() ? SM_SUCCESS : AdjustTwoBlendTangentCorner();
+  return ( IsSwept() || IsMitreTurn() ) ? SM_SUCCESS : AdjustTwoBlendTangentCorner();
 }
 
 SmStatus SmBlendCorner::CreateCornerPatch()
 {
-  return IsSwept() ? CreateSweptPatch() : CreateTwoBlendPatch();
+  return IsSwept() ? CreateSweptPatch() : IsMitreTurn() ? CreateMitrePatch() : CreateTwoBlendPatch();
 }
 
 /********************************************************************
@@ -1034,37 +1325,19 @@ iDebugLevel = DebugLevel();
       pNewFaceFV->SetPointClass( SM_PC_FACE, pCommonFace );
       m_vVertices.Add( pNewFaceFV );
 
-      // SolidCraft change: where the common face's corner between the two filleted edges is
-      // concave (mixed convexity: a pocket's rim at its sharp corner, a boss's root at its sharp
-      // corner, the side edge not filleted), the two blends are mitred, as at a corner of
-      // uniform convexity: each runs on past the corner until it meets the other, their rails
-      // meeting in the common face and on the side edge (the owner's ruling, 2026-10-30). Upstream
-      // swept a 3-sided face round the side edge here, between ribs straight across from where
-      // the rails meet the side edge. Where the rails meet the side edge at two places (blends
-      // of different heights there), AdjustTopology joins them along the side face, as for any
-      // bevel. Edges meeting at less than 5 degrees still blend (below). A Swept turn is
-      // MakeSweptTopology's, never made here.
-
-      //
-      if (   bIsTangentCase
-          // || dAngleDeg <= 2.0
-          || (bMixedConvexity && dAngleDeg <= 5.0) )
-        {
-          m_bBlending = TRUE;
-          // Two filleted edgeuses are tangent to each other.
-          // The new face-vertex will just be straight across from the
-          // rail-side edge intersection vertex.
-          pNewFaceFV->SetFilletVertexType( SM_FV_MATE );
-          pNewFaceFV->SetMate( 0, pNewSideFV );
-          pNewSideFV->SetMate( 0, pNewFaceFV );
-        }
-      else // Regular BEVEL corner branch
-        {
-          // The new face vertex will be the intersection of the rails.
-          pNewFaceFV->SetFilletVertexType( SM_FV_RAIL_X_RAIL );
-          m_bBevel = TRUE;
-          m_bMitre = bMixedConvexity; // SolidCraft change: the mitre at the face's concave corner
-        } // end regular BEVEL corner branch
+      // At a corner of three edges only the Join is built here: the blends continue each other,
+      // or meet at 5 degrees or less where the face's corner is of the other convexity
+      // (SmBlendCorner::Classify). A Turn is MakeMitreTopology's or MakeSweptTopology's.
+      if ( !(   bIsTangentCase
+             || (bMixedConvexity && dAngleDeg <= 5.0) ) )
+        { SER( SM_ERR ); }
+      m_bBlending = TRUE;
+      // Two filleted edgeuses are tangent to each other.
+      // The new face-vertex will just be straight across from the
+      // rail-side edge intersection vertex.
+      pNewFaceFV->SetFilletVertexType( SM_FV_MATE );
+      pNewFaceFV->SetMate( 0, pNewSideFV );
+      pNewSideFV->SetMate( 0, pNewFaceFV );
 
       // Setup rails of fillet
       //   Make a FilletEdgeuse and a FilletVertexuse to connect 
@@ -2168,21 +2441,6 @@ SmStatus SmBlendCorner::AdjustTwoBlendTopology()
       if ( dDist < m_dThisApproxTol3d )
         { continue ; }
 
-      // SolidCraft change: two rounds mitred at the common face's concave corner (a pocket's rim
-      // at a sloped corner) whose rails meet the side edge at two places. The larger round cut
-      // by the side face, and the smaller round's rail, run on past the side edge onto the side
-      // face's continuation, where they meet the mitre's curve: the gap between them and the
-      // side edge is filled by a patch on the side face's surface, extended, as at a corner of
-      // mixed convexity whose rounds are swept. That corner's topology is built for it, the
-      // mitre's curve taking the place of the swept face (CreateCornerPatch).
-      if (   m_pAllEUs->GetSize() == 3
-          && sm_CheckFaceComplimentaryCornerConcavity( m_cpVertex, (*m_pSolverEUs)[0], (*m_pSolverEUs)[1], NULL, 0 ) )
-        {
-          SER( AdjustConcaveCornerTopology() );
-          m_bBevelGapPatch = TRUE;
-          return SM_SUCCESS;
-        }
-
       // Ok, if we're here, we're going to adjust the topology
       // of this corner.  We're going to make two separate vertices
       // where the rails from each of the two fillets hit the common
@@ -2359,24 +2617,6 @@ NOTES: This corner should have either 3 or 6 boundary edges
 SmStatus SmBlendCorner::CreateTwoBlendPatch()
 {
   ULONG ii, lTotalEdges = m_vEdges.GetSize();
-
-  // SolidCraft change: a mitre whose rails meet the side edge at two places
-  // (AdjustTopology, AdjustConcaveCornerTopology): the mitre's curve, then the
-  // three edges round the gap on the side face's continuation, filled by a
-  // patch on that face's extended surface. The mitre needs no patch of its own.
-  if ( m_bBevelGapPatch )
-    {
-      if ( lTotalEdges != 4 )
-        { SER( SM_ERR ); }
-      SmTArray<SmFilletEdge*> sAll;
-      sAll.Append( m_vEdges );
-      m_vEdges.RemoveAt( 0 );
-      SmStatus eGap = SmFilletCorner::CreateEndPatch();
-      m_vEdges.ReSet();
-      m_vEdges.Append( sAll );
-      SER( eGap );
-      return SM_SUCCESS;
-    }
 
   SmFilletEdge * apData1[3];
   SmFilletEdge * apData2[3];

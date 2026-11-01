@@ -71,6 +71,18 @@ protected:
   SmTArray<SmOrientType>    m_vTurnOrients; // and their orientations in the loop
 
   SmBoolean IsSwept() const { return ( m_eEvent == SM_BCE_TURN && m_eTurn == SM_BT_SWEPT ) ? TRUE : FALSE; }
+  SmBoolean IsMitreTurn() const { return ( m_eEvent == SM_BCE_TURN && m_eTurn == SM_BT_MITRE && m_pAllEUs != NULL && m_pAllEUs->GetSize() == 3 ) ? TRUE : FALSE; }
+
+  // the Mitre turn at a corner of three edges: each round runs on past the vertex to where the two
+  // meet, both cut along their crossing (the mitre), from where their rails cross on the common
+  // face (X) to where they meet the side edge (S). Where the rails meet the side edge at two
+  // places (unequal radii, or a slope), the larger round meets the smaller one's side face
+  // between them: on the face itself at a convex face corner, on its continuation, where a patch
+  // of it fills the gap, at a concave one. The mitre is the rounds' certified intersection.
+  SmStatus MakeMitreTopology();
+  SmStatus AdjustMitreTopology();
+  SmStatus SplitMitreSideVertex(SmFilletVertex * pSide, SmBoolean bGapOnContinuation);
+  SmStatus CreateMitrePatch();
 
   // the Swept turn
   SmStatus MakeSweptTopology();
@@ -78,9 +90,8 @@ protected:
   void     DeleteSweptSurface();
   SmStatus CreateSweptPatch();
 
-  // the Mitre turn and the Join: the two blends run on to their intersection (bevel), or end on
-  // one common section (blending). Where the rails meet a side edge at two places, the gap on the
-  // side face's continuation is filled by a patch (m_bBevelGapPatch).
+  // the Join, and a corner of four edges: the two blends end on one common section (blending), or
+  // run on to their intersection (bevel); moved from SmFilletNx2Corner.
   SmStatus MakeTwoBlendTopology();
   SmStatus Make4x2ConcaveCornerTopology();
   SmStatus AdjustConcaveCornerTopology();
