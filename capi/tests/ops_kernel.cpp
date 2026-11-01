@@ -4500,7 +4500,6 @@ struct SectionGrade
     unsigned long long most_evaluations = 0;      // the definition's evaluations the operation may make (a count, not a time),
     unsigned long long most_solves = 0;           // the station solves they may take,
     unsigned long long most_newton_steps = 2;     // and the Newton steps any one solve may take (seeded within the bound)
-    bool net_graded = true;                       // a definition's net graded against its certified bound of it
 };
 
 // Builds a blend by `build` and grades it by `g`: status, SMLib's check, volume, every point of
@@ -4590,7 +4589,7 @@ void section_blend(const std::function<int32_t(smlib_brep **)> &build, const Sec
         {
             std::printf("  blend face %lu: the net off the definition by %.3g, within its certified bound %.3g\n", static_cast<unsigned long>(i), gap,
                         pb->GetBound());
-            CHECK(!g.net_graded || gap <= pb->GetBound());
+            CHECK(gap <= pb->GetBound());
         }
         if (g.off != nullptr && pb != nullptr)
         {
@@ -4890,7 +4889,7 @@ smlib_surface *twisted_top()
     return s;
 }
 
-void twisted_wedge_g2_equal_area(bool net_graded)
+void section_twisted_wedge_g2_equal_area()
 {
     smlib_surface *top = twisted_top();
     smlib_brep *below = nullptr, *above = nullptr;
@@ -4919,13 +4918,14 @@ void twisted_wedge_g2_equal_area(bool net_graded)
     g.fitted = true;
     g.size = 3.0;
     // certified span by span at a tenth of the tolerance, the rows' remainder with the jets' (one
-    // thumbweight for the edge, -0.5, takes 197)
-    g.spans = 288;
+    // thumbweight for the edge, -0.5, takes 197): 275, where the feet's own order-2 jets took 288.
+    // Those carried the top's third partials, which in the twist change along x; the jet of order 2
+    // takes its second partials only, whose fourth s-derivatives are smaller over the twist
+    g.spans = 275;
     // its definition carries the equal area rule and resolves w at every point from its own
     // station's wedge, as the net's stations did: the net within its certified bound of it
     g = counted(g, 39000, 13200);
     g.definition = true;
-    g.net_graded = net_graded;
     int stations = 0;
     g.also = [&stations](const SmSurface *srf)
     {
@@ -4986,16 +4986,81 @@ void section_box_edge_g2_thumbweight_w_star()
     section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, W_STAR, 3.0), counted(box_edge_grade(2, W_STAR, 113.0 / 756.0), 14100, 3300));
 }
 
-void section_twisted_wedge_g2_equal_area() { twisted_wedge_g2_equal_area(false); }
-
-// The same blend's net against its definition. The top is a cubic spline in x, C2 across its knot
-// lines; the order-2 section's jets take the top's third partials (c_2 = F''(1) / 2, F the feet of
-// the points at distance tau r from both faces), so the definition jumps across each knot line the
-// rail crosses (by 0.0115 at x = 20.69). The net takes the station on the line from one side for
-// both its spans, and is off the definition on the other by that jump, decaying to 0 at the
-// span's far station: 0.0122 against the certified bound 4e-6. They agree at every station
-// (7e-14): the thumbweight rule is the builder's.
-void section_twisted_wedge_g2_equal_area_net_on_definition() { twisted_wedge_g2_equal_area(true); }
+// The twisted wedge's round across the top's knot lines. The top is a cubic spline in x, C2 across
+// the knots x = 0, 4, ..., 60 (C3 nowhere across those in the twist, 12 < x < 48). The order-2
+// section takes the faces' second partials only (sm_GnTopJets), so its definition is continuous
+// across every knot line the rail crosses: the definition just before and just after it agree to
+// 1e-6 (the feet's own order-2 jet, from the third partials, jumped 0.0115 at x = 20.69), and the
+// net, whose station on the line is solved on each side for its span, is within its certified
+// bound of the definition next to every line (it was 0.0122 off, against 4e-6).
+void section_twisted_wedge_g2_equal_area_net_on_definition()
+{
+    smlib_surface *top = twisted_top();
+    smlib_brep *below = nullptr, *above = nullptr, *r = nullptr;
+    smlib_brep *block = box(0, 0, 0, 60, 30, 50);
+    CHECK(top != nullptr && block != nullptr && smlib_split_body(block, top, &below, &above) == SMLIB_OK);
+    smlib_brep_free(block);
+    smlib_brep_free(above);
+    const double pick[3] = {30, 0, 25}, size = 3.0;
+    CHECK(below != nullptr && smlib_blend_order(below, 2, SMLIB_BLEND_THUMBWEIGHT, pick, &size, 1, 0.1, &r, nullptr) == SMLIB_OK);
+    const SmProceduralBlend *pb = nullptr;
+    if (r != nullptr)
+    {
+        CHECK(sound(r));
+        SmTArray<SmFace *> faces;
+        r->p->GetFaces(faces);
+        for (ULONG i = 0; i < faces.GetSize() && pb == nullptr; i++)
+        {
+            pb = dynamic_cast<const SmProceduralBlend *>(faces[i]->GetSurface());
+        }
+    }
+    CHECK(pb != nullptr);
+    if (pb != nullptr)
+    {
+        const SmExtent2d dom = pb->GetNaturalUVDomain();
+        const double u0 = dom.GetMin().x, u1 = dom.GetMax().x, v0 = dom.GetMin().y, v1 = dom.GetMax().y;
+        auto at = [&](double u, double v, bool net)
+        {
+            SmPoint3d p(0, 0, 0);
+            CHECK((net ? pb->SmBSplineSurface::EvaluatePoint(SmPoint2d(u, v), p) : pb->EvaluatePoint(SmPoint2d(u, v), p)) == SM_SUCCESS);
+            return p;
+        };
+        // the rail on the top: the side of the domain whose points are off the plane y = 0
+        const double vt = std::fabs(at(0.5 * (u0 + u1), v0, false).y) > std::fabs(at(0.5 * (u0 + u1), v1, false).y) ? v0 : v1;
+        const bool rising = at(u1, vt, false).x > at(u0, vt, false).x;
+        double jump = 0.0, gap = 0.0;
+        int lines = 0;
+        for (int xk = 4; xk <= 56; xk += 4)
+        {
+            // u where the rail is on the knot line x = xk
+            double lo = u0, hi = u1;
+            for (int it = 0; it < 200; it++)
+            {
+                const double mid = 0.5 * (lo + hi);
+                if ((at(mid, vt, false).x < xk) == rising) { lo = mid; } else { hi = mid; }
+            }
+            const double uk = 0.5 * (lo + hi), du = 1e-9 * (u1 - u0);
+            lines++;
+            for (int j = 0; j <= 16; j++)
+            {
+                const double v = v0 + (v1 - v0) * j / 16.0;
+                jump = std::max(jump, at(uk - du, v, false).DistanceBetween(at(uk + du, v, false)));
+                // the net next to the line, on both sides, out to 1% of the edge
+                for (int m = -20; m <= 20; m++)
+                {
+                    const double u = std::min(u1, std::max(u0, uk + 0.0005 * (u1 - u0) * m));
+                    gap = std::max(gap, at(u, v, false).DistanceBetween(at(u, v, true)));
+                }
+            }
+        }
+        std::printf("  %d knot lines: the definition across each by at most %.3g; the net off it beside them by %.3g, its certified bound %.3g\n",
+                    lines, jump, gap, pb->GetBound());
+        CHECK(lines == 14 && jump <= 1e-6 && gap <= pb->GetBound());
+    }
+    smlib_brep_free(r);
+    smlib_brep_free(below);
+    smlib_surface_free(top);
+}
 
 // The thumbweight pulls the section towards the edge: its middle (1 - w) / (2 (2 - w)) s off each
 // face, s / 4 at 0, s / 6 at 1/2, and the area it cuts off from 0.1541927 s^2 to 0.0744373 s^2.
@@ -5075,9 +5140,11 @@ void section_boss_root_g2()
     g.spans = 227;
     // the G^n section is taken in the leader's planes, as its certificate is: the leader is the
     // fitted centre line, whose planes tilt off the meridians by its tangent's error, and that
-    // moves the definition's section 5.8e-11 off the meridian section graded here (1.8e-14 where
-    // the spine is straight)
-    g.definition_tol = 1e-10;
+    // moves the definition's section 2.3e-10 off the meridian section graded here (1.8e-14 where
+    // the spine is straight): in a tilted plane the feet on the wall are not quite on a generator,
+    // and the order-2 jet keeps only the normal part of their curve's coefficient (5.8e-11 when it
+    // was the feet's own)
+    g.definition_tol = 1e-9;
     section_blend(by_order(boss_on_plate(), {30 + 4 * std::sqrt(2.0), 20 + 4 * std::sqrt(2.0), 10}, 2, 0.0, 2.0), g);
 }
 
@@ -5087,15 +5154,28 @@ void section_boss_root_g2()
 // both faces is V(d) = (20 + g(d), 10 + d), g(d) = sqrt((10 + d)^2 - (d - 6)^2) = sqrt(64 + 32 d);
 // its feet are F1(d) = (20 + g, 10) on the plate and F2(d) = (20, 16) + 10 (V - (20, 16)) / (10 +
 // d) = (20 + 10 g / (10 + d), 26 - 160 / (10 + d)) on the pipe. The jets c_ik = r^k / k! F_i^(k)(r)
-// (r the ball's radius) from g' = 16 / g, g'' = -256 / g^3. V0 = 24000 + 60 (100 pi - (100 acos 0.6 - 48)) =
+// (r the ball's radius) from g' = 16 / g, g'' = -256 / g^3, below the section's order n; its
+// order-n jet is the part of that coefficient along the face's normal, which takes the face's
+// n-th partials only (the tangent part is the curve's parametrization: the feet's would take the
+// (n+1)-th). On the plate the feet move along the plate, so the order-2 jet is 0 (the feet's c_2
+// lies in the plate); on the pipe it is N (N . c_2), N = (F2 - (20, 16)) / 10. V0 = 24000 + 60 (100 pi - (100 acos 0.6 - 48)) =
 // 40165.7846135291; each section adds 60 times the area between it, the plate and the pipe
 // (Green's theorem along the plate, the section and the pipe's arc). The chamfer 2 back from the
 // edge rolls the ball of radius 2 sqrt((1 - c) / (1 + c)) = 1, c = 0.6 the cosine between the
 // faces' directions (1, 0) and (0.6, 0.8) away from the edge: the chord between that ball's
 // contacts adds 1.26553105186724 (V = 40241.7164766411). The ball r = 2: the circle 2.25035755648288
-// (40300.8060669181), the order-2 section 1.54598304589003 at the default thumbweight 0
-// (40258.5435962825) and 0.845294194544005 at 1/2 (40216.5022652017), G2 with the faces exactly: on
-// the pipe the feet are not linear in d, and the t^3 coefficient of its standoff is not zero.
+// (40300.8060669181), the order-2 section 1.69874395201567 at the default thumbweight 0
+// (40267.7092506500) and 1.05076301198606 at 1/2 (40228.8303942483) (Gauss-Legendre, 64 panels of
+// 40 points, the section's tangent by dual numbers; the feet's own order-2 jets gave
+// 1.54598304589003 and 0.845294194544005). The order of contact with the plate is 3 (G2): the t^3
+// coefficient of the standoff, (T_pipe(0) - rho_plate) . N_plate = 0.537 (the pipe's jets taken at
+// u = 0), is not zero. With the pipe it is 4 (G3), at either thumbweight: that coefficient is
+// [(T_plate(0) - rho_pipe) - C_3 (-1/(1 - w))^3] . N_pipe - tau_2 . N_1 (-1/(1 - w))^3
+// (SmGnSectionFSG::ContactOrderAt), and each term is 0. T_plate(0) = V - V' (the plate's feet are
+// V - tau r n, n constant, and its order-2 jet is 0), and (V - V' - rho_pipe) . N_pipe = r - V' .
+// N_pipe = 0, the distance from the pipe growing at the rate r; on the circle with the feet's
+// angle linear in tau the face curve's third coefficient lies along the circle (C_3 . N = 0) and its
+// second along the normal (tau_2 = 0). (The feet's own jets gave G2 with both.)
 smlib_brep *pipe_on_plate()
 {
     const double o[3] = {0, 0, 0};
@@ -5107,10 +5187,15 @@ smlib_brep *pipe_on_plate()
 SectionGrade pipe_on_plate_grade(int order, double w, double d, double volume)
 {
     const double g = std::sqrt(64.0 + 32.0 * d), g1 = 16.0 / g, g2 = -256.0 / (g * g * g), e = 10.0 + d;
-    const std::vector<P2> plate = {{20 + g, 10}, {d * g1, 0}, {d * d / 2 * g2, 0}};
-    const std::vector<P2> pipe = {{20 + 10 * g / e, 26 - 160 / e},
-                                  {d * 10 * (g1 * e - g) / (e * e), d * 160 / (e * e)},
-                                  {d * d / 2 * 10 * (g2 / e - 2 * g1 / (e * e) + 2 * g / (e * e * e)), d * d / 2 * (-320 / (e * e * e))}};
+    // the order-2 jet on the plate: the feet's coefficient's part along the plate's normal, 0
+    const std::vector<P2> plate = {{20 + g, 10}, {d * g1, 0}, {0, 0}};
+    std::vector<P2> pipe = {{20 + 10 * g / e, 26 - 160 / e},
+                            {d * 10 * (g1 * e - g) / (e * e), d * 160 / (e * e)},
+                            {d * d / 2 * 10 * (g2 / e - 2 * g1 / (e * e) + 2 * g / (e * e * e)), d * d / 2 * (-320 / (e * e * e))}};
+    // the order-2 jet on the pipe: the feet's coefficient's part along the pipe's normal
+    const P2 nrm = {(pipe[0][0] - 20.0) / 10.0, (pipe[0][1] - 16.0) / 10.0};
+    const double along = pipe[2][0] * nrm[0] + pipe[2][1] * nrm[1];
+    pipe[2] = {along * nrm[0], along * nrm[1]};
     SectionGrade s;
     s.volume = volume;
     s.volume_rel = 1e-7;
@@ -5131,6 +5216,8 @@ SectionGrade pipe_on_plate_grade(int order, double w, double d, double volume)
                {ExactFace::CYLINDER, {0, 20, 16}, X_AXIS, 10}};
     s.rails = {5, 6};
     s.order = order;
+    // the order-2 section: G2 with the plate, G3 with the pipe (above); one grade for both seams
+    s.order_max = order >= 2 ? order + 1 : -1;
     s.fitted = false;
     s.size = d;
     return s;
@@ -5149,12 +5236,12 @@ void section_pipe_on_plate_round()
 void section_pipe_on_plate_g2()
 {
     section_blend(by_order(pipe_on_plate(), {30, 28, 10}, 2, 0.0, 2.0),
-                  counted(pipe_on_plate_grade(2, 0.0, 2.0, 40258.5435962825), 10700, 2000));
+                  counted(pipe_on_plate_grade(2, 0.0, 2.0, 40267.7092506500), 10700, 2100));
 }
 
 void section_pipe_on_plate_g2_thumbweight_half()
 {
-    section_blend(by_order(pipe_on_plate(), {30, 28, 10}, 2, 0.5, 2.0), counted(pipe_on_plate_grade(2, 0.5, 2.0, 40216.5022652017), 12000, 2350));
+    section_blend(by_order(pipe_on_plate(), {30, 28, 10}, 2, 0.5, 2.0), counted(pipe_on_plate_grade(2, 0.5, 2.0, 40228.8303942483), 12000, 2350));
 }
 
 // A variable round: the top back edge (y = 30, z = 20) of a box 20 x 30 x 20, its radius r = 1 + x/5
@@ -6004,8 +6091,7 @@ const TangentEndCase SECTION_CASES[] = {
     {"pipe_on_plate_g2_thumbweight_half", section_pipe_on_plate_g2_thumbweight_half, nullptr},
     {"sharp_wedge_g2_equal_area", section_sharp_wedge_g2_equal_area, nullptr},
     {"twisted_wedge_g2_equal_area", section_twisted_wedge_g2_equal_area, nullptr},
-    {"twisted_wedge_g2_equal_area_net_on_definition", section_twisted_wedge_g2_equal_area_net_on_definition,
-     "the net is 0.0122 off its definition (certified bound 4e-6) after the top's knot lines: a C2 top gives the order-2 jets a jump there, and the net's knot station is one side's"},
+    {"twisted_wedge_g2_equal_area_net_on_definition", section_twisted_wedge_g2_equal_area_net_on_definition, nullptr},
     {"variable_round_law_dip", section_variable_round_law_dip, nullptr},
     {"variable_round_law_dips", section_variable_round_law_dips, nullptr},
     {"variable_round_law_peak", section_variable_round_law_peak, nullptr},
