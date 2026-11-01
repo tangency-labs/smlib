@@ -52,8 +52,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
-#include <functional>
 #include <iterator>
 #include <string>
 #include <utility>
@@ -6365,10 +6365,12 @@ void definition_round_trip()
     };
     const SmProceduralBlend *written = blend_of(r);
     CHECK(written != nullptr);
-    const char *dir = std::getenv("TMPDIR");
+    // The system's temporary directory (Windows has no /tmp), each file named for this run so
+    // runs in parallel don't share it.
+    const std::filesystem::path dir = std::filesystem::temp_directory_path();
     for (int ascii = 0; ascii <= 1 && written != nullptr; ascii++)
     {
-        const std::string path = std::string(dir != nullptr ? dir : "/tmp") + "/smlib-definition-round-trip" + (ascii ? ".txt" : ".smb");
+        const std::string path = (dir / ("smlib-definition-round-trip-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + (ascii ? ".txt" : ".smb"))).string();
         CHECK(smlib_brep_write(r, path.c_str(), ascii) == SMLIB_OK);
         smlib_brep *back = nullptr;
         CHECK(smlib_brep_read(path.c_str(), ascii, &back) == SMLIB_OK);
