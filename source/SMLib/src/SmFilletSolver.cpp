@@ -5783,11 +5783,15 @@ SmStatus SmFilletSolver::JudgeBallAt
       if (   !apBase[k]->GetNaturalUVDomain().ContainsPoint2d(crUV)
           && pExtended != NULL && pExtended->GetNaturalUVDomain().ContainsPoint2d(crUV))
         { pActing = pExtended; }
+      // a ball's centre is the first face's offset point, for both faces (the station's solve
+      // puts the second's there to its precision)
+      const SmVector3d sOwn = bBall ? sC : SmVector3d(asOn[k]);
       SmBoolean bJudged = FALSE;
-      SER(sm_FaceJetAt(*pActing, crUV, asOn[k], asJet[k], bJudged));
+      SER(sm_FaceJetAt(*pActing, crUV, sOwn, asJet[k], bJudged));
       if (!bJudged)
         { return SM_SUCCESS; }
-      adOffset[k] = (asOn[k] - asJet[k].s).Length();
+      // a ball's radius is the solver's there (the law's, or its constant), for both faces
+      adOffset[k] = (bBall && adR[0] > 0.0) ? adR[0] : (sOwn - asJet[k].s).Length();
     }
   const double dR = adOffset[0];
   const SmVector3d sChord = asJet[1].s - asJet[0].s;
