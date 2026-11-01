@@ -796,7 +796,6 @@ SmStatus SmFilletExecutive::SetFilletParameters
   m_bDoTrimming          = TRUE;
   m_bDoClassification    = TRUE;
   m_bCliffOverflow       = FALSE; // SolidCraft change
-  m_vOpenEnds.clear();
   m_vFanSplitPoints.clear(); // SolidCraft change
   m_vOverflowEdges.RemoveAll(); // SolidCraft change
   m_vMitredEdges.RemoveAll();   // SolidCraft change
@@ -978,7 +977,6 @@ SmStatus SmFilletExecutive::SetFilletParameters
   m_bDoTrimming          = TRUE;
   m_bDoClassification    = TRUE;
   m_bCliffOverflow       = FALSE; // SolidCraft change
-  m_vOpenEnds.clear();
   m_vFanSplitPoints.clear(); // SolidCraft change
   m_vOverflowEdges.RemoveAll(); // SolidCraft change
   m_vMitredEdges.RemoveAll();   // SolidCraft change
@@ -3793,9 +3791,9 @@ SmStatus SmFilletExecutive::CreateFilletBrep
 
   // SolidCraft change: a blend whose rails leave the faces they roll on between its ends is
   // larger than those faces. A convex blend (one that removes material) whose rails leave them
-  // across cliffs is built on the faces' continuations, and the material it removes is
-  // subtracted from the body (m_bCliffOverflow, SubtractRemovalRegion): as if the cliffs were
-  // not there, then cut by what they cut away, which can only remove material and never
+  // across cliffs is built on the faces' continuations and trimmed along its creases with the
+  // faces beyond (m_bCliffOverflow, TrimAtCreases): as if the cliffs were not there, the sharp
+  // edges moved to where the blend meets the body, which only removes material and never
   // bridges an opening. Refused: a concave blend (one that adds material) that overflows; a
   // round or curvature-continuous blend whose rail runs on into the body's material (beyond a
   // wall, where it would meet the wall's underside tangentially, in a knife edge); and an

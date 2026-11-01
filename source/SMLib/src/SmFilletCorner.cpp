@@ -6012,8 +6012,8 @@ NOTES: At a corner of uniform convexity and at most three edges, the one
   faces continue past their cliffs, and so does the end face: a rail that
   misses its side edge there (either rail, or both), but for the second
   way, runs past the side edge's far end on its face's continuation. The
-  end rib is left out then and the fillet uncut there; the executive cuts
-  it off by the end face's surface continued (SubtractRemovalRegion).
+  end rib is left out then and the fillet uncut there; the end face cuts
+  it off along their crease (SmFilletExecutive::TrimAtCreases).
 ***********************************************************************/
 SmStatus SmFilletNx1Corner::CalcCornerEdgeGeom
   ()
@@ -6101,16 +6101,7 @@ SmStatus SmFilletNx1Corner::CalcCornerEdgeGeom
                                                         sSolution ) );
           if ( ! bRunsOn && m_pExecutive->GetCliffOverflow() )
             {
-              // The end face: the side edge's face that is neither of the fillet's side faces.
-              SmFace * pEndFace = ( pSideFaces[0] == pOtherFace || pSideFaces[0] == pFilEdgeuse->GetFace()
-                                    || pSideFaces[0] == pFilEdgeuse->GetRadial()->GetFace() )
-                                  ? pSideFaces[1] : pSideFaces[0];
-              if (   pEndFace == pFilEdgeuse->GetFace()
-                  || pEndFace == pFilEdgeuse->GetRadial()->GetFace() )
-                { SER( SM_ERR ); }
-              SmFilletSolver * pFilSolver = GetFilletExecutive()->GetFilletSolverOfEdgeuse( pFilEdgeuse );
-              NER(pFilSolver);
-              SER( m_pExecutive->NoteOpenEnd( pFilSolver, SM_CONST_CAST(SmVertex*, m_cpVertex), pEndFace ));
+              // the end face cuts the fillet off along their crease (TrimAtCreases)
               SER( pEndRib->GetBrep()->DeleteEdge( pEndRib ) );
               m_vEdges.ReSet();
             }

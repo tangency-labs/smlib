@@ -936,62 +936,6 @@ static SmStatus sm_ExtendAsItself
 } // end sm_ExtendAsItself
 
 /*******************************************************************//**
-PURPOSE: SolidCraft change. Whether pSurface continues as itself past its
-    domain (sm_ExtendAsItself): a cylinder, cone, sphere or torus.
-***********************************************************************/
-SmBoolean SmOffsetSurface::ContinuesAsItself( const SmSurface * pSurface )
-{
-  return    pSurface != NULL
-         && (   pSurface->IsKindOf(SmCone_TYPE)
-             || pSurface->IsKindOf(SmSphere_TYPE)
-             || pSurface->IsKindOf(SmTorus_TYPE) ) ? TRUE : FALSE;
-}
-
-/*******************************************************************//**
-PURPOSE: SolidCraft change. pSurface continued as itself over at least crLo
-    to crHi (sm_ExtendAsItself), its analytic kind given back
-    (CopyAndAddAnalytics).
-
-NOTES: Round the axis the continuation reaches no further than closing the
-    turn (sm_RotTurn): asked for more, it closes it. Within its own domain the
-    result is a copy of pSurface.
-***********************************************************************/
-SmStatus SmOffsetSurface::ContinueAsItself
-  (const SmContext & crContext,     // in : context for the new surface
-   const SmSurface * pSurface,      // in : the surface (ContinuesAsItself)
-   const SmPoint2d & crLo,          // in : the domain's least corner to reach
-   const SmPoint2d & crHi,          // in : the domain's greatest corner to reach
-   SmSurface      *& rpContinued)   // out: the surface continued
-{
-  rpContinued = NULL;
-  if ( !ContinuesAsItself( pSurface ))
-    { SER(SM_ERR); }
-  SmBSplineSurface * pBase = SM_CONST_CAST( SmBSplineSurface*, (const SmBSplineSurface *)pSurface );
-  const SmExtent2d sDomain = pBase->GetNaturalUVDomain();
-  if ( sDomain.ContainsPoint2d( crLo ) && sDomain.ContainsPoint2d( crHi ))
-    { return pSurface->Copy( crContext, rpContinued ); }
-  sm_RotTurn sTurn = {0, 0.0, 0.0, 0, 0.0, 0.0};
-  SER( sm_GetRotTurn( pBase, sTurn ));
-  SmPoint2d sLo( smos_Min( crLo.x, sDomain.GetMin().x ), smos_Min( crLo.y, sDomain.GetMin().y ));
-  SmPoint2d sHi( smos_Max( crHi.x, sDomain.GetMax().x ), smos_Max( crHi.y, sDomain.GetMax().y ));
-  double & rRotLo = ( sTurn.lRot == 0 ) ? sLo.x : sLo.y;
-  double & rRotHi = ( sTurn.lRot == 0 ) ? sHi.x : sHi.y;
-  const SmBoolean bClose = ( rRotHi - rRotLo >= sTurn.dHi - sTurn.dLo ) ? TRUE : FALSE;
-  if ( bClose )
-    {
-      rRotLo = sTurn.dLo;
-      rRotHi = sTurn.dHi;
-    }
-  SmBSplineSurface * pExtended = NULL;
-  SER( sm_ExtendAsItself( crContext, pBase, sLo, sHi, bClose, pExtended ));
-  NER( pExtended );
-  SmObjDelete sClean( pExtended );
-  SER( pExtended->CopyAndAddAnalytics( crContext, rpContinued ));
-  NER( rpContinued );
-  return SM_SUCCESS;
-} // end SmOffsetSurface::ContinueAsItself
-
-/*******************************************************************//**
 PURPOSE: Make sure given DomainPoint is contained in
             domain of given surface by 
    1. Wrapping UV coordinates in domain periodic directions and

@@ -770,46 +770,35 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   a convex one is a cliff overflow (below). This replaces the earlier change that merged such a
   fillet into the body face by face (`RailsLeaveTheirFaces`), which built a round or a chamfer
   across the openings it ran into.
-- **The cliff overflow of a convex blend** (new `SmFilletCliffOverflow.cpp`:
-  `SmFilletExecutive::SubtractRemovalRegion`, `CutFilletAtOpenEnd`, `CloseRemovalRegion`;
-  `SmFilletExecutive.cpp`, `CreateFilletBrep`, `DoFilleting`, `sm_BlendAddsMaterial`;
-  `SmFilletSolver.cpp`, `RailsFitTheirFaces`, `sm_InsideMaterial`; `SmFilletCorner.cpp`,
-  `SmFilletNx1Corner::CalcCornerEdgeGeom`; `SmFilletGeom.h`, `SM_FILERR_NOT_EXACT`): a convex
-  blend (one that removes material: its edge is convex,
-  `SmFilletSolver::IsConcaveEdge`) whose rail leaves its face across a cliff is
-  built on the faces' continuations and subtracted. The rails' crossings are not rolled over
-  (`TestRollOver` is skipped); an Nx1 corner whose rails miss their side edges (or meet them
-  only clamped at the side edge's far vertex, off the fillet) leaves that end uncut, and the
-  fillet is cut there by the end face's plane (the section nearest the edge's end). The sheet of
-  fillet and corner faces is closed with a face on the surface of each target face its boundary
-  runs on, the plane continued exactly (a new plane on the same frame over a larger domain),
-  bounded by the sheet's boundary there, the blended edges and the side edges joining them
-  (continued along their lines past their ends), stitched and oriented as a solid, and
-  subtracted from the body with `SmMerge::ManifoldBoolean` (`SM_BO_DIFFERENCE`). The result is
-  the body blended as if the cliffs were not there, then cut by what the cliffs cut away (rig
-  5158 and 5181, #422, solidcraft#1080). A planar face continues as its plane whatever its
-  surface (a loft's planar B-spline wall too). At a pocket's rim corner (an Nx1 corner of mixed
-  convexity) the sheet holds the corner's end face, on the end wall's surface extended back
-  over the rim: its edge along the pocket's corner edge lies on both walls' surfaces, and passes
-  onto the wall that is not its own; the top's chain then ends at the rim's vertex itself (a
-  sloped basin's front rim chamfered past it, solidcraft#1080, had been refused as on two
-  faces' surfaces). Where every edge of a loop of a planar face is blended (a pocket's rim
-  loop), the sheet's boundary closes on that face round the loop, and the region's face there
-  lies between the two, one inside the other (it had been refused as closing on one face). A
-  cylinder, cone, sphere or torus continues as itself (`SmOffsetSurface::ContinueAsItself`,
-  `sm_ContinuedSurface`), and a straight side edge on a cylinder or cone (a ruling, a closed
-  rim's seam) runs on along its line, its UV line evaluated past its ends: a closed rim blended
-  past its wall's far end (solidcraft#190's disc, a hole's top rim past the plate's bottom,
-  solidcraft#2893's chamfer past the bottom) closes on the band of the wall continued, between
-  the rim and the rail, each a circle round the axis (`sm_CloseBand`); a chain that is one closed
-  edge is closed. Refused: a round whose rail runs on into the body's
-  material (beyond a wall: the knife edge it would leave under the wall, `SM_FILERR_NO_ROOM`,
-  solidcraft#3435); a needed continuation of a surface that does not continue as itself past its
-  domain, of a side edge that is not a line, or a band off the circles of its surface
-  (`SM_FILERR_NOT_EXACT`); an overflow with a tangent rollover, a fillet
-  end on several faces or on a non-planar face, concave blends in the same call, a sheet
-  boundary that does not pass from face to face along side edges, or a variable round on planes
-  whose surface misses its law (`sm_HoldsItsLaw`): too large, `SM_FILERR_NO_ROOM`, as before.
+- **The cliff overflow of a convex blend** (new `SmFilletOverflow.cpp`:
+  `SmFilletExecutive::TrimAtCreases`; `SmFilletExecutive.cpp`, `CreateFilletBrep`, `DoFilleting`,
+  `sm_BlendAddsMaterial`; `SmFilletSolver.cpp`, `RailsFitTheirFaces`, `sm_InsideMaterial`,
+  `IsTangentEdge`; `SmFilletCorner.cpp`, `SmFilletNx1Corner::CalcCornerEdgeGeom`): a convex
+  blend (one that removes material: its edge is convex, `SmFilletSolver::IsConcaveEdge`) whose
+  rail leaves its face across a cliff keeps its surface, built on the faces' continuations, and
+  the sharp edge moves (the owner's ruling, rig 5158, 5181, 5236, #422, solidcraft#1080). The
+  rails' crossings are not rolled over (`TestRollOver` is skipped); an Nx1 corner whose rails miss
+  their side edges (or meet them only clamped at the side edge's far vertex, off the fillet)
+  leaves that end uncut. Each face of the sheet of fillet and corner faces is sectioned by the
+  surface of each body face near it that holds none of its boundary: by a plane exactly
+  (`CreatePlanarSectionCurves`: a line on a cylinder, a conic on a cone, a circle on a torus),
+  by SMLib's surface intersection otherwise, fitted to the body's tolerance; each crease is kept
+  where it lies inside both faces, the sheet face split along them and the pieces inside the
+  body kept (each piece's UV domain from its own trims). A support face whose kept rail runs past
+  its foot into the material (a pocket rim's chamfer past the floor) carries on along its plane
+  to the rail, between the lines of its side edges. The kept sheet's boundary is imprinted on the
+  body's faces (`SmBrep::MergeCurvesOnSurface`), the faces it encloses round the blended edges
+  are deleted, and the sheet is merged in (`SmBrep::MergeBrep`: the body keeps its tolerance, the
+  edges it is sewn along take the sheet's), stitched and oriented. No boolean: the body is only
+  trimmed, so the blend never bridges an opening. This replaces building the region the blend
+  removes and subtracting it (`SmMerge::ManifoldBoolean`). Refused: a round whose rail runs on
+  into the body's material (beyond a wall: the knife edge it would leave under the wall,
+  `SM_FILERR_NO_ROOM`, solidcraft#3435); a crease on a face that runs on tangentially from a face
+  the sheet rolls on (the rail would roll over onto a round already there: a 5 wide end with
+  both uprights rounded r3); a rail past a face's boundary partway along it, or past a face that
+  is not planar, into the material; an overflow with a tangent rollover, a fillet end on several
+  faces, concave blends in the same call, or a variable round on planes whose surface misses its
+  law (`sm_HoldsItsLaw`, the touch circle): too large, `SM_FILERR_NO_ROOM`.
 - **A fillet meeting its face steeply trims it** (`SmFilletGeom.cpp`, `TrimOriginalSurfaces`): the
   piece of a face 'inside' a fillet's rail (to be deleted) was the one whose binormal along the
   rail made a dot of more than 0.2 with the fillet's, as if anything less were noise. The pieces'

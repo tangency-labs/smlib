@@ -232,15 +232,8 @@ protected:
                                                      // corner is a dip or a peak (owned), else NULL
 
   SmBoolean                 m_bCliffOverflow;       // SolidCraft change: TRUE = a convex blend's rail leaves its face across a cliff;
-                                                    //   the blend is built on its faces' continuations and the material it
-                                                    //   removes is subtracted from m_pTargetBrep (SubtractRemovalRegion)
-  struct SmFilletOpenEnd                            // SolidCraft change: an end of a fillet the Nx1 corner there left uncut,
-    {                                               //   its rails missing its side edges, in m_bCliffOverflow:
-      SmFilletSolver * m_pSolver;                   //   the solver of the filleted edge,
-      SmVertex       * m_pVertex;                   //   the edge's vertex at that end,
-      SmFace         * m_pEndFace;                  //   the face whose surface's continuation cuts the fillet off there
-    };
-  std::vector<SmFilletOpenEnd> m_vOpenEnds;         // SolidCraft change: the fillet's ends left uncut, in m_bCliffOverflow
+                                                    //   the blend is built on its faces' continuations and trimmed along its
+                                                    //   creases with the faces beyond (TrimAtCreases)
   std::vector<SmPoint3d>       m_vFanSplitPoints;   // SolidCraft change: where a blended edge's vertex the body touches itself at
                                                     //   was split into one vertex per fan (SplitBlendedVertexFans)
   SmBoolean                 m_bOverflowFirst;       // SolidCraft change: TRUE = when blends of several edges overflow across cliffs, stop
@@ -440,7 +433,7 @@ public:
   SmStatus LoadFilletSolver          (SmFilletSolver * pFS);
   SmStatus FacesOutlastTheirBlends(SmBoolean & rbOutlast); // SolidCraft change: whether every face the blends roll on keeps some of itself, or is closed by blends tangent to it
   SmStatus BandsClearOtherRails(SmBoolean & rbClear); // SolidCraft change: whether no blend's rail runs inside the band another takes off a face they share, away from a corner
-  // SolidCraft change: the cliff overflow (SmFilletCliffOverflow.cpp)
+  // SolidCraft change: the cliff overflow (SmFilletOverflow.cpp)
   SmBoolean GetCliffOverflow() const { return m_bCliffOverflow; }
   void      SetOverflowFirst(SmBoolean bFirst) { m_bOverflowFirst = bFirst; }
   void      SetClassifyOnly(SmBoolean bOnly) { m_bClassifyOnly = bOnly; }
@@ -450,13 +443,7 @@ public:
   SmBoolean GetSweptTurns() const { return m_bSweptTurns; }
   const SmTArray<SmEdge*> & GetOverflowEdges() const { return m_vOverflowEdges; }
   const SmTArray<SmEdge*> & GetMitredEdges() const { return m_vMitredEdges; }
-  SmStatus  NoteOpenEnd(SmFilletSolver * pSolver, SmVertex * pVertex, SmFace * pEndFace); // an end the Nx1 corner left uncut
-  SmStatus  SubtractRemovalRegion();          // close m_pFilletBrep into the region the blends remove, subtract it from m_pTargetBrep
   SmStatus  TrimAtCreases();                  // trim m_pFilletBrep along its creases with the faces past the cliffs, sew it in (SmFilletOverflow.cpp)
-private:
-  SmStatus  CutFilletAtOpenEnd(const SmFilletOpenEnd & crEnd); // cut the fillet off by the end face's surface continued
-  SmStatus  CloseRemovalRegion();             // add the faces on the target's surfaces that close m_pFilletBrep
-public:
   SmStatus EaseSetBackSections();             // SolidCraft change: ease rounds into curvature-continuous sections before eased setbacks (SmFilletCorner::m_dEaseDist)
   SmStatus NoteRadiusCornerSurfaces();        // SolidCraft change: copy fillet surfaces that turn where the radius has a corner
   SmStatus SplitFilletFacesAtRadiusCorners(); // SolidCraft change: split those fillet faces where the radius turns
