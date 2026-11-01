@@ -14,6 +14,7 @@
 #include <SmApiTessellationParams.h>
 #include <SmPoly.h>
 #include <SmAssertArray.h>
+#include <SmBlendCorner.h>
 #include <SmBlendSetback.h>
 #include <SmBSplineCurve.h>
 #include <SmBSplineSurface.h>
@@ -117,6 +118,90 @@ bool sound(const smlib_brep *b)
     }
     return failures == 0;
 }
+
+// The points a caller blending with tangent propagation sends for `picks`: the picks, then the
+// middle of every edge that continues one of them tangentially (its direction out of a shared
+// vertex opposite to the other's, within half a degree), until no more do. An edge one face
+// uses, a seam, an edge whose faces meet tangentially, and an edge of the other convexity end a
+// chain (as SolidCraft's tangent_chain does).
+std::vector<double> tangent_chain_points(const smlib_brep *b, const std::vector<double> &picks)
+{
+    std::vector<double> out = picks;
+    SmTArray<SmEdge *> all;
+    b->p->GetEdges(all);
+    std::vector<SmEdge *> chain;
+    for (size_t i = 0; i + 2 < picks.size(); i += 3)
+    {
+        SmEdge *best = nullptr;
+        double d0 = HUGE_VAL;
+        for (ULONG k = 0; k < all.GetSize(); ++k)
+        {
+            SmPoint3d q;
+            double t = 0.0, d = 0.0;
+            if (SmApiEdgeClosestPoint(all[k], SmPoint3d(picks[i], picks[i + 1], picks[i + 2]), q, t, d) == SM_SUCCESS && d < d0)
+            {
+                d0 = d;
+                best = all[k];
+            }
+        }
+        if (best != nullptr && std::find(chain.begin(), chain.end(), best) == chain.end())
+        {
+            chain.push_back(best);
+        }
+    }
+    const size_t seeds = chain.size();
+    // the unit direction edge e leaves its end v in (none at a closed edge's vertex)
+    auto leaving = [](SmEdge *e, const SmVertex *v, SmVector3d &d) {
+        if (e->GetStartVertex() == e->GetEndVertex())
+        {
+            return false;
+        }
+        const bool start = e->GetStartVertex() == v;
+        if (e->GetEndTangent(start ? TRUE : FALSE, d) != SM_SUCCESS || d.Unitize() != SM_SUCCESS)
+        {
+            return false;
+        }
+        if (!start)
+        {
+            d = d * -1.0;
+        }
+        return true;
+    };
+    const double cosine = std::cos(0.5 * PI / 180.0);
+    for (size_t k = 0; k < chain.size(); ++k)
+    {
+        SmEdge *e = chain[k];
+        for (const SmVertex *v : {static_cast<const SmVertex *>(e->GetStartVertex()), static_cast<const SmVertex *>(e->GetEndVertex())})
+        {
+            SmVector3d d;
+            if (!leaving(e, v, d))
+            {
+                continue;
+            }
+            for (ULONG f = 0; f < all.GetSize(); ++f)
+            {
+                SmEdge *other = all[f];
+                SmVector3d g;
+                if (std::find(chain.begin(), chain.end(), other) != chain.end() || (other->GetStartVertex() != v && other->GetEndVertex() != v) ||
+                    other->IsLamina() || other->IsSeam() || other->IsTangentEdge(0.5) || !same_convexity_edges_round_vertex(e->GetPrimaryEdgeuse(), other) ||
+                    !leaving(other, v, g) ||
+                    d.Dot(g) >= -cosine)
+                {
+                    continue;
+                }
+                chain.push_back(other);
+            }
+        }
+    }
+    for (size_t k = seeds; k < chain.size(); ++k)
+    {
+        SmPoint3d m;
+        CHECK(chain[k]->GetCurve()->EvaluatePoint(chain[k]->GetInterval().Evaluate(0.5), m) == SM_SUCCESS);
+        out.insert(out.end(), {m.x, m.y, m.z});
+    }
+    return out;
+}
+
 
 // Checks a result and frees it.
 void done(smlib_brep *&r)
@@ -7532,6 +7617,51 @@ void scenario_round_ending_where_its_edge_runs_on()
     done(r);
 }
 
+// SolidCraft issue 851's part: a 41 1/6 x 21 plate and the corner a circle of radius 21 about
+// (62 1/6, -21) leaves, 10 high, the arc wall meeting the front face square and running out
+// tangent into the back face in a knife-edge tip at (62 1/6, 0): V0 = 9591.394.
+smlib_brep *knife_edge_arc_part()
+{
+    const double tip = 62.0 + 1.0 / 6.0, wall = 21.0, x0 = tip - wall;
+    const double axis[3] = {tip, -wall, 0};
+    smlib_brep *disc = nullptr;
+    CHECK(smlib_make_cylinder(axis, wall, 10, &disc) == SMLIB_OK);
+    return combined(box(0, -wall, 0, x0, wall, 10), combined(box(x0, -wall, 0, wall, wall, 10), disc, SMLIB_BOOLEAN_SUBTRACT), SMLIB_BOOLEAN_UNION);
+}
+
+// SolidCraft's 851-fillet-three-edges-at-knife-edge-arc-corner: the top front edge, the arc's
+// top edge and the front upright at the arc, R2 together, with tangent propagation (SolidCraft's
+// tangent_chain default sends their tangent chains). Its analytic volume (SolidCraft's
+// expected.json): near the three edges the part is z <= 10, y >= -21 and rho >= 21 about the
+// wall's axis, so the ball centres lie in z <= 8, y >= -19, rho >= 23; removed the top front
+// round (4 - pi) along x 0..37, 31.761, the arc's round outside the corner
+// Int_21^23 (2 - sqrt(4 - (23 - rho)^2)) rho (asin(21/rho) - asin(6/rho)) drho, 20.286, and the
+// corner x 37..45, y -21..-15, 15.004 (on a 0.0025 grid): 67.051, V = 9524.342896, to the
+// grid's 5e-3.
+void scenario_three_edges_at_the_knife_edge_arc_corner()
+{
+    smlib_brep *part = knife_edge_arc_part();
+    const std::vector<double> chain =
+        part != nullptr ? tangent_chain_points(part, {20, -21, 10, 47.3174, -6.1508, 10, 41.1667, -21, 5}) : std::vector<double>();
+    std::printf("  the three edges' tangent chain: %zu edge(s)\n", chain.size() / 3);
+    const std::vector<double> sizes(chain.size() / 3, 2.0);
+    smlib_brep *r = nullptr;
+    const int32_t s = part == nullptr ? SMLIB_ERR_ARG
+                                      : smlib_blend(part, SMLIB_BLEND_ROUND, chain.data(), sizes.data(), static_cast<int64_t>(sizes.size()), 0.1, &r, nullptr);
+    std::printf("  status %d%s%s\n", static_cast<int>(s), s == SMLIB_OK ? "" : ": ", s == SMLIB_OK ? "" : last_blend_reason().c_str());
+    smlib_brep_free(part);
+    CHECK(s == SMLIB_OK && r != nullptr);
+    if (r == nullptr)
+    {
+        return;
+    }
+    const double v = volume_of(r);
+    std::printf("  volume %.9f, want 9524.342896\n", v);
+    CHECK(std::fabs(v - 9524.342896) < 5e-3);
+    CHECK(sound(r));
+    done(r);
+}
+
 // A 20 x 4 x 10 block with a slot 4 wide (x 8 to 12) cut through it from below to 1 under its
 // top: two pillars joined by a bridge 1 thick (656). Its top front edge (y = 0, z = 10, the whole
 // 20) is blended. In the section square to the edge, coordinates y (in from the front) and z,
@@ -7927,6 +8057,7 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"round_over_a_thin_rib_not_a_cut", scenario_round_over_a_thin_rib_not_a_cut, nullptr},
     {"round_past_the_rim_over_an_opening", scenario_round_past_the_rim_over_an_opening, nullptr},
     {"square_bar_rounded_to_a_rod", scenario_square_bar_rounded_to_a_rod, nullptr},
+    {"three_edges_at_the_knife_edge_arc_corner", scenario_three_edges_at_the_knife_edge_arc_corner, nullptr},
     {"three_unequal_rounds_at_a_corner", scenario_three_unequal_rounds_at_a_corner, nullptr},
     {"unequal_chamfers_at_a_corner", scenario_unequal_chamfers_at_a_corner, nullptr},
     {"unequal_rounds_at_a_concave_turn", scenario_unequal_rounds_at_a_concave_turn, nullptr},
@@ -9419,6 +9550,7 @@ int main(int argc, char **argv)
             smlib_brep_free(b);
         }
     }
+
 
     // A constant radius law (r -> r) on the top back edge of a 60 x 40 x 20 box whose vertical
     // edge at (60, 40) is rounded R5. The round runs on past the edge's end until it meets the R5
