@@ -9684,7 +9684,11 @@ bool bb_net(const SmBSplineSurface *s, BB h[4])
 // is nearer both of a round a's faces than its radius (A = H_f - r w < 0, B = H_g - r w < 0, f and
 // g those faces' axes), within its cylinder (C = A^2 + B^2 - r^2 w^2 <= 0), certified per piece
 // (A >= 0 or B >= 0 or -C >= 0 on it, subdividing). Each polynomial is held to -1e-12 of its
-// coefficients' scale (rounding); `report` prints the worst values seen.
+// coefficients' scale (rounding); `report` prints the worst values seen. The prisms are halved up
+// to 24 times (the curvature signs 6): where a round's rail ends, a G1 fill touches both its
+// cylinder (C = 0 along the end section, B < 0 just inside it) and the face (C = B^2 > 0 along the
+// spring curve, B >= 0), so a piece at that corner passes only once B on the spring curve is below
+// the rounding level across it; only the pieces there are halved further.
 bool fill_keeps_the_body_convex(const SmBlendSetback::Fill &fill, const std::array<double, 3> &radii, const char *what)
 {
     bool all = true;
@@ -9808,7 +9812,7 @@ bool fill_keeps_the_body_convex(const SmBlendSetback::Fill &fill, const std::arr
                 }
                 return res;
             };
-            const int r2 = held(A, B, C, depth);
+            const int r2 = held(A, B, C, 24);
             if (r2 != 1)
             {
                 all = false;
