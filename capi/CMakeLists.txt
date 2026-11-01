@@ -229,6 +229,8 @@ if(SMLIB_CAPI_TESTS)
   add_test(NAME smlib_test_ops_kernel_section_orders_known_failing COMMAND smlib_test_ops_kernel --section-orders-known-failing)
   # The turns at a sharp side edge that fail today (tests/ops_kernel.cpp, TURN_CASES), held the same way.
   add_test(NAME smlib_test_ops_kernel_turns_known_failing COMMAND smlib_test_ops_kernel --turns-known-failing)
+  # The faces shrunk to their trims that fail today (tests/ops_kernel.cpp, SHRINK_CASES), held the same way.
+  add_test(NAME smlib_test_ops_kernel_shrinks_known_failing COMMAND smlib_test_ops_kernel --shrinks-known-failing)
   # The blend scenarios that fail today (tests/ops_kernel.cpp, SCENARIO_CASES), held the same way.
   add_test(NAME smlib_test_ops_kernel_scenarios_known_failing COMMAND smlib_test_ops_kernel --scenarios-known-failing)
   # The setback corner's fills that fail today (tests/ops_kernel.cpp, SETBACK_CASES), held the same way.

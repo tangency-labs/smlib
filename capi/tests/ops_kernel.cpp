@@ -1707,6 +1707,38 @@ double worst_pcurve_gap(const smlib_brep *b)
     return worst;
 }
 
+// The largest distance, over every edgeuse of b, between its trim curve lifted onto its face's
+// surface and its edge's curve at the same parameter (33 points each), each trim curve got or
+// made first (SmEdgeuse::GetOrCreateUVTrimCurve).
+double worst_pcurve_distance(SmBrep *b)
+{
+    SmTArray<SmEdgeuse *> uses;
+    b->GetEdgeuses(uses);
+    double worst = 0.0;
+    for (ULONG i = 0; i < uses.GetSize(); i++)
+    {
+        SmBSplineCurve *uv = nullptr;
+        CHECK(uses[i]->GetOrCreateUVTrimCurve(uv) == SM_SUCCESS && uv != nullptr);
+        SmEdge *e = uses[i]->GetEdge();
+        if (uv == nullptr || e == nullptr || uses[i]->GetFace() == nullptr)
+        {
+            worst = HUGE_VAL;
+            continue;
+        }
+        const SmSurface *srf = uses[i]->GetFace()->GetSurface();
+        const SmExtent1d ivl = e->GetInterval();
+        for (int k = 0; k <= 32; k++)
+        {
+            SmPoint3d c, q, w;
+            const double t = ivl.Evaluate(k / 32.0);
+            CHECK(e->GetCurve()->EvaluatePoint(t, c) == SM_SUCCESS && uv->EvaluatePoint(t, w) == SM_SUCCESS &&
+                  srf->EvaluatePoint(SmPoint2d(w.x, w.y), q) == SM_SUCCESS);
+            worst = std::max(worst, c.DistanceBetween(q));
+        }
+    }
+    return worst;
+}
+
 // A planar profile (lines and arcs about +z, in the plane z0) extruded `h` up.
 struct Profile
 {
@@ -6358,6 +6390,196 @@ int turn_cases(bool known_failing, const char *only)
     return run_cases(TURN_CASES, "turn", known_failing, only);
 }
 
+// ---- A face shrunk to its trims (SmFace::ShrinkGeometry) -----------------------------------
+// A face on the sub-domain [u0, u1] x [v0, v1] of a surface, bounded by the surface's own iso
+// curves (exact NURB extractions) and their UV lines, at the same parameters; shrunk, its
+// surface trimmed to that domain. Where the trim keeps the surface's parameterization (its NURB
+// the same map on the smaller domain) the face keeps its trim curves: each still the one it was
+// given, on its edge to 1e-12. Where the trim reparameterizes the surface, they no longer lie on
+// it: they are removed, and made again by projection they lie on their edges to the edges'
+// tolerance.
+void shrunk_face_trims(SmBSplineSurface *srf, const SmExtent2d &d, bool kept)
+{
+    const SmContext &ctx = *SmApiGetOrCreateContext();
+    SmBrep *b = new (ctx) SmBrep();
+    b->SetTolerance(1e-6);
+    const double u0 = d.GetMin().x, u1 = d.GetMax().x, v0 = d.GetMin().y, v1 = d.GetMax().y;
+    // counter-clockwise: v = v0 (u up), u = u1 (v up), v = v1 (u down), u = u0 (v down)
+    const SmSurfParamType iso[4] = {SM_SP_V, SM_SP_U, SM_SP_V, SM_SP_U};
+    const double at[4] = {v0, u1, v1, u0};
+    const SmPoint2d from[4] = {SmPoint2d(u0, v0), SmPoint2d(u1, v0), SmPoint2d(u0, v1), SmPoint2d(u0, v0)};
+    const SmPoint2d to[4] = {SmPoint2d(u1, v0), SmPoint2d(u1, v1), SmPoint2d(u1, v1), SmPoint2d(u0, v1)};
+    SmTArray<SmCurve *> curves;
+    SmTArray<SmBSplineCurve *> uvs;
+    SmTArray<SmOrientType> orients;
+    for (int k = 0; k < 4; ++k)
+    {
+        SmBSplineCurve *c = nullptr;
+        CHECK(srf->SmBSplineSurface::CreateIsoParametricCurve(ctx, iso[k], at[k], 0.0, c, &d) == SM_SUCCESS && c != nullptr);
+        SmTArray<SmPoint3d> cps;
+        cps.Add(SmPoint3d(from[k].x, from[k].y, 0));
+        cps.Add(SmPoint3d(to[k].x, to[k].y, 0));
+        SmTArray<ULONG> mult;
+        mult.Add(2);
+        mult.Add(2);
+        SmTArray<double> knots;
+        knots.Add(c != nullptr ? c->GetNaturalInterval().GetMin() : 0.0);
+        knots.Add(c != nullptr ? c->GetNaturalInterval().GetMax() : 1.0);
+        SmBSplineCurve *uv = nullptr;
+        CHECK(SmBSplineCurve::CreateCanonical(ctx, 2, 1, cps, SM_CF_UNSPECIFIED, mult, knots, SM_KT_UNSPECIFIED, nullptr, nullptr, uv) ==
+              SM_SUCCESS);
+        curves.Add(c);
+        uvs.Add(uv);
+        orients.Add(k < 2 ? SM_OT_SAME : SM_OT_OPPOSITE);
+    }
+    SmTArray<ULONG> loops;
+    loops.Add(4);
+    SmTArray<SmPoint3d> none;
+    SmRegion *region = nullptr;
+    SmShell *shell = nullptr;
+    SmFace *face = nullptr;
+    const SmBoolean keep = TRUE;
+    CHECK(b->MakeFaceWithCurves(b->GetInfiniteRegion(), loops, &curves, &uvs, orients, none, srf, srf->GetNaturalUVDomain(), SM_OT_SAME,
+                                region, shell, face, &keep) == SM_SUCCESS &&
+          face != nullptr);
+    if (face == nullptr)
+    {
+        delete b;
+        return;
+    }
+    SmTArray<SmEdgeuse *> eus;
+    b->GetEdgeuses(eus);
+    std::vector<const SmBSplineCurve *> given;
+    for (ULONG i = 0; i < eus.GetSize(); ++i)
+    {
+        given.push_back(eus[i]->GetUVTrimCurve());
+    }
+    CHECK(face->ShrinkGeometry() == SM_SUCCESS);
+    int same = 0, removed = 0;
+    for (ULONG i = 0; i < eus.GetSize(); ++i)
+    {
+        const SmBSplineCurve *now = eus[i]->GetUVTrimCurve();
+        same += now != nullptr && now == given[i];
+        removed += now == nullptr;
+    }
+    const double off = worst_pcurve_distance(b); // made again where removed
+    std::printf("  %s: %d of %zu trim curves kept, %d removed; then on their edges to %.3g\n", kept ? "kept" : "reparameterized", same,
+                given.size(), removed, off);
+    CHECK(eus.GetSize() == 8);
+    if (kept)
+    {
+        CHECK(same == static_cast<int>(eus.GetSize()) && off <= 1e-12);
+    }
+    else
+    {
+        CHECK(removed == static_cast<int>(eus.GetSize()) && off <= 1e-6);
+    }
+    delete b;
+}
+
+// A bicubic B-spline of two spans each way, a hill: its trim (a patch) is the same map.
+void shrink_bspline_patch()
+{
+    const SmContext &ctx = *SmApiGetOrCreateContext();
+    SmTArray<SmPoint3d> net;
+    for (int i = 0; i < 5; ++i)
+    {
+        for (int j = 0; j < 5; ++j)
+        {
+            net.Add(SmPoint3d(2.5 * i, 2.5 * j, (i == 2 && j == 2) ? 4.0 : 0.3 * i * j));
+        }
+    }
+    SmTArray<ULONG> mult;
+    mult.Add(4);
+    mult.Add(1);
+    mult.Add(4);
+    SmTArray<double> unique;
+    unique.Add(0.0);
+    unique.Add(0.5);
+    unique.Add(1.0);
+    SmBSplineSurface *s = nullptr;
+    CHECK(SmBSplineSurface::CreateCanonical(ctx, 3, 3, net, SM_SF_UNSPECIFIED, mult, mult, unique, unique, SM_KT_UNSPECIFIED, nullptr, nullptr,
+                                            s) == SM_SUCCESS &&
+          s != nullptr);
+    if (s != nullptr)
+    {
+        shrunk_face_trims(s, SmExtent2d(SmPoint2d(0.2, 0.3), SmPoint2d(0.7, 0.9)), true);
+    }
+}
+
+// A quarter cylinder r 2, height 10 (generator a line), trimmed along its axis only: its line is
+// rebuilt over the shorter length at the same parameters and its arcs are as they were.
+void shrink_cylinder_along_its_axis()
+{
+    const SmContext &ctx = *SmApiGetOrCreateContext();
+    SmCylinder *c = new (ctx) SmCylinder(SmPoint3d(0, 0, 0), SmVector3d(1, 0, 0), SmVector3d(0, 1, 0), 2.0, 0.0, 90.0, 10.0, FALSE, FALSE,
+                                         FALSE, &ctx);
+    const SmExtent2d n = c->GetNaturalUVDomain();
+    // u is the rotation, v the axis (bSwapUV FALSE)
+    shrunk_face_trims(c, SmExtent2d(SmPoint2d(n.GetMin().x, n.GetMin().y + 0.2 * (n.GetMax().y - n.GetMin().y)),
+                                    SmPoint2d(n.GetMax().x, n.GetMin().y + 0.7 * (n.GetMax().y - n.GetMin().y))),
+                      true);
+}
+
+// The same cylinder trimmed in its angle: its arc is rebuilt over the smaller angle, a different
+// rational parameterization of the circle.
+void shrink_cylinder_in_its_angle()
+{
+    const SmContext &ctx = *SmApiGetOrCreateContext();
+    SmCylinder *c = new (ctx) SmCylinder(SmPoint3d(0, 0, 0), SmVector3d(1, 0, 0), SmVector3d(0, 1, 0), 2.0, 0.0, 90.0, 10.0, FALSE, FALSE,
+                                         FALSE, &ctx);
+    const SmExtent2d n = c->GetNaturalUVDomain();
+    shrunk_face_trims(c, SmExtent2d(SmPoint2d(n.GetMin().x + 0.2 * (n.GetMax().x - n.GetMin().x), n.GetMin().y),
+                                    SmPoint2d(n.GetMin().x + 0.7 * (n.GetMax().x - n.GetMin().x), n.GetMax().y)),
+                      false);
+}
+
+// A torus R 5, r 1 (generator a circle) trimmed along its generator: the circle's arc is rebuilt.
+void shrink_torus_along_its_generator()
+{
+    const SmContext &ctx = *SmApiGetOrCreateContext();
+    SmTorus *t = nullptr;
+    CHECK(SmTorus::CreateCanonical(ctx, SmAxis2Placement(SmPoint3d(0, 0, 0), SmVector3d(1, 0, 0), SmVector3d(0, 1, 0)), 5.0, 1.0, t) ==
+              SM_SUCCESS &&
+          t != nullptr);
+    if (t != nullptr)
+    {
+        const SmExtent2d n = t->GetNaturalUVDomain();
+        shrunk_face_trims(t, SmExtent2d(SmPoint2d(n.GetMin().x, n.GetMin().y + 0.1 * (n.GetMax().y - n.GetMin().y)),
+                                        SmPoint2d(n.GetMax().x, n.GetMin().y + 0.4 * (n.GetMax().y - n.GetMin().y))),
+                          false);
+    }
+}
+
+// A plane: its trim adjusts its STEP domain (SmPlane::TrimWithDomain), not shown to keep the map.
+void shrink_plane()
+{
+    const SmContext &ctx = *SmApiGetOrCreateContext();
+    SmPlane *pl = nullptr;
+    CHECK(SmPlane::CreateCanonical(ctx, SmAxis2Placement(SmPoint3d(0, 0, 0), SmVector3d(1, 0, 0), SmVector3d(0, 1, 0)), pl) == SM_SUCCESS &&
+          pl != nullptr);
+    if (pl != nullptr)
+    {
+        const SmExtent2d n = pl->GetNaturalUVDomain();
+        shrunk_face_trims(pl, SmExtent2d(n.Evaluate(0.2, 0.3), n.Evaluate(0.6, 0.8)), false);
+    }
+}
+
+// Each kind of surface a face is shrunk on, and why each that fails today fails.
+const TangentEndCase SHRINK_CASES[] = {
+    {"bspline_patch", shrink_bspline_patch, "SmFace::ShrinkGeometry removes every trim curve, whatever the trim does to the surface's map"},
+    {"cylinder_along_its_axis", shrink_cylinder_along_its_axis,
+     "SmFace::ShrinkGeometry removes every trim curve, whatever the trim does to the surface's map"},
+    {"cylinder_in_its_angle", shrink_cylinder_in_its_angle, nullptr},
+    {"torus_along_its_generator", shrink_torus_along_its_generator, nullptr},
+    {"plane", shrink_plane, nullptr},
+};
+
+int shrink_cases(bool known_failing, const char *only)
+{
+    return run_cases(SHRINK_CASES, "shrink", known_failing, only);
+}
+
 // ---- Scenarios -------------------------------------------------------------------------------
 // Blends users ask for often that the lists above leave out: several sizes in one call, a chord
 // width, a variable round fading to nothing, unequal chamfers at a corner, a bar rounded into a
@@ -7515,6 +7737,14 @@ int main(int argc, char **argv)
             smlib_set_dump_dir(dir);
         }
         return turn_cases(false, argv[2]) == 0 ? 0 : 1;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--shrinks-known-failing") == 0)
+    {
+        return shrink_cases(true, nullptr) == 0 ? 0 : 1;
+    }
+    if (argc == 3 && std::strcmp(argv[1], "--shrink") == 0)
+    {
+        return shrink_cases(false, argv[2]) == 0 ? 0 : 1;
     }
     if (argc == 2 && std::strcmp(argv[1], "--section-orders-known-failing") == 0)
     {
@@ -10982,6 +11212,7 @@ int main(int argc, char **argv)
     failures += exact_class_cases(false, nullptr);
     failures += section_cases(false, nullptr);
     failures += turn_cases(false, nullptr);
+    failures += shrink_cases(false, nullptr);
     failures += scenario_cases(false, nullptr);
     failures += setback_cases(false, nullptr);
 
