@@ -224,8 +224,8 @@ SmStatus SmProceduralBlend::Create
   NER(apSupport[0]); NER(apSupport[1]); NER(apSeed[0]); NER(apSeed[1]);
   if (lOrder < 1 || lOrder > SM_GN_MAX_ORDER)
     { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmProceduralBlend: a section's order is 1 to 4")); }
-  if (lOrder >= 2 && (cpLaw != NULL || !(sm_Finite(dThumbweight) && dThumbweight < 1.0)))
-    { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmProceduralBlend: a G^n section needs a ball of one radius and a thumbweight below 1")); }
+  if (lOrder >= 2 && (cpLaw != NULL || !SmGnSectionFSG::IsValid(lOrder, dThumbweight)))
+    { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmProceduralBlend: a G^n section needs a ball of one radius and a thumbweight below 1 or the equal area rule")); }
   for (int i=0; i<2; i++)
     if (crSide[i] != 1.0 && crSide[i] != -1.0)
       { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmProceduralBlend: a support's side is +1 or -1")); }

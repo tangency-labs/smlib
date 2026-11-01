@@ -81,7 +81,8 @@ protected:
   double           m_adR[2];        // the ball's offsets from S1 and S2 (its radius, both), when m_pLaw is NULL
   SmBSplineCurve * m_pLaw;          // owned, or NULL: the radius r(s) as the x of a curve over the leader's parameter
   ULONG            m_lOrder;        // the section's order n, 1 to SM_GN_MAX_ORDER
-  double           m_dThumbweight;  // n >= 2: the G^n section's thumbweight w < 1
+  double           m_dThumbweight;  // n >= 2: the G^n section's thumbweight rule: w < 1, or SM_GN_THUMBWEIGHT_EQUAL_AREA
+                                    // (each point's w is the equal area one of its station's own wedge)
   SmBSplineCurve * m_pLeader;       // owned: L(s)
   SmBSplineCurve * m_apSeed[2];     // owned: the feet's uv on each support, over s
   double           m_dBound;        // the net's certified distance from the definition, > 0
@@ -133,6 +134,7 @@ public:
   double                 GetOffset(ULONG i) const  { return i < 2 ? m_adR[i] : 0.0; }
   const SmBSplineCurve * GetLaw() const            { return m_pLaw; }
   ULONG                  GetOrder() const          { return m_lOrder; }
+  // the thumbweight rule: w, or SM_GN_THUMBWEIGHT_EQUAL_AREA (resolved at each station)
   double                 GetThumbweight() const    { return m_dThumbweight; }
   const SmBSplineCurve * GetLeader() const         { return m_pLeader; }
   const SmBSplineCurve * GetSeed(ULONG i) const    { return i < 2 ? m_apSeed[i] : NULL; }

@@ -4005,7 +4005,46 @@ SmStatus SmProceduralBlend::EvaluateDefinition(double dS, double dT, ULONG lHigh
     }
 
   sm_TV sSum = sm_TVZero(lS, lT);
-  if (n >= 2)
+  if (n >= 2 && m_dThumbweight == SM_GN_THUMBWEIGHT_EQUAL_AREA)
+    {
+      // the equal area thumbweight of this station's own wedge, as a series in s (the builder's
+      // rule, sm_GnStationThumbweight, to every order asked): w(s) solves I(w) = target(u(s)), u
+      // half the angle between the ball's radii to its contacts
+      if (lS > SM_GN_TAY)
+        { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmProceduralBlend: partials of this order are past what its thumbweight's series holds")); }
+      const sm_Tay<double> sU = sm_GnHalfAngle(sm_GnWedgeCos<double>(sAt.asF, sAt.sV, m_adR[0] * m_adR[1], lS));
+      double dW0 = 0.0;
+      SER(sm_GnEqualAreaW(m_lOrder, sU.c[0], dW0));
+      const sm_Tay<double> sD = sm_GnAreaSum(m_lOrder, sm_TayOf(dW0, 1.0));
+      if (!(sD.c[1] < 0.0))
+        { SER_MSG(SM_ERR, _T("SmProceduralBlend: the section's area does not fall with its thumbweight")); }
+      const sm_Tay<double> sWs = sm_GnInvert(sm_GnTarget(sU), sD, dW0);
+      const sm_GnSectionFormT< sm_Tay<double> > sForm = sm_GnFormT< sm_Tay<double> >(m_lOrder, sWs);
+      // a row of the form in (sigma, dt): sum_j g_j(sigma) B_j(t0 + dt)
+      const size_t lDeg = sForm.W.size();
+      std::vector< std::vector<double> > sBasis(lDeg);
+      for (size_t j=0; j<lDeg; j++)
+        {
+          sm_Bern sUnit(lDeg, 0.0);
+          sUnit[j] = 1.0;
+          sBasis[j] = sm_BernTaylor(sUnit, dT, lT);
+        }
+      auto row = [&](const std::vector< sm_Tay<double> > & crG)
+      {
+        sm_T2 sR(lS, lT);
+        for (size_t j=0; j<lDeg; j++)
+          for (int i=0; i<=lS; i++)
+            for (int q=0; q<=lT; q++)
+              sR.at(i, q) += crG[j].c[i] * sBasis[j][static_cast<size_t>(q)];
+        return sR;
+      };
+      sm_T2 sInvW;
+      SER(sm_T2Pow(row(sForm.W), -1.0, sInvW));
+      for (int f=0; f<2; f++)
+        for (int k=0; k<=n; k++)
+          sSum = sSum + sm_TVOf(sAt.asF[f], k, lS, lT) * (row(sForm.aG[f][static_cast<size_t>(k)]) * sInvW);
+    }
+  else if (n >= 2)
     {
       const sm_GnSectionForm sForm = sm_GnForm(m_lOrder, m_dThumbweight);
       sm_T2 sW(0, lT);
