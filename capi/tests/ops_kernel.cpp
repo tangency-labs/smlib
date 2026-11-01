@@ -7987,6 +7987,40 @@ void scenario_chamfers_of_an_arc_wall_and_the_top_front()
     scenario_blend(arc_wall_plate(), SMLIB_BLEND_CHAMFER, {47.31742426174917, -6.150757595082503, 10, 20, -21, 10}, {2, 2}, 9453.6359553261, 1e-6, -1);
 }
 
+// The plate's top front edge rounded R2 (SolidCraft's pick and tolerance), then the edge between
+// that round and the arc wall rounded on its own at r: the middle edge of the arc top edge's
+// tangent chain (the arc top edge, this edge, the upright edge of the wall and the front face),
+// whose ends are tangent ends. It builds as a sound body, or is refused, SMLIB_ERR_NO_ROOM, with a
+// reason (the remote SMLib worker's repro-851-middle-edge). r 0.25 crashed in the merge's
+// post-process (SmMerge::BooleanPostProcess removed an edge with the arc wall on both sides, as
+// if between two faces, and the arc wall with it); r 2, the front round's own radius, is a ball
+// whose offset of that round is its axis.
+void scenario_middle_edge_of_an_arc_tangent_chain(double r)
+{
+    smlib_brep *part = arc_wall_plate(), *front = nullptr, *out = nullptr;
+    const double tol = 3.3197702709152845, at_front[3] = {20.583333333333332, -21, 10}, two = 2.0;
+    CHECK(part != nullptr && smlib_blend(part, SMLIB_BLEND_ROUND, at_front, &two, 1, tol, &front, nullptr) == SMLIB_OK);
+    const double middle[3] = {41.17486688363082, -20.413218067968561, 9.415188112149071};
+    const int32_t s = front != nullptr ? smlib_blend(front, SMLIB_BLEND_ROUND, middle, &r, 1, tol, &out, nullptr) : -1;
+    const std::string why = last_blend_reason();
+    std::printf("  r %g: status %d%s%s\n", r, static_cast<int>(s), why.empty() ? "" : ": ", why.c_str());
+    CHECK((s == SMLIB_OK && out != nullptr && sound(out)) || (s == SMLIB_ERR_NO_ROOM && out == nullptr && !why.empty()));
+    for (smlib_brep *b : {part, front, out})
+    {
+        smlib_brep_free(b);
+    }
+}
+
+void scenario_middle_edge_of_an_arc_tangent_chain_r0_25()
+{
+    scenario_middle_edge_of_an_arc_tangent_chain(0.25);
+}
+
+void scenario_middle_edge_of_an_arc_tangent_chain_r2()
+{
+    scenario_middle_edge_of_an_arc_tangent_chain(2.0);
+}
+
 // The top rim of a cylinder r10 x 20 chamfered 12 across the top and 3 down the wall (SolidCraft
 // rig fillets/2893-chamfer-two-distances-past-the-top-refused): 12 across a top of radius 10 runs
 // past the axis, so no chamfer between the top and the wall has those sizes: refused,
@@ -8233,6 +8267,10 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"hole_in_band_kept", scenario_hole_in_band_kept, nullptr},
     {"hole_in_band_taken", scenario_hole_in_band_taken, nullptr},
     {"hole_short_of_band", scenario_hole_short_of_band, nullptr},
+    {"middle_edge_of_an_arc_tangent_chain_r0_25", scenario_middle_edge_of_an_arc_tangent_chain_r0_25,
+     "status -1100 (not a solid), no reason: the round leaves a cut in the arc wall whose radial pairing runs the face's two sides, the arc wall on both sides of it"},
+    {"middle_edge_of_an_arc_tangent_chain_r2", scenario_middle_edge_of_an_arc_tangent_chain_r2,
+     "status 1001, Fillet Surface Computation Failure (SmFilletSolver::CalcFilletGeom): a ball of the front round's own radius, its offset of that round the round's axis; not refused naming a smaller radius"},
     {"round_at_a_pin_on_a_slope_folds_refused", scenario_round_at_a_pin_on_a_slope_folds_refused, nullptr},
     {"round_at_a_pin_on_a_slope_just_inside", scenario_round_at_a_pin_on_a_slope_just_inside, nullptr},
     {"round_ending_on_a_cylinder", scenario_round_ending_on_a_cylinder, nullptr},
