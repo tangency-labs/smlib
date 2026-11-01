@@ -3552,7 +3552,7 @@ smlib_brep *tangent_peg(double draft)
 // the concave blends add their spandrel ring, clipped by the bar's sides.
 const double PEG_V0 = 6400.0 + 960.0 * PI;
 const double PEG_FRONT_ROUND_R2 = 32.30647504387316;    // int_0^2 (2 - sqrt(4 - (2 - y)^2)) (40 - sqrt(64 - (8 - y)^2)) dy
-const double PEG_FRONT_CURVATURE_R2 = 23.3237146876438;   // the order-2 section at thumbweight 0, size 2 (Green's theorem on it), as rig report-peg-front-curvature-round-r2
+const double PEG_FRONT_CURVATURE_R2 = 32.3017037132;   // the order-2 section at its equal-area thumbweight, size 2, swept along x to the wall (as rig report-peg-front-curvature-round-r2)
 const double PEG_FRONT_CHAMFER_D2 = 74.1305705753116;   // int_0^2 (2 - y) (40 - sqrt(64 - (8 - y)^2)) dy
 const double PEG_CONCAVE_CHAMFER_D2 = 41.65678424889758; // int_8^10 (10 - rho) rho 2 asin(8 / rho) d rho
 
@@ -3652,11 +3652,47 @@ void tangent_end_front_round_r2()
 // the square planes y = 0 and z = 10, their feet linear: (y, z) at t in [0, 1] from the contact on
 // the front face, (0, 8), to the one on the top, (2, 10): y = 2 (1 - f) t, z = 10 - 2 f (1 - t),
 // f = (1 - t)^3 / ((1 - t)^3 + t^3).
+// The thumbweight at which the order-2 section between square planes takes off the circle's area,
+// (1 - pi/4) s^2: the root of that area's equation in w, bisected with a trapezium-rule area.
+double square_corner_equal_area_w()
+{
+    auto cut = [](double w)
+    {
+        const int N = 20000;
+        auto ab = [w](double t, double &a, double &b)
+        {
+            const double p = std::pow(1 - t, 3), q = std::pow(t, 3), f = p / (p + q);
+            a = f * (1 - t / (1 - w + w * t));
+            b = (1 - f) * t * (1 - w) / (1 - w * t);
+        };
+        double s = 0, a0, b0;
+        ab(0, a0, b0);
+        for (int i = 1; i <= N; i++)
+        {
+            double a1, b1;
+            ab(static_cast<double>(i) / N, a1, b1);
+            s += 0.5 * (a0 * b1 - a1 * b0);
+            a0 = a1;
+            b0 = b1;
+        }
+        return s;
+    };
+    double lo = -0.999999, hi = 0.999999;
+    for (int it = 0; it < 80; it++)
+    {
+        const double mid = 0.5 * (lo + hi);
+        if (cut(mid) > 1.0 - PI / 4) { lo = mid; } else { hi = mid; }
+    }
+    return 0.5 * (lo + hi);
+}
+
+// The front curvature round's section, at the default (equal area) thumbweight of its square corner.
 void peg_curvature_section(double t, double &y, double &z)
 {
+    static const double w = square_corner_equal_area_w();
     const double a = std::pow(1 - t, 3), b = std::pow(t, 3), f = a / (a + b);
-    y = 2 * (1 - f) * t;
-    z = 10 - 2 * f * (1 - t);
+    y = 2 * (1 - f) * t * (1 - w) / (1 - w * t);
+    z = 10 - 2 * f * (1 - t / (1 - w + w * t));
 }
 
 // The exact end rib of the front curvature round at section parameter w: where the section's
@@ -3703,16 +3739,19 @@ double peg_curvature_rib_distance(const SmPoint3d &x)
 // The front curvature round's end rib on the cylinder, from the tangent end P = (40, 0, 8), where
 // its rail on the front face crosses the seam T: x = 40 on y = 0, to its rail on the top. The
 // section stands off the front face as y = c s^4 at s = z - 8 along T (k = 4: between square planes
-// the order-2 section is G3, its t^3 term vanishing), c = 1/8: y = 2 t^4 + O(t^5), s = 2 t + O(t^4).
-// On the cylinder, x = 40 - sqrt(16 y - y^2), the rib is x = 40 - 4 sqrt(c) s^2 (1 + O(s)) = 40 -
-// sqrt 2 s^2: regular at P, leaving along T, its curvature there 8 sqrt(c) = 2 sqrt 2. Its knots: a
+// the order-2 section is G3, its t^3 term vanishing), c = (1 - w)^5 / 8 at the thumbweight w (the
+// default, equal area: w = -0.5252124, c = 1.0318). On the cylinder, x = 40 - sqrt(16 y - y^2), the
+// rib is x = 40 - 4 sqrt(c) s^2 (1 + O(s)): regular at P, leaving along T, its curvature there
+// 8 sqrt(c) = 8.1259. Its knots: a
 // cubic interpolant is within the tolerance 4e-5 where h^4 / 384 |C''''| is, and the exact rib's
 // |C''''| in t (at most 5518) takes h <= 0.041: the stations, 8 doubled until they are within it,
 // are 32 at most, 33 knots.
 void peg_curvature_end_rib(const smlib_brep *b)
 {
     const SmPoint3d p(40, 0, 8), q(40 - std::sqrt(28.0), 2, 10);
-    const double tol = 4e-5, limit = 2 * std::sqrt(2.0);
+    // c = (1 - w)^5 / 8 at the thumbweight w: the rib's curvature at P is 8 sqrt(c)
+    const double w = square_corner_equal_area_w();
+    const double tol = 4e-5, limit = 8 * std::sqrt(std::pow(1 - w, 5) / 8);
     SmTArray<SmEdge *> es;
     b->p->GetEdges(es);
     SmEdge *rib = nullptr;
@@ -4673,20 +4712,26 @@ void section_box_edge_g2_thumbweight_zero()
 }
 
 // The area the order-n section between the box's top and back cuts off the edge's corner, over s^2:
-// Green's theorem on the section, by the trapezium rule on 20000 pieces.
+// Green's theorem on the section, (1/2) the integral of x y' - y x' about the edge (30, 20), by
+// Simpson's rule on 20000 intervals with central differences for the derivatives.
 double box_edge_section_cut(int n, double w)
 {
     const int N = 20000;
-    double a = 0.0;
-    P2 q = gn_section(n, w, BOX_TOP_JETS, BOX_BACK_JETS, 0.0);
-    for (int i = 1; i <= N; i++)
+    const double h = 1e-6;
+    auto g = [&](double t)
     {
-        const P2 r = gn_section(n, w, BOX_TOP_JETS, BOX_BACK_JETS, static_cast<double>(i) / N);
-        // about the edge (30, 20), the region between the section and the two faces
-        a += 0.5 * ((q[0] - 30.0) * (r[1] - 20.0) - (r[0] - 30.0) * (q[1] - 20.0));
-        q = r;
+        const double ta = std::max(0.0, t - h), tb = std::min(1.0, t + h);
+        const P2 p = gn_section(n, w, BOX_TOP_JETS, BOX_BACK_JETS, t);
+        const P2 a = gn_section(n, w, BOX_TOP_JETS, BOX_BACK_JETS, ta), b = gn_section(n, w, BOX_TOP_JETS, BOX_BACK_JETS, tb);
+        const double dx = (b[0] - a[0]) / (tb - ta), dy = (b[1] - a[1]) / (tb - ta);
+        return (p[0] - 30.0) * dy - (p[1] - 20.0) * dx;
+    };
+    double s = 0.0;
+    for (int i = 0; i <= N; i++)
+    {
+        s += (i == 0 || i == N ? 1.0 : (i % 2 ? 4.0 : 2.0)) * g(static_cast<double>(i) / N);
     }
-    return std::fabs(a) / 9.0;
+    return std::fabs(0.5 * s / (3.0 * N)) / 9.0;
 }
 
 // The default thumbweight is equal area: the curvature section takes off what the circle does on
