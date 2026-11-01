@@ -5483,8 +5483,139 @@ int turn_cases(bool known_failing, const char *only)
     return run_cases(TURN_CASES, "turn", known_failing, only);
 }
 
+// ---- Scenarios -------------------------------------------------------------------------------
+// Blends users ask for often that the lists above leave out: several sizes in one call, a chord
+// width, a variable round fading to nothing, unequal chamfers at a corner, a bar rounded into a
+// rod, and blends past a rim over an opening, up to and past cutting the part in two.
+
+// The reason smlib_blend_reason gives for the last blend ("" when it built or gave none).
+std::string last_blend_reason()
+{
+    char why[1024] = {0};
+    int64_t length = 0;
+    CHECK(smlib_blend_reason(why, sizeof why, &length) == SMLIB_OK);
+    return why;
+}
+
+// smlib_blend of `kind` on `body` (consumed) at the points' edges, each at its size, graded: built,
+// sound, one solid, of volume `want` (to `rel`), with `faces` faces (-1: not graded).
+void scenario_blend(smlib_brep *body, int32_t kind, std::vector<double> points, std::vector<double> sizes, double want, double rel, int faces)
+{
+    smlib_brep *r = nullptr;
+    const int32_t s = body == nullptr ? SMLIB_ERR_ARG
+                                      : smlib_blend(body, kind, points.data(), sizes.data(), static_cast<int64_t>(sizes.size()), 0.1, &r, nullptr);
+    std::printf("  status %d%s%s\n", static_cast<int>(s), s == SMLIB_OK ? "" : ": ", s == SMLIB_OK ? "" : last_blend_reason().c_str());
+    smlib_brep_free(body);
+    CHECK(s == SMLIB_OK && r != nullptr);
+    if (r == nullptr)
+    {
+        return;
+    }
+    int64_t solids = 0;
+    CHECK(smlib_brep_solid_count(r, &solids) == SMLIB_OK && solids == 1);
+    const double v = volume_of(r);
+    const int n = static_cast<int>(r->p->GetNumFaces());
+    std::printf("  volume %.9f, want %.9f; %d faces, want %d\n", v, want, n, faces);
+    CHECK(near(v, want, rel));
+    CHECK(faces < 0 || n == faces);
+    done(r);
+}
+
+// The spandrel a round of radius r takes off a square corner, (1 - pi/4) r^2.
+double spandrel(double r)
+{
+    return (1.0 - PI / 4.0) * r * r;
+}
+
+// Two rounds of radii a and b on the two edges of a face that meet at a corner of square faces,
+// the corner's third edge sharp: at depth s into the round's faces (s < r), round r takes the
+// strip d_r(s) = r - sqrt(2 r s - s^2) wide off its side face. Where the rounds turn, each runs
+// on to where it meets the other (the turn's mitre), so the material they take there is the
+// union of the two strips: each strip's whole length, less their overlap, the rectangle d_a d_b
+// at each depth, I(a, b) = Int_0^min(a,b) d_a(s) d_b(s) ds (s = u^2 takes out the square
+// root's end: smooth in u, Simpson's rule exact to 1e-13 at 4000 spans).
+double turn_overlap(double a, double b)
+{
+    auto d = [](double r, double u) { return r - u * std::sqrt(2.0 * r - u * u); };
+    return simpson([&](double u) { return d(a, u) * d(b, u) * 2.0 * u; }, 0.0, std::sqrt(std::min(a, b)), 4000);
+}
+
+// A 40 x 30 x 20 box, its top front edge (y = 0) rounded r 4 and its top right edge (x = 40)
+// r 2 in one call, the upright edge where they meet sharp: 40 A(4) + 30 A(2) - I(4, 2) removed
+// (turn_overlap). Six faces and two rounds.
+void scenario_unequal_rounds_at_a_convex_turn()
+{
+    const double want = 24000.0 - (40.0 * spandrel(4) + 30.0 * spandrel(2) - turn_overlap(4, 2));
+    scenario_blend(box(0, 0, 0, 40, 30, 20), SMLIB_BLEND_ROUND, {20, 0, 20, 40, 15, 20}, {4, 2}, want, 1e-7, 8);
+}
+
+// A 20 x 10 x 5 pocket in a 40 x 30 x 10 block, its long floor edges rounded r 2 and its short
+// ones r 1 in one call, the pocket's upright corners sharp: the rounds add 2 (20 A(2) + 10 A(1))
+// less I(2, 1) at each of the four corners (turn_overlap, the strips laid on the walls). The
+// block's 6 faces, the pocket's 5, four rounds.
+void scenario_unequal_rounds_at_a_concave_turn()
+{
+    smlib_brep *block = box(0, 0, 0, 40, 30, 10), *cut = box(10, 10, 5, 20, 10, 6), *part = nullptr;
+    CHECK(smlib_boolean(block, cut, SMLIB_BOOLEAN_SUBTRACT, &part) == SMLIB_OK && part != nullptr);
+    smlib_brep_free(block);
+    smlib_brep_free(cut);
+    const double want = 11000.0 + 2.0 * (20.0 * spandrel(2) + 10.0 * spandrel(1)) - 4.0 * turn_overlap(2, 1);
+    scenario_blend(part, SMLIB_BLEND_ROUND, {20, 10, 5, 20, 20, 5, 10, 15, 5, 30, 15, 5}, {2, 2, 1, 1}, want, 1e-7, 15);
+}
+
+// The three edges at the corner (40, 30, 20) of a 40 x 30 x 20 box rounded r 2 (along x), 3
+// (along y) and 4 (upright) in one call. No ball touches all three faces with three radii; the
+// corner is set back and filled by a patch that meets each round and face tangentially (the
+// owner's ruling for unequal rounds at a vertex): one solid, sound, inside the box, the patch's
+// seams within Continuity Analysis's 1 degree. A mitre of three creases fails the seams.
+void scenario_three_unequal_rounds_at_a_corner()
+{
+    smlib_brep *b = box(0, 0, 0, 40, 30, 20), *r = nullptr;
+    const double points[9] = {20, 30, 20, 40, 15, 20, 40, 30, 10}, sizes[3] = {2, 3, 4};
+    const int32_t s = smlib_blend(b, SMLIB_BLEND_ROUND, points, sizes, 3, 0.1, &r, nullptr);
+    std::printf("  status %d%s%s\n", static_cast<int>(s), s == SMLIB_OK ? "" : ": ", s == SMLIB_OK ? "" : last_blend_reason().c_str());
+    CHECK(s == SMLIB_OK && r != nullptr);
+    if (r != nullptr)
+    {
+        int64_t solids = 0;
+        CHECK(smlib_brep_solid_count(r, &solids) == SMLIB_OK && solids == 1);
+        SmExtent3d bb;
+        CHECK(r->p->CalculateTightBoundingBox(bb) == SM_SUCCESS);
+        CHECK(bb.GetMax().x <= 40.0 + 1e-6 && bb.GetMax().y <= 30.0 + 1e-6 && bb.GetMax().z <= 20.0 + 1e-6);
+        int patches = 0;
+        const double angle = worst_corner_seam_angle(r, SmPoint3d(40, 30, 20), 15.0, patches);
+        std::printf("  %lu faces, volume %.9f; %d corner patch face(s), seams within %.3g degrees\n",
+                    static_cast<unsigned long>(r->p->GetNumFaces()), volume_of(r), patches, angle);
+        CHECK(patches >= 1 && angle < 1.0);
+        done(r);
+    }
+    smlib_brep_free(b);
+}
+
+// The scenario cases, and why each that fails today fails (null: it passes). As
+// TANGENT_END_CASES: `--scenarios-known-failing` runs the failing ones and fails if one passes.
+const TangentEndCase SCENARIO_CASES[] = {
+    {"three_unequal_rounds_at_a_corner", scenario_three_unequal_rounds_at_a_corner, nullptr},
+    {"unequal_rounds_at_a_concave_turn", scenario_unequal_rounds_at_a_concave_turn, nullptr},
+    {"unequal_rounds_at_a_convex_turn", scenario_unequal_rounds_at_a_convex_turn, nullptr},
+};
+
+int scenario_cases(bool known_failing, const char *only)
+{
+    return run_cases(SCENARIO_CASES, "scenario", known_failing, only);
+}
+
 int main(int argc, char **argv)
 {
+    if (argc == 2 && std::strcmp(argv[1], "--scenarios-known-failing") == 0)
+    {
+        return scenario_cases(true, nullptr) == 0 ? 0 : 1;
+    }
+    if (argc == 3 && std::strcmp(argv[1], "--scenario") == 0)
+    {
+        smlib_set_log([](void *, int32_t level, const char *line) { std::fprintf(stderr, "log %d %s\n", static_cast<int>(level), line); }, nullptr);
+        return scenario_cases(false, argv[2]) == 0 ? 0 : 1;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--turns-known-failing") == 0)
     {
         return turn_cases(true, nullptr) == 0 ? 0 : 1;
@@ -8942,6 +9073,7 @@ int main(int argc, char **argv)
     failures += exact_class_cases(false, nullptr);
     failures += section_cases(false, nullptr);
     failures += turn_cases(false, nullptr);
+    failures += scenario_cases(false, nullptr);
 
     // SolidCraft surface.offset of a ball's one face: the face taken off as a sheet is a closed
     // shell whose regions are all voids, which smlib_offset_sheet refused as a solid
