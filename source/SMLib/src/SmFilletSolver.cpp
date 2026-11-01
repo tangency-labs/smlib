@@ -6062,10 +6062,11 @@ NOTES: For CreateFilletBrep, before the corners (which look for a rail's end
     section where it is least (golden section over the steps either side),
     so that a narrow dip between sections is found. rFirst is the station
     that fails (m_lCheck SM_BS_REGULAR where none does), with m_dWorks:
-    - a constant ball: the largest radius regular at the failing station,
+    - a constant ball: the largest radius regular at each failing station,
       by bisection on the radius with the section solved again at each (the
-      contacts move with r), the least over the failing stations (0 where
-      no radius down to a millionth of r is regular there);
+      contacts move with r), and its least along the edge by golden section
+      about the failing station where it is least (0 where no radius down to
+      a millionth of r is regular there);
     - a radius law: the radius where the law first stops being regular
       along the edge, by bisection on t from a regular section below.
     A section the solve does not find and a pole are not judged.
@@ -6087,6 +6088,53 @@ SmStatus SmFilletSolver::BallIsRegular
   const ULONG lBisections = 40;
   std::vector<SmTsectPnt> vSections(lSteps);  // each step's section, the guess about it (vFound: one was found)
   std::vector<SmBoolean>  vFound(lSteps, FALSE);
+
+  // a constant ball's largest regular radius at the section dT (judged crAt at the ball's own
+  // radius): its own where regular there; else by halving to a regular one, then bisection, the
+  // section solved again at each (h(r) = 0 exactly at the contacts of the largest regular radius
+  // where the ball does not fit: the bisection itself stops at the focal tolerance)
+  auto LimitAt = [&](double dT, const SmBallStation & crAt, SmTsectPnt & rNear, SmBoolean & rbNear, double & rdLimit) -> SmStatus
+  {
+    const double dRadius = crAt.m_dRadius;
+    rdLimit = dRadius;
+    if (crAt.m_lCheck == SmBallStation::SM_BS_REGULAR || crAt.m_lCheck == SmBallStation::SM_BS_UNJUDGED)
+      { return SM_SUCCESS; }
+    double dLo = 0.0, dHi = dRadius;
+    SmBallStation sLo;
+    for (double dTry = 0.5 * dRadius; dTry > 1.0e-6 * dRadius; dTry *= 0.5)
+      {
+        SmBoolean bTry = TRUE;
+        SmBallStation sTry;
+        SER(sm_RegularAt(*this, *pCurve, dT, dTry, rNear, rbNear, bTry, sTry));
+        if (bTry)
+          {
+            dLo = dTry;
+            sLo = sTry;
+            break;
+          }
+        dHi = dTry;
+      }
+    for (ULONG i=0; i<lBisections && dLo > 0.0; i++)
+      {
+        const double dMid = 0.5 * (dLo + dHi);
+        SmBoolean bMid = TRUE;
+        SmBallStation sMid;
+        SER(sm_RegularAt(*this, *pCurve, dT, dMid, rNear, rbNear, bMid, sMid));
+        if (bMid)
+          {
+            dLo = dMid;
+            sLo = sMid;
+          }
+        else
+          { dHi = dMid; }
+      }
+    if (dLo > 0.0 && crAt.m_lCheck == SmBallStation::SM_BS_NOT_ENCLOSED && sLo.m_dFits < SM_BIG_DOUBLE)
+      { dLo = sLo.m_dFits; }
+    rdLimit = dLo;
+    return SM_SUCCESS;
+  };
+  double     dWorstT = 0.0;  // the failing section with the least limit so far
+  SmTsectPnt sWorstNear;
 
   // the radius that works at a failing section dT (judged crFail), from a regular one at
   // dPassT below it (bPass) for a law, the solves continuing from crNear (bHaveNear)
@@ -6134,48 +6182,90 @@ SmStatus SmFilletSolver::BallIsRegular
           }
         return SM_SUCCESS;
       }
-    const double dRadius = crFail.m_dRadius;
-    double dLo = 0.0, dHi = dRadius;
-    SmBallStation sLo;
-    for (double dTry = 0.5 * dRadius; dTry > 1.0e-6 * dRadius; dTry *= 0.5)
-      {
-        SmBoolean bTry = TRUE;
-        SmBallStation sTry;
-        SER(sm_RegularAt(*this, *pCurve, dT, dTry, sNear, bNear, bTry, sTry));
-        if (bTry)
-          {
-            dLo = dTry;
-            sLo = sTry;
-            break;
-          }
-        dHi = dTry;
-      }
-    if (dLo > 0.0)
-      {
-        for (ULONG i=0; i<lBisections; i++)
-          {
-            const double dMid = 0.5 * (dLo + dHi);
-            SmBoolean bMid = TRUE;
-            SmBallStation sMid;
-            SER(sm_RegularAt(*this, *pCurve, dT, dMid, sNear, bNear, bMid, sMid));
-            if (bMid)
-              {
-                dLo = dMid;
-                sLo = sMid;
-              }
-            else
-              { dHi = dMid; }
-          }
-      }
-    // a ball that does not fit: the limit is where h(r) reaches 0 at the contacts of the largest
-    // regular radius (the bisection itself stops at the focal tolerance, a millionth past it)
-    if (dLo > 0.0 && crFail.m_lCheck == SmBallStation::SM_BS_NOT_ENCLOSED && sLo.m_dFits < SM_BIG_DOUBLE)
-      { dLo = sLo.m_dFits; }
+    double dLo = 0.0;
+    SER(LimitAt(dT, crFail, sNear, bNear, dLo));
     if (rFirst.m_lCheck == SmBallStation::SM_BS_REGULAR || dLo < rFirst.m_dWorks)
       {
         rFirst = crFail;
         rFirst.m_dWorks = dLo;
+        dWorstT  = dT;
+        sWorstNear = sNear;
       }
+    return SM_SUCCESS;
+  };
+
+  auto Refine = [&]() -> SmStatus
+  {
+    // a constant ball: its limit's least along the edge. The limit is below the ball's radius
+    // only where the ball fails, about the failing section dWorstT: that run is bracketed by
+    // stepping out either way to sections that are regular (a closed edge's parameter wrapping
+    // round), and the limit's least found in it by golden section.
+    if (!bRollsABall || rFirst.m_bLaw || !(rFirst.m_dWorks > 0.0))
+      { return SM_SUCCESS; }
+    const SmBoolean bClosed = pEdge->IsClosed();
+    const double dLength = sIvl.GetLength();
+    auto Wrap = [&](double dT) -> double
+    {
+      if (!bClosed)
+        { return smos_Max(sIvl.GetMin(), smos_Min(sIvl.GetMax(), dT)); }
+      double d = std::fmod(dT - sIvl.GetMin(), dLength);
+      if (d < 0.0)
+        { d += dLength; }
+      return sIvl.GetMin() + d;
+    };
+    auto Limit = [&](double dT, double & rdLimit) -> SmStatus
+    {
+      SmTsectPnt sAt = sWorstNear;
+      SmBoolean  bAt = TRUE, bRegular = TRUE;
+      SmBallStation sStation;
+      SER(sm_RegularAt(*this, *pCurve, Wrap(dT), 0.0, sAt, bAt, bRegular, sStation));
+      SER(LimitAt(Wrap(dT), sStation, sAt, bAt, rdLimit));
+      return SM_SUCCESS;
+    };
+    const double dOwn = rFirst.m_dRadius;
+    double dA = dWorstT, dB = dWorstT;
+    for (int iSide=0; iSide<2; iSide++)
+      {
+        double dStep = dLength / (64.0 * lSteps);
+        double & rdEnd = (iSide == 0) ? dA : dB;
+        for (ULONG i=0; i<24; i++)
+          {
+            const double dNext = (iSide == 0) ? dWorstT - dStep : dWorstT + dStep;
+            if (!bClosed && (dNext < sIvl.GetMin() || dNext > sIvl.GetMax()))
+              {
+                rdEnd = (iSide == 0) ? sIvl.GetMin() : sIvl.GetMax();
+                break;
+              }
+            rdEnd = dNext;
+            double dLimit = 0.0;
+            SER(Limit(dNext, dLimit));
+            if (!(dLimit < dOwn))
+              { break; }
+            dStep *= 2.0;
+          }
+      }
+    const double dGolden = 0.5 * (std::sqrt(5.0) - 1.0);
+    double dX1 = dB - dGolden * (dB - dA), dX2 = dA + dGolden * (dB - dA), dF1 = 0.0, dF2 = 0.0;
+    SER(Limit(dX1, dF1));
+    SER(Limit(dX2, dF2));
+    for (ULONG i=0; i<2*lBisections; i++)
+      {
+        if (dF1 < dF2)
+          {
+            dB = dX2; dX2 = dX1; dF2 = dF1;
+            dX1 = dB - dGolden * (dB - dA);
+            SER(Limit(dX1, dF1));
+          }
+        else
+          {
+            dA = dX1; dX1 = dX2; dF1 = dF2;
+            dX2 = dA + dGolden * (dB - dA);
+            SER(Limit(dX2, dF2));
+          }
+      }
+    const double dLeast = smos_Min(dF1, dF2);
+    if (dLeast > 0.0 && dLeast < rFirst.m_dWorks)
+      { rFirst.m_dWorks = dLeast; }
     return SM_SUCCESS;
   };
 
@@ -6207,7 +6297,10 @@ SmStatus SmFilletSolver::BallIsRegular
         { return SM_SUCCESS; } // a law: the first failing section along the edge
     }
   if (rFirst.m_lCheck != SmBallStation::SM_BS_REGULAR)
-    { return SM_SUCCESS; }
+    {
+      SER(Refine());
+      return SM_SUCCESS;
+    }
 
   // every section regular: each margin's least between the sections about its least one
   for (ULONG m=0; m<2; m++)
@@ -6263,6 +6356,8 @@ SmStatus SmFilletSolver::BallIsRegular
       const SmBoolean bPass = (sT[lLeast] < dFailT || lLeast > 0) ? TRUE : FALSE;
       SER(Fail(dFailT, crFail, bPass, dPassT, vSections[lLeast], vFound[lLeast]));
     }
+  if (rFirst.m_lCheck != SmBallStation::SM_BS_REGULAR)
+    { SER(Refine()); }
   return SM_SUCCESS;
 } // end SmFilletSolver::BallIsRegular
 
