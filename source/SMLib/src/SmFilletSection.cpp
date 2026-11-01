@@ -2611,7 +2611,8 @@ SmStatus SmGnSectionFSG::CircleSurface
         // round by its definition (Build: stations solved on the faces, the arc's rows certified
         // span by span), unless the circles sweep a cylinder or revolve a torus, which stay those
         // exact surfaces, or the rails meet at an end (the section fades to a point there, which
-        // the definition does not take yet).
+        // the definition does not take yet), or the solver's rails are not the ball's feet on the two
+        // faces everywhere (a rail held on a face's boundary while the ball rolls on its edge).
         SmBoolean bDefinition = FALSE;
         double dRadius = 0.0;
         SmSurface * apBase[2] = { NULL, NULL };
@@ -2658,9 +2659,11 @@ SmStatus SmGnSectionFSG::CircleSurface
         }
         if (bDefinition)
         {
+            SmBoolean bNotTheFeet = FALSE;
             SER(Build(rFilletSolver.GetCreationContext(), *pCenterLine, *pRail1Curve, *pRail2Curve, dThisApproxTol3d,
-                      apBase[0], pUV1, apBase[1], pUV2, TRUE, rpFilletSurface, dRadius));
-            return SM_SUCCESS;
+                      apBase[0], pUV1, apBase[1], pUV2, TRUE, rpFilletSurface, dRadius, &bNotTheFeet));
+            if (!bNotTheFeet)
+                { return SM_SUCCESS; }
         }
         SER(CircleSurfaceFromCurves(rFilletSolver.GetCreationContext(),
             *pCenterLine,*pRail1Curve,*pRail2Curve,dThisApproxTol3d,
@@ -3642,9 +3645,11 @@ SmStatus SmGnSectionFSG::Build
    SmBSplineCurve    * pUV2,
    SmBoolean           bReplaceRails,
    SmBSplineSurface *& rpFilletSurface,
-   double              dRadius)
+   double              dRadius,
+   SmBoolean         * pbNotTheFeet)
 {
   rpFilletSurface = NULL;
+  if (pbNotTheFeet != NULL) { *pbNotTheFeet = FALSE; }
   NER(pFace1); NER(pFace2); NER(pUV1); NER(pUV2);
   const ULONG n = m_lOrder;
   if (!(n == 1 && !m_sArcs.bApproximateArcs && !m_sArcs.bMirror && !m_sArcs.bComplement) && !IsValid(n, m_dThumbweight))
@@ -3728,6 +3733,20 @@ SmStatus SmGnSectionFSG::Build
       for (int f=0; f<2; f++)
         {
           const SmPoint3d sRho(sStations[j].asF[f].a[0].c[0][0], sStations[j].asF[f].a[1].c[0][0], sStations[j].asF[f].a[2].c[0][0]);
+          // the ball's circle of a given radius (pbNotTheFeet): the solver's rails are this ball's feet
+          // on the two faces, or the round is not their ball's (a rail held on a face's boundary, the
+          // ball rolling on its edge), which the caller builds otherwise
+          if (pbNotTheFeet != NULL)
+            {
+              SmPoint3d sRail;
+              SER(apRail[f]->EvaluatePoint(sS[j], sRail));
+              if (sRail.DistanceBetween(sRho) > dTol)
+                {
+                  *pbNotTheFeet = TRUE;
+                  return SM_SUCCESS;
+                }
+              continue;
+            }
           if (smos_Fabs(sM.DistanceBetween(sRho) - adR[f]) > smos_Max(dTol, 1.0e-6 * adR[f]))
             { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmGnSectionFSG: a section of order 2 and up is built for a ball of one radius only")); }
         }

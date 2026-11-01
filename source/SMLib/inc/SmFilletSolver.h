@@ -628,7 +628,8 @@ protected:
                  SmBSplineCurve    * pUV2,
                  SmBoolean           bReplaceRails,
                  SmBSplineSurface *& rpFilletSurface,
-                 double              dRadius = 0.0);
+                 double              dRadius = 0.0,          // the ball's radius, given (0: as the rails stand off the centre line)
+                 SmBoolean         * pbNotTheFeet = NULL);   // with a radius given: TRUE (and no surface) where the rails are not its feet
 
 } ; // end class SmGnSectionFSG
 
