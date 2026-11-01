@@ -3549,6 +3549,10 @@ SmStatus SmFilletExecutive::CreateFilletBrep
 #ifdef SM_DEBUG_CODE
       if (iDebugLevel > 0 ) 
         {
+          // SolidCraft change: a blend refused as too large for its faces or its law (noted where
+          // that was found, SM_FILERR_NO_ROOM) keeps that reason
+          if ( GetFilletErrorInfo()->GetErrorCode() == SM_FILERR_NO_ROOM )
+            { SER( SM_ERR ); }
           smos_sprintf(sBuff,_T("\nExec: After CalcFilletGeom for FilletSolver # %ld :\n"), solverIdx);
           pFilSolver->DumpLevel( iDebugLevel, sBuff);
 
