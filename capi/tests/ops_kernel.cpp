@@ -7483,6 +7483,55 @@ void scenario_round_ending_on_a_cylinder()
     done(r);
 }
 
+// A bar 20 x 10 x 10 with a half-round end (the cylinder R 5 about x = 20, y = 5): its top
+// front edge y = 0, z = 10 runs on tangentially into the end's arc at (20, 0, 10). Only the
+// straight edge is selected and rounded r 2: with tangent propagation off, only the selected
+// edges are rounded, and the round ends at the smooth vertex, cut by the plane square to its
+// edge there (x = 20). The round takes 20 (4 - pi); the end face is that plane's piece between
+// the round's end section and the two sides, exactly the section's area 4 - pi.
+void scenario_round_ending_where_its_edge_runs_on()
+{
+    const double c[3] = {20, 5, 0};
+    smlib_brep *end = nullptr;
+    CHECK(smlib_make_cylinder(c, 5.0, 10.0, &end) == SMLIB_OK);
+    smlib_brep *bar = combined(box(0, 0, 0, 20, 10, 10), end, SMLIB_BOOLEAN_UNION);
+    const double v0 = 2000.0 + 125.0 * PI;
+    const double at[3] = {10, 0, 10};
+    smlib_brep *r = nullptr;
+    const int32_t s = bar == nullptr ? SMLIB_ERR_ARG : smlib_fillet(bar, at, 1, 0.1, 2.0, &r, nullptr);
+    smlib_brep_free(bar);
+    std::printf("  status %d%s%s\n", static_cast<int>(s), s == SMLIB_OK ? "" : ": ", s == SMLIB_OK ? "" : last_blend_reason().c_str());
+    CHECK(s == SMLIB_OK && r != nullptr);
+    if (r == nullptr)
+    {
+        return;
+    }
+    const double v = volume_of(r), want = v0 - 20.0 * (4.0 - PI);
+    // the end face: a plane x = 20 of area 4 - pi
+    int ends = 0;
+    double area = 0.0;
+    SmTArray<SmFace *> faces;
+    r->p->GetFaces(faces);
+    for (ULONG i = 0; i < faces.GetSize(); i++)
+    {
+        SmExtent3d bx;
+        CHECK(faces[i]->CalculateTightBoundingBox(bx) == SM_SUCCESS);
+        if (SM_CAST_PTR(SmPlane, faces[i]->GetSurface()) == nullptr || bx.GetMin().x != 20.0 || bx.GetMax().x != 20.0 || bx.GetMax().z < 10.0 - 1e-9 ||
+            bx.GetMax().y > 2.0 + 1e-9)
+        {
+            continue;
+        }
+        ends++;
+        CHECK(SmApiFaceComputeArea(faces[i], 1e-10, area) == SM_SUCCESS);
+    }
+    std::printf("  volume %.9f, want %.9f; %d end face(s), area %.12f, want %.12f\n", v, want, ends, area, 4.0 - PI);
+    CHECK(near(v, want, 1e-9));
+    CHECK(ends == 1);
+    CHECK(near(area, 4.0 - PI, 1e-9));
+    CHECK(sound(r));
+    done(r);
+}
+
 // A 20 x 4 x 10 block with a slot 4 wide (x 8 to 12) cut through it from below to 1 under its
 // top: two pillars joined by a bridge 1 thick (656). Its top front edge (y = 0, z = 10, the whole
 // 20) is blended. In the section square to the edge, coordinates y (in from the front) and z,
@@ -7871,6 +7920,8 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"round_at_a_pin_on_a_slope_folds_refused", scenario_round_at_a_pin_on_a_slope_folds_refused, nullptr},
     {"round_at_a_pin_on_a_slope_just_inside", scenario_round_at_a_pin_on_a_slope_just_inside, nullptr},
     {"round_ending_on_a_cylinder", scenario_round_ending_on_a_cylinder, nullptr},
+    {"round_ending_where_its_edge_runs_on", scenario_round_ending_where_its_edge_runs_on,
+     "status 0, but no End at the smooth vertex (SmFilletNx1Corner takes the tangent side edge): 2373.945975411, 1.585 below the closed form, and no end face at x = 20"},
     {"round_cutting_a_bridge_refused", scenario_round_cutting_a_bridge_refused, nullptr},
     {"round_of_an_arc_wall_into_its_tip", scenario_round_of_an_arc_wall_into_its_tip, nullptr},
     {"round_over_a_thin_rib_not_a_cut", scenario_round_over_a_thin_rib_not_a_cut, nullptr},
