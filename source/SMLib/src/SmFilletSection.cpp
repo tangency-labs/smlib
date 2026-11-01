@@ -1621,6 +1621,11 @@ SmStatus SmGnSectionFSG::CircleSurface
     if (rFilletSolver.GetSolverType() == SM_FS_CONST_RADIUS) {
         //bNeedG1Continuity = TRUE; // fix it later
     }
+    // SolidCraft change: the solvers whose ball changes its radius along the round (a radius law,
+    // or a constant chord between faces whose angle changes); the others' balls touch the round
+    // along their great circles.
+    const SmFilletSolverType eSolver = rFilletSolver.GetSolverType();
+    const SmBoolean bBallRadiusVaries = (eSolver == SM_FS_VARIABLE_RADIUS || eSolver == SM_FS_CONST_DIST) ? TRUE : FALSE;
 
     // SolidCraft change: a skinned surface interpolates its cross sections smoothly, so where
     // the center curve or a rail turns (a corner in a variable radius) it would overshoot.
@@ -1636,7 +1641,7 @@ SmStatus SmGnSectionFSG::CircleSurface
     {
         SER(CircleSurfaceFromCurves(rFilletSolver.GetCreationContext(),
             *pCenterLine,*pRail1Curve,*pRail2Curve,dThisApproxTol3d,
-            bNeedG1Continuity,pSurf1,pUV1,pSurf2,pUV2,rpFilletSurface));
+            bNeedG1Continuity,bBallRadiusVaries,pSurf1,pUV1,pSurf2,pUV2,rpFilletSurface));
         return SM_SUCCESS;
     }
 
@@ -1667,7 +1672,7 @@ SmStatus SmGnSectionFSG::CircleSurface
 
         SmBSplineSurface * pPiece = NULL;
         SER(CircleSurfaceFromCurves(crContext, *apPieces[0], *apPieces[1], *apPieces[2],
-            dThisApproxTol3d, bNeedG1Continuity, pSurf1, pUV1, pSurf2, pUV2, pPiece));
+            dThisApproxTol3d, bNeedG1Continuity, bBallRadiusVaries, pSurf1, pUV1, pSurf2, pUV2, pPiece));
         NER(pPiece);
         SmObjDelete sDeletePiece(pPiece);
 
@@ -1735,6 +1740,7 @@ SmStatus SmGnSectionFSG::CircleSurfaceFromCurves
    double              dThisApproxTol3d,   // in : max allowed dist between NewSurface and idealized surface
    SmBoolean           bNeedG1Continuity,  // in : TRUE =
                                            //      FALSE=
+   SmBoolean           bBallRadiusVaries,  // in : TRUE = the ball's radius changes along the centre line (SolidCraft change)
    SmSurface         *,                    // in :
    SmBSplineCurve    *,                    // in :
    SmSurface         *,                    // in :
@@ -1991,14 +1997,15 @@ SmBoolean bDebugMe=FALSE;
 
               // SolidCraft change: the section is the circle along which the balls' envelope
               // touches the ball, in the plane square to the centre line through the rail points
-              // (the ball's touch points, so both lie in it). Its centre is the ball's centre moved
-              // along the centre line by the rails' projection on it: zero for a constant radius,
-              // -r r'/|c'| for a varying one, where the great circle through the rails would leave
-              // the envelope.
+              // (the ball's touch points, so both lie in it). Where the ball's radius varies, its
+              // centre is the ball's centre moved along the centre line by the rails' projection
+              // on it, -r r'/|c'|, where the great circle through the rails would leave the
+              // envelope; at a constant radius that is zero, the great circle (whose rails, where a
+              // corner moved them, would only add their own error).
               SmVector3d sV1 = sP1 - sCentPV[0];
               SmVector3d sV2 = sP2 - sCentPV[0];
               SmVector3d sAlong = sCentPV[1];
-              if (sAlong.Length() > SM_EFF_ZERO)
+              if (bBallRadiusVaries && sAlong.Length() > SM_EFF_ZERO)
                 {
                   SER(sAlong.Unitize());
                   sCentPV[0] += sAlong * (0.5 * (sV1.Dot(sAlong) + sV2.Dot(sAlong)));
@@ -2591,8 +2598,9 @@ SmStatus SmGnSectionFSG::CreateSurfaceFromCurves
     }
   if (m_lOrder == 1)
     {
+      // the curves of a ball of constant radius (an offset's edge, a corner's ease)
       SER(CircleSurfaceFromCurves(crContext, rCenterLine, rRail1Curve, rRail2Curve, dThisApproxTol3d, bNeedG1Continuity,
-                                  pSurf1, pUV1, pSurf2, pUV2, rpFilletSurface));
+                                  FALSE, pSurf1, pUV1, pSurf2, pUV2, rpFilletSurface));
       return SM_SUCCESS;
     }
   SER(Build(crContext, rCenterLine, rRail1Curve, rRail2Curve, dThisApproxTol3d, pSurf1, pUV1, pSurf2, pUV2, FALSE, rpFilletSurface));
