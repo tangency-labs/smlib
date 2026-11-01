@@ -231,6 +231,8 @@ if(SMLIB_CAPI_TESTS)
   add_test(NAME smlib_test_ops_kernel_turns_known_failing COMMAND smlib_test_ops_kernel --turns-known-failing)
   # The faces shrunk to their trims that fail today (tests/ops_kernel.cpp, SHRINK_CASES), held the same way.
   add_test(NAME smlib_test_ops_kernel_shrinks_known_failing COMMAND smlib_test_ops_kernel --shrinks-known-failing)
+  # The Ball corners that fail today (tests/ops_kernel.cpp, BALL_CASES), held the same way.
+  add_test(NAME smlib_test_ops_kernel_balls_known_failing COMMAND smlib_test_ops_kernel --balls-known-failing)
   # The blend scenarios that fail today (tests/ops_kernel.cpp, SCENARIO_CASES), held the same way.
   add_test(NAME smlib_test_ops_kernel_scenarios_known_failing COMMAND smlib_test_ops_kernel --scenarios-known-failing)
   # The setback corner's fills that fail today (tests/ops_kernel.cpp, SETBACK_CASES), held the same way.

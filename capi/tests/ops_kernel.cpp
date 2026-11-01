@@ -6723,6 +6723,266 @@ int shrink_cases(bool known_failing, const char *only)
     return run_cases(SHRINK_CASES, "shrink", known_failing, only);
 }
 
+// ---- The Ball corner ---------------------------------------------------------------------------
+// Three rounds of one radius r and one convexity at a vertex of three planes square to each other
+// (a box's corner, a pocket's floor corner): the ball of radius r touching the three planes, its
+// centre C the point r off each, touches each round along that round's end section, a great
+// circle of the ball in the plane of its two contact normals. The corner's face is the ball's zone
+// between those three quarter circles, an octant of the sphere about C: exact, and tangent to each
+// round along its end section (both are tangent to the ball there).
+//
+// Volume: each round takes (convex) or adds (concave) the spandrel A(r) along its edge outside the
+// cube of side r at the corner; inside that cube the body keeps (convex) or the rounds fill
+// (concave) the cube less the ball's octant, r^3 (1 - pi/6) taken or added.
+
+double spandrel(double r);
+
+// The corner's sphere face of `r`: exactly one face on an SmSphere, centre `c`, radius `rad`, its
+// surface on that sphere, its three vertices `v`, its edges on the sphere, G1 across all three
+// edges (the rounds' end sections). Its normal points out of the body: away from `c` at a convex
+// corner, towards it at a concave one.
+void ball_corner_sphere(const smlib_brep *r, const SmPoint3d &c, double rad, const SmPoint3d (&v)[3], bool convex)
+{
+    SmTArray<SmFace *> faces;
+    r->p->GetFaces(faces);
+    int spheres = 0;
+    for (ULONG f = 0; f < faces.GetSize(); ++f)
+    {
+        SmSurface *srf = faces[f]->GetSurface();
+        if (srf == nullptr || srf->GetType() != SmSphere_TYPE)
+        {
+            continue;
+        }
+        spheres++;
+        SmSphere *sphere = SM_CAST_PTR(SmSphere, srf);
+        SmAxis2Placement frame;
+        double radius = 0.0;
+        CHECK(sphere != nullptr && sphere->GetCanonical(frame, radius) == SM_SUCCESS);
+        const SmPoint3d o = frame.GetOrigin();
+        std::printf("  sphere face %lu: centre (%.15g, %.15g, %.15g), radius %.15g\n", static_cast<unsigned long>(f), o.x, o.y, o.z, radius);
+        CHECK((o - c).Length() <= 1e-12 && std::fabs(radius - rad) <= 1e-12);
+        // the surface on the sphere about c, its normal out of the body
+        double surf_off = 0.0, edge_off = 0.0, normal_off = 0.0;
+        const SmExtent2d dom = srf->GetNaturalUVDomain();
+        for (int i = 0; i <= 16; ++i)
+        {
+            for (int j = 0; j <= 16; ++j)
+            {
+                const SmPoint2d uv = dom.Evaluate(i / 16.0, j / 16.0);
+                SmPoint3d p;
+                if (srf->EvaluatePoint(uv, p) != SM_SUCCESS)
+                {
+                    surf_off = HUGE_VAL;
+                    continue;
+                }
+                surf_off = std::max(surf_off, std::fabs((p - c).Length() - rad));
+                SmVector3d n, out = p - c;
+                if (i == 0 || i == 16 || j == 0 || j == 16)
+                {
+                    continue; // the pole's side has no one normal
+                }
+                if (srf->EvaluateNormal(uv, FALSE, FALSE, n) != SM_SUCCESS || n.Unitize(FALSE) != SM_SUCCESS || out.Unitize(FALSE) != SM_SUCCESS)
+                {
+                    normal_off = HUGE_VAL;
+                    continue;
+                }
+                normal_off = std::max(normal_off, (n - (convex ? out : -out)).Length());
+            }
+        }
+        // its edges and vertices on it
+        SmTArray<SmEdge *> es;
+        faces[f]->GetEdges(es);
+        for (ULONG k = 0; k < es.GetSize(); ++k)
+        {
+            SmExtent1d ivl = es[k]->GetInterval();
+            for (int s = 0; s <= 32; ++s)
+            {
+                SmPoint3d p;
+                if (es[k]->GetCurve() == nullptr || es[k]->GetCurve()->EvaluatePoint(ivl.Evaluate(s / 32.0), p) != SM_SUCCESS)
+                {
+                    edge_off = HUGE_VAL;
+                    continue;
+                }
+                edge_off = std::max(edge_off, std::fabs((p - c).Length() - rad));
+            }
+        }
+        SmTArray<SmVertex *> vs;
+        faces[f]->GetVertices(vs);
+        CHECK(vs.GetSize() == 3 && vertex_at(vs, v[0]) >= 0 && vertex_at(vs, v[1]) >= 0 && vertex_at(vs, v[2]) >= 0);
+        int seams = 0;
+        const double angle = worst_seam_angle(faces[f], seams);
+        std::printf("    surface off the sphere by %.3g, edges by %.3g, normal off outward by %.3g; %d seams, worst angle %.3g rad\n", surf_off,
+                    edge_off, normal_off, seams, angle);
+        CHECK(surf_off <= 1e-12 && edge_off <= 1e-12 && normal_off <= 1e-9);
+        // G1 to the three rounds
+        CHECK(seams == 3 && angle <= 1e-9);
+    }
+    CHECK(spheres == 1);
+}
+
+// The volume of `b` integrated to 1e-12.
+double exact_volume_of(const smlib_brep *b)
+{
+    double v = -1.0;
+    CHECK(smlib_brep_volume(b, 1e-12, &v) == SMLIB_OK);
+    return v;
+}
+
+// A 40 x 30 x 20 box, the three edges at its corner (40, 30, 20) rounded r 3 in one call: the ball
+// about C = (37, 27, 17). Removed: A(3) along 40 + 30 + 20 less the cube's 3 r, and r^3 (1 - pi/6)
+// in the cube. Faces: the box's 6, 3 rounds, the sphere (10); vertices: the box's 4 corners off
+// the rounded edges, each round's far end 2, the sphere's 3 (13); edges by Euler's formula (21).
+const double BALL_BOX_POINTS[9] = {20, 30, 20, 40, 15, 20, 40, 30, 10};
+const SmPoint3d BALL_BOX_CENTRE(37, 27, 17);
+const SmPoint3d BALL_BOX_VERTICES[3] = {SmPoint3d(40, 27, 17), SmPoint3d(37, 30, 17), SmPoint3d(37, 27, 20)};
+
+double ball_box_volume(double rad)
+{
+    return 24000.0 - spandrel(rad) * (90.0 - 3.0 * rad) - rad * rad * rad * (1.0 - PI / 6.0);
+}
+
+void ball_box_corner()
+{
+    const double rad = 3.0, want = ball_box_volume(rad);
+    smlib_brep *b = box(0, 0, 0, 40, 30, 20), *r = nullptr;
+    const double sizes[3] = {rad, rad, rad};
+    CHECK(smlib_blend(b, SMLIB_BLEND_ROUND, BALL_BOX_POINTS, sizes, 3, 0.1, &r, nullptr) == SMLIB_OK && r != nullptr);
+    if (r != nullptr)
+    {
+        const double v = exact_volume_of(r);
+        std::printf("  volume %.12f, want %.12f (%.3g relative)\n", v, want, std::fabs(v - want) / want);
+        CHECK(near(v, want, 1e-11));
+        int64_t counts[3] = {0, 0, 0};
+        CHECK(smlib_brep_counts(r, counts) == SMLIB_OK);
+        std::printf("  %lld faces, %lld edges, %lld vertices\n", static_cast<long long>(counts[0]), static_cast<long long>(counts[1]),
+                    static_cast<long long>(counts[2]));
+        CHECK(counts[0] == 10 && counts[1] == 21 && counts[2] == 13);
+        ball_corner_sphere(r, BALL_BOX_CENTRE, rad, BALL_BOX_VERTICES, true);
+        done(r);
+    }
+    smlib_brep_free(b);
+}
+
+// A 40 x 30 x 20 block with a 20 x 10 x 10 pocket (10..30, 10..20, 10..20), the three concave
+// edges at the pocket's floor corner (10, 10, 10) rounded r 2 in one call: the ball about
+// C = (12, 12, 12). Added: A(2) along 20 + 10 + 10 less 3 r, and r^3 (1 - pi/6) in the cube.
+// Faces: the block's 6 and the pocket's 5, 3 rounds, the sphere (15); vertices: the block's 8,
+// the pocket's 8 less the corner and the far ends of its three rounded edges, each round's far end
+// 2 and the sphere's 3 (21); edges 33 (Euler's formula, the top face's opening an inner loop).
+void ball_pocket_corner()
+{
+    const double rad = 2.0;
+    const double want = 22000.0 + spandrel(rad) * (40.0 - 3.0 * rad) + rad * rad * rad * (1.0 - PI / 6.0);
+    smlib_brep *block = box(0, 0, 0, 40, 30, 20), *cut = box(10, 10, 10, 20, 10, 11), *part = nullptr, *r = nullptr;
+    CHECK(smlib_boolean(block, cut, SMLIB_BOOLEAN_SUBTRACT, &part) == SMLIB_OK && part != nullptr);
+    const double points[9] = {20, 10, 10, 10, 15, 10, 10, 10, 15}, sizes[3] = {rad, rad, rad};
+    CHECK(part != nullptr && smlib_blend(part, SMLIB_BLEND_ROUND, points, sizes, 3, 0.1, &r, nullptr) == SMLIB_OK && r != nullptr);
+    if (r != nullptr)
+    {
+        const double v = exact_volume_of(r);
+        std::printf("  volume %.12f, want %.12f (%.3g relative)\n", v, want, std::fabs(v - want) / want);
+        CHECK(near(v, want, 1e-11));
+        int64_t counts[3] = {0, 0, 0};
+        CHECK(smlib_brep_counts(r, counts) == SMLIB_OK);
+        std::printf("  %lld faces, %lld edges, %lld vertices\n", static_cast<long long>(counts[0]), static_cast<long long>(counts[1]),
+                    static_cast<long long>(counts[2]));
+        CHECK(counts[0] == 15 && counts[1] == 33 && counts[2] == 21);
+        const SmPoint3d c(12, 12, 12), v3[3] = {SmPoint3d(10, 12, 12), SmPoint3d(12, 10, 12), SmPoint3d(12, 12, 10)};
+        ball_corner_sphere(r, c, rad, v3, false);
+        done(r);
+    }
+    for (smlib_brep *x : {block, cut, part})
+    {
+        smlib_brep_free(x);
+    }
+}
+
+// A kite prism 10 tall, its corner V = (0, 0) of 120 degrees between the sides to (5, +-5 sqrt 3),
+// each 10 long and square there to the sides on to (20, 0): the three edges at the top of V
+// rounded r 2 in one call. The top is square to both walls, so the ball about
+// C = (2 r / sqrt 3, 0, 10 - r) touches the walls at (r / (2 sqrt 3), +-r / 2, 10 - r), r / sqrt 3
+// along the top edges from V. Removed, by the edges of the ball centres' region and its corner C:
+// A(r) along each top edge's 10 - r / sqrt 3, the 120 degree spandrel r^2 (1/sqrt 3 - pi/6) along
+// the upright's 10 - r, and at C the region between the three planes and the planes through C
+// square to them, r^3 cot 60, less the ball's sector there, r^3 (pi/3) / 3. Counts as the box's.
+void ball_prism_corner()
+{
+    const double rad = 2.0, s3 = std::sqrt(3.0);
+    const double want = 1000.0 * s3 - (2.0 * spandrel(rad) * (10.0 - rad / s3) + rad * rad * (1.0 / s3 - PI / 6.0) * (10.0 - rad) +
+                                       rad * rad * rad * (1.0 / s3 - PI / 9.0));
+    Profile kite;
+    kite.line(0, 0, 5, -5 * s3, 0).line(5, -5 * s3, 20, 0, 0).line(20, 0, 5, 5 * s3, 0).line(5, 5 * s3, 0, 0, 0);
+    smlib_brep *prism = kite.extrude(10.0), *r = nullptr;
+    const double points[9] = {2.5, 2.5 * s3, 10, 2.5, -2.5 * s3, 10, 0, 0, 5}, sizes[3] = {rad, rad, rad};
+    CHECK(prism != nullptr && smlib_blend(prism, SMLIB_BLEND_ROUND, points, sizes, 3, 0.1, &r, nullptr) == SMLIB_OK && r != nullptr);
+    if (r != nullptr)
+    {
+        const double v = exact_volume_of(r);
+        std::printf("  volume %.12f, want %.12f (%.3g relative)\n", v, want, std::fabs(v - want) / want);
+        CHECK(near(v, want, 1e-11));
+        int64_t counts[3] = {0, 0, 0};
+        CHECK(smlib_brep_counts(r, counts) == SMLIB_OK);
+        std::printf("  %lld faces, %lld edges, %lld vertices\n", static_cast<long long>(counts[0]), static_cast<long long>(counts[1]),
+                    static_cast<long long>(counts[2]));
+        CHECK(counts[0] == 10 && counts[1] == 21 && counts[2] == 13);
+        const SmPoint3d c(2.0 * rad / s3, 0, 10 - rad);
+        const SmPoint3d v3[3] = {SmPoint3d(2.0 * rad / s3, 0, 10), SmPoint3d(rad / (2.0 * s3), rad / 2.0, 10 - rad),
+                                 SmPoint3d(rad / (2.0 * s3), -rad / 2.0, 10 - rad)};
+        ball_corner_sphere(r, c, rad, v3, true);
+        done(r);
+    }
+    smlib_brep_free(prism);
+}
+
+// The box corner's sphere face turned round by SmFace::SwapUV, as SmBrep::OrientTrimmedSurfaces
+// turns a face, then the body oriented outward again: the face stays the sphere it was, bounded on
+// it, G1 to the rounds, the body sound at its volume.
+void ball_sphere_turned_round()
+{
+    const double rad = 3.0, want = ball_box_volume(rad);
+    smlib_brep *b = box(0, 0, 0, 40, 30, 20), *r = nullptr;
+    const double sizes[3] = {rad, rad, rad};
+    CHECK(smlib_blend(b, SMLIB_BLEND_ROUND, BALL_BOX_POINTS, sizes, 3, 0.1, &r, nullptr) == SMLIB_OK && r != nullptr);
+    if (r != nullptr)
+    {
+        SmTArray<SmFace *> faces;
+        r->p->GetFaces(faces);
+        int turned = 0;
+        for (ULONG f = 0; f < faces.GetSize(); ++f)
+        {
+            if (faces[f]->GetSurface() != nullptr && faces[f]->GetSurface()->GetType() == SmSphere_TYPE)
+            {
+                CHECK(faces[f]->SwapUV() == SM_SUCCESS);
+                turned++;
+            }
+        }
+        CHECK(turned == 1);
+        SmBoolean open = FALSE;
+        CHECK(r->p->OrientTrimmedSurfaces(TRUE, open, FALSE) == SM_SUCCESS && !open);
+        const double v = exact_volume_of(r);
+        std::printf("  turned round and back: volume %.12f, want %.12f\n", v, want);
+        CHECK(near(v, want, 1e-11));
+        ball_corner_sphere(r, BALL_BOX_CENTRE, rad, BALL_BOX_VERTICES, true);
+        done(r);
+    }
+    smlib_brep_free(b);
+}
+
+
+// The Ball corner's cases, and why each that fails today fails (null: it passes). As
+// TANGENT_END_CASES: `--balls-known-failing` runs the failing ones and fails if one passes.
+const TangentEndCase BALL_CASES[] = {
+    {"box_corner", ball_box_corner, nullptr},
+    {"pocket_corner", ball_pocket_corner, nullptr},
+    {"prism_corner", ball_prism_corner, "SmFilletConvexNxNCorner's sphere (CreateSphereFromArcs) is trimmed by fitted curves: its seams with the rounds 7.4e-6 rad off G1, the volume 8.5e-11 off"},
+    {"sphere_turned_round", ball_sphere_turned_round, nullptr},
+};
+
+int ball_cases(bool known_failing, const char *only)
+{
+    return run_cases(BALL_CASES, "ball", known_failing, only);
+}
+
 // ---- Scenarios -------------------------------------------------------------------------------
 // Blends users ask for often that the lists above leave out: several sizes in one call, a chord
 // width, a variable round fading to nothing, unequal chamfers at a corner, a bar rounded into a
@@ -6768,7 +7028,7 @@ void scenario_blend(smlib_brep *body, int32_t kind, std::vector<double> points, 
     smlib_brep *r = nullptr;
     const int32_t s = body == nullptr ? SMLIB_ERR_ARG
                                       : smlib_blend(body, kind, points.data(), sizes.data(), static_cast<int64_t>(sizes.size()), 0.1, &r, nullptr);
-    std::printf("  status %d%s%s\n", static_cast<int>(s), s == SMLIB_OK ? "" : ": ", s == SMLIB_OK ? "" : last_blend_reason().c_str());
+    std::printf("  status %d%s%s\n", static_cast<int>(s), s == SMLIB_OK ? "" : ": ", "");
     smlib_brep_free(body);
     CHECK(s == SMLIB_OK && r != nullptr);
     if (r == nullptr)
@@ -6858,7 +7118,7 @@ void scenario_three_unequal_rounds_at_a_corner()
     smlib_brep *b = box(0, 0, 0, 40, 30, 20), *r = nullptr;
     const double points[9] = {20, 30, 20, 40, 15, 20, 40, 30, 10}, sizes[3] = {2, 3, 4};
     const int32_t s = smlib_blend(b, SMLIB_BLEND_ROUND, points, sizes, 3, 0.1, &r, nullptr);
-    std::printf("  status %d%s%s\n", static_cast<int>(s), s == SMLIB_OK ? "" : ": ", s == SMLIB_OK ? "" : last_blend_reason().c_str());
+    std::printf("  status %d%s%s\n", static_cast<int>(s), s == SMLIB_OK ? "" : ": ", "");
     CHECK(s == SMLIB_OK && r != nullptr);
     if (r != nullptr)
     {
@@ -7143,7 +7403,7 @@ void scenario_feature_in_band(bool boss, bool keep, double r, double want, doubl
     const int32_t s = body == nullptr ? SMLIB_ERR_ARG
                       : keep          ? smlib_blend(body, SMLIB_BLEND_ROUND, at, &r, 1, 0.1, &out, nullptr)
                                       : smlib_blend_features(body, SMLIB_BLEND_ROUND, 0, at, &r, 1, 0.1, &out, nullptr);
-    std::printf("  status %d%s%s\n", static_cast<int>(s), s == SMLIB_OK ? "" : ": ", s == SMLIB_OK ? "" : last_blend_reason().c_str());
+    std::printf("  status %d%s%s\n", static_cast<int>(s), s == SMLIB_OK ? "" : ": ", "");
     CHECK(s == SMLIB_OK && out != nullptr);
     if (out != nullptr)
     {
@@ -7867,6 +8127,15 @@ int main(int argc, char **argv)
     {
         smlib_set_log([](void *, int32_t level, const char *line) { std::fprintf(stderr, "log %d %s\n", static_cast<int>(level), line); }, nullptr);
         return setback_cases(false, argv[2]) == 0 ? 0 : 1;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--balls-known-failing") == 0)
+    {
+        return ball_cases(true, nullptr) == 0 ? 0 : 1;
+    }
+    if (argc == 3 && std::strcmp(argv[1], "--ball") == 0)
+    {
+        smlib_set_log([](void *, int32_t level, const char *line) { std::fprintf(stderr, "log %d %s\n", static_cast<int>(level), line); }, nullptr);
+        return ball_cases(false, argv[2]) == 0 ? 0 : 1;
     }
     if (argc == 2 && std::strcmp(argv[1], "--turns-known-failing") == 0)
     {
@@ -11356,6 +11625,7 @@ int main(int argc, char **argv)
     failures += section_cases(false, nullptr);
     failures += turn_cases(false, nullptr);
     failures += shrink_cases(false, nullptr);
+    failures += ball_cases(false, nullptr);
     failures += scenario_cases(false, nullptr);
     failures += setback_cases(false, nullptr);
 
