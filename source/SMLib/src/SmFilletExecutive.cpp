@@ -829,7 +829,7 @@ SmStatus SmFilletExecutive::SetFilletParameters
   if ( eXSectType == SM_FSG_LINEAR )
     { pFSG = new(*pContext) SmGnSectionFSG( 0 ); }
   else if ( eXSectType == SM_FSG_CIRCULAR )
-    { pFSG = new(*pContext) SmGnSectionFSG( SmArcSection( TRUE, dXSectTol ) ); }
+    { pFSG = new(*pContext) SmGnSectionFSG( SmArcSection( FALSE, dXSectTol ) ); }
   else if ( eXSectType == SM_FSG_BLEND_CURVE )
     {
           if ( !SmGnSectionFSG::IsValid( lContinuity, dThumbweight ) )
@@ -1025,7 +1025,7 @@ SmStatus SmFilletExecutive::SetFilletParameters
       if ( eXSectType == SM_FSG_LINEAR )
         { pFSG = new(*pContext) SmGnSectionFSG( 0 ); }
       else if ( eXSectType == SM_FSG_CIRCULAR )
-        { pFSG = new(*pContext) SmGnSectionFSG( SmArcSection( TRUE, dXSectTol ) ); }
+        { pFSG = new(*pContext) SmGnSectionFSG( SmArcSection( FALSE, dXSectTol ) ); }
       else if ( eXSectType == SM_FSG_BLEND_CURVE )
         {
           if ( !SmGnSectionFSG::IsValid( lContinuity, dThumbweight ) )
@@ -1143,7 +1143,7 @@ SmStatus SmFilletExecutive::SetFilletParameters
           if ( eXSectType == SM_FSG_LINEAR )
             { pFSG = new(*pContext) SmGnSectionFSG( 0 ); }
           else if ( eXSectType == SM_FSG_CIRCULAR )
-            { pFSG = new(*pContext) SmGnSectionFSG( SmArcSection( TRUE, 0.1 ) ); }
+            { pFSG = new(*pContext) SmGnSectionFSG( SmArcSection( FALSE, 0.1 ) ); }
           else if ( eXSectType == SM_FSG_BLEND_CURVE )
             {
           if ( !SmGnSectionFSG::IsValid( lContinuity, dThumbweight ) )

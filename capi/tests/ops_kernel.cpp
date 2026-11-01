@@ -4300,8 +4300,7 @@ const TangentEndCase EXACT_CLASS_CASES[] = {
     {"sphere_coaxial_cone", exact_class_sphere_coaxial_cone, nullptr},
     {"sphere_plane", exact_class_sphere_plane,
      "status 1001: SmFilletNx1Corner, Corner Edge Computation Failure, at the rim's one vertex, on the sphere's seam (the torus is built)"},
-    {"tee_is_fitted", exact_class_tee_is_fitted,
-     "the traced round is 1.47e-3 off the ball's surface, over the fillet's tolerance 1e-3: its fit is not checked against the true round"},
+    {"tee_is_fitted", exact_class_tee_is_fitted, nullptr},
 };
 
 int exact_class_cases(bool known_failing, const char *only)

@@ -463,7 +463,7 @@ struct SmArcSection
   SmBoolean bMirror;
   SmBoolean bComplement;
 
-  explicit SmArcSection(SmBoolean bApprox = TRUE, double dTolPercent = 0.05, SmBoolean bMirrored = FALSE,
+  explicit SmArcSection(SmBoolean bApprox = FALSE, double dTolPercent = 0.05, SmBoolean bMirrored = FALSE,
                         SmBoolean bLarger = FALSE)
     : bApproximateArcs(bApprox), dTolPercentRadius(dTolPercent), bMirror(bMirrored), bComplement(bLarger) {}
 };

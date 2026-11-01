@@ -3340,7 +3340,7 @@ SmStatus SmFilletCorner::MakeConstantRadiusFillet
   SmFilletSolver            * pNewFS = NULL;
   SmFilletLaw               * pLaw   = NULL;
   SmGnSectionFSG sFSGLinear( 0 );                            // Create Linear
-  SmGnSectionFSG sFSGCircular( SmArcSection( TRUE, 1.0e-3 ) );             // Creates Circular
+  SmGnSectionFSG sFSGCircular( SmArcSection( FALSE, 1.0e-3 ) );            // Creates Circular
   SmGnSectionFSG sFSGBlend(lMaxContinuity > 1 ? lMaxContinuity : 2, dThumbweight); // Create blend
   switch (eType) 
     {
