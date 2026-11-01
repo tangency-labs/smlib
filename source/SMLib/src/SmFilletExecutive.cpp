@@ -2699,7 +2699,9 @@ SmStatus SmFilletExecutive::EaseSetBackSections()
           asDeleteCopies[k].SetObj(apCopies[k]);
           NER(SM_CAST_PTR(SmBSplineCurve, apCopies[k]));
         }
-      SmGnSectionFSG sG2(2, SM_GN_DEFAULT_THUMBWEIGHT);
+      // the ease's target section keeps thumbweight 0: it is the corner's transition, not the
+      // blend's own section (whose default is equal area), and the corner rework replaces it
+      SmGnSectionFSG sG2(2, 0.0);
       SmBSplineSurface * pG2 = NULL;
       SmBoolean bNeedG1 = (pFS->GetSolverType() == SM_FS_CONST_RADIUS) ? TRUE : FALSE;
       SER(sG2.CreateSurfaceFromCurves(m_crContext, *SM_CAST_PTR(SmBSplineCurve, apCopies[0]), *SM_CAST_PTR(SmBSplineCurve, apCopies[1]),
