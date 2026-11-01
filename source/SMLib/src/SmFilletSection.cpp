@@ -11,8 +11,12 @@
 * line) at its parameter s: V(tau) is the point of that plane at distance
 * tau r_i from face i (r_i the ball's offset from face i), F_i(tau) its foot
 * on face i (tau = 1 at the rails, 0 at the edge), and
-* T_i(u) = sum_{k<=n} c_ik (u - 1)^k the order-n Taylor polynomial of F_i at
-* tau = 1 (c_ik = F_i^(k)(1) / k!). The section is
+* T_i(u) = sum_{k<=n} c_ik (u - 1)^k the order-n jet at tau = 1 of a curve on
+* face i: c_ik = F_i^(k)(1) / k! for k < n, and c_in the part along the
+* face's normal of the n-th coefficient of S_i(x_i(tau)), x_i the feet's
+* parameters to order n - 1 (sm_GnTopJets). The feet's n-th coefficient
+* would take the face's partials of order n + 1; this one takes them to
+* order n, so the section is continuous on a C^n face. The section is
 *
 *   S(t) = f(t) T1(1 - p1(t)) + (1 - f(t)) T2(p2(t)),  t in [0, 1],
 *   f(t) = (1-t)^(n+1) / ((1-t)^(n+1) + t^(n+1)),
@@ -463,7 +467,27 @@ template <class T> void sm_NurbsPartials(const sm_Nurbs & crN, int ku, int kv, c
 // The partials of a face's surface at crUV up to total order lK: a NURBS (every analytic surface is
 // one, evaluated in its net's parameters) by its net, continued past its knots; any other surface,
 // and a blend by its definition (whose net is only its approximation), by its own evaluator.
-SmStatus sm_SurfacePartials(const SmSurface & crSurface, const SmPoint2d & crUV, int lK, sm_Partials<double> & rP)
+// lSideU, lSideV: at a knot line (within 1e-9 of it), -1 the piece before it, +1 the piece after
+// it, 0 the span sm_Span finds.
+int sm_SidedSpan(const std::vector<double> & crU, int p, int n, double u, int lSide)
+{
+  int k = sm_Span(crU, p, n, u);
+  const double dTol = 1.0e-9 * (1.0 + std::fabs(u));
+  if (lSide < 0 && std::fabs(u - crU[static_cast<size_t>(k)]) <= dTol)
+    {
+      while (k > p && !(crU[static_cast<size_t>(k - 1)] < crU[static_cast<size_t>(k)])) { k--; }
+      if (k > p) { k--; }
+    }
+  else if (lSide > 0 && k + 1 < n && std::fabs(u - crU[static_cast<size_t>(k + 1)]) <= dTol)
+    {
+      k++;
+      while (k + 1 < n && !(crU[static_cast<size_t>(k)] < crU[static_cast<size_t>(k + 1)])) { k++; }
+    }
+  return k;
+}
+
+SmStatus sm_SurfacePartials(const SmSurface & crSurface, const SmPoint2d & crUV, int lK, sm_Partials<double> & rP, int lSideU = 0,
+                            int lSideV = 0)
 {
   if (lK < 0 || lK > SM_GN_MAXK)
     { SER(SM_ERR); }
@@ -473,7 +497,7 @@ SmStatus sm_SurfacePartials(const SmSurface & crSurface, const SmPoint2d & crUV,
     {
       sm_Nurbs sN;
       SER(sm_NurbsOf(*pBS, sN));
-      const int ku = sm_Span(sN.U, sN.p, sN.nu, crUV.x), kv = sm_Span(sN.V, sN.q, sN.nv, crUV.y);
+      const int ku = sm_SidedSpan(sN.U, sN.p, sN.nu, crUV.x, lSideU), kv = sm_SidedSpan(sN.V, sN.q, sN.nv, crUV.y, lSideV);
       sm_NurbsPartials<double>(sN, ku, kv, crUV.x, crUV.y, lK, rP);
       return SM_SUCCESS;
     }
@@ -503,9 +527,9 @@ template <class T> struct sm_GnSystem
 
 // G and the feet F_i as series, given the feet's parameters as series x[0..3] (u1, v1, u2, v2),
 // whose constant terms are the point the partials were taken at; pV: the point V(tau) off face 1
-// (the ball's centre at tau = 1).
+// (the ball's centre at tau = 1); pN: the faces' unit normals at the feet.
 template <class T> SmStatus sm_GnEvaluate(const sm_GnSystem<T> & crSys, const sm_Ser<T> (&x)[4], const sm_Trunc & tr,
-                                          sm_Ser<T> (&rG)[4], sm_VSer<T> (&rF)[2], sm_VSer<T> * pV = NULL)
+                                          sm_Ser<T> (&rG)[4], sm_VSer<T> (&rF)[2], sm_VSer<T> * pV = NULL, sm_VSer<T> (*pN)[2] = NULL)
 {
   sm_VSer<T> asV[2];
   const int lM = tr.s + tr.e;
@@ -558,6 +582,8 @@ template <class T> SmStatus sm_GnEvaluate(const sm_GnSystem<T> & crSys, const sm
         for (int i=0; i<=tr.s; i++)
           sD.c[i][1] = sD.c[i][0];
       asV[f] = sm_VSerAdd(sS, sm_VSerTimes(sN, sm_SerMul(sInvLen, sD, tr), tr), tr);
+      if (pN != NULL)
+        { (*pN)[f] = sm_VSerTimes(sN, sInvLen, tr); }
       rF[f] = sS;
     }
   const sm_VSer<T> sDiff = sm_VSerSub(asV[0], asV[1], tr);
@@ -588,6 +614,50 @@ template <class T> SmStatus sm_GnJacobian(const sm_GnSystem<T> & crSys, const sm
       for (int i=0; i<4; i++) { rJ[i][j] = sG[i].c[0][1]; }
     }
   return SM_SUCCESS;
+}
+
+/*******************************************************************//**
+   The section's jets of order lTop (its order n) and up, from the faces'
+   order-n partials only. The feet's parameters x are solved to order n - 1
+   in eps (they take the faces' partials to order n), and the face curve
+   C_i(tau) = S_i(x_i(tau)), x_i so truncated, is a curve on face i whose jet
+   agrees with the feet's to order n - 1. Its eps^n coefficient's part along
+   the face's normal is the face's own (the second fundamental form and its
+   order-n kin, along the foot's direction), and its part in the tangent
+   plane is only the parametrization's: a curve on the face has any tangent
+   n-th coefficient, by reparametrizing it (DeRose's G^n). The jet of order
+   k >= n is that normal part, N (N . C_k), so the section meets the face
+   in contact of order n + 1 (n + 2 between planes, where it is the feet's
+   own, zero), and is as continuous as the face's n-th partials: on a C^n
+   face (a cubic B-spline's C2 for n = 2) it is continuous across the face's
+   knot lines. rF holds C (x truncated) on entry, the jets on return; crN the
+   faces' unit normals at the feet.
+***********************************************************************/
+template <class T> void sm_GnTopJets(int lTop, const sm_Trunc & tr, const sm_VSer<T> (&crN)[2], sm_VSer<T> (&rF)[2])
+{
+  if (lTop < 1)
+    { return; }
+  const sm_Trunc sSigma = { tr.s, 0 };
+  for (int f=0; f<2; f++)
+    {
+      sm_VSer<T> sN = crN[f];
+      for (int c=0; c<3; c++)
+        for (int i=0; i<=SM_GN_MAXS; i++)
+          for (int k=1; k<=SM_GN_MAXE; k++)
+            sN.a[c].c[i][k] = T(0.0);
+      for (int k=lTop; k<=tr.e; k++)
+        {
+          sm_VSer<T> sC = sN;
+          for (int c=0; c<3; c++)
+            for (int i=0; i<=SM_GN_MAXS; i++)
+              for (int k2=0; k2<=SM_GN_MAXE; k2++)
+                sC.a[c].c[i][k2] = (k2 == 0 && i <= tr.s) ? rF[f].a[c].c[i][k] : T(0.0);
+          const sm_VSer<T> sJ = sm_VSerTimes(sN, sm_VSerDot(sN, sC, sSigma), sSigma);
+          for (int c=0; c<3; c++)
+            for (int i=0; i<=tr.s; i++)
+              rF[f].a[c].c[i][k] = sJ.a[c].c[i][0];
+        }
+    }
 }
 
 // Solves A y = b, 4 x 4, by Gaussian elimination with partial pivoting.
@@ -639,13 +709,28 @@ struct sm_GnStation
   double            dW;      // the equal area thumbweight there, and its s-derivative (NaN: not resolved)
   double            dWds;
   int               lSteps;  // the Newton steps the feet took
+  // the series above are the station's on the pieces after it along s (the leader's, a face's
+  // where a foot is on one of its knot lines); these on the pieces before it, whose s-derivatives
+  // the span ending here takes (the values agree; the derivatives differ where the leader or a
+  // face is not smooth at the station); aiBefore: a face's side for them (sm_SidedSpan)
+  int               aiBefore[4];
+  SmBoolean         bSided;
+  sm_Ser<double>    asXL[4];
+  sm_VSer<double>   asFL[2];
+  double            dWdsL;
 };
+
+// a station's series as the span ending there takes them
+inline const sm_VSer<double> & sm_InF(const sm_GnStation & crSt, int f) { return crSt.bSided ? crSt.asFL[f] : crSt.asF[f]; }
+inline const sm_Ser<double> & sm_InX(const sm_GnStation & crSt, int q) { return crSt.bSided ? crSt.asXL[q] : crSt.asX[q]; }
+inline double sm_InWds(const sm_GnStation & crSt) { return crSt.bSided ? crSt.dWdsL : crSt.dWds; }
 
 /*******************************************************************//**
    The leader (centre line) at s as series in sigma up to tr.s: its point,
    and its unit tangent (which takes one derivative more).
 ***********************************************************************/
-SmStatus sm_LeaderSeries(const SmBSplineCurve & crLeader, double dS, const sm_Trunc & tr, sm_VSer<double> & rL, sm_VSer<double> & rT)
+SmStatus sm_LeaderSeries(const SmBSplineCurve & crLeader, double dS, const sm_Trunc & tr, sm_VSer<double> & rL, sm_VSer<double> & rT,
+                         SmBoolean bBefore = FALSE)
 {
   const sm_Trunc sSigma = { tr.s, 0 };
   SmVector3d asD[SM_GN_MAXS + 2];
@@ -654,7 +739,8 @@ SmStatus sm_LeaderSeries(const SmBSplineCurve & crLeader, double dS, const sm_Tr
   if (!crLeader.IsRational())
     { lDerivs = smos_Min(lDerivs, crLeader.GetDegree()); }
   for (ULONG j=lDerivs+1; j<=static_cast<ULONG>(tr.s + 1); j++) { asD[j] = SmVector3d(0.0, 0.0, 0.0); }
-  if (crLeader.Evaluate(dS, lDerivs, TRUE, asD, FALSE) != SM_SUCCESS)
+  // at a knot of the leader its piece after dS (upper interval), or the one before it with bBefore
+  if (crLeader.Evaluate(dS, lDerivs, bBefore ? FALSE : TRUE, asD, FALSE) != SM_SUCCESS)
     { SER_MSG(SM_ERR, _T("SmGnSectionFSG: the leader's derivatives of this order are not evaluated")); }
   const sm_V3<double> sZero = { 0.0, 0.0, 0.0 };
   rL = sm_VSerConst<double>(sZero);
@@ -684,11 +770,14 @@ SmStatus sm_LeaderSeries(const SmBSplineCurve & crLeader, double dS, const sm_Tr
 ***********************************************************************/
 SmStatus sm_GnSolveStation(const SmSurface * apFace[2], const SmBSplineCurve & crLeader, double dS, const double (&crSeed)[4],
                            const double (&crR)[2], const double (&crSide)[2], const sm_Trunc & tr, double dTol,
-                           sm_GnStation & rStation, const sm_Ser<double> * pR = NULL)
+                           sm_GnStation & rStation, const sm_Ser<double> * pR = NULL, int lTop = 0, const int (*pSides)[4] = NULL,
+                           sm_VSer<double> (*pC)[2] = NULL, sm_VSer<double> (*pN)[2] = NULL, SmBoolean bBefore = FALSE)
 {
   rStation.dS = dS;
-  rStation.dW = rStation.dWds = std::numeric_limits<double>::quiet_NaN();
+  rStation.dW = rStation.dWds = rStation.dWdsL = std::numeric_limits<double>::quiet_NaN();
   rStation.lSteps = 0;
+  rStation.bSided = FALSE;
+  for (int q=0; q<4; q++) { rStation.aiBefore[q] = 0; }
   const int lK = tr.s + tr.e + 1;
   sm_Partials<double> asP[2];
   sm_GnSystem<double> sSys;
@@ -700,7 +789,7 @@ SmStatus sm_GnSolveStation(const SmSurface * apFace[2], const SmBSplineCurve & c
   sSys.adSide[1] = crSide[1];
   sSys.bHold = FALSE;
   sSys.pR = pR;
-  SER(sm_LeaderSeries(crLeader, dS, tr, sSys.sLeader, sSys.sTangent));
+  SER(sm_LeaderSeries(crLeader, dS, tr, sSys.sLeader, sSys.sTangent, bBefore));
 
   // the feet at tau = 1, by Newton (the leader at sigma = 0 only)
   double x[4] = { crSeed[0], crSeed[1], crSeed[2], crSeed[3] };
@@ -710,7 +799,7 @@ SmStatus sm_GnSolveStation(const SmSurface * apFace[2], const SmBSplineCurve & c
     {
       rStation.lSteps++;
       for (int f=0; f<2; f++)
-        { SER(sm_SurfacePartials(*apFace[f], SmPoint2d(x[2*f], x[2*f+1]), 2, asP[f])); }
+        { SER(sm_SurfacePartials(*apFace[f], SmPoint2d(x[2*f], x[2*f+1]), 2, asP[f], pSides != NULL ? (*pSides)[2*f] : 0, pSides != NULL ? (*pSides)[2*f+1] : 0)); }
       sm_Ser<double> sX[4];
       for (int q=0; q<4; q++) { sX[q] = sm_SerConst<double>(x[q]); }
       sm_Ser<double> sG[4];
@@ -734,9 +823,10 @@ SmStatus sm_GnSolveStation(const SmSurface * apFace[2], const SmBSplineCurve & c
   if (!bConverged)
     { SER_MSG(SM_ERR, _T("SmGnSectionFSG: the feet of a station did not converge")); }
 
-  // the series, order by order: each coefficient of G is J x[i][k] plus the lower ones'
+  // the series, order by order: each coefficient of G is J x[i][k] plus the lower ones' (to order
+  // lTop - 1 in eps with lTop, sm_GnTopJets)
   for (int f=0; f<2; f++)
-    { SER(sm_SurfacePartials(*apFace[f], SmPoint2d(x[2*f], x[2*f+1]), lK, asP[f])); }
+    { SER(sm_SurfacePartials(*apFace[f], SmPoint2d(x[2*f], x[2*f+1]), lK, asP[f], pSides != NULL ? (*pSides)[2*f] : 0, pSides != NULL ? (*pSides)[2*f+1] : 0)); }
   for (int q=0; q<4; q++) { rStation.asX[q] = sm_SerConst<double>(x[q]); }
   double J[4][4];
   SER(sm_GnJacobian(sSys, rStation.asX, J));
@@ -749,7 +839,7 @@ SmStatus sm_GnSolveStation(const SmSurface * apFace[2], const SmBSplineCurve & c
     for (int i=0; i<=tr.s && i<=lTot; i++)
       {
         const int k = lTot - i;
-        if (k > tr.e)
+        if (k > tr.e || (lTop >= 1 && k >= lTop))
           { continue; }
         double b[4], y[4];
         for (int j=0; j<4; j++) { b[j] = -sG[j].c[i][k]; }
@@ -758,7 +848,11 @@ SmStatus sm_GnSolveStation(const SmSurface * apFace[2], const SmBSplineCurve & c
       }
     }
   sm_Ser<double> sG[4];
-  SER(sm_GnEvaluate(sSys, rStation.asX, tr, sG, rStation.asF, &rStation.sV));
+  sm_VSer<double> asN[2];
+  SER(sm_GnEvaluate(sSys, rStation.asX, tr, sG, rStation.asF, &rStation.sV, &asN));
+  if (pC != NULL) { for (int f=0; f<2; f++) { (*pC)[f] = rStation.asF[f]; } }
+  if (pN != NULL) { for (int f=0; f<2; f++) { (*pN)[f] = asN[f]; } }
+  sm_GnTopJets(lTop, tr, asN, rStation.asF);
   return SM_SUCCESS;
 }
 
@@ -1099,6 +1193,22 @@ void sm_HermitePoints(const std::vector<double> & crS, const std::vector<SmVecto
       if (j == 0) { rCPs.push_back(crV[j]); }
       rCPs.push_back(crV[j] + crD[j] * (h / 3.0));
       rCPs.push_back(crV[j+1] - crD[j+1] * (h / 3.0));
+      rCPs.push_back(crV[j+1]);
+    }
+}
+
+// The same with each station's derivative as the span ending there takes it (crDIn) and as the
+// span starting there does (crD): a station on a face's knot line has one of each.
+void sm_HermitePoints(const std::vector<double> & crS, const std::vector<SmVector3d> & crV, const std::vector<SmVector3d> & crD,
+                      const std::vector<SmVector3d> & crDIn, std::vector<SmVector3d> & rCPs)
+{
+  rCPs.clear();
+  for (size_t j=0; j+1<crS.size(); j++)
+    {
+      const double h = crS[j+1] - crS[j];
+      if (j == 0) { rCPs.push_back(crV[j]); }
+      rCPs.push_back(crV[j] + crD[j] * (h / 3.0));
+      rCPs.push_back(crV[j+1] - crDIn[j+1] * (h / 3.0));
       rCPs.push_back(crV[j+1]);
     }
 }
@@ -1520,8 +1630,8 @@ SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader
     for (int i=0; i<=sTr.s && i<=lTot; i++)
       {
         const int k = lTot - i;
-        if (k > sTr.e)
-          { continue; }
+        if (k > sTr.e || k >= n)
+          { continue; } // the section's jets of order n are the face curve's (sm_GnTopJets)
         sm_Ivl yr[4];
         double dRho = 0.0;
         for (int r=0; r<4; r++)
@@ -1543,7 +1653,9 @@ SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader
       }
     }
   sm_Ser<sm_Ivl> sG[4];
-  SM_GN_TRY(sm_GnEvaluate(sSys, sX, sTr, sG, rF, pV));
+  sm_VSer<sm_Ivl> asN[2];
+  SM_GN_TRY(sm_GnEvaluate(sSys, sX, sTr, sG, rF, pV, &asN));
+  sm_GnTopJets(n, sTr, asN, rF);
   if (pX != NULL)
     { for (int c=0; c<4; c++) { (*pX)[c] = sX[c]; } }
   if (pDS != NULL)
@@ -3429,7 +3541,7 @@ SmStatus SmGnSectionFSG::Build
       SmPoint3d sM;
       SER(rCenterLine.EvaluatePoint(sS[j], sM));
       const double dSolveTol = 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length());
-      SER(sm_GnSolveStation(apFace, rCenterLine, sS[j], adSeed, adR, adSide, sTr, dSolveTol, sStations[j]));
+      SER(sm_GnSolveStation(apFace, rCenterLine, sS[j], adSeed, adR, adSide, sTr, dSolveTol, sStations[j], NULL, static_cast<int>(n)));
       for (int f=0; f<2; f++)
         {
           const SmPoint3d sRho(sStations[j].asF[f].a[0].c[0][0], sStations[j].asF[f].a[1].c[0][0], sStations[j].asF[f].a[2].c[0][0]);
@@ -3492,12 +3604,29 @@ SmStatus SmGnSectionFSG::Build
                       for (int q2=0; q2<4; q2++) { adSeed[q2] = (1.0 - t) * sA.asX[q2].c[0][0] + t * crB.asX[q2].c[0][0]; }
                       SmPoint3d sM;
                       SER(rCenterLine.EvaluatePoint(dS, sM));
-                      SER(sm_GnSolveStation(apFace, rCenterLine, dS, adSeed, adR, adSide, sTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()), sAt));
+                      SER(sm_GnSolveStation(apFace, rCenterLine, dS, adSeed, adR, adSide, sTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()), sAt,
+                                            NULL, static_cast<int>(n)));
                       const double x = sAt.asX[2*f+c].c[0][0] - dK;
                       if (std::fabs(x) <= 1.0e-12 * (1.0 + std::fabs(dK)))
                         { break; }
                       if ((x < 0.0) == (x0 < 0.0)) { s0 = dS; x0 = x; } else { s1 = dS; x1 = x; }
                     }
+                  // on the knot line the face's derivatives of order n + 1 differ on its two sides, and
+                  // with them the jets' s-derivatives: the station is solved on the piece after it (the
+                  // foot moves on to xb's side) and on the piece before, for the span ending there
+                  {
+                    const int lAfter = (xb > xa) ? 1 : -1;
+                    int aiAfter[4] = { 0, 0, 0, 0 }, aiBefore[4] = { 0, 0, 0, 0 };
+                    aiAfter[2*f+c] = lAfter;
+                    aiBefore[2*f+c] = -lAfter;
+                    double adOn[4];
+                    for (int q2=0; q2<4; q2++) { adOn[q2] = sAt.asX[q2].c[0][0]; }
+                    SmPoint3d sM;
+                    SER(rCenterLine.EvaluatePoint(sAt.dS, sM));
+                    const double dOnTol = 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length());
+                    SER(sm_GnSolveStation(apFace, rCenterLine, sAt.dS, adOn, adR, adSide, sTr, dOnTol, sAt, NULL, static_cast<int>(n), &aiAfter));
+                    for (int q2=0; q2<4; q2++) { sAt.aiBefore[q2] = aiBefore[q2]; }
+                  }
                   sNext.push_back(sAt);
                 }
             }
@@ -3558,7 +3687,8 @@ SmStatus SmGnSectionFSG::Build
             SmPoint3d sM;
             SER(rCenterLine.EvaluatePoint(dMid, sM));
             sm_GnStation sMid;
-            SER(sm_GnSolveStation(apFace, rCenterLine, dMid, adSeed, adR, adSide, sTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()), sMid));
+            SER(sm_GnSolveStation(apFace, rCenterLine, dMid, adSeed, adR, adSide, sTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()), sMid,
+                                  NULL, static_cast<int>(n)));
             if (bEqualArea)
               { SER(sm_GnStationThumbweight(n, dRR, sMid)); }
             sNext.push_back(sMid);
@@ -3592,6 +3722,29 @@ SmStatus SmGnSectionFSG::Build
   sS.clear();
   for (size_t j=0; j<sStations.size(); j++) { sS.push_back(sStations[j].dS); }
 
+  // each station's series on the pieces before it, for the span ending there: a Hermite span
+  // interpolates the values and s-derivatives of its own pieces, which the certificate bounds
+  for (size_t j=1; j<sStations.size(); j++)
+    {
+      sm_GnStation & rSt = sStations[j];
+      double adOn[4];
+      for (int q=0; q<4; q++) { adOn[q] = rSt.asX[q].c[0][0]; }
+      SmPoint3d sM;
+      SER(rCenterLine.EvaluatePoint(rSt.dS, sM));
+      sm_GnStation sBefore;
+      const int (&raiBefore)[4] = rSt.aiBefore;
+      SER(sm_GnSolveStation(apFace, rCenterLine, rSt.dS, adOn, adR, adSide, sTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()), sBefore,
+                            NULL, static_cast<int>(n), &raiBefore, NULL, NULL, TRUE));
+      if (bEqualArea)
+        {
+          SER(sm_GnStationThumbweight(n, adR[0] * adR[1], sBefore));
+          rSt.dWdsL = sBefore.dWds;
+        }
+      for (int q=0; q<4; q++) { rSt.asXL[q] = sBefore.asX[q]; }
+      for (int f=0; f<2; f++) { rSt.asFL[f] = sBefore.asF[f]; }
+      rSt.bSided = TRUE;
+    }
+
   const size_t lD = 3 * n + 2; // the section's control points across
   SmTArray<double> sUKnots, sVKnots;
   SmTArray<ULONG> sUMult, sVMult;
@@ -3606,14 +3759,15 @@ SmStatus SmGnSectionFSG::Build
       asJets[f].resize(n + 1);
       for (ULONG k=0; k<=n; k++)
         {
-          std::vector<SmVector3d> sV, sD;
+          std::vector<SmVector3d> sV, sD, sDIn;
           for (size_t j=0; j<sS.size(); j++)
             {
-              const sm_VSer<double> & crF = sStations[j].asF[f];
+              const sm_VSer<double> & crF = sStations[j].asF[f], & crFIn = sm_InF(sStations[j], f);
               sV.push_back(SmVector3d(crF.a[0].c[0][k], crF.a[1].c[0][k], crF.a[2].c[0][k]));
               sD.push_back(SmVector3d(crF.a[0].c[1][k], crF.a[1].c[1][k], crF.a[2].c[1][k]));
+              sDIn.push_back(SmVector3d(crFIn.a[0].c[1][k], crFIn.a[1].c[1][k], crFIn.a[2].c[1][k]));
             }
-          sm_HermitePoints(sS, sV, sD, asJets[f][k]);
+          sm_HermitePoints(sS, sV, sD, sDIn, asJets[f][k]);
         }
     }
   const size_t lNU = asJets[0][0].size();
@@ -3640,35 +3794,45 @@ SmStatus SmGnSectionFSG::Build
     {
       // each station's own form (over W_0): every row W_j P_j and weight W_j a Hermite curve of
       // its values and s-derivatives there (the form's in w(s) and the jets')
-      std::vector< std::vector<SmVector3d> > sHV(lD), sHD(lD), sWV(lD), sWD(lD);
+      std::vector< std::vector<SmVector3d> > sHV(lD), sHD(lD), sWV(lD), sWD(lD), sHDIn(lD), sWDIn(lD);
       for (size_t m=0; m<sStations.size(); m++)
         {
           const sm_GnStation & crSt = sStations[m];
-          const sm_GnSectionFormT< sm_Tay<double> > sF = sm_GnFormNormalized(n, sm_TayOf(crSt.dW, crSt.dWds));
-          for (size_t j=0; j<lD; j++)
+          // the rows' s-derivatives as the span starting here takes them, then as the one ending here
+          for (int lIn=0; lIn<2; lIn++)
             {
-              SmVector3d sV(0.0, 0.0, 0.0), sD(0.0, 0.0, 0.0);
-              for (int f=0; f<2; f++)
-                for (ULONG k=0; k<=n; k++)
-                  {
-                    const sm_VSer<double> & crF = crSt.asF[f];
-                    const SmVector3d sC(crF.a[0].c[0][k], crF.a[1].c[0][k], crF.a[2].c[0][k]);
-                    const SmVector3d sC1(crF.a[0].c[1][k], crF.a[1].c[1][k], crF.a[2].c[1][k]);
-                    const sm_Tay<double> & crG = sF.aG[f][k][j];
-                    sV = sV + sC * crG.c[0];
-                    sD = sD + sC * crG.c[1] + sC1 * crG.c[0];
-                  }
-              sHV[j].push_back(sV);
-              sHD[j].push_back(sD);
-              sWV[j].push_back(SmVector3d(sF.W[j].c[0], 0.0, 0.0));
-              sWD[j].push_back(SmVector3d(sF.W[j].c[1], 0.0, 0.0));
+              const sm_GnSectionFormT< sm_Tay<double> > sF = sm_GnFormNormalized(n, sm_TayOf(crSt.dW, lIn ? sm_InWds(crSt) : crSt.dWds));
+              for (size_t j=0; j<lD; j++)
+                {
+                  SmVector3d sV(0.0, 0.0, 0.0), sD(0.0, 0.0, 0.0);
+                  for (int f=0; f<2; f++)
+                    for (ULONG k=0; k<=n; k++)
+                      {
+                        const sm_VSer<double> & crF = crSt.asF[f], & crFD = lIn ? sm_InF(crSt, f) : crSt.asF[f];
+                        const SmVector3d sC(crF.a[0].c[0][k], crF.a[1].c[0][k], crF.a[2].c[0][k]);
+                        const SmVector3d sC1(crFD.a[0].c[1][k], crFD.a[1].c[1][k], crFD.a[2].c[1][k]);
+                        const sm_Tay<double> & crG = sF.aG[f][k][j];
+                        sV = sV + sC * crG.c[0];
+                        sD = sD + sC * crG.c[1] + sC1 * crG.c[0];
+                      }
+                  if (lIn)
+                    {
+                      sHDIn[j].push_back(sD);
+                      sWDIn[j].push_back(SmVector3d(sF.W[j].c[1], 0.0, 0.0));
+                      continue;
+                    }
+                  sHV[j].push_back(sV);
+                  sHD[j].push_back(sD);
+                  sWV[j].push_back(SmVector3d(sF.W[j].c[0], 0.0, 0.0));
+                  sWD[j].push_back(SmVector3d(sF.W[j].c[1], 0.0, 0.0));
+                }
             }
         }
       for (size_t j=0; j<lD; j++)
         {
           std::vector<SmVector3d> sHP, sWP;
-          sm_HermitePoints(sS, sHV[j], sHD[j], sHP);
-          sm_HermitePoints(sS, sWV[j], sWD[j], sWP);
+          sm_HermitePoints(sS, sHV[j], sHD[j], sHDIn[j], sHP);
+          sm_HermitePoints(sS, sWV[j], sWD[j], sWDIn[j], sWP);
           for (size_t i=0; i<lNU; i++)
             {
               sHomog[i * lD + j] = sHP[i];
@@ -3699,13 +3863,14 @@ SmStatus SmGnSectionFSG::Build
   SmObjDelete asDelSeed[2];
   for (int f=0; f<2; f++)
     {
-      std::vector<SmVector3d> sV, sD, sUVCPs;
+      std::vector<SmVector3d> sV, sD, sDIn, sUVCPs;
       for (size_t j=0; j<sS.size(); j++)
         {
           sV.push_back(SmVector3d(sStations[j].asX[2*f].c[0][0], sStations[j].asX[2*f+1].c[0][0], 0.0));
           sD.push_back(SmVector3d(sStations[j].asX[2*f].c[1][0], sStations[j].asX[2*f+1].c[1][0], 0.0));
+          sDIn.push_back(SmVector3d(sm_InX(sStations[j], 2*f).c[1][0], sm_InX(sStations[j], 2*f+1).c[1][0], 0.0));
         }
-      sm_HermitePoints(sS, sV, sD, sUVCPs);
+      sm_HermitePoints(sS, sV, sD, sDIn, sUVCPs);
       SmTArray<SmPoint3d> sUVArr;
       for (size_t i=0; i<sUVCPs.size(); i++) { sUVArr.Add(sUVCPs[i]); }
       SmCurve * pCopy = NULL;
@@ -3740,15 +3905,18 @@ PURPOSE: The order of contact k of this section with face lRail (0 or 1)
     the section stands off the face, c s^k, s along the face across the
     rail.
 
-NOTES: S - F_i = (T_i - F_i)(1 - p1) + (1 - f)(T_o(p2) - T_i(1 - p1)) about
-    the rail on face i (o the other face, F_i the foot curve): 1 - f = t^(n+1)
-    + ..., T_i - F_i = -c_i,n+1 (u - 1)^(n+1) + ... with u - 1 = -p1 = -t/(1 - w)
-    + ..., so the coefficient of t^(n+1) in the standoff along the face's
-    normal N_i is [(T_o(0) - rho_i) - c_i,n+1 (-1/(1 - w))^(n+1)] . N_i:
-    k = n + 1 where it is not zero. On two planes the feet are linear in tau,
-    so c_i,n+1 = 0 and T_o(0) is the edge's point, which lies on face i: the
-    coefficient vanishes and the next, (1 - w) (rho_o - e) . N_i (from p2's
-    first term), does not: k = n + 2, the section G(n + 1).
+NOTES: S - C_i = (T_i - C_i)(1 - p1) + (1 - f)(T_o(p2) - T_i(1 - p1)) about
+    the rail on face i (o the other face, C_i the curve on face i whose jet
+    T_i is, sm_GnTopJets): 1 - f = t^(n+1) + ..., T_i - C_i = -C_i,n+1 (u -
+    1)^(n+1) + ... (T_i's n-th coefficient differs from C_i's in the tangent
+    plane only, which the standoff along N_i does not see) with u - 1 = -p1 =
+    -t/(1 - w) + ..., so the coefficient of t^(n+1) in the standoff along the
+    face's normal N_i is [(T_o(0) - rho_i) - C_i,n+1 (-1/(1 - w))^(n+1)] .
+    N_i: k = n + 1 where it is not zero. On two planes the feet are linear in
+    tau, C_i is the line of the feet, so C_i,n+1 = 0, and T_o(0) is the edge's
+    point, which lies on face i: the coefficient vanishes and the next, (1 -
+    w) (rho_o - e) . N_i (from p2's first term), does not: k = n + 2, the
+    section G(n + 1).
 ***********************************************************************/
 SmStatus SmGnSectionFSG::ContactOrderAt
   (const SmSurface      * apFace[2],   // in : the faces under the rails
@@ -3781,7 +3949,9 @@ SmStatus SmGnSectionFSG::ContactOrderAt
     }
   const sm_Trunc sTr = { 0, n + 1 };
   sm_GnStation sAt;
-  SER(sm_GnSolveStation(apFace, crCenter, dS, crSeed, adR, adSide, sTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()), sAt));
+  sm_VSer<double> asC[2], asN[2];
+  SER(sm_GnSolveStation(apFace, crCenter, dS, crSeed, adR, adSide, sTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()), sAt, NULL, n,
+                        NULL, &asC, &asN));
   auto jet = [&](int f, int k) { return SmVector3d(sAt.asF[f].a[0].c[0][k], sAt.asF[f].a[1].c[0][k], sAt.asF[f].a[2].c[0][k]); };
   // the thumbweight of the station's own wedge: the ball's radii to its contacts from V
   const SmVector3d sV(sAt.sV.a[0].c[0][0], sAt.sV.a[1].c[0][0], sAt.sV.a[2].c[0][0]);
@@ -3795,7 +3965,13 @@ SmStatus SmGnSectionFSG::ContactOrderAt
   SmVector3d sNi = SmVector3d(sP.P[1][0].x, sP.P[1][0].y, sP.P[1][0].z) * SmVector3d(sP.P[0][1].x, sP.P[0][1].y, sP.P[0][1].z);
   SER(sNi.Unitize());
   const double dScale = smos_Pow(-1.0 / (1.0 - dW), static_cast<double>(n + 1));
-  const double dCoef = ((sTo - jet(i, 0)) - jet(i, n + 1) * dScale).Dot(sNi);
+  // the jet's n-th coefficient leaves out the face curve's tangent part tau_n: the section is off
+  // the curve by -tau_n (u - 1)^n in the tangent plane at the rail, which the face's normal, turning
+  // by N_1 (u - 1) along the curve, sees at order n + 1
+  const SmVector3d sCn(asC[i].a[0].c[0][n], asC[i].a[1].c[0][n], asC[i].a[2].c[0][n]);
+  const SmVector3d sTau = sCn - sNi * sCn.Dot(sNi);
+  const SmVector3d sN1(asN[i].a[0].c[0][1], asN[i].a[1].c[0][1], asN[i].a[2].c[0][1]);
+  const double dCoef = ((sTo - jet(i, 0)) - jet(i, n + 1) * dScale).Dot(sNi) - sTau.Dot(sN1) * dScale;
   const double dSize = jet(0, 0).DistanceBetween(jet(1, 0));
   rlOrder = (smos_Fabs(dCoef) > 1.0e-9 * smos_Max(1.0, dSize)) ? m_lOrder + 1 : m_lOrder + 2;
   return SM_SUCCESS;
@@ -3876,7 +4052,7 @@ SmStatus SmProceduralBlend::EvaluateDefinition(double dS, double dT, ULONG lHigh
       const SmSurface * apFace[2] = { m_apSupport[0], m_apSupport[1] };
       // (a nested support's own evaluations use the memo meanwhile: the station is kept only once solved)
       const SmStatus eSolved = sm_GnSolveStation(apFace, *m_pLeader, dS, adSeed, adR, m_adSide, sTr,
-                                                 1.0e-9 * smos_Max(1.0, SmVector3d(sL).Length()), sAt, pR);
+                                                 1.0e-9 * smos_Max(1.0, SmVector3d(sL).Length()), sAt, pR, n >= 2 ? n : 0);
       CountSolve(static_cast<ULONG>(sAt.lSteps));
       SER(eSolved);
       sm_StationMemo & rMemo = t_asMemo[t_lMemoNext];
