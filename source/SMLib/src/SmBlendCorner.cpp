@@ -1565,8 +1565,9 @@ iDebugLevel = DebugLevel();
   ULONG ii;
   ULONG lTotalEUs = m_pAllEUs->GetSize();
 
-  // no work - unhandled case - Currently we handle only 3x2 and 4x2
-  if ( lTotalEUs > 4)
+  // only a Turn at a corner of four edges comes here (SmBlendCorner::MakeCornerTopology): a Turn
+  // of three is MakeMitreTopology's or MakeSweptTopology's, a G1 pair the Join's
+  if ( lTotalEUs != 4)
     { SER(SM_ERR) ; } 
      
   // Nx2 corner, get the two filleted edgeuses from the base brep
@@ -1639,38 +1640,6 @@ iDebugLevel = DebugLevel();
 
     } // end 4 outward EUs from this corner vertex case check
 
-  // Determine if two edges are tangent at corner vertex.
-  // Set bIsTangentCase, dAngleDeg, and bMixedConvexity.
-
-  double dAngleDeg;
-  double dTangencyTolDeg = SM_RAD2DEG( m_dTangencyTolRadians );
-  SmBoolean bIsTangentCase = sm_TestG1Continuity          // rtn: TRUE = Edge EndTangents at vertex are within tolerance of being tangent
-                               (m_cpVertex,               // in : Target Vertex
-                                pBaseEdgeuse1->GetEdge(), // in : 1st edge connecting to vertex
-                                pBaseEdgeuse2->GetEdge(), // in : 2nd edge connectint to vertex
-                                dTangencyTolDeg,          // in : Tangency tolerance in degrees
-                                &dAngleDeg,               // out: angle (degrees) between edges at vertex
-                                iDebugLevel) ;            // in : 
-
-  // Store this value for later use.
-  m_bG1Case = bIsTangentCase;
-
-  SmBoolean bMixedConvexity = sm_CheckFaceComplimentaryCornerConcavity
-                                (m_cpVertex,     // in : target corner vertex
-                                 pBaseEdgeuse1,  // in : 1st target edgeuse - points outward from CornerVert
-                                 pBaseEdgeuse2,  // in : 2nd target edgeuse - points outward from CornerVert
-                                 NULL,           // in : NULL    = EU1 and EU2 are immediate neighbors bounding same face
-                                                 //      notNULL = OptRefEU lies 'between' EU1 and EU2 so that EU1->edge and
-                                                 //        EU2->edge do not bound the same face. Needs to be a tangential edge.
-                                 iDebugLevel) ;  // in :
-
-  // Test if we need to create a corner surface for concave cases
-  // Note: Only when angle is more than 5 degrees, cause otherwise
-  // it will be a very skinny surface & may cause problems in later process
-//    if (!bIsTangentCase && dAngleDeg < 5.0)
-//    if (!bIsTangentCase && dAngleDeg > 5.0)
-//
-
   // Get Solvers and FilletGeoms for the two filleted edges at this vertex
   SmFilletSolver * pFilSolver1  = GetFilletExecutive()->GetFilletSolverOfEdgeuse(pBaseEdgeuse1);
   SmFilletSolver * pFilSolver2  = GetFilletExecutive()->GetFilletSolverOfEdgeuse(pBaseEdgeuse2);
@@ -1707,96 +1676,12 @@ iDebugLevel = DebugLevel();
         } // end pCurrEU is a side EU check
     } // end iter all outgoing edgeuses from this vertex 
 
-  // Create the topology for the fillet corner.
-  if ( lTotalEUs == 3 )
-    {
-      // In the normal uniform-convexity case, two rails will intersect
-      // in the common face, and the other two rails should intersect the
-      // un-filleted side edge at the same place.
-      // We make vertices at those two places, and an edge between them.
-      // For tangent and mixed-convexity cases ... see comments below.
+  // The two blends are mitred: the pair is not G1, nor within 5 degrees at a face corner of the
+  // other convexity (SmBlendCorner::Classify sends those to the Join).
+  m_bBevel = TRUE;
+  m_bBlending = FALSE;
 
-      // gwc: assuming two rails should intersect the un-filleted side edge AT THE SAME PLACE isn't always true.  
-      // This gets detected and processed with virtual call SmFilletCorner::AdjustTopology() made in SmFilletExecutive::CreateFilletBrep().
-
-      // Find the side EU -- the un-filleted one.
-      SmEdgeuse * pSideEU = NULL;
-      for(ii=0;ii<lTotalEUs;ii++)
-        {
-          SmEdgeuse * pCurrEU = (*m_pAllEUs)[ii];
-          if ( pCurrEU != pBaseEdgeuse1 && pCurrEU != pBaseEdgeuse2 )
-            {
-              pSideEU = pCurrEU;
-              break;
-            }
-        } // end iter all EUs looking for the side (nonFilleted) edgeuse
-
-      // locals
-      SmFace          * pCommonFace     = sm_GetFaceByTwoEdgeuses(pBaseEdgeuse1, pBaseEdgeuse2, pSideEU );
-      ULONG             lRailIndex      = pFilSolver1->FindIndexOfRailOnFace(pCommonFace);
-      ULONG             lOtherRailIndex = pFilSolver2->FindIndexOfRailOnFace(pCommonFace);
-      SmFilletVertex  * pNewSideFV      = m_vVertices[0];
-      SmFilletVertex  * pNewFaceFV      = new (m_pPseudoBrep) SmFilletVertex(this);
-      SmFilletEdgeuse * pNewEdgeuse     = NULL;
-
-      pNewFaceFV->SetPointClass( SM_PC_FACE, pCommonFace );
-      m_vVertices.Add( pNewFaceFV );
-
-      // At a corner of three edges only the Join is built here: the blends continue each other,
-      // or meet at 5 degrees or less where the face's corner is of the other convexity
-      // (SmBlendCorner::Classify). A Turn is MakeMitreTopology's or MakeSweptTopology's.
-      if ( !(   bIsTangentCase
-             || (bMixedConvexity && dAngleDeg <= 5.0) ) )
-        { SER( SM_ERR ); }
-      m_bBlending = TRUE;
-      // Two filleted edgeuses are tangent to each other.
-      // The new face-vertex will just be straight across from the
-      // rail-side edge intersection vertex.
-      pNewFaceFV->SetFilletVertexType( SM_FV_MATE );
-      pNewFaceFV->SetMate( 0, pNewSideFV );
-      pNewSideFV->SetMate( 0, pNewFaceFV );
-
-      // Setup rails of fillet
-      //   Make a FilletEdgeuse and a FilletVertexuse to connect 
-      //   a given filletVertex to one of this FilletGeom's Fillet Rails.
-      SER( pFilletGeom1->MakeRailEdgeuse( m_pPseudoBrep, lRailIndex, pNewFaceFV, pNewEdgeuse));
-      SER( pFilletGeom2->MakeRailEdgeuse( m_pPseudoBrep, lOtherRailIndex, pNewFaceFV, pNewEdgeuse));
-
-    }  // end lTotalEUs == 3 branch
-
-  else if ( lTotalEUs == 4 )
-    {
-      // Note, at this point we don't know what the topology will be.
-      // There are side-edges between both pairs of rails.
-      // (Note, we're assuming exactly one side-edge between each
-      // potentially-intersecting rails: we exluded other case above.)
-//cbi: haven't implemented this yet:
-      // If the two side-edge-rail-rail intersections are straight across
-      // from each other, then the two fillet surfaces will meet, at a
-      // single rib.  Otherwise, we will create a third fillet face to join
-      // the two.
-
-      // Set m_bBlending and m_bBevel in 4x2 case as well. [bd 050718]
-      if (   bIsTangentCase
-                           //dAngleDeg <= 2.0
-          || (bMixedConvexity && dAngleDeg <= 5.0) )
-        {
-          // Two filleted edgeuses are tangent to each other
-          m_bBlending = TRUE;
-          m_bBevel = FALSE;
-        }
-      else
-        {
-          // Regular BEVEL corner
-          m_bBevel = TRUE;
-          m_bBlending = FALSE;
-        }
-    }  // end lTotalEUs == 4 branch
-
-
-  // At this point, we have only one fillet (cross) edge at this corner.
-  // In the 3x2 case, it will run from the rail-rail intersection of the
-  // two rails in the common face to the rail/rail/side-edge intersection.
+  // One fillet (cross) edge at this corner, between the two side vertices: the mitre.
   if(m_vVertices.GetSize() != 2)
     { SER(SM_ERR) ; }
 
@@ -1813,20 +1698,7 @@ iDebugLevel = DebugLevel();
   pPrimEU->SetFilletGeom(pFilletGeom1) ;
   pMateEU->SetFilletGeom(pFilletGeom2) ;
 
-  // Note: in version 5, this said 'if ( bIsTangentCase )', but was changed
-  // to 'if ( m_bBlending )'.  In the 3x2 case, they're the same, but not
-  // in the 4x2 case.  'Or' is correct here.
-  // [bd 09 Nov 05, 050718]
-
-  // if (m_bBlending)
-  if ( bIsTangentCase || m_bBlending )
-    {
-      pNewFilletCrossEdge->SetFilletEdgeType( SM_FE_CROSS_SECTION );
-    }
-  else
-    {
-      pNewFilletCrossEdge->SetFilletEdgeType( SM_FE_FILLET_X_FILLET );
-    }
+  pNewFilletCrossEdge->SetFilletEdgeType( SM_FE_FILLET_X_FILLET );
 
   m_vEdges.Add( pNewFilletCrossEdge );
 
