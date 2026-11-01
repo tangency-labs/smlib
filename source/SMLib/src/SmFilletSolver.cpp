@@ -6709,7 +6709,9 @@ NOTES: h(rho) = <c - f, n'> - rho, f the foot of c on the other face's
     face's offset passes through c. h is followed over 32 equal steps of
     (0, dMax] and its first sign change bisected to the curve's precision.
     The normals toward the ball are the solver's own: (offset - base) / r at
-    the solver's radius r.
+    the solver's radius r. A root at dMax itself is found only where h(dMax)
+    rounds to <= 0, which differs by platform: callers bracket the bound
+    strictly inside (0, dMax).
 ***********************************************************************/
 static SmStatus sm_BallThrough
   (SmFilletSolver  & rSolver,  // in : the solver (its offsets at their own distances)
@@ -6882,7 +6884,10 @@ SmStatus SmFilletSolver::LargestSizeOnItsFaces
   const double adOff[2] = { smos_Fabs(GetSurface(0)->GetOffsetDistance()), smos_Fabs(GetSurface(1)->GetOffsetDistance()) };
   SmBoolean bOnEdge = FALSE;
   double adRatio[2] = { 1.0, 1.0 };
-  double dMax = adOff[0];
+  // the bound is looked for up to twice the blend's own size: refused at that size, the bound is
+  // at most it and may be exactly it, where the sign of h at the search's end would be rounding's;
+  // strictly inside the bracket the root is a sign change on every platform
+  double dMax = 2.0 * adOff[0];
   const SmFilletSolverType eType = GetSolverType();
   if (RollsABall(bOnEdge))
     {
@@ -6899,7 +6904,7 @@ SmStatus SmFilletSolver::LargestSizeOnItsFaces
       rlKind = SM_FIT_SCALE; // both offsets scaled together
       adRatio[0] = adOff[0];
       adRatio[1] = adOff[1];
-      dMax = 1.0;
+      dMax = 2.0; // the factor, twice the blend's own (1), as for a ball
     }
   else
     { return SM_SUCCESS; }

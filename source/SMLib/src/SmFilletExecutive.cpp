@@ -4140,9 +4140,13 @@ SmStatus SmFilletExecutive::CreateFilletBrep
               const double dRad = sCentre.DistanceBetween( asP[0] );
               if ( smos_Fabs( sCentre.DistanceBetween( asP[3] ) - dRad ) > pEdge->GetTolerance().val )
                 { continue; } // not a circle
+              // the radius is looked for up to twice the blend's: the blend was refused at its own,
+              // so the bound is at most that and may be exactly it (the chamfer as wide as the top),
+              // where the sign of h at the search's end would be rounding's; inside the bracket
+              // the root is a sign change h makes with a nonzero slope on every platform
               SmBoolean bFound = FALSE;
               double dRho = 0.0;
-              SER( pFS->BallThrough( k, sCentre, smos_Fabs( pFS->GetSurface(0)->GetOffsetDistance() ), bFound, dRho ));
+              SER( pFS->BallThrough( k, sCentre, 2.0 * smos_Fabs( pFS->GetSurface(0)->GetOffsetDistance() ), bFound, dRho ));
               const double dFit = smos_Max( 0.0, dRho - FitMargin( *pEdge ));
               if ( bFound && ( GetFitRadius() < 0.0 || dFit < GetFitRadius() ))
                 { NoteFitRadius( dFit, pEdge ); }
