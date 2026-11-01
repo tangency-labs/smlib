@@ -2069,6 +2069,8 @@ struct sm_StationMemo
   double             dS;
   int                ts, te;
   sm_GnStation       sStation;
+  SmBoolean          bW;         // sW holds the station's equal area thumbweight series
+  sm_Tay<double>     sW;
 };
 const int SM_STATION_MEMO = 4;
 thread_local sm_StationMemo t_asMemo[SM_STATION_MEMO];
@@ -3976,12 +3978,14 @@ SmStatus SmProceduralBlend::EvaluateDefinition(double dS, double dT, ULONG lHigh
     }
   sm_GnStation sAt;
   SmBoolean bMemo = FALSE;
+  sm_StationMemo * pMemo = NULL;
   for (int m=0; m<SM_STATION_MEMO && !bMemo; m++)
     {
-      const sm_StationMemo & crMemo = t_asMemo[m];
-      if (crMemo.lSerial == m_lSerial && crMemo.dS == dS && crMemo.ts == sTr.s && crMemo.te == sTr.e)
+      sm_StationMemo & rMemo = t_asMemo[m];
+      if (rMemo.lSerial == m_lSerial && rMemo.dS == dS && rMemo.ts == sTr.s && rMemo.te == sTr.e)
         {
-          sAt = crMemo.sStation;
+          sAt = rMemo.sStation;
+          pMemo = &rMemo;
           bMemo = TRUE;
         }
     }
@@ -4002,6 +4006,8 @@ SmStatus SmProceduralBlend::EvaluateDefinition(double dS, double dT, ULONG lHigh
       rMemo.ts = sTr.s;
       rMemo.te = sTr.e;
       rMemo.sStation = sAt;
+      rMemo.bW = FALSE;
+      pMemo = &rMemo;
     }
 
   sm_TV sSum = sm_TVZero(lS, lT);
@@ -4012,13 +4018,25 @@ SmStatus SmProceduralBlend::EvaluateDefinition(double dS, double dT, ULONG lHigh
       // half the angle between the ball's radii to its contacts
       if (lS > SM_GN_TAY)
         { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmProceduralBlend: partials of this order are past what its thumbweight's series holds")); }
-      const sm_Tay<double> sU = sm_GnHalfAngle(sm_GnWedgeCos<double>(sAt.asF, sAt.sV, m_adR[0] * m_adR[1], lS));
-      double dW0 = 0.0;
-      SER(sm_GnEqualAreaW(m_lOrder, sU.c[0], dW0));
-      const sm_Tay<double> sD = sm_GnAreaSum(m_lOrder, sm_TayOf(dW0, 1.0));
-      if (!(sD.c[1] < 0.0))
-        { SER_MSG(SM_ERR, _T("SmProceduralBlend: the section's area does not fall with its thumbweight")); }
-      const sm_Tay<double> sWs = sm_GnInvert(sm_GnTarget(sU), sD, dW0);
+      // (kept with the station: the root is the costly part, and a row of points shares it)
+      sm_Tay<double> sWs;
+      if (pMemo != NULL && pMemo->bW)
+        { sWs = pMemo->sW; }
+      else
+        {
+          const sm_Tay<double> sU = sm_GnHalfAngle(sm_GnWedgeCos<double>(sAt.asF, sAt.sV, m_adR[0] * m_adR[1], lS));
+          double dW0 = 0.0;
+          SER(sm_GnEqualAreaW(m_lOrder, sU.c[0], dW0));
+          const sm_Tay<double> sD = sm_GnAreaSum(m_lOrder, sm_TayOf(dW0, 1.0));
+          if (!(sD.c[1] < 0.0))
+            { SER_MSG(SM_ERR, _T("SmProceduralBlend: the section's area does not fall with its thumbweight")); }
+          sWs = sm_GnInvert(sm_GnTarget(sU), sD, dW0);
+          if (pMemo != NULL)
+            {
+              pMemo->sW = sWs;
+              pMemo->bW = TRUE;
+            }
+        }
       const sm_GnSectionFormT< sm_Tay<double> > sForm = sm_GnFormT< sm_Tay<double> >(m_lOrder, sWs);
       // a row of the form in (sigma, dt): sum_j g_j(sigma) B_j(t0 + dt)
       const size_t lDeg = sForm.W.size();
