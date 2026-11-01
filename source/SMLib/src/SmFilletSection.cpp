@@ -3584,6 +3584,9 @@ SmStatus SmGnSectionFSG::Build
         const SmBSplineSurface * pBS = SM_CAST_PTR(SmBSplineSurface, apFace[f]);
         if (pBS == NULL)
           { SER_MSG(SM_ERR, _T("SmGnSectionFSG: a face that is not a NURBS surface: its blend of order 2 and up cannot be certified")); }
+        // a blend by its definition is enclosed only on its net, which is not the surface the feet are solved on
+        if (apFace[f]->IsKindOf(SmProceduralBlend_TYPE))
+          { SER_MSG(SM_ERR, _T("SmGnSectionFSG: a face that is a blend by its definition: a blend of order 2 and up on it cannot be certified until its definition is enclosed")); }
         SER(sm_NurbsOf(*pBS, asN[f]));
       }
     sm_NurbsCurve sLeader;
@@ -3827,30 +3830,43 @@ SmStatus SmGnSectionFSG::Build
   NER(pSurface);
   SmObjDelete sDelSurface(pSurface);
 
-  if (bReplaceRails)
+  // the feet's uv curves: the Hermite interpolants of the stations' feet, the definition's seeds
+  SmBSplineCurve * apSeed[2] = { NULL, NULL };
+  SmObjDelete asDelSeed[2];
+  for (int f=0; f<2; f++)
     {
-      for (int f=0; f<2; f++)
+      std::vector<SmVector3d> sV, sD, sUVCPs;
+      for (size_t j=0; j<sS.size(); j++)
+        {
+          sV.push_back(SmVector3d(sStations[j].asX[2*f].c[0][0], sStations[j].asX[2*f+1].c[0][0], 0.0));
+          sD.push_back(SmVector3d(sStations[j].asX[2*f].c[1][0], sStations[j].asX[2*f+1].c[1][0], 0.0));
+        }
+      sm_HermitePoints(sS, sV, sD, sUVCPs);
+      SmTArray<SmPoint3d> sUVArr;
+      for (size_t i=0; i<sUVCPs.size(); i++) { sUVArr.Add(sUVCPs[i]); }
+      SmCurve * pCopy = NULL;
+      SER(apUV[f]->Copy(crContext, pCopy));
+      asDelSeed[f].SetObj(pCopy);
+      apSeed[f] = SM_CAST_PTR(SmBSplineCurve, pCopy);
+      NER(apSeed[f]);
+      SER(apSeed[f]->SetCanonical(apUV[f]->GetDim(), 3, sUVArr, SM_CF_UNSPECIFIED, sUMult, sUKnots, SM_KT_UNSPECIFIED, NULL));
+      if (bReplaceRails)
         {
           SmTArray<SmPoint3d> sRailCPs;
           for (size_t i=0; i<lNU; i++) { sRailCPs.Add(asJets[f][0][i]); }
           SER(apRail[f]->SetCanonical(3, 3, sRailCPs, SM_CF_UNSPECIFIED, sUMult, sUKnots, SM_KT_UNSPECIFIED, NULL));
-          {
-              std::vector<SmVector3d> sV, sD, sUVCPs;
-              for (size_t j=0; j<sS.size(); j++)
-                {
-                  sV.push_back(SmVector3d(sStations[j].asX[2*f].c[0][0], sStations[j].asX[2*f+1].c[0][0], 0.0));
-                  sD.push_back(SmVector3d(sStations[j].asX[2*f].c[1][0], sStations[j].asX[2*f+1].c[1][0], 0.0));
-                }
-              sm_HermitePoints(sS, sV, sD, sUVCPs);
-              SmTArray<SmPoint3d> sUVArr;
-              for (size_t i=0; i<sUVCPs.size(); i++) { sUVArr.Add(sUVCPs[i]); }
-              SER(apUV[f]->SetCanonical(apUV[f]->GetDim(), 3, sUVArr, SM_CF_UNSPECIFIED, sUMult, sUKnots, SM_KT_UNSPECIFIED, NULL));
-            }
+          SER(apUV[f]->SetCanonical(apUV[f]->GetDim(), 3, sUVArr, SM_CF_UNSPECIFIED, sUMult, sUKnots, SM_KT_UNSPECIFIED, NULL));
         }
     }
 
-  sDelSurface.Clear();
-  rpFilletSurface = pSurface;
+  // the blend by its definition on this net: the faces, the ball's offsets and sides, the section,
+  // the centre line as the leader the stations were solved in, the seeds, the certified bound
+  const SmBSplineCurve * apConstSeed[2] = { apSeed[0], apSeed[1] };
+  SmProceduralBlend * pBlend = NULL;
+  SER(SmProceduralBlend::Create(crContext, *pSurface, apFace, adSide, adR, NULL, n, m_dThumbweight, rCenterLine, apConstSeed,
+                                m_dCertifiedBound, pBlend));
+  NER(pBlend);
+  rpFilletSurface = pBlend;
   return SM_SUCCESS;
 } // end SmGnSectionFSG::Build
 
