@@ -1285,17 +1285,20 @@ static int iDebugLevel = 0; // Note: Can't call DebugLevel() from a static metho
               }
             switch (lTotalEUs) 
               {
-                case 2: // 2x2: we can handle this only if it's a tangent fillet:
+                case 2: // SolidCraft change: two edges continuing each other alone at the vertex
+                        // are the blend corner's Join (its shared section)
                     if ( sm_TestG1Continuity( cpVertex, pEU0->GetEdge(),
                         pEU1->GetEdge(),  dTanTolDeg, NULL, iDebugLevel ))
                       {
-                        pNewCorner = new(crContext) SmFillet2x2Corner(crContext, 
-                                                                      cpVertex, 
-                                                                      pSolverEUs, 
-                                                                      pAllEUs, 
-                                                                      pExec,
-                                                                      dApproxTol3d, 
-                                                                      dTangencyTolRadians );
+                        pNewCorner = new(crContext) SmBlendCorner(crContext,
+                                                                  cpVertex,
+                                                                  pSolverEUs,
+                                                                  pAllEUs,
+                                                                  pExec,
+                                                                  dApproxTol3d,
+                                                                  dTangencyTolRadians,
+                                                                  SM_BCE_JOIN,
+                                                                  SM_BT_MITRE);
                       }
                     else 
                       {

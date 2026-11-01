@@ -108,6 +108,11 @@ protected:
   void     DeleteSweptSurface();
   SmStatus CreateSweptPatch();
 
+  // the Join on one shared section, where nothing but seams of their faces stands between the two
+  // blends (SmBlendCornerJoin.cpp)
+  SmBoolean IsJoinSection() const;
+  SmStatus  MakeJoinTopology();
+
   // the Join, and a corner of four edges: the two blends end on one common section (blending), or
   // run on to their intersection (bevel); moved from SmFilletNx2Corner.
   SmStatus MakeTwoBlendTopology();

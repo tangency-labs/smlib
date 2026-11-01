@@ -83,6 +83,7 @@ set(SMLIB_STATUS_CLEAN
   ${SRC}/SMLib/src/SmBlendCornerBall.cpp
   ${SRC}/SMLib/src/SmBallPatch.cpp
   ${SRC}/SMLib/src/SmBlendCornerEnd.cpp
+  ${SRC}/SMLib/src/SmBlendCornerJoin.cpp
   ${SRC}/SMLib/src/SmFilletStandardSolver.cpp
   ${SRC}/SMLib/src/SmFilletCustomSolver.cpp
   ${SRC}/SMLib/src/SmFilletIntersector.cpp

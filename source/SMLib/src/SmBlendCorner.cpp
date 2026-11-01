@@ -1418,25 +1418,29 @@ SmStatus SmBlendCorner::MakeCornerTopology()
 {
   if ( IsBall() )
     { return MakeBallTopology(); }
+  if ( IsJoinSection() )
+    { return MakeJoinTopology(); }
   return IsSwept() ? MakeSweptTopology() : IsMitreTurn() ? MakeMitreTopology() : MakeTwoBlendTopology();
 }
 
 SmStatus SmBlendCorner::AdjustTopology()
 {
-  if ( IsBall() )
+  if ( IsBall() || IsJoinSection() )
     { return SM_SUCCESS; }
   return IsSwept() ? SM_SUCCESS : IsMitreTurn() ? AdjustMitreTopology() : AdjustTwoBlendTopology();
 }
 
 SmStatus SmBlendCorner::AdjustTangentCorner()
 {
-  return ( IsBall() || IsSwept() || IsMitreTurn() ) ? SM_SUCCESS : AdjustTwoBlendTangentCorner();
+  return ( IsBall() || IsJoinSection() || IsSwept() || IsMitreTurn() ) ? SM_SUCCESS : AdjustTwoBlendTangentCorner();
 }
 
 SmStatus SmBlendCorner::CreateCornerPatch()
 {
   if ( IsBall() )
     { return CreateBallPatch(); }
+  if ( IsJoinSection() )
+    { return SM_SUCCESS; }
   return IsSwept() ? CreateSweptPatch() : IsMitreTurn() ? CreateMitrePatch() : CreateTwoBlendPatch();
 }
 
