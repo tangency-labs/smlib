@@ -12571,8 +12571,7 @@ const TangentEndCase SETBACK_CASES[] = {
     {"four_face_apex", setback_four_face_apex, nullptr},
     {"four_face_pocket_floor", setback_four_face_pocket_floor, nullptr},
     {"open_concave_notch_hole", setback_open_concave_notch_hole, nullptr},
-    {"asked_where_no_setback_corner_refused", setback_asked_where_no_setback_corner_refused,
-     "status 0: SmFilletConvexNxNCorner sets back a corner the Setback does not build (#86)"},
+    {"asked_where_no_setback_corner_refused", setback_asked_where_no_setback_corner_refused, nullptr},
     {"open_g1_box_corner_hole", setback_open_g1_box_corner_hole, nullptr},
 };
 
