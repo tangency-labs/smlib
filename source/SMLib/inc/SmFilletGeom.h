@@ -241,7 +241,7 @@ public:
   virtual SmStatus CalcCornerVertGeom        ();
   SmStatus         CalcFilletIntFillet       ();
   SmStatus         CalcFilletInt2Fillets     ();
-  SmStatus         CalcRailIntEdgeuse        (SmFilletGeom * pOptFG = NULL);
+  SmStatus         CalcRailIntEdgeuse        (SmFilletGeom * pOptFG = NULL, const SmVertex * cpNear = NULL);
   SmStatus         CalcRailIntExtendedEdgeuse();
   SmStatus         CalcRailIntEndSurface     (); // SmBlendCornerEnd.cpp: an End's rail end on the end face's surface
   SmStatus         CalcJoinSection           (); // SmBlendCornerJoin.cpp: a Join's shared section, both its ends

@@ -18,6 +18,7 @@
 
 #ifndef __SMFILLETCORNER_H__
 #include <SmFilletCorner.h>
+#include <SmBlendCorner.h>
 #endif
 
 #ifndef __SMFILLETINTERSECTOR_H__
@@ -2029,15 +2030,17 @@ NOTES:
   SmFilletVertexuse in each SmFilletGeom.
 ***********************************************************************/
 SmStatus SmFilletVertex::CalcRailIntEdgeuse
- (SmFilletGeom * pOptFG)   // in : notNULL = ignore other FilletGeoms
+ (SmFilletGeom   * pOptFG, // in : notNULL = ignore other FilletGeoms
                            //                attached to this filletVertex
                            //      NULL    = process 1st and last filletGeom
                            //                attached to this vertex
+  const SmVertex * cpNear) // in : the side edge's end the search starts from: NULL, the corner's
+                           //      vertex; else where the side edge continues a missed one
 {
   NER( m_cpCorner );
 
-  // get original Brep vertex
-  const SmVertex * cpVertex = m_cpCorner->GetFilletedVertex();
+  // get original Brep vertex (or the side edge's near end)
+  const SmVertex * cpVertex = ( cpNear != NULL ) ? cpNear : m_cpCorner->GetFilletedVertex();
 
   // get this filletVertex->filletEdgeuse[type == SM_FE_RAIL]->FilletGeom(s)
   SmTArray<SmFilletGeom*> sGeoms;
@@ -2316,6 +2319,25 @@ SmBoolean bDebugFVUs=FALSE;
 
             } // end iter every sideEdge guess parameter seekin rail/edge intersection
         } // end if didn't find intersection
+
+      // SolidCraft change: a side edge split only by a seam ending on it (a cylinder's seam on
+      // its rim) continues across that vertex: the rail that runs past the edge's far end ends
+      // on the next edge, between the same two faces (sm_SideEdgeuseAcrossSeamVertex). Its end
+      // is looked for there, from that vertex on.
+      if ( !bFoundIntersection && !bIsClosed )
+        {
+          const SmVertex * cpFar = ( pSideEdge->GetStartVertex() == cpVertex ) ? pSideEdge->GetEndVertex()
+                                 : ( pSideEdge->GetEndVertex()   == cpVertex ) ? pSideEdge->GetStartVertex()
+                                 : NULL;
+          SmEdgeuse * pNextEU = ( cpFar != NULL )
+                              ? sm_SideEdgeuseAcrossSeamVertex( pSideEU1, cpFar, SM_RAD2DEG( m_cpCorner->GetTangencyTolRadians() ))
+                              : NULL;
+          if ( pNextEU != NULL )
+            {
+              SetPointClass( SM_PC_EDGEUSE, pNextEU );
+              return CalcRailIntEdgeuse( pOptFG, cpFar );
+            }
+        }
 
       // when still not found
       if ( !bFoundIntersection )
@@ -7693,12 +7715,74 @@ SmStatus SmFilletEdge::CalcEdgeOnEdge
   SmCurve        * pCopyCurve  = NULL ;
   SER( pEdge->GetCurve()->Copy(crContext, pCopyCurve)  ); 
   pNew3DCurve = SM_CAST_PTR(SmBSplineCurve, pCopyCurve) ; NER(pNew3DCurve);
+
+  // SolidCraft change: a rail's end found on the side edge continued across a seam's vertex
+  // (SmFilletVertex::CalcRailIntEdgeuse, sm_SideEdgeuseAcrossSeamVertex) lies on a later edge
+  // of that chain: this edge runs from the corner's vertex along the chain to it, the chain's
+  // edges joined end to end (each continues the last G1 between the same two faces).
+  SmBoolean bJoined = FALSE;
+  {
+    SmFilletVertex * apFV[2] = { pStartFV, pEndFV };
+    const SmVertex * cpCornerVertex = ( m_cpCorner != NULL ) ? m_cpCorner->GetFilletedVertex() : NULL;
+    for (ULONG kk=0; kk<2 && cpCornerVertex != NULL; kk++)
+      {
+        SmEdgeuse * pFVEU = ( apFV[kk] != NULL && apFV[kk]->GetPointClass() == SM_PC_EDGEUSE )
+                          ? (SmEdgeuse*)apFV[kk]->GetPointClassObject()
+                          : NULL;
+        if ( pFVEU == NULL || pFVEU->GetEdge() == pEdge || pEdge->IsClosed() )
+          { continue; }
+        // this edge's edgeuse on the rail's faceuse, and the chain from the corner's vertex
+        SmTArray<SmEdgeuse*> sEUs;
+        SER( pEdge->GetEdgeuses( sEUs ));
+        SmEdgeuse * pCurr = NULL;
+        for (ULONG ii=0; ii<sEUs.GetSize() && pCurr == NULL; ii++)
+          {
+            if ( sEUs[ii]->GetFaceuse() == pFVEU->GetFaceuse() )
+              { pCurr = sEUs[ii]; }
+          }
+        NER( pCurr );
+        if ( pEdge->GetStartVertex() != cpCornerVertex && pEdge->GetEndVertex() != cpCornerVertex )
+          { SER( SM_ERR ); }
+        SmTArray<SmBSplineCurve*> sPieces;
+        SmTArray<SmBoolean>       sSenses;
+        SmObjsDelete<SmBSplineCurve*> sCleanPieces( &sPieces );
+        const SmVertex * cpFrom = cpCornerVertex;
+        SmBoolean bReached = FALSE;
+        for (ULONG lStep=0; lStep<64 && pCurr != NULL; lStep++)
+          {
+            SmEdge * pE = pCurr->GetEdge();
+            SmCurve * pPiece = NULL;
+            SER( pE->GetCurve()->Copy( crContext, pPiece ));
+            SmBSplineCurve * pBPiece = SM_CAST_PTR( SmBSplineCurve, pPiece );
+            if ( pBPiece == NULL )
+              { delete pPiece; SER( SM_ERR ); }
+            sPieces.Add( pBPiece );
+            { SmExtent1d sPieceIvl = pE->GetInterval(); SER( pBPiece->Trim( sPieceIvl )); }
+            sSenses.Add( ( pE->GetStartVertex() == cpFrom ) ? TRUE : FALSE );
+            const SmVertex * cpTo = ( pE->GetStartVertex() == cpFrom ) ? pE->GetEndVertex() : pE->GetStartVertex();
+            if ( pE == pFVEU->GetEdge() )
+              { bReached = TRUE; break; }
+            pCurr  = sm_SideEdgeuseAcrossSeamVertex( pCurr, cpTo, SM_RAD2DEG( m_cpCorner->GetTangencyTolRadians() ));
+            cpFrom = cpTo;
+          }
+        if ( !bReached )
+          { SER( SM_ERR ); }
+        SmBSplineCurve * pJoined = NULL;
+        SER( SmBSplineCurve::CreateByJoining( crContext, sPieces, &sSenses, pJoined ));
+        NER( pJoined );
+        delete pNew3DCurve;
+        pNew3DCurve = pJoined;
+        bJoined     = TRUE;
+        break;
+      }
+  }
   //  
   //  SmBSplineCurve * pCurve      = SM_CAST_PTR(SmBSplineCurve, pEdge->GetCurve()); NER(pCurve);
   //  SmBSplineCurve * pNew3DCurve = new (crContext)SmBSplineCurve(*pCurve);
 
   // Trim ThisFilletEdge->OrigCurveCopy by Start and End FilletPoints
-  SmExtent1d sTrimIvl = pEdge->GetInterval();  // was  pNew3DCurve->GetNaturalInterval();  [220629]
+  SmExtent1d sTrimIvl = bJoined ? pNew3DCurve->GetNaturalInterval()  // the chain joined
+                                : pEdge->GetInterval();  // was  pNew3DCurve->GetNaturalInterval();  [220629]
   SmBoolean  bSuccess;
   double     dParam1, dParam2, dDist;
   double     dTol = pEdge->GetTolerance();
