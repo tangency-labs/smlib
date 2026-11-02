@@ -2268,6 +2268,104 @@ SmStatus sm_SbGraphG1(const SmContext & crContext, const std::vector<SmBlendSetb
   SM_SB_FAIL(rFill.m_pReason, SM_ERR, _T("SmBlendSetback: no G1 fill up to degree 9 is certified convex at these setbacks"));
 }
 
+// det(H, Hu, Hv, (V, 0)) of a homogeneous net and a polynomial vector field V (3 components).
+sm_SbT sm_SbTDetWith(const sm_SbNet & crN, const sm_SbT (&crV)[3])
+{
+  sm_SbT h[4], hu[4], hv[4];
+  for (int c=0; c<4; c++)
+    {
+      h[c] = sm_SbTMake(crN.p, crN.q);
+      for (size_t i=0; i<crN.P.size(); i++) { h[c].c[i] = crN.P[i].a[c]; }
+      hu[c] = sm_SbTDu(h[c]);
+      hv[c] = sm_SbTDv(h[c]);
+    }
+  const sm_SbT * pRows[3] = { h, hu, hv };
+  sm_SbT s = sm_SbTMake(0, 0);
+  for (int c=0; c<3; c++)
+    {
+      const sm_SbT * pM[3][3];
+      for (int r=0; r<3; r++)
+        {
+          int cc = 0;
+          for (int col=0; col<4; col++)
+            if (col != c) { pM[r][cc++] = &pRows[r][col]; }
+        }
+      s = sm_SbTAxpy(s, ((3 + c) % 2 == 0) ? 1.0 : -1.0, sm_SbTMulFast(crV[c], sm_SbTDet3(pM)));
+    }
+  return s;
+}
+
+// A setback patch's normal field (ruling (a)'s certificate): V (3 components) and g > 0 with
+// |V| <= g on the square and V = g N along its columns v = 0 (on crA) and v = 1 (on crB), N the
+// face's unit normal there, turned to crE's side. With V the convex blend (1 - v) gB GA + v gA GB
+// of the faces' homogeneous normals GA = gA N (|GA| = gA identically along a column on the face):
+// for the patch's Pu x Pv, g |Pu x Pv| >= (Pu x Pv) . V, equal along a column where the patch is
+// G1 to its face.
+void sm_SbNormalField(const sm_SbNet & crN, const SmBlendSetback::Face & crA, const SmBlendSetback::Face & crB, const SmVector3d & crE,
+                      sm_SbT (&rV)[3], sm_SbT & rG)
+{
+  sm_SbT sGs[2][3], sg[2];
+  for (int e=0; e<2; e++)
+    {
+      const SmBlendSetback::Face & crF = (e == 0) ? crA : crB;
+      const size_t j = (e == 0) ? 0 : crN.q;
+      if (crF.m_eKind == SmBlendSetback::SM_SB_PLANE)
+        {
+          for (int c=0; c<3; c++)
+            {
+              sGs[e][c] = sm_SbTMake(0, 0);
+              sGs[e][c].c[0] = (c == 0) ? crF.m_sNormal.x : (c == 1) ? crF.m_sNormal.y : crF.m_sNormal.z;
+            }
+          sg[e] = sm_SbTMake(0, 0);
+          sg[e].c[0] = 1.0;
+        }
+      else
+        {
+          const double dP[3] = { crF.m_sPoint.x, crF.m_sPoint.y, crF.m_sPoint.z };
+          const double dA[3] = { crF.m_sAxis.x, crF.m_sAxis.y, crF.m_sAxis.z };
+          sm_SbT sU[3], sW = sm_SbTMake(crN.p, 0), sH = sm_SbTMake(crN.p, 0);
+          for (size_t i=0; i<=crN.p; i++) { sW.c[i] = crN.P[i * (crN.q + 1) + j].a[3]; }
+          for (int c=0; c<3; c++)
+            {
+              sU[c] = sm_SbTMake(crN.p, 0);
+              for (size_t i=0; i<=crN.p; i++) { sU[c].c[i] = crN.P[i * (crN.q + 1) + j].a[c] - sW.c[i] * dP[c]; }
+              for (size_t i=0; i<=crN.p; i++) { sH.c[i] += sU[c].c[i] * dA[c]; }
+            }
+          if (crF.m_eKind == SmBlendSetback::SM_SB_SPHERE)
+            {
+              for (int c=0; c<3; c++) { sGs[e][c] = sU[c]; }
+              sg[e] = sm_SbTAxpy(sm_SbTMake(crN.p, 0), crF.m_dRadius, sW);
+            }
+          else
+            {
+              // cylinder (slope 0) or cone: rho w = R w + slope h; G = U - h a - slope rho w a
+              const sm_SbT sRho = sm_SbTAxpy(sm_SbTAxpy(sm_SbTMake(crN.p, 0), crF.m_dRadius, sW), crF.m_dSlope, sH);
+              for (int c=0; c<3; c++)
+                { sGs[e][c] = sm_SbTAxpy(sm_SbTAxpy(sU[c], -dA[c], sH), -crF.m_dSlope * dA[c], sRho); }
+              sg[e] = sm_SbTAxpy(sm_SbTMake(crN.p, 0), sqrt(1.0 + crF.m_dSlope * crF.m_dSlope), sRho);
+            }
+        }
+      // its side: G . e > 0 at the column's middle
+      double dDot = 0.0;
+      for (int c=0; c<3; c++)
+        {
+          double dMid = 0.0;
+          for (size_t i=0; i<=sGs[e][c].p; i++)
+            { dMid += sGs[e][c].c[i] * sm_Binomial(static_cast<ULONG>(sGs[e][c].p), static_cast<ULONG>(i)); }
+          dDot += dMid * ((c == 0) ? crE.x : (c == 1) ? crE.y : crE.z);
+        }
+      if (dDot < 0.0)
+        for (int c=0; c<3; c++)
+          for (size_t i=0; i<sGs[e][c].c.size(); i++) { sGs[e][c].c[i] = -sGs[e][c].c[i]; }
+    }
+  sm_SbT sLo = sm_SbTMake(0, 1), sHi = sm_SbTMake(0, 1);
+  sLo.c = { 1.0, 0.0 };
+  sHi.c = { 0.0, 1.0 };
+  for (int c=0; c<3; c++)
+    { rV[c] = sm_SbTAxpy(sm_SbTMulFast(sm_SbTMulFast(sLo, sg[1]), sGs[0][c]), 1.0, sm_SbTMulFast(sm_SbTMulFast(sHi, sg[0]), sGs[1][c])); }
+  rG = sm_SbTMulFast(sg[0], sg[1]);
+}
+
 /*******************************************************************//**
 PURPOSE: The G1 fill of a corner beside curved faces, as a graph over the
     corner's axis (SmBlendSetback.h; #85, the owner's rulings of
@@ -3138,7 +3236,15 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
           for (size_t i=0; i<sNegO.c.size(); i++) { sNegO.c[i] = -sNegO.c[i]; }
           const double s = (sm_SbTNonneg(sF[3], 1.0e-12 * dOs, SM_SB_GRAPH_DEPTH) == 1) ? 1.0 : (sm_SbTNonneg(sNegO, 1.0e-12 * dOs, SM_SB_GRAPH_DEPTH) == 1) ? -1.0 : 0.0;
           if (s == 0.0) { bCertified = false; break; }
-          // the shift's J from the net's projection (as above) and w^3
+          // the shift's J from the net's projection (as above) and w^3; beside a face where k < 0,
+          // the net's own J and the faces' normal field in place of e (exact along the columns)
+          const bool bExactPhi = (p < n && sK[p] < 0.0);
+          sm_SbT sNV[3], sNg, sOt;
+          if (bExactPhi)
+            {
+              sm_SbNormalField(sNets[p], crFaces[crFace[p]], crFaces[crFace[(p + 1) % n]], sE, sNV, sNg);
+              sOt = sm_SbTDetWith(sNets[p], sNV);
+            }
           sm_SbT h[4], hu[4], hv[4];
           for (int c=0; c<4; c++)
             {
@@ -3146,7 +3252,7 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
               for (size_t i=0; i<sNets[p].P.size(); i++)
                 {
                   double dV = sNets[p].P[i].a[c];
-                  if (c < 3) { dV -= heightOf(sNets[p].P[i]) * ((c == 0) ? sE.x : (c == 1) ? sE.y : sE.z); }
+                  if (c < 3 && !bExactPhi) { dV -= heightOf(sNets[p].P[i]) * ((c == 0) ? sE.x : (c == 1) ? sE.y : sE.z); }
                   h[c].c[i] = dV;
                 }
               hu[c] = sm_SbTDu(h[c]);
@@ -3162,7 +3268,15 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
           for (int k=0; k<3; k++)
             {
               sCm[k] = (sK[p] < 0.0) ? sm_SbTMulFast(sW3, sF[k]) : sF[k];
-              if (sK[p] < 0.0)
+              if (bExactPhi)
+                {
+                  const sm_SbT * pA = (k == 2) ? sXv : sXu;
+                  const sm_SbT * pB = (k == 0) ? sXu : sXv;
+                  sm_SbT sJk = sm_SbTMulFast(pA[0], pB[0]);
+                  for (int c=1; c<3; c++) { sJk = sm_SbTAxpy(sJk, 1.0, sm_SbTMulFast(pA[c], pB[c])); }
+                  sCm[k] = sm_SbTAxpy(sm_SbTMulFast(sNg, sCm[k]), -sK[p], sm_SbTMulFast(sOt, sJk));
+                }
+              else if (sK[p] < 0.0)
                 {
                   const sm_SbT * pA = (k == 2) ? sXv : sXu;
                   const sm_SbT * pB = (k == 0) ? sXu : sXv;
@@ -3182,6 +3296,22 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
               if (iNon != 1)
                 {
                   if (getenv("SBDBG")) fprintf(stderr, "SBDBG d %zu: certificate fails on patch %zu check %d (%s), k %.4g\n", d, p, k, iNon == 0 ? "negative" : "undecided", sK[p]);
+                  if (getenv("SBDBG3"))
+                    {
+                      for (int a=0; a<=10; a++) { for (int b=0; b<=10; b++)
+                        {
+                          const double u = a / 10.0, v = b / 10.0;
+                          SmVector3d P, Xu, Xv; double R2[3][3];
+                          sm_SbFirst(sNets[p], u, v, P, Xu, Xv); sm_SbSecond(sNets[p], u, v, R2);
+                          SmVector3d N = Xu * Xv; N.Unitize(); if (N.Dot(sE) * atof(getenv("SBDBG3")) < 0) N = N * -1.0;
+                          const double E = Xu.Dot(Xu), F = Xu.Dot(Xv), G = Xv.Dot(Xv);
+                          const double L = SmVector3d(R2[0][0], R2[0][1], R2[0][2]).Dot(N), M = SmVector3d(R2[1][0], R2[1][1], R2[1][2]).Dot(N), NN = SmVector3d(R2[2][0], R2[2][1], R2[2][2]).Dot(N);
+                          const double a11 = L - sK[p] * E, a12 = M - sK[p] * F, a22 = NN - sK[p] * G;
+                          const double tr = 0.5 * (a11 / E + a22 / G);
+                          fprintf(stderr, " %+.1e", (a11 * a22 - a12 * a12) / (E * G) >= 0 && a11 >= 0 ? smos_Min(a11 / E, a22 / G) : -1.0);
+                          (void)tr;
+                        } fprintf(stderr, "\n"); }
+                    }
                   bCertified = false;
                 }
             }
