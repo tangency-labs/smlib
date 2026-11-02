@@ -781,15 +781,15 @@ int32_t smlib_blend_dropping(const smlib_brep *brep, int32_t kind, const double 
  * per edge. A point that picks no vertex or several is SMLIB_ERR_PICK_NONE or
  * SMLIB_ERR_PICK_AMBIGUOUS (its index in `out_failed_corner`, if not NULL); a vertex where no
  * blended edge meets is SMLIB_ERR_ARG; a corner where some edge is not blended, or whose edges are
- * not all convex or all concave (SMLib builds a setback only where all are blended, of one
- * convexity), is SMLIB_ERR_UNSUPPORTED with the index of the first point that picked it in
+ * not all convex or all concave, or that is not one SMLib sets back (every face there a plane,
+ * every edge straight, constant rounds or curvature-continuous sections, no two edges tangent), is
+ * SMLIB_ERR_UNSUPPORTED with the index of the first point that picked it in
  * `out_failed_corner` (if not NULL), as is any setback on a chamfer (its corners are bevelled; no
  * index is written). A setback as long as an edge at its corner, or two on the ends of one
  * edge that together are, is SMLIB_ERR_NO_ROOM. The setback must reach past where the corner's
  * blends meet without one (on a corner of rounds of radius r between faces square to each other,
  * past r), else SMLib fails (its status): the patch does not join contact lines that already
- * cross. Known limit: on that corner a setback beyond about 2 r gives a patch that bulges past
- * the faces it meets (by 0.002 at 2.2 r, 0.25 at 3 r). */
+ * cross. The corner's fill stays within the faces it meets (certified). */
 int32_t smlib_blend_setback(const smlib_brep *brep, int32_t kind, const double *points, const double *sizes, int64_t n_points,
                             const double *corners, const double *setbacks, int64_t n_corners, double tolerance, smlib_brep **out,
                             int64_t *out_failed_point, int64_t *out_failed_corner);
