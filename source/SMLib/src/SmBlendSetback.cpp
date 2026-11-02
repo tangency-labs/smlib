@@ -973,7 +973,8 @@ SmBoolean sm_SbLeastSquares(std::vector<double> M, std::vector<double> c, size_t
 // SM_ERR_INVALID_INPUT: G is not positive definite; SM_ERR: no y meets the constraints (or no
 // progress within the step limit).
 SmStatus sm_SbDualQP(const std::vector<double> & crG, const std::vector<double> & crg, const std::vector<double> & crC,
-                     const std::vector<double> & crb, size_t n, size_t m, double dTol, std::vector<double> & rY, bool * pbProven = NULL)
+                     const std::vector<double> & crb, size_t n, size_t m, double dTol, std::vector<double> & rY, bool * pbProven = NULL,
+                     unsigned long long * plSteps = NULL)
 {
   if (pbProven != NULL) { *pbProven = false; }
   // G = L L', J = L^-T (J' G J = I), J[r n + c] its column c
@@ -1026,6 +1027,7 @@ SmStatus sm_SbDualQP(const std::vector<double> & crG, const std::vector<double> 
   const size_t lMaxSteps = 50 * (m + n) + 1000;
   for (size_t lStep=0; lStep<lMaxSteps; lStep++)
     {
+      if (plSteps != NULL) { (*plSteps)++; }
       size_t p = m;
       double dWorst = -dTol;
       for (size_t i=0; i<m; i++)
@@ -1154,14 +1156,15 @@ SmStatus sm_SbDualQP(const std::vector<double> & crG, const std::vector<double> 
 // answer is the full programme's: a solution meets every row; a set of rows with no solution is
 // one the full set has none of either (*pbProven as sm_SbDualQP's).
 SmStatus sm_SbDualQPRows(const std::vector<double> & crG, const std::vector<double> & crg, const std::vector<double> & crC,
-                         const std::vector<double> & crb, size_t n, size_t m, double dTol, std::vector<double> & rY, bool * pbProven = NULL)
+                         const std::vector<double> & crb, size_t n, size_t m, double dTol, std::vector<double> & rY, bool * pbProven = NULL,
+                         unsigned long long * plSteps = NULL)
 {
   if (pbProven != NULL) { *pbProven = false; }
   const size_t lBlock = 2000;
   std::vector<char> sIn(m, 0);
   std::vector<size_t> sSet;
   // y at the unconstrained minimum: the empty set's solution
-  SER(sm_SbDualQP(crG, crg, std::vector<double>(), std::vector<double>(), n, 0, dTol, rY));
+  SER(sm_SbDualQP(crG, crg, std::vector<double>(), std::vector<double>(), n, 0, dTol, rY, NULL, plSteps));
   for (int iRound=0; iRound<200; iRound++)
     {
       std::vector< std::pair<double, size_t> > sViolated;
@@ -1187,7 +1190,7 @@ SmStatus sm_SbDualQPRows(const std::vector<double> & crG, const std::vector<doub
           for (size_t k=0; k<n; k++) { sC[t * n + k] = crC[sSet[t] * n + k]; }
           sb[t] = crb[sSet[t]];
         }
-      const SmStatus eStatus = sm_SbDualQP(crG, crg, sC, sb, n, sSet.size(), dTol, rY, pbProven);
+      const SmStatus eStatus = sm_SbDualQP(crG, crg, sC, sb, n, sSet.size(), dTol, rY, pbProven, plSteps);
       if (eStatus != SM_SUCCESS)
         { return eStatus; }
     }
@@ -2221,7 +2224,9 @@ SmStatus sm_SbGraphG1(const SmContext & crContext, const std::vector<SmBlendSetb
               for (size_t f=0; f<lN; f++) { sCm[lM * lN + f] = (f == lFree) ? 1.0 : 0.0; }
               sbm.push_back(-1.0);
               std::vector<double> sTm;
-              const SmStatus eM = sm_SbDualQPRows(sGm, sgm, sCm, sbm, lN, lM + 1, 1.0e-13, sTm);
+              rFill.m_lRowsBuilt += sbm.size();
+              rFill.m_lPeakRows = smos_Max(rFill.m_lPeakRows, static_cast<unsigned long long>(sbm.size()));
+              const SmStatus eM = sm_SbDualQPRows(sGm, sgm, sCm, sbm, lN, lM + 1, 1.0e-13, sTm, NULL, &rFill.m_lQPSteps);
               if (eM != SM_SUCCESS)
                 { SER(eM); }
               pProbe->m_dMargin = sTm[lFree];
@@ -2229,7 +2234,9 @@ SmStatus sm_SbGraphG1(const SmContext & crContext, const std::vector<SmBlendSetb
               return SM_SUCCESS;
             }
           bool bProven = false;
-          const SmStatus eQP = sm_SbDualQPRows(sG, sg, sC, sb, lFree, sb.size(), 1.0e-13, sT, &bProven);
+          rFill.m_lRowsBuilt += sb.size();
+          rFill.m_lPeakRows = smos_Max(rFill.m_lPeakRows, static_cast<unsigned long long>(sb.size()));
+          const SmStatus eQP = sm_SbDualQPRows(sG, sg, sC, sb, lFree, sb.size(), 1.0e-13, sT, &bProven, &rFill.m_lQPSteps);
           if (bProbe)
             {
               pProbe->m_bFeasible = (eQP == SM_SUCCESS);
@@ -2890,8 +2897,9 @@ SmStatus sm_SbModelRounds(const SmContext & crContext, const std::vector<SmBlend
 
 SmStatus SmBlendSetback::CertifiedScale(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Edge> & crEdges,
                                         const std::vector<double> & crSetBacks, double & rdScale, ULONG * plSolves, const TCHAR ** ppReason,
-                                        const std::vector<double> * pvMost, ULONG * plAttempts)
+                                        const std::vector<double> * pvMost, ULONG * plAttempts, Work * pWork)
 {
+  if (pWork != NULL) { *pWork = Work(); }
   rdScale = 0.0;
   if (plSolves != NULL) { *plSolves = 0; }
   ULONG lAttempts = 0;
@@ -2930,6 +2938,14 @@ SmStatus SmBlendSetback::CertifiedScale(const SmContext & crContext, const std::
       sAsFill.m_bFill = true;
       eStatus = FillHoleProbe(crContext, crFaces, sRounds, dTol, sFill, (pProbe != NULL) ? *pProbe : sAsFill);
       if (plSolves != NULL) { *plSolves += sFill.m_lSolves; }
+      if (pWork != NULL)
+        {
+          pWork->m_lAttempts++;
+          pWork->m_lSolves += sFill.m_lSolves;
+          pWork->m_lRowsBuilt += sFill.m_lRowsBuilt;
+          pWork->m_lPeakRows = smos_Max(pWork->m_lPeakRows, sFill.m_lPeakRows);
+          pWork->m_lQPSteps += sFill.m_lQPSteps;
+        }
       for (size_t o=0; o<sSurfaces.size(); o++) { delete sSurfaces[o]; }
       if (pProbe == NULL && eStatus != SM_SUCCESS && sFill.m_bUncertified)
         { return SM_SUCCESS; }

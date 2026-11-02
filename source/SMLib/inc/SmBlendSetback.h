@@ -147,7 +147,9 @@ public:
   //   as its side s = 0 (its t the same as part q's s).
   // m_vRound[m]: the caller's index of the cycle's round m; m_vFace[m]: of face m.
   // m_lDegree: the interior map's degree. m_pReason: why FillHole refused, NULL when it did not.
-  // m_lSolves: the quadratic programmes a G1 fill solved (its count, not its time).
+  // m_lSolves: the quadratic programmes a G1 fill solved (its count, not its time); m_lRowsBuilt,
+  // m_lPeakRows, m_lQPSteps: their sector rows computed, the most held at once, and their dual
+  // active-set steps (counts, not times).
   // m_bUncertified: FillHole refused a G1 fill as no fill up to degree 9 is certified convex.
   // The patches are owned by the fill.
   struct Fill
@@ -159,6 +161,9 @@ public:
     ULONG                           m_lDegree = 0;
     const TCHAR *                   m_pReason = NULL;
     ULONG                           m_lSolves = 0;
+    unsigned long long              m_lRowsBuilt = 0;
+    unsigned long long              m_lPeakRows = 0;
+    unsigned long long              m_lQPSteps = 0;
     bool                            m_bUncertified = false;
 
     Fill() {}
@@ -193,6 +198,17 @@ public:
   static SmStatus FillHoleProbe(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Round> & crRounds, double dTol,
                                 Fill & rFill, Probe & rProbe);
 
+  // A scale search's work (CertifiedScale), counts not times: the fills tried, their quadratic
+  // programmes, their sector rows computed and the most held at once, their dual active-set steps.
+  struct Work
+  {
+    ULONG              m_lAttempts = 0;
+    ULONG              m_lSolves = 0;
+    unsigned long long m_lRowsBuilt = 0;
+    unsigned long long m_lPeakRows = 0;
+    unsigned long long m_lQPSteps = 0;
+  };
+
   // The smallest scale k on the grid of 1e-3 in [1, 2] of the setbacks crSetBacks (one per
   // edge, the edges and faces as for Distances, every face a plane through the corner's vertex,
   // every edge a straight line there), each held at its most (pvMost, optional), at which the G1
@@ -206,7 +222,7 @@ public:
   // where the corner is not one of planes and straight edges.
   static SmStatus CertifiedScale(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Edge> & crEdges,
                                  const std::vector<double> & crSetBacks, double & rdScale, ULONG * plSolves = NULL, const TCHAR ** ppReason = NULL,
-                                 const std::vector<double> * pvMost = NULL, ULONG * plAttempts = NULL);
+                                 const std::vector<double> * pvMost = NULL, ULONG * plAttempts = NULL, Work * pWork = NULL);
 
   // The most any patch of crFill stands past a face out of the corner (positive: past it): out
   // of the material for a convex corner (bConvex), into it for a concave one. A certified bound:
