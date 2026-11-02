@@ -57,6 +57,7 @@
     I(SMLIB_FLAT_FACE_NURBS_FORM, face_nurbs_form)                                                 \
     I(SMLIB_FLAT_EDGE_NURBS_FORM, edge_nurbs_form)                                                 \
     I(SMLIB_FLAT_WIRE_EDGE_NURBS_FORM, wire_edge_nurbs_form)                                       \
+    I(SMLIB_FLAT_FACE_DEFINITION_REAL_COUNT, face_definition_real_count)                           \
     F(SMLIB_FLAT_TOLERANCE, tolerance)                                                             \
     F(SMLIB_FLAT_EXTENT, extent)                                                                   \
     F(SMLIB_FLAT_FACE_RANGE, face_range)                                                           \
@@ -121,7 +122,8 @@
     F(SMLIB_FLAT_FACE_TORUS_MAJOR_RADIUS, face_torus_major_radius)                                 \
     F(SMLIB_FLAT_FACE_TORUS_MINOR_RADIUS, face_torus_minor_radius)                                 \
     F(SMLIB_FLAT_EDGE_TOLERANCE, edge_tolerance)                                                   \
-    F(SMLIB_FLAT_VERTEX_TOLERANCE, vertex_tolerance)
+    F(SMLIB_FLAT_VERTEX_TOLERANCE, vertex_tolerance)                                               \
+    F(SMLIB_FLAT_FACE_DEFINITION_REALS, face_definition_reals)
 
 namespace smlib_flat_impl
 {

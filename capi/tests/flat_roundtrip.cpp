@@ -49,11 +49,11 @@ std::string dir = ".";
         }                                                                                          \
     } while (0)
 
-// Every id: int64 ids 1..35, double ids 101..165.
+// Every id: int64 ids 1..36, double ids 101..166.
 std::vector<int32_t> IntIds()
 {
     std::vector<int32_t> v;
-    for (int32_t id = SMLIB_FLAT_REGION_SHELL_COUNT; id <= SMLIB_FLAT_WIRE_EDGE_NURBS_FORM; ++id)
+    for (int32_t id = SMLIB_FLAT_REGION_SHELL_COUNT; id <= SMLIB_FLAT_FACE_DEFINITION_REAL_COUNT; ++id)
     {
         v.push_back(id);
     }
@@ -63,7 +63,7 @@ std::vector<int32_t> IntIds()
 std::vector<int32_t> RealIds()
 {
     std::vector<int32_t> v;
-    for (int32_t id = SMLIB_FLAT_TOLERANCE; id <= SMLIB_FLAT_VERTEX_TOLERANCE; ++id)
+    for (int32_t id = SMLIB_FLAT_TOLERANCE; id <= SMLIB_FLAT_FACE_DEFINITION_REALS; ++id)
     {
         v.push_back(id);
     }
@@ -1981,7 +1981,7 @@ int main(int argc, char **argv)
         int64_t n = 0;
         const int64_t one = 1;
         const double half = 0.5;
-        for (int32_t id : {0, 36, 100, 166, -1, 1000})
+        for (int32_t id : {0, 37, 100, 167, -1, 1000})
         {
             CHECK(smlib_flat_get_i64(f, id, &pi, &n) == SMLIB_ERR_ARG);
             CHECK(smlib_flat_get_f64(f, id, &pf, &n) == SMLIB_ERR_ARG);
