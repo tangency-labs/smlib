@@ -1515,16 +1515,71 @@ void sm_SbAffineFundamentals(const sm_SbAffinePatch & crP, const SmVector3d & cr
     }
 }
 
+// The sides of the setback patches (nets 0 .. n - 1) G1 to a plane by construction: patch m's side
+// v = 0 on face m, v = 1 on face m + 1 (crFace: the cycle's faces), each marked where its first two
+// rows of control points (the side and its cross derivative) lie on that face's plane, to
+// rounding at their scale. Out: 2 flags per net, false for every other net and side.
+std::vector<bool> sm_SbSidesOnPlanes(const std::vector<sm_SbNet> & crNets, size_t n, const std::vector<SmBlendSetback::Face> & crFaces,
+                                     const std::vector<ULONG> & crFace)
+{
+  std::vector<bool> sOn(2 * crNets.size(), false);
+  for (size_t m=0; m<n && m<crNets.size() && n<=crFace.size(); m++)
+    for (size_t e=0; e<2; e++)
+      {
+        const size_t f = crFace[(m + e) % n];
+        if (f >= crFaces.size())
+          { continue; }
+        SmVector3d sN = crFaces[f].m_sNormal;
+        if (sN.Unitize() != SM_SUCCESS)
+          { continue; }
+        const sm_SbNet & crN = crNets[m];
+        if (crN.q < 1)
+          { continue; }
+        bool bOn = true;
+        for (size_t i=0; i<=crN.p && bOn; i++)
+          for (size_t jj=0; jj<2 && bOn; jj++)
+            {
+              const size_t j = (e == 0) ? jj : crN.q - jj;
+              const sm_SbH & crH = crN.P[i * (crN.q + 1) + j];
+              if (!(smos_Fabs(crH.a[3]) > 0.0))
+                { bOn = false; break; }
+              const SmPoint3d sX(crH.a[0] / crH.a[3], crH.a[1] / crH.a[3], crH.a[2] / crH.a[3]);
+              const SmVector3d sD = sX - crFaces[f].m_sPoint;
+              const double dScale = 1.0 + SmVector3d(sX).Length() + SmVector3d(crFaces[f].m_sPoint).Length();
+              bOn = smos_Fabs(sD.Dot(sN)) <= 1.0e-12 * dScale;
+            }
+        sOn[2 * m + e] = bOn;
+      }
+  return sOn;
+}
+
 // The fill's shape certified from its nets: on every patch o = det(H, Hu, Hv, (e, 0)) of one sign
 // s and s l, s n, l n - m^2 >= 0 (each to 1e-12 of its coefficients' scale), from Bernstein
 // coefficients halving up to lDepth times. rlPatch: the first patch not certified.
-bool sm_SbCertifiedConvex(const std::vector<sm_SbNet> & crNets, const SmVector3d & crE, size_t lDepth, size_t & rlPatch)
+// crPlaneSides[2 p + e] (e = 0: side v = 0, e = 1: side v = 1) marks a side of patch p that is G1
+// to a plane by the patch's construction (sm_SbSidesOnPlanes). Along such a side the normal is the
+// plane's, so N is constant and N_u = 0; and since S_u . N = 0 and S_v . N = 0 along it,
+// L = -S_u . N_u = 0 and M = -S_v . N_u = 0: l = det(H, Hu, Hv, Huu) and m = det(H, Hu, Hv, Huv)
+// vanish identically there, so their Bernstein rows on that side are exactly 0, and are set so
+// rather than read from rounding (a value of 0 to within 1e-12 of the scale either side decides
+// nothing; l n - m^2 is then exactly 0 there too). Every other side keeps its computed rows.
+bool sm_SbCertifiedConvex(const std::vector<sm_SbNet> & crNets, const std::vector<bool> & crPlaneSides, const SmVector3d & crE, size_t lDepth,
+                          size_t & rlPatch)
 {
   for (size_t p=0; p<crNets.size(); p++)
     {
       rlPatch = p;
       sm_SbT sF[4];
       sm_SbFundamentals(crNets[p], crE, sF);
+      for (size_t e=0; e<2; e++)
+        {
+          if (2 * p + e >= crPlaneSides.size() || !crPlaneSides[2 * p + e])
+            { continue; }
+          // a side G1 to a plane: N_u = 0 there, so L = -S_u . N_u = 0 and M = -S_v . N_u = 0
+          for (int k=0; k<2; k++)
+            for (size_t i=0; i<=sF[k].p; i++)
+              { sF[k].c[i * (sF[k].q + 1) + (e == 0 ? 0 : sF[k].q)] = 0.0; }
+        }
       const sm_SbT & crO = sF[3];
       const double dO = sm_SbTScale(crO);
       sm_SbT sNegO = crO;
@@ -2242,7 +2297,7 @@ SmStatus sm_SbGraphG1(const SmContext & crContext, const std::vector<SmBlendSetb
           std::vector<sm_SbNet> sNets;
           SER(netsAt(sT, sNets));
           size_t lBad = 0;
-          if (!sm_SbCertifiedConvex(sNets, sE, SM_SB_GRAPH_DEPTH, lBad))
+          if (!sm_SbCertifiedConvex(sNets, sm_SbSidesOnPlanes(sNets, n, crFaces, crFace), sE, SM_SB_GRAPH_DEPTH, lBad))
             { continue; }
           if (d == 9 && pProbe == NULL)
             {
