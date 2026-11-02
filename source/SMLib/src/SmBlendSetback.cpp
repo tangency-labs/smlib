@@ -2695,9 +2695,10 @@ NOTES: As sm_SbGraphG1, with three changes where a face is curved (every
 ***********************************************************************/
 SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBlendSetback::Face> & crWorldFaces,
                             const std::vector<SmBlendSetback::Round> & crRounds, const std::vector< std::vector< std::vector<sm_SbH> > > & crWorldJets,
-                            const std::vector<size_t> & crQ, const std::vector<ULONG> & crRound, const std::vector<ULONG> & crFace,
+                            const std::vector<size_t> & crQIn, const std::vector<ULONG> & crRound, const std::vector<ULONG> & crFace,
                             const std::vector<SmBoolean> & crRev, double dTol, SmBlendSetback::Fill & rFill, bool bLeastFirst)
 {
+  std::vector<size_t> crQ(crQIn);
   typedef SmBlendSetback::Face Face;
   const size_t n = crRound.size();
   // the frame about the rails' ends' centre (rounding of the corner's size, not its place)
@@ -2725,6 +2726,59 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
         }
   std::vector<Face> crFaces(crWorldFaces);
   for (size_t f=0; f<crFaces.size(); f++) { crFaces[f].m_sPoint = SmPoint3d(SmVector3d(crFaces[f].m_sPoint) - sO); }
+  // each round's end section and its derivative across it from the GEOMETRY, not the round's
+  // parametrization (owner, section 24): the section is a circular arc about the ball's centre C
+  // (radius r) in the plane square to the spine there (unit normal T, toward the round's rails'
+  // increasing parameter): its rational quadratic arc from its rail end A to its rail end B (the
+  // middle point C + r (a + b) / (1 + a . b), weight cos of half the angle, a, b the unit radii),
+  // and its derivative across the end the spine's unit tangent T at every point, (T w, 0) (the
+  // round's tangent plane holds T all along its section: the fill is G1 to it whatever the speed).
+  // The raw jets stay for the round's curvature (sm_SbRoundRowK: of its geometry).
+  const std::vector< std::vector< std::vector<sm_SbH> > > crRawJets(crJets);
+  const std::vector<size_t> crRawQ(crQ);
+  for (size_t r=0; r<crJets.size(); r++)
+    {
+      const size_t q = crQ[r];
+      auto pt = [&](const sm_SbH & crH) { return SmVector3d(crH.a[0] / crH.a[3], crH.a[1] / crH.a[3], crH.a[2] / crH.a[3]); };
+      sm_SbH sMid = sm_SbZero();
+      for (size_t j=0; j<=q; j++) { sMid = sm_SbAxpy(sMid, sm_Binomial(static_cast<ULONG>(q), static_cast<ULONG>(j)) / std::pow(2.0, static_cast<double>(q)), crJets[r][0][j]); }
+      const SmVector3d A = pt(crJets[r][0][0]), M = pt(sMid), B = pt(crJets[r][0][q]);
+      const SmVector3d a0 = A - B, b0 = M - B, axb = a0 * b0;
+      const double dAxb2 = axb.Dot(axb);
+      if (!(dAxb2 > 0.0))
+        { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's end section is not a circular arc")); }
+      const SmVector3d C = B + ((b0 * a0.Dot(a0) - a0 * b0.Dot(b0)) * axb) * (0.5 / dAxb2);
+      SmVector3d ua = A - C, ub = B - C;
+      const double dR = ua.Length();
+      SER(ua.Unitize());
+      SER(ub.Unitize());
+      const double dCos = ua.Dot(ub);
+      if (!(dCos > -1.0 + 1.0e-9))
+        { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's end section spans half its ball or more")); }
+      SmVector3d sT = ua * ub;
+      SER(sT.Unitize());
+      // T toward the round's rails' increasing parameter (its raw derivative along, at the middle)
+      sm_SbH sD = sm_SbZero();
+      for (size_t j=0; j<=q; j++) { sD = sm_SbAxpy(sD, sm_Binomial(static_cast<ULONG>(q), static_cast<ULONG>(j)) / std::pow(2.0, static_cast<double>(q)), crJets[r][1][j]); }
+      const SmVector3d sDx(sD.a[0] - sD.a[3] * M.x, sD.a[1] - sD.a[3] * M.y, sD.a[2] - sD.a[3] * M.z);
+      if (sDx.Dot(sT) < 0.0) { sT = sT * -1.0; }
+      // (its scale is free: each side's speed lambda is matched to it)
+      const double w1 = std::sqrt(0.5 * (1.0 + dCos));
+      const SmVector3d P1 = C + (ua + ub) * (dR / (1.0 + dCos));
+      const double dSpeed = 1.0;
+      std::vector<sm_SbH> sRow(3), sAcross(3);
+      const SmVector3d sPts[3] = { A, P1, B };
+      const double dW[3] = { 1.0, w1, 1.0 };
+      for (int j=0; j<3; j++)
+        {
+          sRow[j].a[0] = sPts[j].x * dW[j]; sRow[j].a[1] = sPts[j].y * dW[j]; sRow[j].a[2] = sPts[j].z * dW[j]; sRow[j].a[3] = dW[j];
+          sAcross[j].a[0] = sT.x * dW[j] * dSpeed; sAcross[j].a[1] = sT.y * dW[j] * dSpeed; sAcross[j].a[2] = sT.z * dW[j] * dSpeed; sAcross[j].a[3] = 0.0;
+        }
+      crJets[r].assign(2, std::vector<sm_SbH>());
+      crJets[r][0] = sRow;
+      crJets[r][1] = sAcross;
+      crQ[r] = 2;
+    }
 
   // each cycle patch's round rows, its rails' ends and their directions toward the corner
   std::vector< std::vector<sm_SbH> > sH0(n), sH1(n);
@@ -2797,7 +2851,7 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
       size_t lFaceAt[2] = { crFaces.size(), crFaces.size() };
       for (int e=0; e<2; e++)
         {
-          const sm_SbH & crH = crJets[r][0][e == 0 ? 0 : crQ[r]];
+          const sm_SbH & crH = crRawJets[r][0][e == 0 ? 0 : crRawQ[r]];
           sEnd[e] = SmPoint3d(crH.a[0] / crH.a[3], crH.a[1] / crH.a[3], crH.a[2] / crH.a[3]);
           for (size_t f=0; f<crFaces.size(); f++)
             if (smos_Fabs(SmBlendSetback::Distance(crFaces[f], sEnd[e])) <= dTol)
@@ -2808,8 +2862,8 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
         }
       bool bLine = false;
       if (lFaceAt[0] < crFaces.size() && lFaceAt[1] < crFaces.size())
-        SER(sm_SbLineSpine(crFaces[lFaceAt[0]], crFaces[lFaceAt[1]], sEnd, crJets[r][0], dTol, bLine));
-      if (sm_SbRoundRowK(crJets[r], sE, bPlaneEnd, bLine, sRoundK[r], pWhy) != SM_SUCCESS)
+        SER(sm_SbLineSpine(crFaces[lFaceAt[0]], crFaces[lFaceAt[1]], sEnd, crRawJets[r][0], dTol, bLine));
+      if (sm_SbRoundRowK(crRawJets[r], sE, bPlaneEnd, bLine, sRoundK[r], pWhy) != SM_SUCCESS)
         { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, pWhy != NULL ? pWhy : _T("SmBlendSetback: a round's least normal curvature at its end cannot be found")); }
     }
 
