@@ -4603,20 +4603,17 @@ void mixed_drafted_rounds_together_r2()
 // The mixed-convexity corner cases (smlib #82), held as the other lists are: `--mixed-corners-
 // known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase MIXED_CORNER_CASES[] = {
-    {"chamfers_together_d2", mixed_chamfers_together_d2,
-     "status 1001: SmFillet3x2MixedConvexityCorner, Vertex Computation Failure, where the two chamfers meet at the tangent seam (each chamfer alone builds)"},
+    {"chamfers_together_d2", mixed_chamfers_together_d2, nullptr},
     {"drafted_rounds_together_r2", mixed_drafted_rounds_together_r2,
-     "status 1001 before any geometry: the corner where the front top edge runs tangent into the concave arc, on the cone, is of no kind SMLib's blend corners take"},
-    {"residue_rounds_together_r2", mixed_residue_rounds_together_r2,
-     "SmFillet3x2MixedConvexityCorner's one collapsed-side patch stands 0.0374 out of the front face (box y min 0.0205155, the face at 0.0579255), folds over at X (a seam at 3.14 rad), 10 faces"},
+     "status 1001, Unable to Make Topology: the corner on the cones is the blend corner's Mixed, whose topology there is not built yet"},
+    {"residue_rounds_together_r2", mixed_residue_rounds_together_r2, nullptr},
     {"residue_rounds_together_r5", mixed_residue_rounds_together_r5,
-     "SmFillet3x2MixedConvexityCorner's one collapsed-side patch stands 0.128 out of the front face (box y min -0.0698950, the face at 0.0579255), folds over at X (a seam at 3.14 rad), 10 faces"},
+     "status 1001, Vertex Computation Failure: traced past V, the concave round splits into several fillet geoms, and the Mixed corner takes the first, the piece past the front point, whose rail on the cylinder does not cross the seam's line"},
     {"residue_rounds_together_r7", mixed_residue_rounds_together_r7,
-     "SmFillet3x2MixedConvexityCorner's one collapsed-side patch stands 0.230 out of the front face (box y min -0.1723259, the face at 0.0579255), folds over at X (a seam at 3.14 rad), 10 faces"},
-    {"rounds_together_r2", mixed_rounds_together_r2,
-     "SmFillet3x2MixedConvexityCorner's one collapsed-side patch stands 0.0374 out of the front face (box y min -0.0374099), folds over at X (a seam at 3.14 rad), 10 faces"},
+     "status 1001, Vertex Computation Failure: traced past V, the concave round splits into several fillet geoms, and the Mixed corner takes the first, the piece past the front point, whose rail on the cylinder does not cross the seam's line"},
+    {"rounds_together_r2", mixed_rounds_together_r2, nullptr},
     {"rounds_together_r5", mixed_rounds_together_r5,
-     "SmFillet3x2MixedConvexityCorner's one collapsed-side patch stands 0.128 out of the front face (box y min -0.1278205), folds over at X (a seam at 3.14 rad), 10 faces"},
+     "status 1001, Vertex Computation Failure: traced past V, the concave round splits into several fillet geoms, and the Mixed corner takes the first, the piece past the front point, whose rail on the cylinder does not cross the seam's line"},
 };
 
 int mixed_corner_cases(bool known_failing, const char *only)

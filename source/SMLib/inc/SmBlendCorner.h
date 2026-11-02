@@ -37,8 +37,9 @@ enum SmBlendCornerEvent
   SM_BCE_TURN, // two blends turn at the unblended side edge(s) between their faces
   SM_BCE_JOIN, // two blends whose edges continue each other (G1) at the vertex
   SM_BCE_BALL, // three rounds of one radius and convexity, the common ball's sphere between them (SmBlendCornerBall.cpp)
-  SM_BCE_END,    // one blend ends at the vertex, its side faces there not blended
-  SM_BCE_SETBACK // three or more blends, every edge there blended, each set back and the hole filled (SmBlendSetback)
+  SM_BCE_END,     // one blend ends at the vertex, its side faces there not blended
+  SM_BCE_SETBACK, // three or more blends, every edge there blended, each set back and the hole filled (SmBlendSetback)
+  SM_BCE_MIXED    // a convex and a concave blend continuing each other G1 across a tangent seam (SmBlendCornerMixed.cpp)
 };
 
 // How an End ends (SmBlendCornerEnd.cpp).
@@ -111,6 +112,20 @@ protected:
   SmStatus  CreateBallPatch();
 
   SmBoolean IsSetBack() const { return ( m_eEvent == SM_BCE_SETBACK ) ? TRUE : FALSE; }
+
+  // the Mixed corner (SmBlendCornerMixed.cpp): its two faces, either side of the inflection X-V
+  SmSurface               * m_apMixedSurface[2]; // from CalcCornerEdgeGeom until CreateCornerPatch hands them to their faces
+  SmTArray<SmCurve*>        m_vMixed3d[2];       // each face's loop's 3D curves
+  SmTArray<SmBSplineCurve*> m_vMixedUV[2];       // and their uv lines
+  SmTArray<SmOrientType>    m_vMixedOrients[2];  // and their orientations in the loop
+
+  SmBoolean IsMixed() const { return ( m_eEvent == SM_BCE_MIXED ) ? TRUE : FALSE; }
+  SmStatus  MakeMixedTopology();
+  SmStatus  CalcMixedVertGeom();
+  SmStatus  CalcMixedEdgeGeom();
+  SmStatus  CreateMixedPatches();
+  void      DeleteMixedSurfaces();
+
   SmBoolean IsSwept() const { return ( m_eEvent == SM_BCE_TURN && m_eTurn == SM_BT_SWEPT ) ? TRUE : FALSE; }
   SmBoolean IsMitreTurn() const { return ( m_eEvent == SM_BCE_TURN && m_eTurn == SM_BT_MITRE && m_pAllEUs != NULL && m_pAllEUs->GetSize() == 3 ) ? TRUE : FALSE; }
 
@@ -185,6 +200,18 @@ public:
                            double                       dTangencyTolDeg,
                            SmBlendCornerEvent         & reEvent,
                            SmBlendTurn                & reTurn);
+
+  // The Mixed corner at a filleted vertex of three edges where a convex and a concave blend meet,
+  // their edges continuing each other G1 at the vertex, and the third edge, not blended, a straight
+  // tangent seam between their other faces (the peg's front edge and its concave arc where the
+  // front face runs tangent into the cylinder), the blends' common face a plane.
+  // reEvent SM_BCE_MIXED, else SM_BCE_NONE (the corner hierarchy builds it).
+  static SmStatus ClassifyMixed(const SmVertex             * cpVertex,
+                                const SmTArray<SmEdgeuse*> & crSolverEUs,
+                                const SmTArray<SmEdgeuse*> & crAllEUs,
+                                SmFilletExecutive          * pExec,
+                                double                       dTangencyTolDeg,
+                                SmBlendCornerEvent         & reEvent);
 
   // The Ball at a filleted vertex where all three edges are blended (pAllEUs, the corner's ring):
   // constant circular rounds of one radius, all convex or all concave, between three faces each a
