@@ -4128,15 +4128,22 @@ int tangent_end_cases(bool known_failing, const char *only)
 //   bound the body, to the blends' tolerance 4e-5 (the rig's grade);
 // - X a vertex of the result, where at least three faces meet (the top's, the two blends');
 // - G1 at every seam's stations within a box B about the corner (rounds), to 1e-9 rad: the
-//   rounds are exact and the corner carries their exact jets;
+//   rounds are exact and the corner carries their exact jets. Measured on the faces' surfaces,
+//   their normals (turned as their faces) at the edge's point, so that it is the surfaces'
+//   tangency, not how closely a face's uv curve was refitted (a surface of revolution trimmed to a
+//   smaller turn has its uv curves made again, to the edge's tolerance), and a fold reads pi;
 // - the result's faces: the peg's 7, the two blends, and the corner's two faces either side of
 //   its inflection X-V, 11 (each blend's End caps merge into the faces they lie on, as each
 //   blend alone leaves 8);
-// - the volume of the body less B against an independent measure: outside B each blend is its
-//   own section, so it is the concave blend alone less B (built and cut the same way: its End on
-//   the back face is certified, 7.3e-7 off the closed form for the round, -3.2e-6 for the chamfer,
-//   and is the same End here) less the front blend's section along the bar from its End on the
-//   left face to B, in closed form (the front blend alone less B meets that form to 1.5e-11).
+// - the volume of the body less B and less B', its mirror about the bar's middle (y = 8) round the
+//   concave blend's End on the back face, in closed form: outside them each blend is its own
+//   section (the front one from its End on the left face, exact, to B; the concave one between
+//   them). B' takes out the End on the back face, whose rib is a certified intersection (the
+//   concave round alone is 7.3e-7 off a closed form that keeps it, the chamfer 3.2e-6, and two
+//   builds of the same End differ by up to 1.9e-6). To 1e-11 for the rounds; to 2e-9 for the
+//   chamfers, whose concave chamfer's cone is itself 9.66e-6 (1.07e-9 relative) off the closed
+//   form between B and B' when it is blended alone (the round alone 4.0e-8, the front chamfer and
+//   round alone 1.5e-11).
 // Built on a peg placed by `PegFrame`: the bar's front left corner (ox, oy) and its length l (the
 // cylinder's axis at (ox + l, oy + 8)): the rig's sketch residues move these by 1e-10.
 struct PegFrame
@@ -4216,24 +4223,55 @@ void peg_corner_box(double s, double &x0, double &y1, double &z0, double &z1)
 
 double exact_volume_of(const smlib_brep *b);
 
-// The volume of `b` less B (blends of size s on the peg placed by `f`); -1 if the cut fails.
+// The volume of `b` less B and B' (blends of size s on the peg placed by `f`); -1 if a cut fails.
 double peg_outside_corner_volume(const smlib_brep *b, const PegFrame &f, double s)
 {
     double x0, y1, z0, z1;
     peg_corner_box(s, x0, y1, z0, z1);
-    const double o[3] = {f.ox + f.l - 40.0 + x0, f.oy - 1.0, z0}, size[3] = {60.0, y1 + 1.0, z1 - z0};
-    smlib_brep *cut = nullptr, *outside = nullptr;
-    CHECK(smlib_make_box(o, size, &cut) == SMLIB_OK);
-    CHECK(b != nullptr && cut != nullptr && smlib_boolean(b, cut, SMLIB_BOOLEAN_SUBTRACT, &outside) == SMLIB_OK && outside != nullptr);
+    const double o[3] = {f.ox + f.l - 40.0 + x0, f.oy - 1.0, z0}, o2[3] = {f.ox + f.l - 40.0 + x0, f.oy + 16.0 - y1, z0};
+    const double size[3] = {60.0, y1 + 1.0, z1 - z0};
+    smlib_brep *cut = nullptr, *cut2 = nullptr, *mid = nullptr, *outside = nullptr;
+    CHECK(smlib_make_box(o, size, &cut) == SMLIB_OK && smlib_make_box(o2, size, &cut2) == SMLIB_OK);
+    CHECK(b != nullptr && cut != nullptr && smlib_boolean(b, cut, SMLIB_BOOLEAN_SUBTRACT, &mid) == SMLIB_OK && mid != nullptr);
+    CHECK(mid != nullptr && cut2 != nullptr && smlib_boolean(mid, cut2, SMLIB_BOOLEAN_SUBTRACT, &outside) == SMLIB_OK && outside != nullptr);
     double v = -1.0;
     if (outside != nullptr)
     {
         CHECK(sound(outside));
         v = exact_volume_of(outside);
     }
-    smlib_brep_free(cut);
-    smlib_brep_free(outside);
+    for (smlib_brep *x : {cut, cut2, mid, outside})
+    {
+        smlib_brep_free(x);
+    }
     return v;
+}
+
+// That volume in closed form: V0 (16 x 10 along the bar's length l, and 960 pi of the half disc and
+// the disc) less the unblended peg's part in B and in B' (the same, mirrored: the bar's block, the
+// half disc's segment below z = 10 and the whole disc's above it, of height y1: the circular
+// segment 64 acos(1 - y1/8) - (8 - y1) sqrt(16 y1 - y1^2)), less the front blend's section A from
+// the left face to B, plus the concave blend's ring between B and B': the integral over its radius
+// rho in [8, 8 + s] of its height h(rho) times rho times the arc's angle there between y = y1 and
+// y = 16 - y1, asin((8 - y1) / rho) - asin((y1 - 8) / rho). The round's h = s - sqrt(s^2 - (8 + s -
+// rho)^2), A = (1 - pi/4) s^2; the chamfer's h = 8 + s - rho, A = s^2 / 2. Integrated in theta, rho
+// = 8 + s (1 - cos theta), where the integrand is analytic, by Gauss-Legendre at 40 points.
+double peg_outside_corner_closed_form(const PegFrame &f, double s, bool chamfer)
+{
+    double x0, y1, z0, z1;
+    peg_corner_box(s, x0, y1, z0, z1);
+    const double seg = 64.0 * std::acos(1.0 - y1 / 8.0) - (8.0 - y1) * std::sqrt(16.0 * y1 - y1 * y1);
+    const double in_box = (40.0 - x0) * y1 * (10.0 - z0) + 0.5 * seg * (10.0 - z0) + seg * (z1 - 10.0);
+    const double section = chamfer ? 0.5 * s * s : (1.0 - PI / 4.0) * s * s;
+    const double ring = gauss_legendre(
+        [&](double th)
+        {
+            const double rho = 8.0 + s * (1.0 - std::cos(th)), drho = s * std::sin(th);
+            const double h = chamfer ? 8.0 + s - rho : s - s * std::sin(th);
+            return h * rho * 2.0 * std::asin((8.0 - y1) / rho) * drho;
+        },
+        0.0, PI / 2.0, 40);
+    return 160.0 * f.l + 960.0 * PI - 2.0 * in_box - section * (f.l - (40.0 - x0)) + ring;
 }
 
 // The largest angle (radians) between the faces either side of any edge of `b`, at 31 stations
@@ -4273,17 +4311,33 @@ double peg_corner_worst_seam(const smlib_brep *b, const PegFrame &f, double s, d
                 counted = true;
                 seams++;
             }
-            SmPoint3d pa, pb;
-            SmVector3d ba, bb;
-            if (o == nullptr || o == a || a->EvaluateBinormal(ivl.Evaluate(st / 32.0), FALSE, pa, ba) != SM_SUCCESS ||
-                o->EvaluateBinormal(ivl.Evaluate(st / 32.0), FALSE, pb, bb) != SM_SUCCESS || ba.Unitize(FALSE) != SM_SUCCESS ||
-                bb.Unitize(FALSE) != SM_SUCCESS)
+            // each face's surface normal at the edge's point (its foot, solved from the face's uv
+            // there), turned as the face: G1 when they agree, a fold reads pi
+            SmVector3d an[2];
+            bool ok = o != nullptr && o != a;
+            for (int h = 0; h < 2 && ok; ++h)
+            {
+                SmEdgeuse *eu = h == 0 ? a : o;
+                SmPoint3d pe;
+                SmVector3d be, fn;
+                SmPoint2d uv;
+                SmSurface *srf = eu->GetFace()->GetSurface();
+                SmBoolean found = FALSE;
+                SmSolution sol;
+                ok = srf != nullptr && eu->EvaluateBinormal(ivl.Evaluate(st / 32.0), FALSE, pe, be, nullptr, &fn, &uv) == SM_SUCCESS &&
+                     srf->LocalPointSolve(srf->GetNaturalUVDomain(), SM_SO_MINIMIZE, m, uv, found, sol) == SM_SUCCESS && found &&
+                     srf->EvaluateNormal(SmPoint2d(sol.m_vStart[0], sol.m_vStart[1]), TRUE, TRUE, an[h]) == SM_SUCCESS;
+                if (ok && an[h].Dot(fn) < 0.0)
+                {
+                    an[h] = an[h] * -1.0;
+                }
+            }
+            if (!ok)
             {
                 worst = HUGE_VAL;
                 continue;
             }
-            // tangent faces' binormals (into each face, square to the edge) are opposed
-            worst = std::max(worst, std::atan2((ba * bb).Length(), -ba.Dot(bb)));
+            worst = std::max(worst, std::atan2((an[0] * an[1]).Length(), an[0].Dot(an[1])));
         }
     }
     return worst;
@@ -4344,18 +4398,11 @@ void peg_corner_graded(smlib_brep *&r, const PegFrame &f, double s, bool chamfer
         std::printf("  %d seams within the corner's box, worst angle %.3g rad\n", seams, worst);
         CHECK(seams > 0 && worst <= 1e-9);
     }
-    // the volume outside B: the concave blend alone's, less the front blend's section from the
-    // left face to B
+    // the volume outside B and B', in closed form
     {
-        smlib_brep *alone = peg_blend(f.oy == 0.0 ? tangent_peg(0) : residue_peg(), chamfer ? SMLIB_BLEND_CHAMFER : SMLIB_BLEND_ROUND,
-                                      {f.ox + f.l - 8.0, f.oy + 8.0, 10.0}, {s});
-        double x0, y1, z0, z1;
-        peg_corner_box(s, x0, y1, z0, z1);
-        const double section = chamfer ? 0.5 * s * s : (1.0 - PI / 4.0) * s * s;
-        const double got = peg_outside_corner_volume(r, f, s), want = peg_outside_corner_volume(alone, f, s) - section * (f.l - 40.0 + x0);
-        std::printf("  volume outside the corner's box %.10f, want %.10f\n", got, want);
-        CHECK(near(got, want, 1e-11));
-        smlib_brep_free(alone);
+        const double got = peg_outside_corner_volume(r, f, s), want = peg_outside_corner_closed_form(f, s, chamfer);
+        std::printf("  volume outside the corner's and the End's boxes %.10f, want %.10f\n", got, want);
+        CHECK(near(got, want, chamfer ? 2e-9 : 1e-11));
     }
     done(r);
 }
