@@ -14,6 +14,7 @@
 
 #include <SmBSplineSurface.h>
 #include <SmMath.h>
+#include <SmFilletExact.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -2459,6 +2460,54 @@ int sm_SbNoMoreConcave(const sm_SbNet & crN, const SmBlendSetback::Face & crA, c
   return iResult;
 }
 
+// Whether a constant round between faces crA (its row's start crEnd[0] on it) and crB (crEnd[1])
+// has a line for its spine, by the one classification (sm_ClassifyBlendSpine): the faces as their
+// natural quadrics, offset through the ball's centre (the row's circumcentre).
+SmStatus sm_SbLineSpine(const SmBlendSetback::Face & crA, const SmBlendSetback::Face & crB, const SmPoint3d (&crEnd)[2], const std::vector<sm_SbH> & crRow,
+                        double dTol, bool & rbLine)
+{
+  rbLine = false;
+  const size_t q = crRow.size() - 1;
+  sm_SbH sMid = sm_SbZero();
+  for (size_t j=0; j<=q; j++) { sMid = sm_SbAxpy(sMid, sm_Binomial(static_cast<ULONG>(q), static_cast<ULONG>(j)) / std::pow(2.0, static_cast<double>(q)), crRow[j]); }
+  const SmVector3d A(crEnd[0]), B(sMid.a[0] / sMid.a[3], sMid.a[1] / sMid.a[3], sMid.a[2] / sMid.a[3]), Cc(crEnd[1]);
+  const SmVector3d a = A - Cc, b = B - Cc, axb = a * b;
+  const double dAxb2 = axb.Dot(axb);
+  if (!(dAxb2 > 0.0))
+    { return SM_SUCCESS; }
+  const SmPoint3d sC(Cc + ((b * a.Dot(a) - a * b.Dot(b)) * axb) * (0.5 / dAxb2));
+  SmExactBlend sBlend;
+  sBlend.m_dRadius = (A - SmVector3d(sC)).Length();
+  for (int e=0; e<2; e++)
+    {
+      const SmBlendSetback::Face & crF = (e == 0) ? crA : crB;
+      SmBlendQuadric & rQ = sBlend.m_aFaces[e];
+      switch (crF.m_eKind)
+        {
+        case SmBlendSetback::SM_SB_PLANE:    rQ.m_eKind = SmBlendQuadric::SM_BQ_PLANE; rQ.m_sPoint = crF.m_sPoint; rQ.m_sDir = crF.m_sNormal; break;
+        case SmBlendSetback::SM_SB_SPHERE:   rQ.m_eKind = SmBlendQuadric::SM_BQ_SPHERE; rQ.m_sPoint = crF.m_sPoint; rQ.m_dRadius = crF.m_dRadius; rQ.m_dSide = crF.m_dSide; break;
+        case SmBlendSetback::SM_SB_CYLINDER: rQ.m_eKind = SmBlendQuadric::SM_BQ_CYLINDER; rQ.m_sPoint = crF.m_sPoint; rQ.m_sDir = crF.m_sAxis; rQ.m_dRadius = crF.m_dRadius; rQ.m_dSide = crF.m_dSide; break;
+        default:
+          {
+            // the apex where R + slope h = 0, the axis into the nappe the face is on
+            rQ.m_eKind = SmBlendQuadric::SM_BQ_CONE;
+            rQ.m_sPoint = SmPoint3d(SmVector3d(crF.m_sPoint) - crF.m_sAxis * (crF.m_dRadius / crF.m_dSlope));
+            rQ.m_sDir = crF.m_sAxis * ((crF.m_dSlope > 0.0) ? 1.0 : -1.0);
+            rQ.m_dAngle = std::atan(smos_Fabs(crF.m_dSlope));
+            rQ.m_dSide = crF.m_dSide;
+            break;
+          }
+        }
+      const SmVector3d sN = rQ.Normal(crEnd[e]);
+      const double dOff = (SmVector3d(sC) - SmVector3d(crEnd[e])).Dot(sN);
+      sBlend.m_adContact[e] = (dOff < 0.0) ? 1.0 : -1.0;
+      sBlend.m_aOffsets[e] = rQ.Offset(dOff, dTol);
+    }
+  SER(sm_ClassifyBlendSpine(sC, dTol, sBlend));
+  rbLine = (sBlend.m_eSpine == SM_BS_LINE);
+  return SM_SUCCESS;
+}
+
 // A round's least normal curvature along its end row (owner's ruling (a), the rounds' part of k),
 // II with the unit normal toward crE's side, to rounding. crJ: its jets there (sm_SbRoundJets, 0 ..
 // 2), the row a circular arc (a constant round's section about its ball's centre C, radius r: its
@@ -2466,10 +2515,12 @@ int sm_SbNoMoreConcave(const sm_SbNet & crN, const SmBlendSetback::Face & crA, c
 // those jets at u = 0 (P0 = H, P1 = H + Hs / 2, P2 = H + Hs + Hss / 2) restricted to u = 0:
 // k is certified a lower bound where s w^4 r (l, m, n) - k sigma Dc J is PSD on the row (sigma Dc =
 // |det(H, Hs, Ht, (H_xyz - w C, 0))| = w^4 r |Hs x Ht|-scaled, s the side of o); the largest such k
-// (bisection to 1e-13 of it, each step certified) is taken, 0 where the row is not concave (to
-// rounding: above -1e-12 / r). Refused
+// (bisection to 1e-13 of it, each step certified) is taken, 0 where the row is certified not
+// concave (an end on a plane face exactly 0 along its rail, crPlaneEnd; a line spine's round, a
+// cylinder, 0 along its rails everywhere, bLineSpine). Refused
 // where the row is not a circular arc or o or Dc is not one-signed on it.
-SmStatus sm_SbRoundRowK(const std::vector< std::vector<sm_SbH> > & crJ, const SmVector3d & crE, double & rdK, const TCHAR *& rpWhy)
+SmStatus sm_SbRoundRowK(const std::vector< std::vector<sm_SbH> > & crJ, const SmVector3d & crE, const bool (&crPlaneEnd)[2], bool bLineSpine,
+                        double & rdK, const TCHAR *& rpWhy)
 {
   rdK = 0.0;
   if (crJ.size() < 3)
@@ -2565,6 +2616,19 @@ SmStatus sm_SbRoundRowK(const std::vector< std::vector<sm_SbH> > & crJ, const Sm
       for (size_t i=0; i<sB[k].c.size(); i++) { sB[k].c[i] *= sigma; }
       dTerm[k] = sm_SbTScale(sA[k]) + sm_SbTScale(sB[k]) / (r > 0.0 ? r : 1.0);
     }
+  // an end of the row on a PLANE face: there the round is G1 to the plane along its rail, so its
+  // second fundamental form on the rail's direction is the plane's, zero (Meusnier): its (rail,
+  // rail) and (rail, across) entries are 0 at that end exactly, set so (the end's Bernstein
+  // coefficient is the value there)
+  for (int e=0; e<2; e++)
+    if (crPlaneEnd[e])
+      for (int k=0; k<2; k++)
+        { sA[k].c[(e == 0) ? 0 : sA[k].c.size() - 1] = 0.0; }
+  // a round whose spine is a line (sm_ClassifyBlendSpine: two planes; a plane or cylinder parallel
+  // to a cylinder's axis) is a cylinder, its rails its rulings: those entries are 0 all along
+  if (bLineSpine)
+    for (int k=0; k<2; k++)
+      for (size_t i=0; i<sA[k].c.size(); i++) { sA[k].c[i] = 0.0; }
   // 1 where sA - k sB is certified PSD on the row
   auto certified = [&](double dK) {
     sm_SbT sCm[3];
@@ -2590,9 +2654,7 @@ SmStatus sm_SbRoundRowK(const std::vector< std::vector<sm_SbH> > & crJ, const Sm
       const double dMid = 0.5 * (dLo + dHi);
       if (certified(dMid)) { dLo = dMid; } else { dHi = dMid; }
     }
-  // 0 to rounding (its scale the round's own curvature 1 / r): a row whose least is 0 exactly (a
-  // round's rail on a plane) is not made concave by the certificate's rounding
-  rdK = (dLo >= -1.0e-12 / r) ? 0.0 : dLo;
+  rdK = dLo;
   return SM_SUCCESS;
 }
 
@@ -2728,7 +2790,26 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
   for (size_t r=0; r<n; r++)
     {
       const TCHAR * pWhy = NULL;
-      if (sm_SbRoundRowK(crJets[r], sE, sRoundK[r], pWhy) != SM_SUCCESS)
+      // the faces at the row's ends: which are planes, and the round's spine by the one
+      // classification (sm_ClassifyBlendSpine) from the faces' kinds and placement
+      bool bPlaneEnd[2] = { false, false };
+      SmPoint3d sEnd[2];
+      size_t lFaceAt[2] = { crFaces.size(), crFaces.size() };
+      for (int e=0; e<2; e++)
+        {
+          const sm_SbH & crH = crJets[r][0][e == 0 ? 0 : crQ[r]];
+          sEnd[e] = SmPoint3d(crH.a[0] / crH.a[3], crH.a[1] / crH.a[3], crH.a[2] / crH.a[3]);
+          for (size_t f=0; f<crFaces.size(); f++)
+            if (smos_Fabs(SmBlendSetback::Distance(crFaces[f], sEnd[e])) <= dTol)
+              {
+                lFaceAt[e] = f;
+                bPlaneEnd[e] = (crFaces[f].m_eKind == SmBlendSetback::SM_SB_PLANE);
+              }
+        }
+      bool bLine = false;
+      if (lFaceAt[0] < crFaces.size() && lFaceAt[1] < crFaces.size())
+        SER(sm_SbLineSpine(crFaces[lFaceAt[0]], crFaces[lFaceAt[1]], sEnd, crJets[r][0], dTol, bLine));
+      if (sm_SbRoundRowK(crJets[r], sE, bPlaneEnd, bLine, sRoundK[r], pWhy) != SM_SUCCESS)
         { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, pWhy != NULL ? pWhy : _T("SmBlendSetback: a round's least normal curvature at its end cannot be found")); }
     }
 
@@ -4700,7 +4781,8 @@ SmStatus SmBlendSetback::RoundEndCurvature(const SmContext & crContext, const Ro
   const TCHAR *& rWhy = (ppReason != NULL) ? *ppReason : pLocal;
   rWhy = NULL;
   SER(sm_SbRoundJets(crContext, crRound, 2, sJ, lQ, dDtDs, rWhy));
-  return sm_SbRoundRowK(sJ, crInto, rdK, rWhy);
+  const bool bPlaneEnd[2] = { false, false };
+  return sm_SbRoundRowK(sJ, crInto, bPlaneEnd, false, rdK, rWhy);
 }
 
 SmStatus SmBlendSetback::NoMoreConcave(const SmBSplineSurface & crPatch, const Face & crA, const Face & crB, const SmVector3d & crInto, double dK,
