@@ -4649,13 +4649,13 @@ const TangentEndCase MIXED_CORNER_CASES[] = {
     {"residue_rounds_together_r2", mixed_residue_rounds_together_r2,
      "creased inside: the corner's faces L, U fold by up to 0.0161 rad across the trimline's interior knot lines (its uv curve is a C1 cubic fit, and the ribbons' c' term carries c'' into the patch)"},
     {"residue_rounds_together_r5", mixed_residue_rounds_together_r5,
-     "status 1001, Vertex Computation Failure: traced past V, the concave round splits into several fillet geoms, and the Mixed corner takes the first, the piece past the front point, whose rail on the cylinder does not cross the seam's line"},
+     "creased inside: the corner's faces L, U fold by up to 0.0223 rad across the trimline's interior knot lines (its uv curve is a C1 cubic fit, and the ribbons' c' term carries c'' into the patch); SMLib's test #4 also fails L"},
     {"residue_rounds_together_r7", mixed_residue_rounds_together_r7,
-     "status 1001, Vertex Computation Failure: traced past V, the concave round splits into several fillet geoms, and the Mixed corner takes the first, the piece past the front point, whose rail on the cylinder does not cross the seam's line"},
+     "creased inside: the corner's faces L, U fold by up to 0.0196 rad across the trimline's interior knot lines (its uv curve is a C1 cubic fit, and the ribbons' c' term carries c'' into the patch); SMLib's test #4 also fails L"},
     {"rounds_together_r2", mixed_rounds_together_r2,
      "creased inside: the corner's faces L, U fold by up to 0.0161 rad across the trimline's interior knot lines (its uv curve is a C1 cubic fit, and the ribbons' c' term carries c'' into the patch)"},
     {"rounds_together_r5", mixed_rounds_together_r5,
-     "status 1001, Vertex Computation Failure: traced past V, the concave round splits into several fillet geoms, and the Mixed corner takes the first, the piece past the front point, whose rail on the cylinder does not cross the seam's line"},
+     "creased inside: the corner's faces L, U fold by up to 0.0223 rad across the trimline's interior knot lines (its uv curve is a C1 cubic fit, and the ribbons' c' term carries c'' into the patch); SMLib's test #4 also fails L"},
 };
 
 int mixed_corner_cases(bool known_failing, const char *only)
