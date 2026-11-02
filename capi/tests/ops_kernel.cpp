@@ -8624,9 +8624,9 @@ const TangentEndCase BALL_CASES[] = {
      "smlib#103: the flat's trim curves along the flat-cone rounds' hyperbolas are fitted, not exact (SmPlane::DropCurve clamps the rational rail's control points to the plane's domain and falls to the general drop), and the cone's along its rails too: 2.5e-6 off Steiner's (the sharp part alone 5e-9)"},
     {"knife_edge_arc_corner", ball_knife_edge_arc_corner, nullptr},
     {"box_shelled_after_a_round_trip", ball_box_shelled_after_a_round_trip, nullptr},
-    {"regular_apex_4", ball_regular_apex_4, "SmFilletConvexNxNCorner's patch, not the Ball: a common ball of four or more rounds is not taken (#86)"},
-    {"regular_apex_5", ball_regular_apex_5, "SmFilletConvexNxNCorner's patch, not the Ball: a common ball of four or more rounds is not taken (#86)"},
-    {"regular_apex_6", ball_regular_apex_6, "SmFilletConvexNxNCorner's patch, not the Ball: a common ball of four or more rounds is not taken (#86)"},
+    {"regular_apex_4", ball_regular_apex_4, nullptr},
+    {"regular_apex_5", ball_regular_apex_5, nullptr},
+    {"regular_apex_6", ball_regular_apex_6, nullptr},
 };
 
 int ball_cases(bool known_failing, const char *only)
@@ -12453,10 +12453,8 @@ const TangentEndCase SETBACK_CASES[] = {
     {"corner_curvature_g2", setback_corner_curvature_g2, nullptr},
     {"corner_eased_g2", setback_corner_eased_g2, nullptr},
     {"concave_corner_rounds", setback_concave_corner_rounds, nullptr},
-    {"four_face_apex", setback_four_face_apex,
-     "SmFilletConvexNxNCorner's patch, not the Setback: equal rounds of four edges are not taken as a Setback unless asked (#86)"},
-    {"four_face_pocket_floor", setback_four_face_pocket_floor,
-     "SmFilletConvexNxNCorner's patch, not the Setback: equal rounds of four edges are not taken as a Setback unless asked (#86)"},
+    {"four_face_apex", setback_four_face_apex, nullptr},
+    {"four_face_pocket_floor", setback_four_face_pocket_floor, nullptr},
     {"open_g1_box_corner_hole", setback_open_g1_box_corner_hole,
      "an open setback is SmFilletConvexNxNCorner's patch removed: a hole of twelve edges, its face curves no parabolas (#86)"},
 };

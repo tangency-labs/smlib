@@ -1326,6 +1326,18 @@ static int iDebugLevel = 0; // Note: Can't call DebugLevel() from a static metho
               {
                 SmBlendCornerEvent eEvent = SM_BCE_NONE;
                 ULONG              lOrder = 1;
+                // four or more rounds that one ball touches: the Ball (SmBlendCorner::ClassifyBall)
+                if ( lTotalEUs > 3 )
+                  {
+                    if ( SmBlendCorner::ClassifyBall( cpVertex, *pSolverEUs, *pAllEUs, pExec, eEvent ) != SM_SUCCESS )
+                      { break; }
+                    if ( eEvent == SM_BCE_BALL )
+                      {
+                        pNewCorner = new(crContext) SmBlendCorner(crContext, cpVertex, pSolverEUs, pAllEUs, pExec, dApproxTol3d,
+                                                                  dTangencyTolRadians, SM_BCE_BALL, SM_BT_MITRE);
+                        break;
+                      }
+                  }
                 if ( SmBlendCorner::ClassifySetBack( cpVertex, *pSolverEUs, *pAllEUs, pExec, dTanTolDeg, eEvent, lOrder ) != SM_SUCCESS )
                   { break; }
                 if ( eEvent == SM_BCE_SETBACK )

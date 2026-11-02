@@ -36,7 +36,7 @@ enum SmBlendCornerEvent
   SM_BCE_NONE, // not an event of the blend corner (yet): the corner hierarchy builds it
   SM_BCE_TURN, // two blends turn at the unblended side edge(s) between their faces
   SM_BCE_JOIN, // two blends whose edges continue each other (G1) at the vertex
-  SM_BCE_BALL, // three rounds of one radius and convexity, the common ball's sphere between them (SmBlendCornerBall.cpp)
+  SM_BCE_BALL, // three or more rounds of one radius and convexity, the common ball's sphere between them (SmBlendCornerBall.cpp)
   SM_BCE_END,     // one blend ends at the vertex, its side faces there not blended
   SM_BCE_SETBACK, // three or more blends, every edge there blended, each set back and the hole filled (SmBlendSetback)
   SM_BCE_MIXED    // a convex and a concave blend continuing each other G1 across a tangent seam (SmBlendCornerMixed.cpp)
@@ -100,16 +100,18 @@ protected:
   SmBlendSetback::Fill    * m_pFill;
 
   // the Ball (SmBlendCornerBall.cpp)
-  SmSurface               * m_pBallSurface; // the corner's face's sphere, from CalcCornerEdgeGeom until CreateCornerPatch hands it to its face
-  SmTArray<SmCurve*>        m_vBall3d;      // its loop's 3D curves (natural iso-curves, the pole left out)
-  SmTArray<SmBSplineCurve*> m_vBallUV;      // and their uv lines
-  SmTArray<SmOrientType>    m_vBallOrients; // and their orientations in the loop
+  SmTArray<SmSurface*>      m_vBallSurfaces; // the corner's faces' patches on its sphere (n - 2 of them, the n-gon fanned from
+                                             // contact 0), from CalcCornerEdgeGeom until CreateCornerPatch hands them to their faces
+  SmTArray<ULONG>           m_vBallLoops;    // each patch's loop: its count of curves in the arrays below, in turn
+  SmTArray<SmCurve*>        m_vBall3d;       // the loops' 3D curves (natural iso-curves, the pole left out)
+  SmTArray<SmBSplineCurve*> m_vBallUV;       // and their uv lines
+  SmTArray<SmOrientType>    m_vBallOrients;  // and their orientations in the loop
 
   SmBoolean IsBall() const { return ( m_eEvent == SM_BCE_BALL ) ? TRUE : FALSE; }
   SmStatus  MakeBallTopology();
-  SmStatus  BuildBallSurface();  // m_pBallSurface and its loop, from the faces and the processed contacts
+  SmStatus  BuildBallSurface();  // m_vBallSurfaces and their loops, from the faces and the processed contacts
   void      DeleteBallSurface();
-  SmStatus  BallCentre(SmPoint3d & rCentre, double & rdRadius, SmPoint3d asContact[3]) const; // the faces' triple offset point, the contacts
+  SmStatus  BallCentre(SmPoint3d & rCentre, double & rdRadius, std::vector<SmPoint3d> & rvContact) const; // the faces' common offset point, the contacts
   SmStatus  PlaceBallContacts(); // the contacts and the rounds' sections there in closed form
   SmStatus  CreateBallPatch();
 
@@ -224,10 +226,11 @@ public:
                                 double                       dTangencyTolDeg,
                                 SmBlendCornerEvent         & reEvent);
 
-  // The Ball at a filleted vertex where all three edges are blended (pAllEUs, the corner's ring):
-  // constant circular rounds of one radius, all convex or all concave, between three faces each a
-  // plane or a natural quadric (a sphere, a cylinder or a cone; a cylinder or sphere wider than the
-  // ball) whose normals at the vertex are independent, the vertex not set back
+  // The Ball at a filleted vertex where all its n >= 3 edges are blended (pAllEUs, the corner's
+  // ring): constant circular rounds of one radius, all convex or all concave, between n faces that
+  // one ball touches: three faces each a plane or a natural quadric (a sphere, a cylinder or a cone;
+  // a cylinder or sphere wider than the ball) whose normals at the vertex are independent, or four
+  // or more planes whose offsets by the radius meet in a point; the vertex not set back
   // (SmFilletExecutive::IsSetBackVertex).
   // reEvent SM_BCE_BALL, else SM_BCE_NONE (the corner hierarchy builds it).
   static SmStatus ClassifyBall(const SmVertex             * cpVertex,
