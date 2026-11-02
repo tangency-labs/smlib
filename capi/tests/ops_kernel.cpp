@@ -57,6 +57,7 @@
 #include <iterator>
 #include <string>
 #include <utility>
+#include <functional>
 #include <vector>
 
 
@@ -7511,6 +7512,137 @@ void ball_d_pocket_corners()
     }
 }
 
+// Int_a^b f by 64-point Gauss-Legendre (nodes by Newton's method on P_64): to rounding for the
+// analytic integrands here.
+double gauss64(const std::function<double(double)> &f, double a, double b)
+{
+    const int n = 64;
+    double sum = 0.0;
+    for (int i = 1; i <= n / 2; ++i)
+    {
+        double x = std::cos(PI * (i - 0.25) / (n + 0.5)), dp = 0.0;
+        for (int it = 0; it < 100; ++it)
+        {
+            double p0 = 1.0, p1 = x;
+            for (int k = 2; k <= n; ++k)
+            {
+                const double p2 = ((2.0 * k - 1.0) * x * p1 - (k - 1.0) * p0) / k;
+                p0 = p1;
+                p1 = p2;
+            }
+            dp = n * (x * p1 - p0) / (x * x - 1.0);
+            const double dx = p1 / dp;
+            x -= dx;
+            if (std::fabs(dx) < 1e-16)
+            {
+                break;
+            }
+        }
+        const double w = 2.0 / ((1.0 - x * x) * dp * dp), m = 0.5 * (a + b), h = 0.5 * (b - a);
+        sum += w * h * (f(m + h * x) + f(m - h * x));
+    }
+    return sum;
+}
+
+// A cylinder (R 10, z 0 to 6) under a cone's frustum (radius 10 at z 6 narrowing at 30 degrees to
+// z 10), less x > 4: a convex body whose every edge is rounded r 1.5 in one call. Its six corners
+// are Balls: the flat, the cylinder and the bottom (two planes), the flat, the cone and the top (two
+// planes), and the flat, the cylinder and the cone, where the ball's centre has no closed form in
+// the build (one plane) and is certified: C = (a', +-sqrt(Rc^2 - a'^2), z*), a' = 4 - r, Rc = 10 - r,
+// z* = 6 - r tan 15 deg (where the cylinder's offset meets the cone's). The rounded body is the
+// inner body K' (the faces moved in by r: the cylinder Rc, the cone's radius less r / cos 30, the
+// flat a', z from r to 10 - r) grown by r: its volume is Steiner's, V' + S' r + M' r^2 + 4/3 pi r^3,
+// each of V', S', M' one integral over z of K''s section (the disc of radius rho(z) less x > a',
+// alpha = acos(a' / rho)), taken by 64-point Gauss-Legendre: V' = Int A, S' = the end sections +
+// Int (the flat's 2 y + the cylinder's rho (2 pi - 2 alpha), or the cone's over cos 30), and
+// M' = Int (pi - alpha) (both the cylinder's and the cone's mean curvature) + half of each edge's
+// turning angle times its length (the ends' and the uprights' as the prism's; the cylinder-cone
+// arc 30 degrees; the flat-cone hyperbolas acos(cos 30 a' / rho) along their length). Faces: 5, 9
+// rounds and 6 balls (20); vertices 18; edges 36 (each round's two rails and two end sections).
+// With `volume`, its volume only.
+void cone_frustum_corners(bool volume)
+{
+    const double R = 10.0, z1 = 6.0, H = 10.0, a = 4.0, rad = 1.5, beta = PI / 6.0;
+    const double tb = std::tan(beta), cb = std::cos(beta);
+    const double ap = a - rad, Rc = R - rad, zs = z1 - rad * std::tan(beta / 2.0), zt = H - rad;
+    auto rho = [&](double z) { return z <= zs ? Rc : R - (z - z1) * tb - rad / cb; };
+    auto alpha = [&](double z) { return std::acos(ap / rho(z)); };
+    auto half = [&](double z) { return std::sqrt(rho(z) * rho(z) - ap * ap); };
+    auto area = [&](double z) { return rho(z) * rho(z) * (PI - alpha(z)) + ap * half(z); };
+    auto arc = [&](double z) { return 2.0 * rho(z) * (PI - alpha(z)); };
+    const double V = gauss64(area, rad, zs) + gauss64(area, zs, zt);
+    const double S = area(rad) + area(zt) + gauss64([&](double z) { return 2.0 * half(z) + arc(z); }, rad, zs) +
+                     gauss64([&](double z) { return 2.0 * half(z) + arc(z) / cb; }, zs, zt);
+    double M = gauss64([&](double z) { return PI - alpha(z); }, rad, zs) + gauss64([&](double z) { return PI - alpha(z); }, zs, zt);
+    M += 0.5 * (0.5 * PI) * (arc(rad) + 2.0 * half(rad));              // the bottom's arc and chord
+    M += 0.5 * ((0.5 * PI - beta) * arc(zt) + 0.5 * PI * 2.0 * half(zt)); // the top's
+    M += 0.5 * beta * arc(zs);                                         // the cylinder-cone arc
+    M += alpha(rad) * (zs - rad);                                      // the two flat-cylinder uprights
+    // the two flat-cone hyperbolas (a', y(z), z): y' = -rho tan 30 / y
+    M += gauss64([&](double z) { const double y = half(z), yp = -rho(z) * tb / y; return std::acos(cb * ap / rho(z)) * std::sqrt(1.0 + yp * yp); }, zs, zt);
+    const double want = V + S * rad + M * rad * rad + 4.0 / 3.0 * PI * rad * rad * rad;
+
+    const double o0[3] = {0, 0, 0}, o1[3] = {0, 0, z1};
+    smlib_brep *cyl = nullptr, *cone = nullptr;
+    CHECK(smlib_make_cylinder(o0, R, z1, &cyl) == SMLIB_OK && smlib_make_cone(o1, R, R - (H - z1) * tb, H - z1, &cone) == SMLIB_OK);
+    smlib_brep *part = combined(combined(cyl, cone, SMLIB_BOOLEAN_UNION), box(a, -20, -1, 20, 40, 20), SMLIB_BOOLEAN_SUBTRACT), *r = nullptr;
+    int64_t sharp[3] = {0, 0, 0};
+    CHECK(part != nullptr && smlib_brep_counts(part, sharp) == SMLIB_OK);
+    std::printf("  the part: %lld faces, %lld edges, %lld vertices\n", static_cast<long long>(sharp[0]), static_cast<long long>(sharp[1]),
+                static_cast<long long>(sharp[2]));
+    CHECK(sharp[0] == 5 && sharp[1] == 9 && sharp[2] == 6);
+    const double h0 = std::sqrt(R * R - a * a), zc = 8.0, hc = std::sqrt(std::pow(R - 2.0 * tb, 2) - a * a);
+    const double points[27] = {-R, 0, 0, a, 0, 0, a, h0, 3, a, -h0, 3, -R, 0, z1, a, hc, zc, a, -hc, zc, -(R - 4.0 * tb), 0, H, a, 0, H};
+    const std::vector<double> sizes(9, rad);
+    CHECK(part != nullptr && smlib_blend(part, SMLIB_BLEND_ROUND, points, sizes.data(), 9, 0.1, &r, nullptr) == SMLIB_OK && r != nullptr);
+    smlib_brep_free(part);
+    if (r != nullptr)
+    {
+        if (volume)
+        {
+            const double v = exact_volume_of(r);
+            std::printf("  volume %.12f, want %.12f (%.3g relative)\n", v, want, std::fabs(v - want) / want);
+            CHECK(near(v, want, 1e-11));
+            done(r);
+            return;
+        }
+        int64_t counts[3] = {0, 0, 0};
+        CHECK(smlib_brep_counts(r, counts) == SMLIB_OK);
+        std::printf("  %lld faces, %lld edges, %lld vertices\n", static_cast<long long>(counts[0]), static_cast<long long>(counts[1]),
+                    static_cast<long long>(counts[2]));
+        CHECK(counts[0] == 20 && counts[1] == 36 && counts[2] == 18);
+        const double size = part_size(r);
+        for (double sy : {1.0, -1.0})
+        {
+            // the flat, the cylinder and the bottom; the flat, the cylinder and the cone; the flat, the cone and the top
+            const double zs3[3] = {rad, zs, zt};
+            for (int k = 0; k < 3; ++k)
+            {
+                const double z = zs3[k], y = sy * half(z), p = rho(z);
+                const SmPoint3d c(ap, y, z);
+                const SmPoint3d onflat(a, y, z), oncyl(ap * R / Rc, y * R / Rc, z);
+                const SmPoint3d oncone(ap + rad * cb * ap / p, y + rad * cb * y / p, z + rad * std::sin(beta));
+                const SmPoint3d v3[3] = {onflat, k == 0 ? SmPoint3d(ap, y, 0) : oncone, k == 0 ? oncyl : (k == 1 ? oncyl : SmPoint3d(ap, y, H))};
+                std::printf("  corner (%g, %g, %g):\n", ap, y, z);
+                ball_corner_sphere(r, c, rad, v3, true, 1e-13 * size);
+            }
+        }
+        CHECK(sound(r));
+        done(r);
+    }
+}
+
+void ball_cone_frustum_corners()
+{
+    cone_frustum_corners(false);
+}
+
+// The cone frustum's volume against Steiner's (as ball_cone_frustum_corners).
+void ball_cone_frustum_volume()
+{
+    cone_frustum_corners(true);
+}
+
 smlib_brep *knife_edge_arc_part();
 
 // SolidCraft's 851-fillet-three-edges-at-knife-edge-arc-corner (its expected.json: volume
@@ -7555,6 +7687,9 @@ const TangentEndCase BALL_CASES[] = {
     {"sphere_turned_round", ball_sphere_turned_round, nullptr},
     {"d_prism_corners", ball_d_prism_corners, "the faces are planes and a cylinder: no Ball (ClassifyBall asks for planes), the old convex corner's patch"},
     {"d_pocket_corners", ball_d_pocket_corners, "the faces are planes and a concave cylinder: no Ball (ClassifyBall asks for planes), the old convex corner's patch"},
+    {"cone_frustum_corners", ball_cone_frustum_corners, "the faces are planes, a cylinder and a cone: no Ball (ClassifyBall asks for planes), the old convex corner's patch"},
+    {"cone_frustum_volume", ball_cone_frustum_volume,
+     "smlib#103: the flat's trim curves along the flat-cone rounds' hyperbolas are fitted, not exact (SmPlane::DropCurve clamps the rational rail's control points to the plane's domain and falls to the general drop), and the cone's along its rails too: 2.5e-6 off Steiner's (the sharp part alone 5e-9)"},
     {"knife_edge_arc_corner", ball_knife_edge_arc_corner, "the arc wall is a concave cylinder: no Ball (ClassifyBall asks for planes), the old convex corner's sphere fitted to the sections"},
 };
 
