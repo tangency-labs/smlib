@@ -42,6 +42,8 @@ struct SmBlendCounts
                                        // the certificate's work, definition or not
   unsigned long long lAreaSums;        // the equal area thumbweight's area sums I(w) a G^n certificate summed outside
                                        // its cells (at a point of w, or over an interval of w off the cells' grid)
+  unsigned long long lAreaRoots;       // the equal area thumbweights solved for (each bisects I(w) = target(u) on a
+                                       // thread's first meeting of that order and u)
 };
 
 /*******************************************************************//**
@@ -166,6 +168,8 @@ public:
   static void          CountCertifiedPiece();
   // one more area sum a certificate summed outside its cells (SmBlendCounts::lAreaSums)
   static void          CountAreaSum();
+  // one more equal area thumbweight solved for (SmBlendCounts::lAreaRoots)
+  static void          CountAreaRoot();
 
   // SmSurface
   virtual SmBoolean operator==(const SmSurface & crOther) const;

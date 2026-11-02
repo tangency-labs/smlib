@@ -24,7 +24,7 @@
 
 namespace
 {
-std::atomic<unsigned long long> s_lEvaluations(0), s_lSolves(0), s_lNewtonSteps(0), s_lMostNewtonSteps(0), s_lCertifiedPieces(0), s_lAreaSums(0);
+std::atomic<unsigned long long> s_lEvaluations(0), s_lSolves(0), s_lNewtonSteps(0), s_lMostNewtonSteps(0), s_lCertifiedPieces(0), s_lAreaSums(0), s_lAreaRoots(0);
 std::atomic<unsigned long long> s_lLastSerial(0);
 
 SmBoolean sm_Finite(double d) { return std::isfinite(d) ? TRUE : FALSE; }
@@ -106,6 +106,7 @@ SmBlendCounts SmProceduralBlend::GetCounts()
   sCounts.lMostNewtonSteps = s_lMostNewtonSteps.load();
   sCounts.lCertifiedPieces = s_lCertifiedPieces.load();
   sCounts.lAreaSums = s_lAreaSums.load();
+  sCounts.lAreaRoots = s_lAreaRoots.load();
   return sCounts;
 }
 
@@ -117,6 +118,7 @@ void SmProceduralBlend::ResetCounts()
   s_lMostNewtonSteps = 0;
   s_lCertifiedPieces = 0;
   s_lAreaSums = 0;
+  s_lAreaRoots = 0;
 }
 
 void SmProceduralBlend::CountCertifiedPiece()
@@ -127,6 +129,11 @@ void SmProceduralBlend::CountCertifiedPiece()
 void SmProceduralBlend::CountAreaSum()
 {
   s_lAreaSums++;
+}
+
+void SmProceduralBlend::CountAreaRoot()
+{
+  s_lAreaRoots++;
 }
 
 void SmProceduralBlend::CountEvaluation()
