@@ -1919,6 +1919,7 @@ SmStatus SmFilletCorner::CreateCornerPatch()
                       case SM_FV_RAIL_X_EXTENDED_EDGEUSE:
                       case SM_FV_SETBACK          :
                       case SM_FV_PRECOMPUTED      :
+                      case SM_FV_JOIN_SECTION     :
                       case SM_FV_UNKNOWN          : break;
 
                     } // end switch on corner->VertexType
@@ -4731,6 +4732,7 @@ int iDebugLevel = 0;
 #ifdef SM_DEBUG_CODE
 iDebugLevel = DebugLevel();
 #endif // SM_DEBUG_CODE
+SM_REF1(iDebugLevel);
 
   // locals - 1st outward bound fillet edgeuse, its FilletSolver, and its 1st fillet geom
   SmEdgeuse      * pFilEdgeuse   = (*m_pSolverEUs)[0];

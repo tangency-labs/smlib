@@ -68,7 +68,7 @@ SmBoolean SmBallPatch::operator==(const SmSurface & crOther) const
     { return TRUE; }
   if ( !SmBSplineSurface::operator==( crOther ))
     { return FALSE; }
-  const SmBallPatch * pOther = SM_CAST_PTR( SmBallPatch, &crOther );
+  const SmBallPatch * pOther = SM_CAST_NONNULL_PTR( SmBallPatch, &crOther );
   return ( pOther != NULL && m_dRadius == pOther->m_dRadius && m_sCentre.x == pOther->m_sCentre.x && m_sCentre.y == pOther->m_sCentre.y
            && m_sCentre.z == pOther->m_sCentre.z ) ? TRUE : FALSE;
 }

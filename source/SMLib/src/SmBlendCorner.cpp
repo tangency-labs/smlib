@@ -327,11 +327,11 @@ SmBlendCorner::SmBlendCorner
    m_bMitre(FALSE),
    m_pSideEU(NULL),
    m_pTurnSurface(NULL),
-   m_pBallSurface(NULL),
    m_lFillOrder(1),
    m_bConvexSetBack(TRUE),
    m_bSetBackOverflows(FALSE),
-   m_pFill(NULL)
+   m_pFill(NULL),
+   m_pBallSurface(NULL)
 {
 }
 
@@ -1360,9 +1360,9 @@ SmStatus SmBlendCorner::ExactMitreCurve
           SmBoolean bHolds = TRUE;
           for (ULONG k=0; k<7 && bHolds; k++)
             {
-              SmPoint3d sW, sOnRound;
-              SER( pTry->EvaluatePoint( pTry->GetNaturalInterval().Evaluate( adAt[k] ), sW ));
-              SER( pSurface->EvaluatePoint( SmPoint2d( sW.x, sW.y ), sOnRound ));
+              SmPoint3d sUV, sOnRound;
+              SER( pTry->EvaluatePoint( pTry->GetNaturalInterval().Evaluate( adAt[k] ), sUV ));
+              SER( pSurface->EvaluatePoint( SmPoint2d( sUV.x, sUV.y ), sOnRound ));
               bHolds = ( sOnRound.DistanceBetween( asOn[k] ) <= 1e-12 * dSize ) ? TRUE : FALSE;
             }
           if ( bHolds )

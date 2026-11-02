@@ -355,7 +355,7 @@ SmBoolean SmProceduralBlend::operator==(const SmSurface & crOther) const
     { return TRUE; }
   if (!SmBSplineSurface::operator==(crOther))
     { return FALSE; }
-  const SmProceduralBlend * pOther = SM_CAST_PTR(SmProceduralBlend, &crOther);
+  const SmProceduralBlend * pOther = SM_CAST_NONNULL_PTR(SmProceduralBlend, &crOther);
   if (pOther == NULL)
     { return FALSE; }
   for (int i=0; i<2; i++)

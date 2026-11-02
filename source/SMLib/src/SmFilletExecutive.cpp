@@ -3621,7 +3621,7 @@ SmStatus SmFilletExecutive::CreateFilletBrep
         if ( sWorst.m_dWorks > 0.0 )
           { smos_sprintf( cWorks, _T(": a radius below %.7g fits"), sWorst.m_dWorks ); }
         else
-          { smos_sprintf( cWorks, _T(": no smaller ball fits there either") ); }
+          { smos_sprintf( cWorks, _T("%s"), _T(": no smaller ball fits there either") ); }
         if ( !sWorst.m_bBall )
           { smos_sprintf( cWhy, _T("Fillet Error: a face curves tighter than the blend's offset of %.7g along it, which folds there: an offset below %.7g fits"), sWorst.m_dRadius, sWorst.m_dWorks ); }
         else if ( sWorst.m_bLaw && sWorst.m_lCheck == SmBallStation::SM_BS_REGRESSIVE )
@@ -3629,9 +3629,9 @@ SmStatus SmFilletExecutive::CreateFilletBrep
         else if ( sWorst.m_bLaw )
           { smos_sprintf( cWhy, _T("Fillet Error: a face curves tighter than the round's ball where its radius reaches %.7g: the ball does not fit the face past there"), sWorst.m_dWorks ); }
         else if ( sWorst.m_lCheck == SmBallStation::SM_BS_NOT_ENCLOSED )
-          { smos_sprintf( cWhy, _T("Fillet Error: a face curves tighter than the rolling ball of radius %.7g, which does not fit it%s"), sWorst.m_dRadius, cWorks ); }
+          { smos_sprintf( cWhy, _T("Fillet Error: a face curves tighter than the rolling ball of radius %.7g, which does not fit it%.200s"), sWorst.m_dRadius, cWorks ); }
         else
-          { smos_sprintf( cWhy, _T("Fillet Error: the rolling ball of radius %.7g folds over itself along the edge (its touch circles move back)%s"), sWorst.m_dRadius, cWorks ); }
+          { smos_sprintf( cWhy, _T("Fillet Error: the rolling ball of radius %.7g folds over itself along the edge (its touch circles move back)%.200s"), sWorst.m_dRadius, cWorks ); }
         GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, cWhy );
         // the largest radius that builds, for a constant ball: where h(r) reaches 0 (a focal
         // station, which builds: the bound is closed), or where f_tt first reaches 0 (open: less
@@ -4084,11 +4084,11 @@ SmStatus SmFilletExecutive::CreateFilletBrep
           // the largest radius at which the overflowing blends' rails stay on their faces (where
           // a boundary of a face first meets a rail): open (at it the rail runs along that
           // boundary), so less the fit margin (FitMargin)
-          for (ULONG i=0; i<vOverflowing.GetSize(); i++)
+          for (ULONG iOver=0; iOver<vOverflowing.GetSize(); iOver++)
             {
               for (ULONG k=0; k<m_vFilletSolvers.GetSize(); k++)
                 {
-                  if ( m_vFilletSolvers[k]->GetEdgeuse(0) == NULL || m_vFilletSolvers[k]->GetEdgeuse(0)->GetEdge() != vOverflowing[i] )
+                  if ( m_vFilletSolvers[k]->GetEdgeuse(0) == NULL || m_vFilletSolvers[k]->GetEdgeuse(0)->GetEdge() != vOverflowing[iOver] )
                     { continue; }
                   SmBoolean bFound = FALSE;
                   double dLimit = 0.0;
@@ -4114,9 +4114,9 @@ SmStatus SmFilletExecutive::CreateFilletBrep
       // one blended circle (a cylinder's top): the band reaches the circle's centre at the
       // radius of the ball touching the face there (the bound is open: at it the face is a
       // point), so less the fit margin
-      for (ULONG i=0; i<m_vFilletSolvers.GetSize(); i++)
+      for (ULONG iSolver=0; iSolver<m_vFilletSolvers.GetSize(); iSolver++)
         {
-          SmFilletSolver * pFS = m_vFilletSolvers[i];
+          SmFilletSolver * pFS = m_vFilletSolvers[iSolver];
           SmEdge * pEdge = ( pFS->GetEdgeuse(0) != NULL ) ? pFS->GetEdgeuse(0)->GetEdge() : NULL;
           if ( pEdge == NULL || pEdge->GetCurve() == NULL || !pEdge->IsClosed() )
             { continue; }

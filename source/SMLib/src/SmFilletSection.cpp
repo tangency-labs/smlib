@@ -1240,26 +1240,10 @@ template <class Z> sm_GnSectionFormT<Z> sm_GnFormNormalized(ULONG n, const Z & w
   return sForm;
 }
 
-/*******************************************************************//**
-   A piecewise cubic Hermite curve on the stations: its control points
-   (3 (N - 1) + 1), from values and derivatives in s at each.
-***********************************************************************/
-void sm_HermitePoints(const std::vector<double> & crS, const std::vector<SmVector3d> & crV, const std::vector<SmVector3d> & crD,
-                      std::vector<SmVector3d> & rCPs)
-{
-  rCPs.clear();
-  for (size_t j=0; j+1<crS.size(); j++)
-    {
-      const double h = crS[j+1] - crS[j];
-      if (j == 0) { rCPs.push_back(crV[j]); }
-      rCPs.push_back(crV[j] + crD[j] * (h / 3.0));
-      rCPs.push_back(crV[j+1] - crD[j+1] * (h / 3.0));
-      rCPs.push_back(crV[j+1]);
-    }
-}
-
-// The same with each station's derivative as the span ending there takes it (crDIn) and as the
-// span starting there does (crD): a station on a face's knot line has one of each.
+// A piecewise cubic Hermite curve on the stations: its control points (3 (N - 1) + 1), from
+// values and derivatives in s at each, with each station's derivative as the span ending there
+// takes it (crDIn) and as the span starting there does (crD): a station on a face's knot line has
+// one of each.
 void sm_HermitePoints(const std::vector<double> & crS, const std::vector<SmVector3d> & crV, const std::vector<SmVector3d> & crD,
                       const std::vector<SmVector3d> & crDIn, std::vector<SmVector3d> & rCPs)
 {
@@ -5364,12 +5348,12 @@ SmStatus SmProceduralBlend::EvaluateDefinition(double dS, double dT, ULONG lHigh
         }
       auto row = [&](const std::vector< sm_Tay<double> > & crG)
       {
-        sm_T2 sR(lS, lT);
+        sm_T2 sRow(lS, lT);
         for (size_t j=0; j<lDeg; j++)
           for (int i=0; i<=lS; i++)
             for (int q=0; q<=lT; q++)
-              sR.at(i, q) += crG[j].c[i] * sBasis[j][static_cast<size_t>(q)];
-        return sR;
+              sRow.at(i, q) += crG[j].c[i] * sBasis[j][static_cast<size_t>(q)];
+        return sRow;
       };
       sm_T2 sInvW;
       SER(sm_T2Pow(row(sForm.W), -1.0, sInvW));

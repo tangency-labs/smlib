@@ -3952,11 +3952,11 @@ static SmStatus sm_DraftSeamPcurve(const SmContext & crContext, const sm_DraftWa
   }
   sCuts.Add(1.0);
   // the homogeneous seam point at s
-  auto fnAt = [&](double t, SmVector3d & rP, double & rW, double & rF)
+  auto fnAt = [&](double t, SmVector3d & rP, double & rWt, double & rF)
     {
       double b0 = (1 - t) * (1 - t), b1 = 2 * t * (1 - t), b2 = t * t;
       rP = b0 * sPH[0] + b1 * sPH[1] + b2 * sPH[2];
-      rW = b0 * sWH[0] + b1 * sWH[1] + b2 * sWH[2];
+      rWt = b0 * sWH[0] + b1 * sWH[1] + b2 * sWH[2];
       rF = (b0 * sWH[0] * sFH[0] + b1 * sWH[1] * sFH[1] + b2 * sWH[2] * sFH[2]); // f, homogeneous
     };
   double dPrevW = 0.0;

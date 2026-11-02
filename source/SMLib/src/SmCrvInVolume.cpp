@@ -1568,7 +1568,7 @@ void SmCrvInVolume::Dump
       smos_sprintf( sBuff, _T("\n         Break [%ld] = [%16.16lf - %s]"), 
                   ii, m_sBreaks[ii], pString) ;
       smos_WriteBuffer(sBuff) ;
-      delete pString;  pString = NULL;
+      delete [] pString;  pString = NULL;
     } // end iter every break
 
   // output base class data
