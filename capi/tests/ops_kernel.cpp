@@ -9527,6 +9527,217 @@ void scenario_ellipse_trimmed_just_short_of_its_seam()
     delete whole;
 }
 
+// A cylinder of radius r and height h standing on `base` along the unit `axis`, as SolidCraft's
+// solid.cylinder makes it: its frame's x the world x for an axis within 0.9 of z, else the
+// horizontal z x axis (made square to the axis), and its seam 0.6131 rad from that x towards
+// axis x x (SmApiCreateCylinder's seam is its frame's x).
+smlib_brep *cylinder_on(std::array<double, 3> base, std::array<double, 3> axis, double r, double h)
+{
+    const double o[3] = {0, 0, 0};
+    smlib_brep *c = nullptr;
+    CHECK(smlib_make_cylinder(o, r, h, &c) == SMLIB_OK);
+    auto cross = [](const std::array<double, 3> &u, const std::array<double, 3> &v) {
+        return std::array<double, 3>{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
+    };
+    std::array<double, 3> cand = std::fabs(axis[2]) > 0.9 ? std::array<double, 3>{1, 0, 0} : cross({0, 0, 1}, axis);
+    const double along = cand[0] * axis[0] + cand[1] * axis[1] + cand[2] * axis[2];
+    std::array<double, 3> fx = {cand[0] - axis[0] * along, cand[1] - axis[1] * along, cand[2] - axis[2] * along};
+    const double lx = std::sqrt(fx[0] * fx[0] + fx[1] * fx[1] + fx[2] * fx[2]);
+    fx = {fx[0] / lx, fx[1] / lx, fx[2] / lx};
+    const std::array<double, 3> fy = cross(axis, fx);
+    const double seam = 0.6131, cs = std::cos(seam), sn = std::sin(seam);
+    const std::array<double, 3> x = {cs * fx[0] + sn * fy[0], cs * fx[1] + sn * fy[1], cs * fx[2] + sn * fy[2]};
+    return placed(c, x, cross(axis, x), axis, base);
+}
+
+// The blend faces of `b` (those on no plane or cylinder: the bodies here are planes and
+// cylinders before the blend) graded G1 along every edge and inside. Along an edge with another
+// face: the angle between the two faces' tangent planes at nine stations. Inside: the angle
+// between the normals on either side of each interior knot line of the face's surface, each side's
+// limit at the knot extrapolated from 1e-7 and 3e-7 of the domain away on that side (a crease
+// reads as their angle; the surface's own turning cancels to the square of the step). The worst
+// of each goes to `seam` and `inside` (radians).
+void blend_faces_g1(const smlib_brep *b, double &seam, double &inside, int &faces)
+{
+    seam = inside = 0.0;
+    faces = 0;
+    SmTArray<SmFace *> all;
+    b->p->GetFaces(all);
+    for (ULONG i = 0; i < all.GetSize(); i++)
+    {
+        const SmSurface *srf = all[i]->GetSurface();
+        if (srf == nullptr || SM_CAST_PTR(SmPlane, srf) != nullptr || SM_CAST_PTR(SmCylinder, srf) != nullptr)
+        {
+            continue;
+        }
+        faces++;
+        SmTArray<SmEdge *> es;
+        all[i]->GetEdges(es);
+        for (ULONG j = 0; j < es.GetSize(); j++)
+        {
+            SmTArray<SmEdgeuse *> eus;
+            if (es[j]->GetEdgeuses(eus) != SM_SUCCESS)
+            {
+                continue;
+            }
+            SmEdgeuse *mine = nullptr, *other = nullptr;
+            for (ULONG k = 0; k < eus.GetSize(); k++)
+            {
+                if (eus[k]->GetFace() == all[i] && mine == nullptr)
+                {
+                    mine = eus[k];
+                }
+                else if (eus[k]->GetFace() != nullptr && eus[k]->GetFace() != all[i])
+                {
+                    other = eus[k];
+                }
+            }
+            if (mine == nullptr || other == nullptr || mine->GetUVTrimCurve() == nullptr || other->GetUVTrimCurve() == nullptr)
+            {
+                continue;
+            }
+            const SmExtent1d ivl = es[j]->GetInterval();
+            for (int k = 1; k <= 9; k++)
+            {
+                const double t = ivl.GetMin() + ivl.GetLength() * k / 10.0;
+                SmPoint3d w1, w2;
+                SmVector3d n1, n2;
+                CHECK(mine->GetUVTrimCurve()->EvaluatePoint(t, w1) == SM_SUCCESS && other->GetUVTrimCurve()->EvaluatePoint(t, w2) == SM_SUCCESS);
+                CHECK(srf->EvaluateNormal(SmPoint2d(w1.x, w1.y), TRUE, TRUE, n1) == SM_SUCCESS &&
+                      other->GetFace()->GetSurface()->EvaluateNormal(SmPoint2d(w2.x, w2.y), TRUE, TRUE, n2) == SM_SUCCESS);
+                seam = std::max(seam, std::acos(std::min(1.0, std::fabs(n1.Dot(n2)))));
+            }
+        }
+        const SmBSplineSurface *bs = dynamic_cast<const SmBSplineSurface *>(srf);
+        SmTArray<double> knots[2];
+        if (bs == nullptr || bs->GetKnots(SM_SP_U, knots[0]) != SM_SUCCESS || bs->GetKnots(SM_SP_V, knots[1]) != SM_SUCCESS)
+        {
+            continue;
+        }
+        const SmExtent2d dom = srf->GetNaturalUVDomain();
+        for (int d = 0; d < 2; d++)
+        {
+            const double lo = d == 0 ? dom.GetMin().x : dom.GetMin().y, hi = d == 0 ? dom.GetMax().x : dom.GetMax().y;
+            const double olo = d == 0 ? dom.GetMin().y : dom.GetMin().x, ohi = d == 0 ? dom.GetMax().y : dom.GetMax().x;
+            const double e = 1e-7 * (hi - lo);
+            for (ULONG k = 0; k < knots[d].GetSize(); k++)
+            {
+                const double kn = knots[d][k];
+                if (!(kn > lo + 2.0 * e && kn < hi - 2.0 * e))
+                {
+                    continue;
+                }
+                for (int m = 1; m <= 9; m++)
+                {
+                    const double o = olo + (ohi - olo) * m / 10.0;
+                    // each side's limit at the knot, extrapolated linearly from e and 3e away on it
+                    SmVector3d n[4];
+                    bool ok = true;
+                    const double at[4] = {kn - 3.0 * e, kn - e, kn + e, kn + 3.0 * e};
+                    for (int q = 0; q < 4 && ok; q++)
+                    {
+                        ok = srf->EvaluateNormal(d == 0 ? SmPoint2d(at[q], o) : SmPoint2d(o, at[q]), TRUE, TRUE, n[q]) == SM_SUCCESS;
+                    }
+                    if (ok)
+                    {
+                        SmVector3d left = n[1] * 1.5 - n[0] * 0.5, right = n[2] * 1.5 - n[3] * 0.5;
+                        if (left.Unitize() == SM_SUCCESS && right.Unitize() == SM_SUCCESS)
+                        {
+                            inside = std::max(inside, std::acos(std::min(1.0, left.Dot(right))));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// SolidCraft's junction rig (sc-recipes-curved/cov-junction-*): two cylinders, or a cylinder and a
+// plate, joined, their junction edge rounded with its tangent chain (§27). Graded from the
+// recipes' expected.json: one valid closed body whose round meets its faces G1 (no closed form);
+// here G1 along every edge of the blend faces and inside them, to 1e-6 rad (a fitted round meets
+// its faces within its certified bound: 1e-6 rad is 1e-6 mm over a millimetre).
+void junction_round(const char *name, smlib_brep *body, std::array<double, 3> pick, double r)
+{
+    const std::vector<double> chain = body != nullptr ? tangent_chain_points(body, {pick[0], pick[1], pick[2]}) : std::vector<double>();
+    smlib_brep *out = nullptr;
+    const int32_t s =
+        body == nullptr ? SMLIB_ERR_ARG : smlib_fillet(body, chain.data(), static_cast<int64_t>(chain.size() / 3), 0.1, r, &out, nullptr);
+    std::printf("  %s: %zu edge(s) rounded %g: status %d%s%s\n", name, chain.size() / 3, r, static_cast<int>(s), s == SMLIB_OK ? "" : ": ",
+                s == SMLIB_OK ? "" : last_blend_reason().c_str());
+    smlib_brep_free(body);
+    CHECK(s == SMLIB_OK && out != nullptr);
+    if (out == nullptr)
+    {
+        return;
+    }
+    int64_t solids = -1;
+    CHECK(smlib_brep_solid_count(out, &solids) == SMLIB_OK && solids == 1);
+    double seam = 0.0, inside = 0.0;
+    int faces = 0;
+    blend_faces_g1(out, seam, inside, faces);
+    std::printf("  %s: %lld solid(s), %d blend face(s): tangent planes across their edges up to %.3g rad apart, normals across their knots %.3g\n",
+                name, static_cast<long long>(solids), faces, seam, inside);
+    CHECK(faces > 0 && seam <= 1e-6 && inside <= 1e-6);
+    CHECK(sound(out));
+    smlib_brep_free(out);
+}
+
+// The tees: a pipe R8 along x from x = -30 (60 long) and a branch on it from the origin.
+smlib_brep *rig_pipe()
+{
+    return cylinder_on({-30, 0, 0}, {1, 0, 0}, 8.0, 60.0);
+}
+void scenario_junction_tee_equal_round()
+{
+    junction_round("tee, equal R8", combined(rig_pipe(), cylinder_on({0, 0, 0}, {0, 0, 1}, 8.0, 25.0), SMLIB_BOOLEAN_UNION),
+                   {7.642691913004848, 2.3641616532907164, 7.642691913004848}, 1.0);
+}
+void scenario_junction_tee_unequal_round()
+{
+    junction_round("tee, R5 branch", combined(rig_pipe(), cylinder_on({0, 0, 0}, {0, 0, 1}, 5.0, 25.0), SMLIB_BOOLEAN_UNION), {0.0, 5, 6.244997998398398}, 1.0);
+}
+void scenario_junction_tee_offset_round()
+{
+    junction_round("tee, R5 branch 2 off", combined(rig_pipe(), cylinder_on({0, 2, 0}, {0, 0, 1}, 5.0, 25.0), SMLIB_BOOLEAN_UNION),
+                   {0.0, 7, 3.872983346207417}, 1.0);
+}
+void scenario_junction_tee_oblique_round()
+{
+    junction_round("tee, R5 branch at 30 degrees",
+                   combined(rig_pipe(), cylinder_on({0, 0, 0}, {0.49999999999999994, 0, 0.8660254037844387}, 5.0, 25.0), SMLIB_BOOLEAN_UNION),
+                   {3.6055512754639882, 5, 6.244997998398398}, 1.0);
+}
+void scenario_junction_tee_oblique_unequal_round()
+{
+    junction_round("tee, R4 branch at 45 degrees",
+                   combined(rig_pipe(), cylinder_on({0, 1, 0}, {0.7071067811865475, 0, 0.7071067811865476}, 4.0, 25.0), SMLIB_BOOLEAN_UNION),
+                   {6.244997998398397, 5, 6.244997998398398}, 1.0);
+}
+
+// The bosses: a cylinder R6 tilted by `deg` about y into the plate 60 x 60 x 10 under z = 0,
+// standing 2 below the top along its axis, its root edge rounded 1.5.
+void junction_boss(const char *name, double deg)
+{
+    const double a = deg * PI / 180.0;
+    junction_round(name,
+                   combined(box(-30, -30, -10, 60, 60, 10), cylinder_on({-2.0 * std::sin(a), 0, -2.0 * std::cos(a)}, {std::sin(a), 0, std::cos(a)}, 6.0, 25.0),
+                            SMLIB_BOOLEAN_UNION),
+                   {0, 6, 0}, 1.5);
+}
+void scenario_junction_boss_tilt_00_root_round()
+{
+    junction_boss("boss upright", 0.0);
+}
+void scenario_junction_boss_tilt_20_root_round()
+{
+    junction_boss("boss tilted 20 degrees", 20.0);
+}
+void scenario_junction_boss_tilt_40_root_round()
+{
+    junction_boss("boss tilted 40 degrees", 40.0);
+}
+
 const TangentEndCase SCENARIO_CASES[] = {
     {"boss_in_band_kept", scenario_boss_in_band_kept, nullptr},
     {"boss_in_band_taken", scenario_boss_in_band_taken, nullptr},
@@ -9555,6 +9766,16 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"round_ending_on_a_cylinder", scenario_round_ending_on_a_cylinder, nullptr},
     {"round_ending_where_its_edge_runs_on", scenario_round_ending_where_its_edge_runs_on, nullptr},
     {"round_cutting_a_bridge_refused", scenario_round_cutting_a_bridge_refused, nullptr},
+    {"junction_tee_equal_round", scenario_junction_tee_equal_round, nullptr},
+    {"junction_tee_unequal_round", scenario_junction_tee_unequal_round, nullptr},
+    {"junction_tee_offset_round", scenario_junction_tee_offset_round, nullptr},
+    {"junction_tee_oblique_round", scenario_junction_tee_oblique_round, nullptr},
+    {"junction_tee_oblique_unequal_round", scenario_junction_tee_oblique_unequal_round, nullptr},
+    {"junction_boss_tilt_00_root_round", scenario_junction_boss_tilt_00_root_round, nullptr},
+    {"junction_boss_tilt_20_root_round", scenario_junction_boss_tilt_20_root_round,
+     "status 1001, Corner Edge Computation Failure: the End at (-5.848, +-2.409, 0), where the root ellipse meets the chord of the cylinder's bottom cap rising out of the plate, is of mixed convexity (the chord concave, the cap's rim convex); the round's rail on the wall, about 1.5 up, passes over the whole rim, which rises only 0.173 above the plate (-2 cos 20 + 6 sin 20), so the rail meets no side edge there and the end rib has no end; not refused naming a size"},
+    {"junction_boss_tilt_40_root_round", scenario_junction_boss_tilt_40_root_round,
+     "status 1001, Corner Edge Computation Failure: at the End at (-3.111, 5.506, 0) (mixed convexity, as tilt 20) the cap's rim is split by the cylinder's seam vertex at (-3.93, 4.91, 0.69), and the rail on the wall crosses the rim past it, on the next edge of the same two faces: the side edge's rail end is not found (built with the seam elsewhere)"},
     {"round_just_under_a_boss_footprint", scenario_round_just_under_a_boss_footprint,
      "status 1001 with no reason: SMLib does not build the round that leaves a 0.001 wide annulus of the can's top round the boss (4.29 builds)"},
     {"round_just_under_a_bridge_cut", scenario_round_just_under_a_bridge_cut,
