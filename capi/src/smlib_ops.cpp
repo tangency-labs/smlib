@@ -717,15 +717,12 @@ int32_t round_edges(SmBrep *b, const std::vector<SmEdge *> &edges, const std::ve
         {
             return SMLIB_ERR_ARG;
         }
-        // SMLib sets back an N x N corner whose edges all have one convexity (its
-        // SmFilletConvexNxNCorner, convex or concave alike). A mixed one (SmFilletConcaveNxNCorner)
-        // hands its setback to that same topology, which takes the rails of neighbouring rounds to
-        // meet within their edges; at a mixed corner those on the face between the two rounds of
-        // one convexity do not, and its sections there come out kinked (a coincident pair of
-        // control points) and the result no solid.
+        // SMLib sets back only the blend corner's Setback (every face a plane, every edge
+        // straight, one convexity: SmBlendCorner::ClassifySetBack); any other corner asked to be
+        // set back is refused (#86: the old N x N corners' setbacks are gone).
         SmFilletCornerType type = corner->GetCornerType();
         const bool filled = type == SM_FCR_BLEND && static_cast<SmBlendCorner *>(corner)->GetEvent() == SM_BCE_SETBACK;
-        if (type != SM_FCR_N_x_N_CONVEX && !filled)
+        if (!filled)
         {
             if (refused != nullptr)
             {
