@@ -5298,7 +5298,7 @@ SmBoolean bDebugMe = FALSE ;
 
   // SolidCraft change: a feature standing inside a round's band is kept (m_bKeepFeatures): the
   // round is trimmed round it in place and sewn in instead of merged (SmFilletKeepFeatures.cpp).
-  if ( m_bKeepFeatures && !m_bCliffOverflow )
+  if ( m_bKeepFeatures && !m_bCliffOverflow && !HasOpenSetBack() )
     {
       SmBoolean bKept = FALSE;
       SmStatus  eKept = KeepFeaturesInBands( bKept );
@@ -5314,8 +5314,10 @@ SmBoolean bDebugMe = FALSE ;
     }
 
   // SolidCraft change: a cliff overflow closes the fillet faces into the region the blends
-  // remove and subtracts it from the target, instead of merging the fillet faces in.
-  if ( m_bCliffOverflow )
+  // remove and subtracts it from the target, instead of merging the fillet faces in. So is an
+  // open G1 setback corner's hole made (no patches: its spring curves are imprinted on its faces
+  // with the sheet's boundary, TrimAtCreases).
+  if ( m_bCliffOverflow || HasOpenSetBack() )
     {
       SmStatus eSubtracted = TrimAtCreases();
       if ( eSubtracted != SM_SUCCESS )

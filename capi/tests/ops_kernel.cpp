@@ -367,13 +367,15 @@ smlib_brep *cube_sphere(double r)
 // refuses (SM_ERR_INVALID_INPUT); MateEdges failed at every round, the rounds' walls were
 // left unmated and the piecewise merge hit a missing vertex (SM_ERR_NULL_POINTER, 1006). The
 // copy is grown only along the rulings, where the offset's tangent extension is still the cone.
-// The corner of corner_setback left open (smlib_blend_setback_open): SMLib's patch, six
-// quadrilaterals meeting at its centre, goes with its six inner edges and its centre, so the
-// sheet keeps the box's six faces and the three rounds (9), 36 - 6 edges and 23 - 1 vertices.
-// Its one hole runs through the six section ends, each side (a section or a face curve) in the
-// two halves SMLib split it into: twelve edges, each between the hole and one face, which are
-// the sheet's only free edges, chained end to start in the direction the faces beside them run
-// them. Too small a buffer makes nothing and names the length needed.
+// The corner of corner_setback left open (smlib_blend_setback_open): the Setback's hole, no fill
+// (owner via coordinator, 2026-11-02, #86): the sheet keeps the box's six faces and the three
+// rounds (9), 27 edges and 19 vertices. Its one hole runs through the six section ends and the
+// three base points: the three end sections whole, and on each face its spring curve (the
+// parabola tangent to the two rails at their ends) in its two halves at its base point, nine
+// edges, each between the hole and one face, which are the sheet's only free edges, chained end
+// to start in the direction the faces beside them run them. Too small a buffer makes nothing and
+// names the length needed. (It was SMLib's old patch removed: twelve edges, each section and
+// face curve in two, the sheet [9, 30, 22].)
 void corner_setback_open()
 {
     smlib_brep *part = box(0, 0, 0, 60, 40, 20);
@@ -385,16 +387,16 @@ void corner_setback_open()
     int64_t len = -1;
     CHECK(smlib_blend_setback_open(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, 1, 0.1, &r, nullptr, 0, &len, nullptr,
                                    nullptr) == SMLIB_ERR_BUFFER &&
-          r == nullptr && len == 1 + 3 * 12);
+          r == nullptr && len == 1 + 3 * 9);
     int64_t holes[64];
     CHECK(smlib_blend_setback_open(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, 1, 0.1, &r, holes, 64, &len, nullptr,
                                    nullptr) == SMLIB_OK &&
-          r != nullptr && len == 1 + 3 * 12 && holes[0] == 12);
+          r != nullptr && len == 1 + 3 * 9 && holes[0] == 9);
     if (r != nullptr)
     {
         int64_t counts[3] = {0, 0, 0};
         CHECK(smlib_brep_counts(r, counts) == SMLIB_OK);
-        CHECK(counts[0] == 9 && counts[1] == 30 && counts[2] == 22);
+        CHECK(counts[0] == 9 && counts[1] == 27 && counts[2] == 19);
         int32_t closed = -1;
         CHECK(smlib_brep_is_manifold_solid(r, &closed) == SMLIB_OK && closed == 0);
         smlib_flat *f = nullptr;
@@ -403,9 +405,9 @@ void corner_setback_open()
         const int64_t *eu = nullptr;
         const double *vp = nullptr;
         int64_t n_ev = 0, n_eu = 0, n_vp = 0;
-        CHECK(smlib_flat_get_i64(f, SMLIB_FLAT_EDGE_VERTICES, &ev, &n_ev) == SMLIB_OK && n_ev == 2 * 30);
+        CHECK(smlib_flat_get_i64(f, SMLIB_FLAT_EDGE_VERTICES, &ev, &n_ev) == SMLIB_OK && n_ev == 2 * 27);
         CHECK(smlib_flat_get_i64(f, SMLIB_FLAT_EDGEUSE_EDGE, &eu, &n_eu) == SMLIB_OK);
-        CHECK(smlib_flat_get_f64(f, SMLIB_FLAT_VERTEX_POSITION, &vp, &n_vp) == SMLIB_OK && n_vp == 3 * 22);
+        CHECK(smlib_flat_get_f64(f, SMLIB_FLAT_VERTEX_POSITION, &vp, &n_vp) == SMLIB_OK && n_vp == 3 * 19);
         // The edges history says each edge bounds: the hole's own edges bound their one face.
         int64_t hlen = 0;
         CHECK(smlib_history_read(r, nullptr, 0, &hlen) == SMLIB_ERR_BUFFER);
@@ -429,14 +431,18 @@ void corner_setback_open()
         {
             free_edges += b.size() == 1 ? 1 : 0;
         }
-        CHECK(free_edges == 12);
+        CHECK(free_edges == 9);
         const double ends[6][3] = {{52, 35, 20}, {52, 40, 15}, {55, 32, 20}, {60, 32, 15}, {55, 40, 12}, {60, 35, 12}};
         int found = 0;
-        for (int64_t k = 0; k < 12; ++k)
+        for (int64_t k = 0; k < 9 && holes[0] == 9; ++k)
         {
             int64_t e = holes[1 + 3 * k], face = holes[2 + 3 * k], fwd = holes[3 + 3 * k];
-            int64_t n = holes[1 + 3 * ((k + 1) % 12)], nfwd = holes[3 + 3 * ((k + 1) % 12)];
-            CHECK(e >= 0 && e < 30 && face >= 0 && face < 9 && (fwd == 0 || fwd == 1));
+            int64_t n = holes[1 + 3 * ((k + 1) % 9)], nfwd = holes[3 + 3 * ((k + 1) % 9)];
+            CHECK(e >= 0 && e < 27 && face >= 0 && face < 9 && (fwd == 0 || fwd == 1));
+            if (!(e >= 0 && e < static_cast<int64_t>(bounds.size())))
+            {
+                continue;
+            }
             CHECK(bounds[static_cast<size_t>(e)].size() == 1 && bounds[static_cast<size_t>(e)][0] == face);
             int64_t end = ev[2 * e + (fwd != 0 ? 1 : 0)];
             int64_t next_start = ev[2 * n + (nfwd != 0 ? 0 : 1)];
@@ -468,7 +474,7 @@ void corner_setback_open()
     int64_t all_holes[8 * 64];
     CHECK(smlib_blend_setback_open(part, SMLIB_BLEND_ROUND, all_edges, all_radii, 12, corners, backs, 8, 0.1, &r, all_holes, 8 * 64, &len,
                                    nullptr, nullptr) == SMLIB_OK &&
-          r != nullptr && len == 8 * (1 + 3 * 12));
+          r != nullptr && len == 8 * (1 + 3 * 9));
     if (r != nullptr)
     {
         smlib_flat *f = nullptr;
@@ -481,10 +487,10 @@ void corner_setback_open()
         std::vector<int64_t> seen;
         for (int k = 0; k < 8; ++k)
         {
-            const int64_t *h = all_holes + k * (1 + 3 * 12);
-            CHECK(h[0] == 12);
+            const int64_t *h = all_holes + k * (1 + 3 * 9);
+            CHECK(h[0] == 9);
             double farthest = 0.0;
-            for (int64_t i = 0; i < 12; ++i)
+            for (int64_t i = 0; i < 9 && h[0] == 9; ++i)
             {
                 int64_t e = h[1 + 3 * i];
                 seen.push_back(e);
@@ -594,8 +600,9 @@ int sections_on_their_rounds(const smlib_brep *r, const int64_t *holes, int64_t 
 }
 
 // tangency-labs/solidcore#1377: a 40 x 40 x 40 box with every edge rounded r 4 and every corner
-// set back 7, left open, and its corner (0, 0, 0) alone: each of the six section halves round
-// every hole is its round's exact arc, never a polynomial spline fitted near it.
+// set back 7, left open, and its corner (0, 0, 0) alone: each of the three end sections round
+// every hole (whole: the Setback's hole, #86; they were six halves) is its round's exact arc,
+// never a polynomial spline fitted near it.
 void setback_sections_are_exact_arcs()
 {
     smlib_brep *part = box(0, 0, 0, 40, 40, 40);
@@ -632,11 +639,11 @@ void setback_sections_are_exact_arcs()
         int64_t len = -1;
         CHECK(smlib_blend_setback_open(part, SMLIB_BLEND_ROUND, edges, radii, 12, corners, backs, n_corners, 0.1, &r, holes.data(),
                                        static_cast<int64_t>(holes.size()), &len, nullptr, nullptr) == SMLIB_OK &&
-              r != nullptr && len == n_corners * (1 + 3 * 12));
+              r != nullptr && len == n_corners * (1 + 3 * 9));
         if (r != nullptr)
         {
             CHECK(sections_on_their_rounds(r, holes.data(), n_corners, n_corners == 8 ? "eight corners" : "corner (0, 0, 0)") ==
-                  6 * n_corners);
+                  3 * n_corners);
             done(r);
         }
     }
@@ -833,15 +840,19 @@ double cross_curvature(const SmBrep *b, const SmPoint3d &p, const SmVector3d &al
 // the vertex the cross curvature is the circle's 1/8, at 12 (the setback) 0, falling in between;
 // across where the ease starts the round is curvature-continuous. The hole's six corners (the
 // sections' ends) each meet a section half and a face-curve half, both with zero curvature
-// there. The sheet passes SMLib's check and its only free edges are the hole's. An ease of 0 is
-// today's body exactly; the ease is refused where it does not fit or is no length.
+// there. The sheet passes SMLib's check and its only free edges are the hole's (nine: the
+// Setback's, #86, its G2 face curves its order-2 fill's sides, which have no closed form; the
+// fill's patches the caller removes). An ease of 0 is today's body exactly; the ease is refused
+// where it does not fit or is no length.
 // The corner (60, 40, 20) of a 60 x 40 x 20 box, its three edges rounded r5 and set back 12 or
 // 13 with an ease of 0.5, 1.25 or 5 (SolidCraft's G2 corner, its long setbacks). Each face curve
 // between two sections is split at the side's middle, and both halves are merged into the face
 // they lie on. One half's midpoint lay on the corner's face curve to scaled zero and the other's
 // only to the edges' tolerance, so SmFilletEdge::FindFilletBrepEdge kept the first and dropped
 // the second: that half was never merged, and the sheet came back with two free edges besides
-// the hole's (SMLIB_ERR_NOT_SOLID). The sheet now holds one hole of twelve edges for every pair.
+// the hole's (SMLIB_ERR_NOT_SOLID). The sheet now holds one hole for every pair: the Setback's
+// (#86), nine edges, its three sections whole and each face curve in two (it was twelve, the
+// sections in two too).
 void corner_setback_eased_long_setbacks()
 {
     smlib_brep *part = box(0, 0, 0, 60, 40, 20);
@@ -861,7 +872,7 @@ void corner_setback_eased_long_setbacks()
             {
                 std::printf("set back %g, eased %g: status %d\n", setback, ease, static_cast<int>(s));
             }
-            CHECK(s == SMLIB_OK && r != nullptr && len == 1 + 3 * 12 && holes[0] == 12);
+            CHECK(s == SMLIB_OK && r != nullptr && len == 1 + 3 * 9 && holes[0] == 9);
             smlib_brep_free(r);
         }
     }
@@ -920,8 +931,8 @@ void corner_setback_eased_face_curves_are_quintics()
             smlib_brep *r = nullptr;
             const int32_t s = smlib_blend_setback_open_eased(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, &ease, 1, 0.1, &r,
                                                              holes, 64, &len, nullptr, nullptr);
-            CHECK(s == SMLIB_OK && r != nullptr && len == 1 + 3 * 12 && holes[0] == 12);
-            if (s != SMLIB_OK || r == nullptr || len != 1 + 3 * 12)
+            CHECK(s == SMLIB_OK && r != nullptr && len == 1 + 3 * 9 && holes[0] == 9);
+            if (s != SMLIB_OK || r == nullptr || len != 1 + 3 * 9)
             {
                 std::printf("set back %g, eased %g: status %d\n", setback, ease, static_cast<int>(s));
                 smlib_brep_free(r);
@@ -932,13 +943,13 @@ void corner_setback_eased_face_curves_are_quintics()
             r->p->GetEdges(es);
             r->p->GetFaces(fs);
             std::vector<SmEdge *> hole;
-            for (int64_t k = 0; k < 12; ++k)
+            for (int64_t k = 0; k < 9; ++k)
             {
                 hole.push_back(es[static_cast<ULONG>(holes[1 + 3 * k])]);
             }
             int face_curves = 0, not_quintic = 0, met_rail = 0, met_half = 0;
             double worst_turn = 0.0, worst_bend = 0.0;
-            for (int64_t k = 0; k < 12; ++k)
+            for (int64_t k = 0; k < 9; ++k)
             {
                 SmEdge *h = hole[static_cast<size_t>(k)];
                 SmFace *f = fs[static_cast<ULONG>(holes[2 + 3 * k])];
@@ -1008,7 +1019,7 @@ void corner_setback_eased_face_curves_are_quintics()
                     ++free_edges;
                 }
             }
-            CHECK(free_edges == 12);
+            CHECK(free_edges == 9);
             done(r);
             CHECK(smlib_blend_setback_eased(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, &ease, 1, 0.1, &r, nullptr, nullptr) ==
                       SMLIB_OK &&
@@ -1077,7 +1088,7 @@ void corner_setback_eased()
     // ease 4, open
     CHECK(smlib_blend_setback_open_eased(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, &ease, 1, 0.1, &r, holes, 64, &len,
                                          nullptr, nullptr) == SMLIB_OK &&
-          r != nullptr && len == 1 + 3 * 12 && holes[0] == 12);
+          r != nullptr && len == 1 + 3 * 9 && holes[0] == 9);
     if (r != nullptr)
     {
         SmTArray<SmEdge *> es;
@@ -1095,7 +1106,7 @@ void corner_setback_eased()
                 free_edges.push_back(static_cast<int64_t>(k));
             }
         }
-        for (int64_t k = 0; k < 12; ++k)
+        for (int64_t k = 0; k < 9; ++k)
         {
             hole_edges.push_back(holes[1 + 3 * k]);
         }
@@ -1108,7 +1119,7 @@ void corner_setback_eased()
         {
             int64_t v = vertex_at(vs, SmPoint3d(e[0], e[1], e[2]));
             CHECK(v >= 0);
-            for (int64_t k = 0; k < 12 && v >= 0; ++k)
+            for (int64_t k = 0; k < 9 && v >= 0; ++k)
             {
                 SmEdge *h = es[static_cast<ULONG>(holes[1 + 3 * k])];
                 if (h->GetStartVertex() == vs[static_cast<ULONG>(v)] || h->GetEndVertex() == vs[static_cast<ULONG>(v)])
@@ -1158,7 +1169,7 @@ void corner_setback_eased()
     {
         CHECK(smlib_blend_setback_open_eased(part, kind, edges, radii, 3, corner, &setback, &ease, 1, 0.1, &r, holes, 64, &len, nullptr,
                                              nullptr) == SMLIB_OK &&
-              r != nullptr && holes[0] == 12);
+              r != nullptr && holes[0] == 9);
         if (r != nullptr)
         {
             SmTArray<SmEdge *> es;
@@ -1210,7 +1221,7 @@ void corner_setback_eased()
     int64_t all_holes[8 * 64];
     CHECK(smlib_blend_setback_open_eased(part, SMLIB_BLEND_ROUND, all_edges, all_radii, 12, all_corners, all_backs, all_eases, 8, 0.1, &r,
                                          all_holes, 8 * 64, &len, nullptr, nullptr) == SMLIB_OK &&
-          r != nullptr && len == 8 * (1 + 3 * 12));
+          r != nullptr && len == 8 * (1 + 3 * 9));
     if (r != nullptr)
     {
         // on the round along X at y 40, z 40, the top contact line: flat across at both
@@ -11561,7 +11572,8 @@ void setback_open_g1_box_corner_hole()
     const int32_t st =
         smlib_blend_setback_open(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, 1, 0.1, &r, holes, 64, &len, nullptr, nullptr);
     smlib_brep_free(part);
-    std::printf("  status %d, hole of %lld edge(s)\n", static_cast<int>(st), static_cast<long long>(len > 0 ? holes[0] : -1));
+    std::printf("  status %d, hole of %lld edge(s)%s%s\n", static_cast<int>(st), static_cast<long long>(len > 0 ? holes[0] : -1), st == SMLIB_OK ? "" : ": ",
+                st == SMLIB_OK ? "" : last_blend_reason().c_str());
     CHECK(st == SMLIB_OK && r != nullptr && len == 1 + 3 * 9 && holes[0] == 9);
     if (r == nullptr)
     {
@@ -11645,6 +11657,62 @@ void setback_open_g1_box_corner_hole()
         std::printf("  face (%g, %g, %g): %d halves, base (%g, %g, %g); off its plane %.3g, off the parabola %.3g, tangents %.3g rad off\n", sp.n.x,
                     sp.n.y, sp.n.z, halves, base.x, base.y, base.z, off_plane, off_parabola, turn);
         CHECK(halves == 2 && off_plane <= 1e-12 * 60.0 && off_parabola <= 1e-12 * 60.0 && turn <= 1e-12);
+    }
+    // the sheet's faces round the hole oriented as the closed solid's (the corner set back 8 and
+    // filled, smlib_blend_setback): at a point inside each, its normal (an oriented body's face
+    // normal is its surface's) and the closed body's face there agree
+    smlib_brep *closed = nullptr;
+    smlib_brep *part2 = box(0, 0, 0, 60, 40, 20);
+    CHECK(smlib_blend_setback(part2, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, 1, 0.1, &closed, nullptr, nullptr) == SMLIB_OK &&
+          closed != nullptr);
+    smlib_brep_free(part2);
+    if (closed != nullptr)
+    {
+        SmTArray<SmFace *> sheet_faces, closed_faces;
+        r->p->GetFaces(sheet_faces);
+        closed->p->GetFaces(closed_faces);
+        double worst = 0.0;
+        int compared = 0;
+        for (int64_t k = 0; k < holes[0]; ++k)
+        {
+            SmFace *f = sheet_faces[static_cast<ULONG>(holes[2 + 3 * k])];
+            SmPoint3d p;
+            CHECK(SmApiFaceInternalPoint(f, p) == SM_SUCCESS);
+            SmVector3d n;
+            SmBoolean on = FALSE, multi = FALSE;
+            SmPoint2d uv;
+            double gap = 0.0;
+            CHECK(f->GetSurface()->DropPoint(p, f->GetSurface()->GetNaturalUVDomain(), nullptr, on, uv, gap, multi) == SM_SUCCESS &&
+                  f->GetSurface()->EvaluateNormal(uv, TRUE, TRUE, n) == SM_SUCCESS);
+            double best = HUGE_VAL;
+            SmVector3d m;
+            for (ULONG c = 0; c < closed_faces.GetSize(); ++c)
+            {
+                SmPoint3d q;
+                double d = HUGE_VAL;
+                if (SmApiFaceClosestPoint(closed_faces[c], p, q, d) != SM_SUCCESS || !(d < best))
+                {
+                    continue;
+                }
+                SmBoolean on2 = FALSE, multi2 = FALSE;
+                SmPoint2d uv2;
+                double gap2 = 0.0;
+                SmVector3d m2;
+                if (closed_faces[c]->GetSurface()->DropPoint(q, closed_faces[c]->GetSurface()->GetNaturalUVDomain(), nullptr, on2, uv2, gap2, multi2) ==
+                        SM_SUCCESS &&
+                    closed_faces[c]->GetSurface()->EvaluateNormal(uv2, TRUE, TRUE, m2) == SM_SUCCESS)
+                {
+                    best = d;
+                    m = m2;
+                }
+            }
+            CHECK(best <= 1e-9);
+            worst = std::max(worst, 1.0 - n.Dot(m) / (n.Length() * m.Length()));
+            ++compared;
+        }
+        std::printf("  %d faces round the hole: normals off the closed solid's by up to %.3g\n", compared, worst);
+        CHECK(compared == static_cast<int>(holes[0]) && worst <= 1e-12);
+        smlib_brep_free(closed);
     }
     smlib_brep_free(r);
 }
@@ -12481,9 +12549,8 @@ const TangentEndCase SETBACK_CASES[] = {
     {"four_face_apex", setback_four_face_apex, nullptr},
     {"four_face_pocket_floor", setback_four_face_pocket_floor, nullptr},
     {"open_concave_notch_hole", setback_open_concave_notch_hole,
-     "an open setback is SmFilletConvexNxNCorner's patch removed: a hole of twelve edges (#86)"},
-    {"open_g1_box_corner_hole", setback_open_g1_box_corner_hole,
-     "an open setback is SmFilletConvexNxNCorner's patch removed: a hole of twelve edges, its face curves no parabolas (#86)"},
+     "SMLIB_ERR_NO_ROOM, \"a blend past its faces keeps no length of its edge\": the merge that leaves the open corner's hole (TrimAtCreases) keeps a sheet's pieces only in the material, and a concave round's lie in the void"},
+    {"open_g1_box_corner_hole", setback_open_g1_box_corner_hole, nullptr},
 };
 
 int setback_cases(bool known_failing, const char *only)

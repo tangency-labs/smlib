@@ -508,6 +508,7 @@ public:
   const SmTArray<SmEdge*> & GetMitredEdges() const { return m_vMitredEdges; }
   SmStatus  NoteOpenEnd(SmFilletSolver * pSolver, SmVertex * pVertex, SmFace * pEndFace); // an end the Nx1 corner left uncut
   SmStatus  TrimAtCreases();                  // trim m_pFilletBrep along its creases with the faces past the cliffs, sew it in (SmFilletOverflow.cpp)
+  SmBoolean HasOpenSetBack() const;            // SolidCraft change: a corner is an open G1 setback (SmBlendCorner::IsSetBackOpen)
 private:
   SmStatus  CutFilletAtOpenEnd(const SmFilletOpenEnd & crEnd); // cut the fillet off by the end face's surface continued
 public:
