@@ -333,6 +333,7 @@ SmBlendCorner::SmBlendCorner
    m_pFill(NULL),
    m_pBallSurface(NULL)
 {
+  m_apMixedSurface[0] = m_apMixedSurface[1] = NULL;
 }
 
 SmBlendCorner::~SmBlendCorner()
@@ -340,6 +341,7 @@ SmBlendCorner::~SmBlendCorner()
   DeleteSweptSurface();
   DeleteBallSurface();
   delete m_pFill;
+  DeleteMixedSurfaces();
 }
 
 void SmBlendCorner::DeleteSweptSurface()
@@ -717,6 +719,8 @@ PURPOSE: The corner's edges: the arc A-B is the torus's (its iso-curve at
 SmStatus SmBlendCorner::CalcCornerVertGeom()
 {
   SER( SmFilletCorner::CalcCornerVertGeom() );
+  if ( IsMixed() )
+    { return CalcMixedVertGeom(); }
   return IsBall() ? PlaceBallContacts() : SM_SUCCESS;
 }
 
@@ -724,6 +728,8 @@ SmStatus SmBlendCorner::CalcCornerEdgeGeom()
 {
   if ( m_eEvent == SM_BCE_END )
     { return CalcEndEdgeGeom(); }
+  if ( IsMixed() )
+    { return CalcMixedEdgeGeom(); }
   if ( IsMitreTurn() )
     {
       // the mitre between the rails' crossing and the side vertex, exact where the class allows;
@@ -1431,6 +1437,8 @@ SmStatus SmBlendCorner::MakeCornerTopology()
 {
   if ( IsBall() )
     { return MakeBallTopology(); }
+  if ( IsMixed() )
+    { return MakeMixedTopology(); }
   if ( m_eEvent == SM_BCE_JOIN )
     { return MakeJoinTopology(); }
   if ( m_eEvent == SM_BCE_END )
@@ -1442,7 +1450,7 @@ SmStatus SmBlendCorner::MakeCornerTopology()
 
 SmStatus SmBlendCorner::AdjustTopology()
 {
-  if ( IsBall() || IsSetBack() || m_eEvent == SM_BCE_JOIN || m_eEvent == SM_BCE_END )
+  if ( IsBall() || IsSetBack() || IsMixed() || m_eEvent == SM_BCE_JOIN || m_eEvent == SM_BCE_END )
     { return SM_SUCCESS; }
   return IsSwept() ? SM_SUCCESS : IsMitreTurn() ? AdjustMitreTopology() : AdjustTwoBlendTopology();
 }
@@ -1451,6 +1459,8 @@ SmStatus SmBlendCorner::CreateCornerPatch()
 {
   if ( IsBall() )
     { return CreateBallPatch(); }
+  if ( IsMixed() )
+    { return CreateMixedPatches(); }
   if ( m_eEvent == SM_BCE_END )
     { return CreateEndPatchOfEnd(); }
   if ( m_eEvent == SM_BCE_JOIN )

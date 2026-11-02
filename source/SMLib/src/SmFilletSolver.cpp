@@ -486,10 +486,13 @@ static SmStatus sm_FindFilletTsectPnt
    const SmSurface * cpSurf2,         // in : Base Surface 2 connected to to-bo-filleted edge
    SmPoint3d       & rPntToDrop,      // in : guess point as close to desired point on fillet center curve as possible
    SmVector3d      & rTraceDir,       // in : fillet center curve tangent at guess point
-   SmTsectPnt      & rNewTsectPnt)    // out: contains fillet intersect UVpnt values
+   SmTsectPnt      & rNewTsectPnt,    // out: contains fillet intersect UVpnt values
                                       //        baseSurface(uvPnt)   = points on rail
                                       //        OffsetSurface(uvPnt) = point on fillet center curve and
                                       //                               plane = [rPntToDrop, rTraceDir]
+   const SmExtent2d * cpOptDomain1 = NULL, // in : SolidCraft change: the domains to search on the two
+   const SmExtent2d * cpOptDomain2 = NULL) //      base surfaces (the trace's extended ones for a point
+                                      //      past the faces), NULL = their natural domains
 {
   // check state
   SM_ASSERT(pFilSolver->GetEdgeuse(0)->GetFace()->GetSurface() == cpSurf1) ;
@@ -514,8 +517,8 @@ SmBoolean bDebug = FALSE;
 #endif
   // locals
   double          dThisApproxTol3d = pFilSolver->GetThisApproxTol3d();
-  SmExtent2d      sDomain1          = cpSurf1->GetNaturalUVDomain();
-  SmExtent2d      sDomain2          = cpSurf2->GetNaturalUVDomain();
+  SmExtent2d      sDomain1          = ( cpOptDomain1 != NULL ) ? *cpOptDomain1 : cpSurf1->GetNaturalUVDomain();
+  SmExtent2d      sDomain2          = ( cpOptDomain2 != NULL ) ? *cpOptDomain2 : cpSurf2->GetNaturalUVDomain();
   SmSurfaceCache *pSC1              = smsurf_GetSurfaceCache(cpSurf1); NER(pSC1);
   SmSurfaceCache *pSC2              = smsurf_GetSurfaceCache(cpSurf2); NER(pSC2);
 
@@ -1093,6 +1096,63 @@ static int sbDumpFVUs=0;
           sTsectPnts.Append(sAllTsectPnts);
         }
     } // end iter twice building the sTsectPnts array
+
+  // SolidCraft change: a rail ends where its corner's event needs it, so at an end whose corner
+  // does not blend (the trace is extended there) the trace runs to the edge's own end first: where
+  // its first or last point stops short of that end (a corner whose rails cross before the
+  // edge's vertex, the Mixed one), the edge's section there is a through point, and the extension
+  // runs on past it. Every spine kind then measures its extension from the edge's end.
+  if ( bDoSorting && sTsectPnts.GetSize() > 0 && pEdge->GetStartVertex() != pEdge->GetEndVertex() )
+    {
+      SmFilletExecutive * pFilExec = GetFilletExecutive();
+      NER( pFilExec );
+      for ( ULONG lEnd=0; lEnd<2; lEnd++ )
+        {
+          const SmVertex  * cpEndVertex = ( lEnd == 0 ) ? pEdge->GetStartVertex() : pEdge->GetEndVertex();
+          SmFilletCorner  * pEndCorner  = pFilExec->GetFilletCornerOfVertex( SM_CONST_CAST(SmVertex*, cpEndVertex) );
+          if ( pEndCorner == NULL || pEndCorner->IsBlendingCorner() || pEndCorner->IsDegenerateCorner() )
+            { continue; }
+          // the trace's point nearest that end: its ball's centre dropped to the edge
+          SmTsectPnt * pNear = sTsectPnts[ lEnd == 0 ? 0 : sTsectPnts.GetSize() - 1 ];
+          SmPoint3d sCentre;
+          SER( SetupOffsetValues( *pNear, NULL ) );
+          SER( pOffsetSrf1->EvaluatePoint( pNear->UVPos(0), sCentre ) );
+          SmSolutionArray sSol;
+          SER( pEdgeCurve->GlobalPointSolve( sIvl, SM_SO_MINIMIZE, sCentre, m_dThisApproxTol3d, NULL, NULL, SM_SR_SINGLE, sSol ) );
+          if ( sSol.GetSize() < 1 )
+            { SER( SM_ERR ); }
+          const double dEndParam = ( lEnd == 0 ) ? sIvl.GetMin() : sIvl.GetMax();
+          SmPoint3d sAt, sEndPnt;
+          SER( pEdgeCurve->EvaluatePoint( sSol[0].m_vStart[0], sAt ) );
+          SER( pEdgeCurve->EvaluatePoint( dEndParam, sEndPnt ) );
+          if ( sAt.DistanceBetween( sEndPnt ) <= m_dThisApproxTol3d )
+            { continue; }
+          // the edge's section at its end, as the G1 knots' through points are made
+          SmPoint3d  sPnt;
+          SmVector3d sBinVec, sTangent;
+          SmVector2d sUVParameter;
+          SER( GetEdgeuse(0)->EvaluateBinormal( dEndParam, FALSE, sPnt, sBinVec, &sTangent, NULL, &sUVParameter ));
+          sBinVec = sBinVec * ( smos_Fabs( GetSurface(1)->GetOffsetDistance() ) * 0.5 );
+          SmVector2d sUVDir;
+          SER( pBaseSrf1->DropVectors( sUVParameter, TRUE, TRUE, 1, &sBinVec, &sUVDir ));
+          sUVParameter = sUVParameter + sUVDir;
+          SER( pOffsetSrf1->EvaluatePoint( sUVParameter, sPnt ));
+          SmTsectPnt * pEndPnt = new SmTsectPnt;
+          sDeletePnts.Add( pEndPnt );
+          // solved where the trace itself runs: its base surfaces' extended domains (the round
+          // runs on past its faces there, and the ball's contacts can lie past a face's surface,
+          // whose domain may end at the face)
+          SmExtent2d sTraceDomain1 = pBaseSrf1->GetNaturalUVDomain(), sTraceDomain2 = pBaseSrf2->GetNaturalUVDomain();
+          SetupOffsetExtension( pBaseSrf1, sTraceDomain1 );
+          SetupOffsetExtension( pBaseSrf2, sTraceDomain2 );
+          SER( sm_FindFilletTsectPnt( this, pBaseSrf1, pBaseSrf2, sPnt, sTangent, *pEndPnt, &sTraceDomain1, &sTraceDomain2 ));
+          pEndPnt->m_dCurveParameter = -SM_BIG_DOUBLE;
+          if ( lEnd == 0 )
+            { sTsectPnts.InsertAt( 0, pEndPnt ); }
+          else
+            { sTsectPnts.Add( pEndPnt ); }
+        }
+    }
 
 #ifdef SM_DEBUG_CODE
   if ( sbDumpFVUs>0 )
