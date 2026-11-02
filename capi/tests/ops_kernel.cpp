@@ -12548,8 +12548,7 @@ const TangentEndCase SETBACK_CASES[] = {
     {"concave_corner_rounds", setback_concave_corner_rounds, nullptr},
     {"four_face_apex", setback_four_face_apex, nullptr},
     {"four_face_pocket_floor", setback_four_face_pocket_floor, nullptr},
-    {"open_concave_notch_hole", setback_open_concave_notch_hole,
-     "SMLIB_ERR_NO_ROOM, \"a blend past its faces keeps no length of its edge\": the merge that leaves the open corner's hole (TrimAtCreases) keeps a sheet's pieces only in the material, and a concave round's lie in the void"},
+    {"open_concave_notch_hole", setback_open_concave_notch_hole, nullptr},
     {"open_g1_box_corner_hole", setback_open_g1_box_corner_hole, nullptr},
 };
 

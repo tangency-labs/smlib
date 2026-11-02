@@ -1308,8 +1308,19 @@ SmStatus SmFilletExecutive::TrimAtCreases()
         }
     }
 
-  // 1, 2: each sheet face split along its creases, the pieces outside the body (beyond the
-  // cliffs, or past an end) deleted, whether a crease split it or not
+  // each round's side of the body: a convex blend's sheet lies in the material it takes off, a
+  // concave blend's (an open setback corner's concave rounds; a concave overflow is refused before)
+  // in the void it fills. A sheet face of no round (a corner's) takes the blends' one side.
+  std::vector<SmBoolean> sAdds( m_vFilletSolvers.GetSize(), FALSE );
+  SmBoolean bAnyAdds = FALSE, bAnyTakes = FALSE;
+  for (ULONG i=0; i<m_vFilletSolvers.GetSize(); i++)
+    {
+      SER( SmFilletSolver::IsConcaveEdge( *m_vFilletSolvers[i]->GetEdgeuse(0)->GetEdge(), sAdds[i] ));
+      if ( sAdds[i] ) { bAnyAdds = TRUE; } else { bAnyTakes = TRUE; }
+    }
+
+  // 1, 2: each sheet face split along its creases, the pieces off their side of the body (beyond
+  // the cliffs, or past an end) deleted, whether a crease split it or not
   SmTArray<SmFace*> sSheetFaces;
   m_pFilletBrep->GetFaces( sSheetFaces );
   for (ULONG s=0; s<sSheetFaces.GetSize(); s++)
@@ -1409,7 +1420,15 @@ SmStatus SmFilletExecutive::TrimAtCreases()
               GetFilletErrorInfo()->NoteError( SM_FILERR_BAD_MERGE, _T("Fillet Error: a blend past its faces lies on the body's boundary away from its creases") );
               return SM_ERR;
             }
-          if ( !bInside )
+          SmBoolean bAdds = bAnyAdds;
+          if ( sRoundOf.count( pSheet ))
+            { bAdds = sAdds[sRoundOf[pSheet]]; }
+          else if ( bAnyAdds && bAnyTakes )
+            {
+              GetFilletErrorInfo()->NoteError( SM_FILERR_CORNER_UNSUPPORTED, _T("Fillet Error: a corner's face between blends that add and blends that take off material, past their faces or at an open setback, is not built") );
+              return SM_ERR;
+            }
+          if ( bAdds ? bInside : !bInside )
             {
               SER( m_pFilletBrep->DeleteFace( sAll[p], TRUE ));
               sAll[p] = NULL;
