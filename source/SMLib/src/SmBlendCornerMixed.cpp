@@ -1767,7 +1767,9 @@ SmStatus SmBlendCorner::CalcMixedEdgeGeom()
   //   A = d (n_T x T~), d the curve's distance from the wall's plane at V (into the material), T~ its
   //     homogeneous tangent: horizontal, zero at V together with its derivative (d(V) = 0 and the
   //     curve arrives at V along the wall);
-  //   B = t w^2 n_T: zero at X, out of T at V.
+  //   B = t w^2 s: zero at X, out of T at V along the seam's line s (the wall's own direction across
+  //     the edges at V, turned to T's outward side: T's normal where the wall stands square to T,
+  //     leaning with a drafted wall, whose tangent plane at V it spans with the edges' direction).
   // So the faces' tangent plane turns from T at X to the wall at V as the room to the wall closes, and
   // only k, the rate at X, is left: the curvature compatibility there fixes it (solved with the twists).
   SmMxSide * apShared[2] = { &L[2], &U[0] };
@@ -1789,7 +1791,8 @@ SmStatus SmBlendCorner::CalcMixedEdgeGeom()
     lin.brk = { 0.0, 1.0 };
     lin.seg.push_back( SmMxBez{ SmMxV4{ 0, 0, 0, 0 }, SmMxV4{ 1, 0, 0, 0 } } );
     SmMxCrv sc = sm_MxTimes( lin, sm_MxTimes( w, w ));
-    sMB = sm_MxMap( sc, [&](const SmMxV4 & q) { return SmMxV4{ q[0] * sOut.x, q[0] * sOut.y, q[0] * sOut.z, 0.0 }; } );
+    const SmVector3d sUp = sSeamDir * ( ( sSeamDir.Dot( sOut ) < 0.0 ) ? -1.0 : 1.0 );
+    sMB = sm_MxMap( sc, [&](const SmMxV4 & q) { return SmMxV4{ q[0] * sUp.x, q[0] * sUp.y, q[0] * sUp.z, 0.0 }; } );
     // A into U at X (towards U's trimline)
     const SmMxV4 t = sm_MxCrvDerivAt( asTrim[1], 0.0, 1 ), p = sm_MxEval( asTrim[1], 0.0 );
     const SmVector3d sE2( t[0] - p[0] * t[3], t[1] - p[1] * t[3], t[2] - p[2] * t[3] );
