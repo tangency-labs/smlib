@@ -184,20 +184,6 @@ public:
   static SmStatus FillHole(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Round> & crRounds, ULONG lOrder,
                            double dTol, Fill & rFill);
 
-  // CertifiedScale's probe of a G1 fill at degree 9: whether its conditions can be met
-  // (m_bFeasible), and the least uniform violation of its normalized sector conditions over the
-  // heights (m_dMargin: <= 0 where met, m_bMargin asks it), one quadratic programme each; or
-  // (m_bFill) the fill as FillHole's, its degrees tried from the least up only.
-  struct Probe
-  {
-    bool   m_bFill = false;   // the fill itself, from the least degree up (no degree-9 proof first)
-    bool   m_bMargin = false;
-    bool   m_bFeasible = false;
-    double m_dMargin = 0.0;
-  };
-  static SmStatus FillHoleProbe(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Round> & crRounds, double dTol,
-                                Fill & rFill, Probe & rProbe);
-
   // A scale search's work (CertifiedScale), counts not times: the fills tried, their quadratic
   // programmes, their sector rows computed and the most held at once, their dual active-set steps.
   struct Work

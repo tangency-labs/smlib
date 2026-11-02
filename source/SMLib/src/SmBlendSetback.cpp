@@ -1151,52 +1151,6 @@ SmStatus sm_SbDualQP(const std::vector<double> & crG, const std::vector<double> 
   return SM_ERR;
 }
 
-// sm_SbDualQP over many rows, few of which bind: solved on a working set of rows, those violated
-// at its solution added (the most violated first, up to a block at a time) until none is. Its
-// answer is the full programme's: a solution meets every row; a set of rows with no solution is
-// one the full set has none of either (*pbProven as sm_SbDualQP's).
-SmStatus sm_SbDualQPRows(const std::vector<double> & crG, const std::vector<double> & crg, const std::vector<double> & crC,
-                         const std::vector<double> & crb, size_t n, size_t m, double dTol, std::vector<double> & rY, bool * pbProven = NULL,
-                         unsigned long long * plSteps = NULL)
-{
-  if (pbProven != NULL) { *pbProven = false; }
-  const size_t lBlock = 2000;
-  std::vector<char> sIn(m, 0);
-  std::vector<size_t> sSet;
-  // y at the unconstrained minimum: the empty set's solution
-  SER(sm_SbDualQP(crG, crg, std::vector<double>(), std::vector<double>(), n, 0, dTol, rY, NULL, plSteps));
-  for (int iRound=0; iRound<200; iRound++)
-    {
-      std::vector< std::pair<double, size_t> > sViolated;
-      for (size_t i=0; i<m; i++)
-        {
-          if (sIn[i]) { continue; }
-          double s = -crb[i];
-          for (size_t k=0; k<n; k++) { s += crC[i * n + k] * rY[k]; }
-          if (s < -dTol) { sViolated.push_back(std::make_pair(s, i)); }
-        }
-      if (sViolated.empty())
-        { return SM_SUCCESS; }
-      const size_t lTake = smos_Min(lBlock, sViolated.size());
-      std::partial_sort(sViolated.begin(), sViolated.begin() + static_cast<long>(lTake), sViolated.end());
-      for (size_t t=0; t<lTake; t++)
-        {
-          sIn[sViolated[t].second] = 1;
-          sSet.push_back(sViolated[t].second);
-        }
-      std::vector<double> sC(sSet.size() * n), sb(sSet.size());
-      for (size_t t=0; t<sSet.size(); t++)
-        {
-          for (size_t k=0; k<n; k++) { sC[t * n + k] = crC[sSet[t] * n + k]; }
-          sb[t] = crb[sSet[t]];
-        }
-      const SmStatus eStatus = sm_SbDualQP(crG, crg, sC, sb, n, sSet.size(), dTol, rY, pbProven, plSteps);
-      if (eStatus != SM_SUCCESS)
-        { return eStatus; }
-    }
-  return SM_ERR;
-}
-
 // Bivariate Bernstein polynomials (sm_SbT) on [0, 1]^2: sums, derivatives, halves.
 sm_SbT sm_SbTMake(size_t p, size_t q)
 {
@@ -1624,11 +1578,198 @@ SmStatus sm_SbFillFrom(const SmContext & crContext, const std::vector<sm_SbNet> 
   return SM_SUCCESS;
 }
 
+/*******************************************************************//**
+   A G1 fill's sector conditions C t >= b over its free heights t, row by
+   row as a quadratic programme asks for them, none held but those it keeps
+   (sm_SbDualQPRows): set up once per attempt from each patch's curvature
+   polynomials l, m, n in pieces, at t = 0 (crPc0[k][piece]) and per free
+   height (crPcf[k * free + f][piece]), the side its normal faces (dSign),
+   its scale and its directions. Row (patch, piece, Bernstein coefficient i,
+   direction a, pair) is the condition's coefficient there,
+     dSign sum_k w_k (Pc0_k,i + sum_f t_f Pcf_kf,i) >= 0 held 1e-12 dScale
+   inside, w (cos a cos a', cos a sin a' + sin a cos a', sin a sin a') for a'
+   the direction itself or the next, normalized by its largest coefficient
+   over t; none where no free height enters it (the certificate decides
+   it). Its index runs over every patch, piece, coefficient, direction and
+   pair in that order, those with no row included, so the rows' order is
+   the order they were once built in.
+   Violated: the rows not in the working set violated at t beyond dTol, each
+   with its slack -b + C t computed from the row itself; a row whose value
+   from the polynomials at t (one sum per coefficient, not per row) stands
+   above 1e-10 of its terms' magnitudes is met, and is not built.
+   (#85's curved fill uses the same rows: its patches' polynomials, signs,
+   scales and directions are AddPatch's.)
+***********************************************************************/
+class sm_SbSectorRows
+{
+public:
+  explicit sm_SbSectorRows(size_t lFree) : m_lFree(lFree) {}
+
+  void AddPatch(const std::vector<double> & crTheta, double dSign, double dScale, std::vector< std::vector<sm_SbT> > & rPc0,
+                std::vector< std::vector<sm_SbT> > & rPcf)
+  {
+    Patch sP;
+    sP.lStart = m_lSize;
+    sP.dSign = dSign;
+    sP.dScale = dScale;
+    for (size_t a=0; a+1<crTheta.size(); a++)
+      for (int iPair=0; iPair<2; iPair++)
+        {
+          const double c0 = std::cos(crTheta[a]), s0 = std::sin(crTheta[a]);
+          const double c1 = (iPair == 0) ? c0 : std::cos(crTheta[a + 1]), s1 = (iPair == 0) ? s0 : std::sin(crTheta[a + 1]);
+          const std::array<double, 3> w = {{ c0 * c1, c0 * s1 + s0 * c1, s0 * s1 }};
+          sP.sW.push_back(w);
+        }
+    sP.lPieces = rPc0[0].size();
+    sP.lCoefs = rPc0[0].empty() ? 0 : rPc0[0][0].c.size();
+    sP.sPc0.swap(rPc0);
+    sP.sPcf.swap(rPcf);
+    m_lSize += sP.lPieces * sP.lCoefs * sP.sW.size();
+    m_vPatches.push_back(std::move(sP));
+  }
+
+  size_t Size() const { return m_lSize; }
+
+  // row lRow's coefficients over t (pC, m_lFree of them) and right-hand side: false where it has none
+  bool Row(size_t lRow, double * pC, double & rdB)
+  {
+    size_t lP = 0;
+    while (lP + 1 < m_vPatches.size() && m_vPatches[lP + 1].lStart <= lRow) { lP++; }
+    const Patch & crP = m_vPatches[lP];
+    const size_t lLocal = lRow - crP.lStart, lPairs = crP.sW.size();
+    const size_t lPc = lLocal / (crP.lCoefs * lPairs), i = (lLocal / lPairs) % crP.lCoefs, lPair = lLocal % lPairs;
+    return Build(crP, lPc, i, lPair, pC, rdB);
+  }
+
+  // the rows not in crIn (by index) violated at crT beyond dTol: (slack, index)
+  void Violated(const std::vector<double> & crT, double dTol, const std::vector<char> & crIn, std::vector< std::pair<double, size_t> > & rOut)
+  {
+    rOut.clear();
+    std::vector<double> sRow(m_lFree);
+    for (size_t lP=0; lP<m_vPatches.size(); lP++)
+      {
+        const Patch & crP = m_vPatches[lP];
+        const size_t lPairs = crP.sW.size();
+        std::vector<double> sL(3 * crP.lCoefs), sA(3 * crP.lCoefs);
+        for (size_t lPc=0; lPc<crP.lPieces; lPc++)
+          {
+            for (int k=0; k<3; k++)
+              for (size_t i=0; i<crP.lCoefs; i++)
+                {
+                  double l = crP.sPc0[k][lPc].c[i], a = std::fabs(l);
+                  for (size_t f=0; f<m_lFree; f++)
+                    {
+                      const double x = crT[f] * crP.sPcf[k * m_lFree + f][lPc].c[i];
+                      l += x;
+                      a += std::fabs(x);
+                    }
+                  sL[k * crP.lCoefs + i] = l;
+                  sA[k * crP.lCoefs + i] = a;
+                }
+            for (size_t i=0; i<crP.lCoefs; i++)
+              for (size_t lPair=0; lPair<lPairs; lPair++)
+                {
+                  const size_t lRow = crP.lStart + (lPc * crP.lCoefs + i) * lPairs + lPair;
+                  if (crIn[lRow]) { continue; }
+                  const std::array<double, 3> & w = crP.sW[lPair];
+                  double v = -1.0e-12 * crP.dScale, dMag = 1.0e-12 * crP.dScale;
+                  for (int k=0; k<3; k++)
+                    {
+                      v += crP.dSign * w[k] * sL[k * crP.lCoefs + i];
+                      dMag += std::fabs(w[k]) * sA[k * crP.lCoefs + i];
+                    }
+                  // met beyond any rounding of the row's own slack: not built
+                  if (v > 1.0e-10 * dMag) { continue; }
+                  double b = 0.0;
+                  if (!Build(crP, lPc, i, lPair, sRow.data(), b)) { continue; }
+                  double dSlack = -b;
+                  for (size_t f=0; f<m_lFree; f++) { dSlack += sRow[f] * crT[f]; }
+                  if (dSlack < -dTol) { rOut.push_back(std::make_pair(dSlack, lRow)); }
+                }
+          }
+      }
+  }
+
+  unsigned long long m_lRowsBuilt = 0;
+
+private:
+  struct Patch
+  {
+    size_t lStart = 0, lPieces = 0, lCoefs = 0;
+    double dSign = 0.0, dScale = 0.0;
+    std::vector< std::array<double, 3> > sW;
+    std::vector< std::vector<sm_SbT> > sPc0, sPcf;
+  };
+
+  bool Build(const Patch & crP, size_t lPc, size_t i, size_t lPair, double * pC, double & rdB)
+  {
+    m_lRowsBuilt++;
+    const std::array<double, 3> & w = crP.sW[lPair];
+    double dConst = 0.0, dMax = 0.0;
+    for (int k=0; k<3; k++) { dConst += crP.dSign * w[k] * crP.sPc0[k][lPc].c[i]; }
+    for (size_t f=0; f<m_lFree; f++)
+      {
+        double x = 0.0;
+        for (int k=0; k<3; k++) { x += crP.dSign * w[k] * crP.sPcf[k * m_lFree + f][lPc].c[i]; }
+        pC[f] = x;
+        dMax = smos_Max(dMax, smos_Fabs(x));
+      }
+    if (!(dMax > 1.0e-11 * crP.dScale))
+      { return false; } // no free height in it: the certificate decides it
+    for (size_t f=0; f<m_lFree; f++) { pC[f] = pC[f] / dMax; }
+    rdB = (-dConst + 1.0e-12 * crP.dScale) / dMax; // held a little inside
+    return true;
+  }
+
+  size_t              m_lFree;
+  size_t              m_lSize = 0;
+  std::vector<Patch>  m_vPatches;
+};
+
+// sm_SbDualQP over many rows, few of which bind: solved on a working set of rows, those violated
+// at its solution added (the most violated first, up to a block at a time) until none is. Its
+// answer is the full programme's: a solution meets every row; a set of rows with no solution is
+// one the full set has none of either (*pbProven as sm_SbDualQP's). The rows come from rRows as
+// they are asked for; only the working set's are held (*plPeak: the most).
+SmStatus sm_SbDualQPRows(const std::vector<double> & crG, const std::vector<double> & crg, sm_SbSectorRows & rRows, size_t n, double dTol,
+                         std::vector<double> & rY, bool * pbProven, unsigned long long * plSteps, unsigned long long * plPeak)
+{
+  if (pbProven != NULL) { *pbProven = false; }
+  const size_t lBlock = 2000;
+  std::vector<char> sIn(rRows.Size(), 0);
+  std::vector<double> sC, sb, sRow(n);
+  // y at the unconstrained minimum: the empty set's solution
+  SER(sm_SbDualQP(crG, crg, std::vector<double>(), std::vector<double>(), n, 0, dTol, rY, NULL, plSteps));
+  for (int iRound=0; iRound<200; iRound++)
+    {
+      std::vector< std::pair<double, size_t> > sViolated;
+      rRows.Violated(rY, dTol, sIn, sViolated);
+      if (sViolated.empty())
+        { return SM_SUCCESS; }
+      const size_t lTake = smos_Min(lBlock, sViolated.size());
+      std::partial_sort(sViolated.begin(), sViolated.begin() + static_cast<long>(lTake), sViolated.end());
+      for (size_t t=0; t<lTake; t++)
+        {
+          const size_t lRow = sViolated[t].second;
+          sIn[lRow] = 1;
+          double b = 0.0;
+          if (!rRows.Row(lRow, sRow.data(), b))
+            { SER(SM_ERR); }
+          sC.insert(sC.end(), sRow.begin(), sRow.end());
+          sb.push_back(b);
+        }
+      if (plPeak != NULL) { *plPeak = smos_Max(*plPeak, static_cast<unsigned long long>(sb.size())); }
+      const SmStatus eStatus = sm_SbDualQP(crG, crg, sC, sb, n, sb.size(), dTol, rY, pbProven, plSteps);
+      if (eStatus != SM_SUCCESS)
+        { return eStatus; }
+    }
+  return SM_ERR;
+}
+
 SmStatus sm_SbGraphG1(const SmContext & crContext, const std::vector<SmBlendSetback::Face> & crWorldFaces,
                        const std::vector<SmBlendSetback::Round> & crRounds, const std::vector< std::vector< std::vector<sm_SbH> > > & crWorldJets,
                        const std::vector<size_t> & crQ, const std::vector<ULONG> & crRound, const std::vector<ULONG> & crFace,
-                       const std::vector<SmBoolean> & crRev, double dTol, SmBlendSetback::Fill & rFill,
-                       SmBlendSetback::Probe * pProbe = NULL)
+                       const std::vector<SmBoolean> & crRev, double dTol, SmBlendSetback::Fill & rFill)
 {
   const size_t n = crRound.size();
   const size_t Nc = 3;                    // the cubic across: rows 0, 1 the round's, 2, 3 F's
@@ -1843,11 +1984,8 @@ SmStatus sm_SbGraphG1(const SmContext & crContext, const std::vector<SmBlendSetb
   // whose fill is certified, or 9's.
   std::vector<sm_SbNet> sTop;
   size_t lTopDegree = 0;
-  const bool bProbe = (pProbe != NULL && !pProbe->m_bFill);
-  std::vector<size_t> sDegrees;
-  if (pProbe == NULL || bProbe) { sDegrees.push_back(9); }
-  for (size_t d=Nc; d<=9 && !bProbe; d++)
-    if (d < 9 || (pProbe != NULL && pProbe->m_bFill)) { sDegrees.push_back(d); }
+  std::vector<size_t> sDegrees(1, 9);
+  for (size_t d=Nc; d<9; d++) { sDegrees.push_back(d); }
   for (size_t lD=0; lD<sDegrees.size(); lD++)
     {
       const size_t d = sDegrees[lD];
@@ -2145,8 +2283,9 @@ SmStatus sm_SbGraphG1(const SmContext & crContext, const std::vector<SmBlendSetb
       {
         const size_t lLevels = SM_SB_GRAPH_LEVELS;
         {
-          // the sector conditions on every piece's coefficient matrices, in t: C t >= b
-          std::vector<double> sC, sb;
+          // the sector conditions on every piece's coefficient matrices, in t: C t >= b, their
+          // rows made as the quadratic programme asks for them (sm_SbSectorRows)
+          sm_SbSectorRows sRowsT(lFree);
           for (size_t p=0; p<2*n; p++)
             {
               const sm_SbAffinePatch & crP = sPatches[p];
@@ -2181,67 +2320,15 @@ SmStatus sm_SbGraphG1(const SmContext & crContext, const std::vector<SmBlendSetb
                   sm_SbTPieces(s0, lLevels, sPc0[k]);
                   for (size_t f=0; f<lFree; f++) { sm_SbTPieces(sF[f], lLevels, sPcf[k * lFree + f]); }
                 }
-              std::vector<double> sRowT(lFree);
-              for (size_t pc=0; pc<sPc0[0].size(); pc++)
-                for (size_t i=0; i<sPc0[0][pc].c.size(); i++)
-                  for (size_t a=0; a+1<sTheta.size(); a++)
-                    for (int iPair=0; iPair<2; iPair++)
-                      {
-                        const double c0 = std::cos(sTheta[a]), s0 = std::sin(sTheta[a]);
-                        const double c1 = (iPair == 0) ? c0 : std::cos(sTheta[a + 1]), s1 = (iPair == 0) ? s0 : std::sin(sTheta[a + 1]);
-                        const double w[3] = { c0 * c1, c0 * s1 + s0 * c1, s0 * s1 };
-                        double dConst = 0.0, dMax = 0.0;
-                        for (int k=0; k<3; k++) { dConst += sS[p] * w[k] * sPc0[k][pc].c[i]; }
-                        for (size_t f=0; f<lFree; f++)
-                          {
-                            double s = 0.0;
-                            for (int k=0; k<3; k++) { s += sS[p] * w[k] * sPcf[k * lFree + f][pc].c[i]; }
-                            sRowT[f] = s;
-                            dMax = smos_Max(dMax, smos_Fabs(s));
-                          }
-                        if (!(dMax > 1.0e-11 * dScale))
-                          { continue; } // no free height in it: the certificate decides it
-                        for (size_t f=0; f<lFree; f++) { sC.push_back(sRowT[f] / dMax); }
-                        sb.push_back((-dConst + 1.0e-12 * dScale) / dMax); // held a little inside
-                      }
+              sRowsT.AddPatch(sTheta, sS[p], dScale, sPc0, sPcf);
             }
           std::vector<double> sT;
           rFill.m_lSolves++;
-          if (bProbe && pProbe->m_bMargin)
-            {
-              // the least tau with C t + tau >= b (tau >= -1): min tau + eps (|t|^2 + tau^2)
-              const size_t lN = lFree + 1, lM = sb.size();
-              std::vector<double> sGm(lN * lN, 0.0), sgm(lN, 0.0), sCm(lM * lN + lN, 0.0), sbm(sb);
-              double dG = 0.0;
-              for (size_t a=0; a<lFree; a++) { dG = smos_Max(dG, sG[a * lFree + a]); }
-              for (size_t a=0; a<lN; a++) { sGm[a * lN + a] = 1.0e-9; }
-              sgm[lFree] = 1.0;
-              for (size_t i=0; i<lM; i++)
-                {
-                  for (size_t f=0; f<lFree; f++) { sCm[i * lN + f] = sC[i * lFree + f]; }
-                  sCm[i * lN + lFree] = 1.0;
-                }
-              for (size_t f=0; f<lN; f++) { sCm[lM * lN + f] = (f == lFree) ? 1.0 : 0.0; }
-              sbm.push_back(-1.0);
-              std::vector<double> sTm;
-              rFill.m_lRowsBuilt += sbm.size();
-              rFill.m_lPeakRows = smos_Max(rFill.m_lPeakRows, static_cast<unsigned long long>(sbm.size()));
-              const SmStatus eM = sm_SbDualQPRows(sGm, sgm, sCm, sbm, lN, lM + 1, 1.0e-13, sTm, NULL, &rFill.m_lQPSteps);
-              if (eM != SM_SUCCESS)
-                { SER(eM); }
-              pProbe->m_dMargin = sTm[lFree];
-              (void)dG;
-              return SM_SUCCESS;
-            }
           bool bProven = false;
-          rFill.m_lRowsBuilt += sb.size();
-          rFill.m_lPeakRows = smos_Max(rFill.m_lPeakRows, static_cast<unsigned long long>(sb.size()));
-          const SmStatus eQP = sm_SbDualQPRows(sG, sg, sC, sb, lFree, sb.size(), 1.0e-13, sT, &bProven, &rFill.m_lQPSteps);
-          if (bProbe)
-            {
-              pProbe->m_bFeasible = (eQP == SM_SUCCESS);
-              return SM_SUCCESS;
-            }
+          unsigned long long lPeak = 0;
+          const SmStatus eQP = sm_SbDualQPRows(sG, sg, sRowsT, lFree, 1.0e-13, sT, &bProven, &rFill.m_lQPSteps, &lPeak);
+          rFill.m_lRowsBuilt += sRowsT.m_lRowsBuilt;
+          rFill.m_lPeakRows = smos_Max(rFill.m_lPeakRows, lPeak);
           if (eQP != SM_SUCCESS && bProven && d == 9)
             { break; }
           if (eQP != SM_SUCCESS)
@@ -2251,7 +2338,7 @@ SmStatus sm_SbGraphG1(const SmContext & crContext, const std::vector<SmBlendSetb
           size_t lBad = 0;
           if (!sm_SbCertifiedConvex(sNets, sE, SM_SB_GRAPH_DEPTH, lBad))
             { continue; }
-          if (d == 9 && pProbe == NULL)
+          if (d == 9)
             {
               sTop = sNets;
               lTopDegree = d;
@@ -2288,22 +2375,16 @@ NOTES: The cycle: round m between faces m (its setback patch's v = 0) and
     face m's base point along one line (the spring curve is tangent there).
 ***********************************************************************/
 SmStatus sm_SbFillHole(const SmContext & crContext, const std::vector<SmBlendSetback::Face> & crFaces, const std::vector<SmBlendSetback::Round> & crRounds,
-                       ULONG lOrder, double dTol, SmBlendSetback::Fill & rFill, SmBlendSetback::Probe * pProbe);
-
-SmStatus SmBlendSetback::FillHoleProbe(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Round> & crRounds, double dTol,
-                                       Fill & rFill, Probe & rProbe)
-{
-  return sm_SbFillHole(crContext, crFaces, crRounds, 1, dTol, rFill, &rProbe);
-}
+                       ULONG lOrder, double dTol, SmBlendSetback::Fill & rFill);
 
 SmStatus SmBlendSetback::FillHole(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Round> & crRounds, ULONG lOrder,
                                   double dTol, Fill & rFill)
 {
-  return sm_SbFillHole(crContext, crFaces, crRounds, lOrder, dTol, rFill, NULL);
+  return sm_SbFillHole(crContext, crFaces, crRounds, lOrder, dTol, rFill);
 }
 
 SmStatus sm_SbFillHole(const SmContext & crContext, const std::vector<SmBlendSetback::Face> & crFaces, const std::vector<SmBlendSetback::Round> & crRounds,
-                       ULONG lOrder, double dTol, SmBlendSetback::Fill & rFill, SmBlendSetback::Probe * pProbe)
+                       ULONG lOrder, double dTol, SmBlendSetback::Fill & rFill)
 {
   typedef SmBlendSetback::Round Round;
   typedef SmBlendSetback::Face Face;
@@ -2393,7 +2474,7 @@ SmStatus sm_SbFillHole(const SmContext & crContext, const std::vector<SmBlendSet
   }
 
   if (k == 1)
-    { return sm_SbGraphG1(crContext, crFaces, crRounds, sJets, sQ, sRound, sFace, sRev, dTol, rFill, pProbe); }
+    { return sm_SbGraphG1(crContext, crFaces, crRounds, sJets, sQ, sRound, sFace, sRev, dTol, rFill); }
   // the domain
   std::vector<SmPoint2d> sB(n);
   for (size_t m=0; m<n; m++)
@@ -2922,8 +3003,9 @@ SmStatus SmBlendSetback::CertifiedScale(const SmContext & crContext, const std::
         }
       return sAt;
     };
-  // the model's fill at scale k: its probe at degree 9 (pProbe), or the fill itself (taken certified)
-  auto model = [&](double k, Probe * pProbe, bool & rbCertified) -> SmStatus
+  // the model's fill at scale k, as FillHole makes it (degree 9 first: proven not met there, it
+  // is not met at any degree), taken certified
+  auto model = [&](double k, bool & rbCertified) -> SmStatus
     {
       (*plAttempts)++;
       rbCertified = false;
@@ -2934,9 +3016,7 @@ SmStatus SmBlendSetback::CertifiedScale(const SmContext & crContext, const std::
         { return eStatus; }
       Fill sFill;
       const double dTol = 1.0e-9 * (1.0 + k * dSize);
-      Probe sAsFill;
-      sAsFill.m_bFill = true;
-      eStatus = FillHoleProbe(crContext, crFaces, sRounds, dTol, sFill, (pProbe != NULL) ? *pProbe : sAsFill);
+      eStatus = FillHole(crContext, crFaces, sRounds, 1, dTol, sFill);
       if (plSolves != NULL) { *plSolves += sFill.m_lSolves; }
       if (pWork != NULL)
         {
@@ -2947,14 +3027,14 @@ SmStatus SmBlendSetback::CertifiedScale(const SmContext & crContext, const std::
           pWork->m_lQPSteps += sFill.m_lQPSteps;
         }
       for (size_t o=0; o<sSurfaces.size(); o++) { delete sSurfaces[o]; }
-      if (pProbe == NULL && eStatus != SM_SUCCESS && sFill.m_bUncertified)
+      if (eStatus != SM_SUCCESS && sFill.m_bUncertified)
         { return SM_SUCCESS; }
       if (eStatus != SM_SUCCESS)
         {
           pWhy = sFill.m_pReason;
           return eStatus;
         }
-      rbCertified = (pProbe == NULL);
+      rbCertified = true;
       return SM_SUCCESS;
     };
   auto fail = [&](SmStatus eStatus) -> SmStatus
@@ -2965,7 +3045,7 @@ SmStatus SmBlendSetback::CertifiedScale(const SmContext & crContext, const std::
   // whether the fill at scale i / 1000 is certified: one attempt
   auto certified = [&](int i, bool & rbCertified) -> SmStatus
     {
-      return model(static_cast<double>(i) / 1000.0, NULL, rbCertified);
+      return model(static_cast<double>(i) / 1000.0, rbCertified);
     };
   // The search on the grid of 1e-3, by bisection between a scale whose fill is not certified
   // (lo) and one whose fill is (hi), from 1 and 2: the result is certified at its scale and the

@@ -10143,8 +10143,9 @@ SmStatus box_corner_g1_fill(const std::array<double, 3> &radii, const std::vecto
 // scale: g1_scale_is_monotone), exactly `scale_want`, the search in at most 12 attempts (1, 2,
 // then 10 halvings of the thousandths between: counted, not timed); at a scale above 1 the fill
 // at the setbacks themselves is refused as not certified, proven so by the one quadratic
-// programme at degree 9. The search's work is gated by `most` (counts, not times): its
-// attempts, the sector rows its fills built and the most held at once, and their dual
+// programme at degree 9. The search's work is gated by `most` (counts, not times, about 5%
+// over those measured on Linux; the rows held at most are the working set, in blocks of 2000):
+// its attempts, the sector rows its fills built and the most held at once, and their dual
 // active-set steps. The fill at the scale keeps the body convex
 // (fill_keeps_the_body_convex), its certified margins printed (fill_margins).
 void setback_g1_fill_keeps_the_body_convex(const std::array<double, 3> &radii, double setback, const char *what, double scale_want,
@@ -10416,10 +10417,10 @@ void setback_g1_convex_grows_with_the_setback()
         CHECK(fill.m_vPatches.size() == 6 && fill_keeps_the_body_convex(fill, radii, what));
     }
 }
-void setback_g1_convex_rounds_2_3_4() { setback_g1_fill_keeps_the_body_convex({2, 3, 4}, 0.0, "rounds 2, 3, 4", 1.056, {12, 0, 14323209, 693051, 129085}); }
-void setback_g1_convex_notch() { setback_g1_fill_keeps_the_body_convex({1, 1.5, 2}, 0.0, "rounds 1, 1.5, 2", 1.056, {12, 0, 14323209, 693051, 9331}); }
+void setback_g1_convex_rounds_2_3_4() { setback_g1_fill_keeps_the_body_convex({2, 3, 4}, 0.0, "rounds 2, 3, 4", 1.056, {12, 0, 3820000, 10000, 6750}); }
+void setback_g1_convex_notch() { setback_g1_fill_keeps_the_body_convex({1, 1.5, 2}, 0.0, "rounds 1, 1.5, 2", 1.056, {12, 0, 4570000, 10000, 7630}); }
 // corner_setback's corner (60, 40, 20), r 5 set back 8, at the origin (p -> (60, 40, 20) - p).
-void setback_corner_setback_8() { setback_g1_fill_keeps_the_body_convex({5, 5, 5}, 8.0, "rounds 5 set back 8", 1.0, {1, 0, 430962, 254037, 4}); }
+void setback_corner_setback_8() { setback_g1_fill_keeps_the_body_convex({5, 5, 5}, 8.0, "rounds 5 set back 8", 1.0, {1, 0, 7400, 2050, 24}); }
 
 // The G1 fill's base points lie on the spring conics' shoulders: on face m, between the end P of
 // one round's rail and the end Q of the other's, with X where the two rails cross, the base point
