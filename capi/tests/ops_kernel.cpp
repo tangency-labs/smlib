@@ -7393,6 +7393,158 @@ void ball_sphere_turned_round()
 }
 
 
+// The diagonal of `r`'s bounding box: the part's scale, for gates held to rounding at it.
+double part_size(const smlib_brep *r)
+{
+    double lo[3], hi[3];
+    CHECK(smlib_brep_bounds(r, lo, hi) == SMLIB_OK);
+    return std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) + (hi[2] - lo[2]) * (hi[2] - lo[2]));
+}
+
+// A D-shaped prism: the disc of radius R about the z axis less x > a (0 < a < R), from z = 0 to H.
+smlib_brep *d_prism(double R, double a, double z0, double H)
+{
+    const double al = std::acos(a / R), h = std::sqrt(R * R - a * a);
+    Profile d;
+    d.line(a, -h, a, h, z0).arc(0, 0, z0, 1, R, al, 2.0 * PI - al);
+    return d.extrude(H);
+}
+
+// The D-shaped prism (R 10, flat a 4, H 10), every edge rounded r 2 in one call: its four corners
+// are each a flat, the top or bottom and the convex cylinder, three convex rounds of radius r, a
+// Ball on a curved face. The ball's centre is where the offsets meet, x = a - r, z = H - r (or r),
+// rho = R - r: C = (a - r, +-h', H - r), h' = sqrt((R - r)^2 - (a - r)^2); it touches the flat at
+// (a, +-h', z_C), the top at (a - r, +-h', H) and the cylinder at C R / (R - r) in x, y. The
+// rounded body is the inner body K' (the D-prism of R - r, a - r, height H - 2 r) grown by r
+// (the rounds and balls are the envelope of a ball of radius r rolled inside a convex body), so
+// its volume is Steiner's: V' + S' r + M' r^2 + 4/3 pi r^3, with A', P' the D' section's area and
+// perimeter (alpha = acos((a - r)/(R - r)): A' = (R - r)^2 (pi - alpha) + (a - r) h',
+// P' = 2 (R - r)(pi - alpha) + 2 h'), V' = A' H', S' = 2 A' + P' H' and M' = pi H' + (pi/2) P' (the
+// cylinder's mean curvature (pi - alpha) H', the flat-cylinder edges' alpha H', the rims' and
+// chords' (pi/2) P'). Faces: the prism's 4, six rounds, four balls (14); vertices 12 (3 per
+// ball); edges 24 (each round's two rails and two end sections).
+void ball_d_prism_corners()
+{
+    const double R = 10.0, a = 4.0, H = 10.0, rad = 2.0;
+    const double Rp = R - rad, ap = a - rad, Hp = H - 2.0 * rad, hp = std::sqrt(Rp * Rp - ap * ap), al = std::acos(ap / Rp);
+    const double A = Rp * Rp * (PI - al) + ap * hp, P = 2.0 * Rp * (PI - al) + 2.0 * hp;
+    const double want = A * Hp + (2.0 * A + P * Hp) * rad + (PI * Hp + 0.5 * PI * P) * rad * rad + 4.0 / 3.0 * PI * rad * rad * rad;
+    smlib_brep *prism = d_prism(R, a, 0.0, H), *r = nullptr;
+    const double h = std::sqrt(R * R - a * a);
+    // the six edges: the flat's top and bottom, the uprights, the arc's top and bottom
+    const double points[18] = {a, 0, H, a, 0, 0, a, h, 5, a, -h, 5, -R, 0, H, -R, 0, 0}, sizes[6] = {rad, rad, rad, rad, rad, rad};
+    CHECK(prism != nullptr && smlib_blend(prism, SMLIB_BLEND_ROUND, points, sizes, 6, 0.1, &r, nullptr) == SMLIB_OK && r != nullptr);
+    if (r != nullptr)
+    {
+        const double v = exact_volume_of(r);
+        std::printf("  volume %.12f, want %.12f (%.3g relative)\n", v, want, std::fabs(v - want) / want);
+        CHECK(near(v, want, 1e-11));
+        int64_t counts[3] = {0, 0, 0};
+        CHECK(smlib_brep_counts(r, counts) == SMLIB_OK);
+        std::printf("  %lld faces, %lld edges, %lld vertices\n", static_cast<long long>(counts[0]), static_cast<long long>(counts[1]),
+                    static_cast<long long>(counts[2]));
+        CHECK(counts[0] == 14 && counts[1] == 24 && counts[2] == 12);
+        // the edges on the sphere to rounding at the part's scale (1e-13 of its diagonal)
+        const double size = part_size(r), k = R / Rp;
+        for (double sy : {1.0, -1.0})
+        {
+            for (double zc : {H - rad, rad})
+            {
+                const double zt = zc > H / 2 ? H : 0.0;
+                const SmPoint3d c(ap, sy * hp, zc);
+                const SmPoint3d v3[3] = {SmPoint3d(a, sy * hp, zc), SmPoint3d(ap, sy * hp, zt), SmPoint3d(ap * k, sy * hp * k, zc)};
+                std::printf("  corner (%g, %g, %g):\n", ap, sy * hp, zc);
+                ball_corner_sphere(r, c, rad, v3, true, 1e-13 * size);
+            }
+        }
+        CHECK(sound(r));
+        done(r);
+    }
+    smlib_brep_free(prism);
+}
+
+// A 40 x 40 x 20 block with a D-shaped pocket 10 deep (R 8 about (20, 20), flat x = 24, floor
+// z = 10): the pocket's floor edges (the chord and the arc) and its two uprights rounded r 2 in
+// one call. The floor corners are each the floor, the flat and the CONCAVE cylinder (the material
+// outside it), three concave rounds of radius r: a Ball on a curved face, C = (24 - r, 20 +- h',
+// 10 + r), h' = sqrt((R - r)^2 - (4 - r)^2), touching the cylinder at 20 + (C - 20) R / (R - r) in
+// x, y. Faces: the block's 6, the pocket's 3, four rounds, two balls (15); vertices: the block's 8,
+// each upright round's end section on the top 2, each ball 3 (18); edges 30 (Euler-Poincare, the
+// top face's opening an inner loop: V - E + F - 1 = 2). The pocket's new void is the opening of the D-shaped prism D x [10, oo) cut at the top:
+// over z >= 10 + r the section D' grown by r (A' + P' r + pi r^2, D' = D less r: R - r, flat
+// 4 - r), and below it the floor zone, Int_0^r area(D' grown by sqrt(r^2 - t^2)) dt =
+// A' r + P' pi r^2 / 4 + 2 pi r^3 / 3. The uprights' rounds end on the top as Ends.
+void ball_d_pocket_corners()
+{
+    const double R = 8.0, a = 4.0, rad = 2.0, floor_z = 10.0, top = 20.0;
+    const double Rp = R - rad, ap = a - rad, hp = std::sqrt(Rp * Rp - ap * ap), al = std::acos(ap / Rp);
+    const double A = Rp * Rp * (PI - al) + ap * hp, P = 2.0 * Rp * (PI - al) + 2.0 * hp;
+    const double voidv = (A + P * rad + PI * rad * rad) * (top - floor_z - rad) + A * rad + P * PI * rad * rad / 4.0 + 2.0 * PI * rad * rad * rad / 3.0;
+    const double want = 40.0 * 40.0 * 20.0 - voidv;
+    smlib_brep *pocket = d_prism(R, a, floor_z, 11.0);
+    smlib_brep *cut = pocket != nullptr ? placed(pocket, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {20, 20, 0}) : nullptr;
+    smlib_brep *part = combined(box(0, 0, 0, 40, 40, 20), cut, SMLIB_BOOLEAN_SUBTRACT), *r = nullptr;
+    const double h = std::sqrt(R * R - a * a);
+    const double points[12] = {24, 20, 10, 12, 20, 10, 24, 20 + h, 15, 24, 20 - h, 15}, sizes[4] = {rad, rad, rad, rad};
+    CHECK(part != nullptr && smlib_blend(part, SMLIB_BLEND_ROUND, points, sizes, 4, 0.1, &r, nullptr) == SMLIB_OK && r != nullptr);
+    if (r != nullptr)
+    {
+        const double v = exact_volume_of(r);
+        std::printf("  volume %.12f, want %.12f (%.3g relative)\n", v, want, std::fabs(v - want) / want);
+        CHECK(near(v, want, 1e-11));
+        int64_t counts[3] = {0, 0, 0};
+        CHECK(smlib_brep_counts(r, counts) == SMLIB_OK);
+        std::printf("  %lld faces, %lld edges, %lld vertices\n", static_cast<long long>(counts[0]), static_cast<long long>(counts[1]),
+                    static_cast<long long>(counts[2]));
+        CHECK(counts[0] == 15 && counts[1] == 30 && counts[2] == 18);
+        const double size = part_size(r), k = R / Rp;
+        for (double sy : {1.0, -1.0})
+        {
+            const SmPoint3d c(20 + ap, 20 + sy * hp, floor_z + rad);
+            const SmPoint3d v3[3] = {SmPoint3d(24, 20 + sy * hp, floor_z + rad), SmPoint3d(20 + ap, 20 + sy * hp, floor_z),
+                                     SmPoint3d(20 + ap * k, 20 + sy * hp * k, floor_z + rad)};
+            std::printf("  corner (%g, %g, %g):\n", 20 + ap, 20 + sy * hp, floor_z + rad);
+            ball_corner_sphere(r, c, rad, v3, false, 1e-13 * size);
+        }
+        CHECK(sound(r));
+        done(r);
+    }
+}
+
+smlib_brep *knife_edge_arc_part();
+
+// SolidCraft's 851-fillet-three-edges-at-knife-edge-arc-corner (its expected.json: volume
+// 9524.342896, to its grid's 5e-3), the corner of the top, the front and the CONCAVE arc wall
+// (rho >= 21 about (62 1/6, -21)), three convex rounds r 2 (the scenario's): a Ball on a curved
+// face. Its centre is where the offsets meet, z = 8, y = -19, rho = 23 on the corner's side:
+// C = (62 1/6 - sqrt(23^2 - 2^2), -19, 8); it touches the top at (C_x, -19, 10), the front at
+// (C_x, -21, 8) and the wall at the axis + 21 (C - axis) / 23.
+void ball_knife_edge_arc_corner()
+{
+    const double tip = 62.0 + 1.0 / 6.0, rad = 2.0;
+    smlib_brep *part = knife_edge_arc_part(), *r = nullptr;
+    const std::vector<double> chain =
+        part != nullptr ? tangent_chain_points(part, {20, -21, 10, 47.3174, -6.1508, 10, 41.1667, -21, 5}) : std::vector<double>();
+    const std::vector<double> sizes(chain.size() / 3, rad);
+    CHECK(part != nullptr &&
+          smlib_blend(part, SMLIB_BLEND_ROUND, chain.data(), sizes.data(), static_cast<int64_t>(sizes.size()), 0.1, &r, nullptr) == SMLIB_OK &&
+          r != nullptr);
+    smlib_brep_free(part);
+    if (r != nullptr)
+    {
+        const double v = exact_volume_of(r);
+        std::printf("  volume %.9f, want 9524.342896\n", v);
+        CHECK(std::fabs(v - 9524.342896) < 5e-3);
+        const double cx = tip - std::sqrt(23.0 * 23.0 - 4.0), k = 21.0 / 23.0;
+        const SmPoint3d c(cx, -19, 8);
+        const SmPoint3d v3[3] = {SmPoint3d(cx, -19, 10), SmPoint3d(cx, -21, 8), SmPoint3d(tip + (cx - tip) * k, -21 + 2.0 * k, 8)};
+        ball_corner_sphere(r, c, rad, v3, true, 1e-13 * part_size(r));
+        CHECK(sound(r));
+        done(r);
+    }
+}
+
+
 // The Ball corner's cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--balls-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase BALL_CASES[] = {
@@ -7401,6 +7553,9 @@ const TangentEndCase BALL_CASES[] = {
     {"prism_corner", ball_prism_corner, nullptr},
     {"oblique_corner", ball_oblique_corner, nullptr},
     {"sphere_turned_round", ball_sphere_turned_round, nullptr},
+    {"d_prism_corners", ball_d_prism_corners, "the faces are planes and a cylinder: no Ball (ClassifyBall asks for planes), the old convex corner's patch"},
+    {"d_pocket_corners", ball_d_pocket_corners, "the faces are planes and a concave cylinder: no Ball (ClassifyBall asks for planes), the old convex corner's patch"},
+    {"knife_edge_arc_corner", ball_knife_edge_arc_corner, "the arc wall is a concave cylinder: no Ball (ClassifyBall asks for planes), the old convex corner's sphere fitted to the sections"},
 };
 
 int ball_cases(bool known_failing, const char *only)
