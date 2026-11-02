@@ -8251,8 +8251,12 @@ SmBoolean bDebugMe = FALSE;
   // or across a pole, a crossing still means the other face does not fit inside this one.
   const SmExtent2d sThisDomain = this->GetNaturalUVDomain();
   // bAcrossWrappedSeams FALSE asks for the cover only within one period, as without the fork.
-  const SmBoolean  bWrapsU     = bAcrossWrappedSeams && this->IsClosed( sThisDomain, SM_SP_U );
-  const SmBoolean  bWrapsV     = bAcrossWrappedSeams && this->IsClosed( sThisDomain, SM_SP_V );
+  // The steps are in STEP parameters (u round a surface of revolution's axis), the closure is
+  // the NURBS's: a surface whose NURBS swaps them (SmSurfOfRevolution's m_bSwapUV) wraps in STEP u
+  // where its NURBS closes in v.
+  const SmBoolean  bSwapUV     = ( pBSplineSurface0 != NULL && pBSplineSurface0->GetSwapUVBit() ) ? TRUE : FALSE;
+  const SmBoolean  bWrapsU     = bAcrossWrappedSeams && this->IsClosed( sThisDomain, bSwapUV ? SM_SP_V : SM_SP_U );
+  const SmBoolean  bWrapsV     = bAcrossWrappedSeams && this->IsClosed( sThisDomain, bSwapUV ? SM_SP_U : SM_SP_V );
   SmBoolean        bCrossedU   = FALSE;
   SmBoolean        bCrossedV   = FALSE;
 
