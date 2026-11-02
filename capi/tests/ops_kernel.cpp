@@ -4268,14 +4268,15 @@ int tangent_end_cases(bool known_failing, const char *only)
 //   its inflection X-V, 11 (each blend's End caps merge into the faces they lie on, as each
 //   blend alone leaves 8);
 // - the volume of the body less B and less B', its mirror about the bar's middle (y = 8) round the
-//   concave blend's End on the back face, in closed form: outside them each blend is its own
-//   section (the front one from its End on the left face, exact, to B; the concave one between
-//   them). B' takes out the End on the back face, whose rib is a certified intersection (the
-//   concave round alone is 7.3e-7 off a closed form that keeps it, the chamfer 3.2e-6, and two
-//   builds of the same End differ by up to 1.9e-6). To 1e-11 for the rounds; to 2e-9 for the
-//   chamfers, whose concave chamfer's cone is itself 9.66e-6 (1.07e-9 relative) off the closed
-//   form between B and B' when it is blended alone (the round alone 4.0e-8, the front chamfer and
-//   round alone 1.5e-11).
+//   concave blend's End on the back face, in closed form: outside them the front blend is its own
+//   section, from its End on the left face (exact) to B. For this measure B and B' meet on y = 8,
+//   the plane through the cylinder's axis, so the concave blend lies wholly within them and its
+//   cuts are exact: a torus's or a cone's section by a plane through its axis is its meridian
+//   circles or lines, where a plane y = y1 off the axis cuts a spiric quartic (or a hyperbola)
+//   that the Boolean fits to tolerance. Proof: the concave round alone, r = 5, against this closed
+//   form with the boxes ending at y1, is off by 5.5e-6 at y1 = 3, -1.36e-6 at 6, -6.7e-8 at 7.9,
+//   1.6e-11 at 8. B' takes out the End on the back face, whose rib is a certified intersection.
+//   To 1e-11 relative, chamfers and rounds alike.
 // Built on a peg placed by `PegFrame`: the bar's front left corner (ox, oy) and its length l (the
 // cylinder's axis at (ox + l, oy + 8)): the rig's sketch residues move these by 1e-10.
 struct PegFrame
@@ -4311,36 +4312,6 @@ smlib_brep *residue_peg()
 }
 const PegFrame PEG_RESIDUE = {0.4892940775280783, 0.05792545052986289, 41.64971183108453 - 0.4892940775280783};
 
-// Gauss-Legendre on [a, b] with n points (nodes by Newton on P_n, to rounding).
-double gauss_legendre(const std::function<double(double)> &f, double a, double b, int n)
-{
-    double sum = 0.0;
-    for (int i = 1; i <= n; ++i)
-    {
-        double x = std::cos(PI * (i - 0.25) / (n + 0.5)), dp = 0.0;
-        for (int it = 0; it < 100; ++it)
-        {
-            double p0 = 1.0, p1 = x;
-            for (int k = 2; k <= n; ++k)
-            {
-                const double p2 = ((2.0 * k - 1.0) * x * p1 - (k - 1.0) * p0) / k;
-                p0 = p1;
-                p1 = p2;
-            }
-            dp = n * (x * p1 - p0) / (x * x - 1.0);
-            const double dx = p1 / dp;
-            x -= dx;
-            if (std::fabs(dx) < 1e-16)
-            {
-                break;
-            }
-        }
-        const double w = 2.0 / ((1.0 - x * x) * dp * dp);
-        sum += w * f(0.5 * (a + b) + 0.5 * (b - a) * x);
-    }
-    return 0.5 * (b - a) * sum;
-}
-
 // The box B about the corner of blends of size s, in the peg's frame (the cylinder's axis at
 // x = 40): x from 31 - s (short of the concave blend's nearest point, 32 - s, and of X,
 // 40 - sqrt(32 s)) on past the part, y from below the front face to s + 1 (at most 8: past X,
@@ -4356,10 +4327,15 @@ void peg_corner_box(double s, double &x0, double &y1, double &z0, double &z1)
 double exact_volume_of(const smlib_brep *b);
 
 // The volume of `b` less B and B' (blends of size s on the peg placed by `f`); -1 if a cut fails.
+// For this measure B and B' reach to y = 8 and meet there, on the plane through the cylinder's
+// axis: there every cut of the concave blend is exact (a torus's or a cone's section through its
+// axis: circles, lines), as the Boolean's cut of it by a plane y = y1 off the axis (a spiric
+// quartic, fitted to tolerance) is not. B's other faces miss the concave blend.
 double peg_outside_corner_volume(const smlib_brep *b, const PegFrame &f, double s)
 {
     double x0, y1, z0, z1;
     peg_corner_box(s, x0, y1, z0, z1);
+    y1 = 8.0;
     const double o[3] = {f.ox + f.l - 40.0 + x0, f.oy - 1.0, z0}, o2[3] = {f.ox + f.l - 40.0 + x0, f.oy + 16.0 - y1, z0};
     const double size[3] = {60.0, y1 + 1.0, z1 - z0};
     smlib_brep *cut = nullptr, *cut2 = nullptr, *mid = nullptr, *outside = nullptr;
@@ -4381,29 +4357,17 @@ double peg_outside_corner_volume(const smlib_brep *b, const PegFrame &f, double 
 
 // That volume in closed form: V0 (16 x 10 along the bar's length l, and 960 pi of the half disc and
 // the disc) less the unblended peg's part in B and in B' (the same, mirrored: the bar's block, the
-// half disc's segment below z = 10 and the whole disc's above it, of height y1: the circular
-// segment 64 acos(1 - y1/8) - (8 - y1) sqrt(16 y1 - y1^2)), less the front blend's section A from
-// the left face to B, plus the concave blend's ring between B and B': the integral over its radius
-// rho in [8, 8 + s] of its height h(rho) times rho times the arc's angle there between y = y1 and
-// y = 16 - y1, asin((8 - y1) / rho) - asin((y1 - 8) / rho). The round's h = s - sqrt(s^2 - (8 + s -
-// rho)^2), A = (1 - pi/4) s^2; the chamfer's h = 8 + s - rho, A = s^2 / 2. Integrated in theta, rho
-// = 8 + s (1 - cos theta), where the integrand is analytic, by Gauss-Legendre at 40 points.
+// half disc's half below z = 10 and the whole disc's above it, each of area 32 pi in plan), less
+// the front blend's section A from the left face to B: the round's A = (1 - pi/4) s^2, the
+// chamfer's s^2 / 2. The concave blend lies wholly within B and B'.
 double peg_outside_corner_closed_form(const PegFrame &f, double s, bool chamfer)
 {
     double x0, y1, z0, z1;
     peg_corner_box(s, x0, y1, z0, z1);
-    const double seg = 64.0 * std::acos(1.0 - y1 / 8.0) - (8.0 - y1) * std::sqrt(16.0 * y1 - y1 * y1);
-    const double in_box = (40.0 - x0) * y1 * (10.0 - z0) + 0.5 * seg * (10.0 - z0) + seg * (z1 - 10.0);
+    const double half = 32.0 * PI;
+    const double in_box = (40.0 - x0) * 8.0 * (10.0 - z0) + 0.5 * half * (10.0 - z0) + half * (z1 - 10.0);
     const double section = chamfer ? 0.5 * s * s : (1.0 - PI / 4.0) * s * s;
-    const double ring = gauss_legendre(
-        [&](double th)
-        {
-            const double rho = 8.0 + s * (1.0 - std::cos(th)), drho = s * std::sin(th);
-            const double h = chamfer ? 8.0 + s - rho : s - s * std::sin(th);
-            return h * rho * 2.0 * std::asin((8.0 - y1) / rho) * drho;
-        },
-        0.0, PI / 2.0, 40);
-    return 160.0 * f.l + 960.0 * PI - 2.0 * in_box - section * (f.l - (40.0 - x0)) + ring;
+    return 160.0 * f.l + 960.0 * PI - 2.0 * in_box - section * (f.l - (40.0 - x0));
 }
 
 // The largest angle (radians) between the faces either side of any edge of `b`, at 31 stations
@@ -4534,7 +4498,7 @@ void peg_corner_graded(smlib_brep *&r, const PegFrame &f, double s, bool chamfer
     {
         const double got = peg_outside_corner_volume(r, f, s), want = peg_outside_corner_closed_form(f, s, chamfer);
         std::printf("  volume outside the corner's and the End's boxes %.10f, want %.10f\n", got, want);
-        CHECK(near(got, want, chamfer ? 2e-9 : 1e-11));
+        CHECK(near(got, want, 1e-11));
     }
     done(r);
 }
