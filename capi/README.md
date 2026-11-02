@@ -1359,3 +1359,18 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   else meets it there, the rail's end is looked for on the next edge too, and the round's end
   takes in the seam's vertex. Upstream looked on the first edge only, so whether a round built
   depended on where a cylinder's seam fell. A real edge at that vertex is still a corner.
+- **Four or more rounds at a vertex** (`SmBlendCornerBall.cpp`, `SmBlendCorner::ClassifyBall`;
+  `SmBlendCornerSetback.cpp`; `SmFilletCorner.cpp`): where n >= 4 edges between planes are rounded
+  alike and one ball touches every face, the corner is that ball's sphere, its n-gon fanned into
+  n - 2 exact rational patches of degree (4, 2); elsewhere it is the setback corner. Upstream built
+  a fitted patch there (6e-3 rad off G1 and 1e-3 past the faces at an irregular apex).
+- **Open setbacks with no fill** (`SmBlendCornerSetback.cpp`, `OpenSetBackSprings`;
+  `SmFilletOverflow.cpp`, `TrimAtCreases`; `capi/src/smlib_ops.cpp`): an open G1 setback corner
+  is the setback's hole, its face curves the exact spring parabolas imprinted on the faces with no
+  fill surface; an open G2 one takes its face curves from the order-2 fill, stored non-rational
+  (their weights are 1 by construction). The hole now has nine edges (a box corner's sheet
+  [9, 27, 19]). The overflow's merge keeps each blend's sheet on its own side of the body: a
+  convex one in the material, a concave one in the void.
+- **Setbacks only at setback corners** (`SmFilletCorner.cpp`, `capi/src/smlib_ops.cpp`): the old
+  convex and concave n-edge corners' setback paths are deleted; a setback asked at a corner the
+  setback corner does not build is refused `SMLIB_ERR_UNSUPPORTED`, naming the corner.
