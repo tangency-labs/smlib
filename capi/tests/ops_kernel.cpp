@@ -11514,6 +11514,28 @@ void setback_four_face_apex() { setback_apex({1.0, 1.4, 0.8, 1.2}, false, 1.0); 
 // pocket (certified convex about the void). (Today SmFilletConvexNxNCorner's patch.)
 void setback_four_face_pocket_floor() { setback_apex({0.6, 0.8, 0.5, 0.7}, true, 1.0); }
 
+smlib_brep *knife_edge_arc_part();
+
+// A setback asked at a corner the Setback does not build is refused, SMLIB_ERR_UNSUPPORTED naming
+// the corner (#86: setbacks are the Setback's, SmFilletConvexNxNCorner's setback paths gone): the
+// 851 knife-edge corner (41.1667, -21, 10), where two straight edges meet the arc wall's top arc
+// (a curved edge: no Setback), its three edges rounded 2, set back 4. (Today the old corner sets
+// it back and builds it.)
+void setback_asked_where_no_setback_corner_refused()
+{
+    smlib_brep *part = knife_edge_arc_part(), *r = nullptr;
+    const double points[9] = {20, -21, 10, 47.3174, -6.1508, 10, 41.1667, -21, 5};
+    const double radii[3] = {2, 2, 2};
+    const double corner[3] = {41.1667, -21, 10};
+    const double setback = 4.0;
+    int64_t failed_corner = -1;
+    const int32_t st = part == nullptr ? SMLIB_ERR_ARG : smlib_blend_setback(part, SMLIB_BLEND_ROUND, points, radii, 3, corner, &setback, 1, 0.1, &r, nullptr, &failed_corner);
+    std::printf("  status %d, failed corner %lld\n", static_cast<int>(st), static_cast<long long>(failed_corner));
+    CHECK(st == SMLIB_ERR_UNSUPPORTED && r == nullptr && failed_corner == 0);
+    smlib_brep_free(r);
+    smlib_brep_free(part);
+}
+
 // The inner corner of a 20 x 20 x 10 notch cut from the top corner (60, 40, 20) of the 60 x 40 x
 // 20 box: its three concave edges, meeting at (40, 20, 10), rounded r5, set back 7.5 and left open
 // (smlib_blend_setback_open, G1): the Setback's hole, no fill (#86), nine edges (the three
@@ -12549,6 +12571,8 @@ const TangentEndCase SETBACK_CASES[] = {
     {"four_face_apex", setback_four_face_apex, nullptr},
     {"four_face_pocket_floor", setback_four_face_pocket_floor, nullptr},
     {"open_concave_notch_hole", setback_open_concave_notch_hole, nullptr},
+    {"asked_where_no_setback_corner_refused", setback_asked_where_no_setback_corner_refused,
+     "status 0: SmFilletConvexNxNCorner sets back a corner the Setback does not build (#86)"},
     {"open_g1_box_corner_hole", setback_open_g1_box_corner_hole, nullptr},
 };
 
