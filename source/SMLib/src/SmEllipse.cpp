@@ -259,10 +259,32 @@ SmStatus SmPolarConversion::SetUpPolarConversion
 
       // Get Polar angle about ZAxis from XAxis in degrees.
       SER( cpQuadCircle->EvaluatePoint( dLowestAngleParam, sPnt1 ));
-      SER( cpQuadCircle->STEPInversion( sPnt1, dLowestDeg ) );
-
       SER( cpQuadCircle->EvaluatePoint( dHighestAngleParam, sPnt2 ));
-      SER( cpQuadCircle->STEPInversion( sPnt2, dHighestDeg ) );
+
+      // SolidCraft change: STEPInversion() on the full circle set above takes a point at its
+      // seam's end (360, to its zone tolerance / 100 and 1e-4 deg) as the seam's start (0): right
+      // for a closed curve, whose end is its start, but an open arc ending that near the seam
+      // (an ellipse trimmed 1.2e-6 deg short of 360) had its end angle made 360, its analytic
+      // domain then disagreeing with its NURB by the gap. An open arc's ends are their own
+      // polar angles, as STEPInversion() computes them before that rule.
+      if ( cpQuadCircle->IsClosed( cpQuadCircle->GetNaturalInterval() ) )
+        {
+          SER( cpQuadCircle->STEPInversion( sPnt1, dLowestDeg ) );
+          SER( cpQuadCircle->STEPInversion( sPnt2, dHighestDeg ) );
+        }
+      else
+        {
+          const SmAxis2Placement & crFrame = cpQuadCircle->GetPosition();
+          for ( int k=0; k<2; k++ )
+            {
+              const SmVector3d sVec( ( k == 0 ? sPnt1 : sPnt2 ) - crFrame.GetOriginRef() );
+              double dAngle = smos_ArcTangent2( cpQuadCircle->GetXRadius() / cpQuadCircle->GetYRadius() * sVec.Dot( crFrame.GetYAxisRef() ),
+                                                sVec.Dot( crFrame.GetXAxisRef() ));
+              if ( dAngle < 0.0 )
+                { dAngle += SM_2PI; }
+              ( k == 0 ? dLowestDeg : dHighestDeg ) = SM_RAD2DEG( dAngle );
+            }
+        }
 
       // STEPInversion will snap dHighestDeg to Min param according to tolerance
       // Only account for noise here. [B630]
