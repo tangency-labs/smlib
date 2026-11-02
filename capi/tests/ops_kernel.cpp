@@ -7064,7 +7064,8 @@ double spandrel(double r);
 // carrying its sphere as its definition (SmBallPatch):
 // its surface on the sphere about `c` of radius `rad` (its centre and radius), its edges on it, G1
 // across all three edges (the rounds' end sections). Its normal points out of the body: away from
-// `c` at a convex corner, towards it at a concave one. `edge_tol` bounds its edges' distance from
+// `c` at a convex corner, towards it at a concave one. G1 inside too: it is one rational patch, and
+// its normal is the sphere's (radial) at every interior grid point to 1e-9, so it has no crease. `edge_tol` bounds its edges' distance from
 // the sphere.
 void ball_corner_sphere(const smlib_brep *r, const SmPoint3d &c, double rad, const SmPoint3d (&v)[3], bool convex, double edge_tol = 1e-12)
 {
@@ -7685,12 +7686,12 @@ const TangentEndCase BALL_CASES[] = {
     {"prism_corner", ball_prism_corner, nullptr},
     {"oblique_corner", ball_oblique_corner, nullptr},
     {"sphere_turned_round", ball_sphere_turned_round, nullptr},
-    {"d_prism_corners", ball_d_prism_corners, "the faces are planes and a cylinder: no Ball (ClassifyBall asks for planes), the old convex corner's patch"},
-    {"d_pocket_corners", ball_d_pocket_corners, "the faces are planes and a concave cylinder: no Ball (ClassifyBall asks for planes), the old convex corner's patch"},
-    {"cone_frustum_corners", ball_cone_frustum_corners, "the faces are planes, a cylinder and a cone: no Ball (ClassifyBall asks for planes), the old convex corner's patch"},
+    {"d_prism_corners", ball_d_prism_corners, nullptr},
+    {"d_pocket_corners", ball_d_pocket_corners, nullptr},
+    {"cone_frustum_corners", ball_cone_frustum_corners, nullptr},
     {"cone_frustum_volume", ball_cone_frustum_volume,
      "smlib#103: the flat's trim curves along the flat-cone rounds' hyperbolas are fitted, not exact (SmPlane::DropCurve clamps the rational rail's control points to the plane's domain and falls to the general drop), and the cone's along its rails too: 2.5e-6 off Steiner's (the sharp part alone 5e-9)"},
-    {"knife_edge_arc_corner", ball_knife_edge_arc_corner, "the arc wall is a concave cylinder: no Ball (ClassifyBall asks for planes), the old convex corner's sphere fitted to the sections"},
+    {"knife_edge_arc_corner", ball_knife_edge_arc_corner, nullptr},
 };
 
 int ball_cases(bool known_failing, const char *only)

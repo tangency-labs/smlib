@@ -5,18 +5,27 @@
 * FILE NAME --- SmBlendCornerBall.cpp
 * PURPOSE: SolidCraft change. The blend corner's Ball event
 *   (SmBlendCorner.h): three constant rounds of one radius r and one
-*   convexity at a vertex of three planes.
+*   convexity at a vertex of three faces, each a plane or a natural quadric
+*   (a sphere, a cylinder or a cone).
 *
-* The ball of radius r touching the three planes F_i (unit normals n_i) is
-* centred at C, the point at distance r from each on the side the rounds'
-* balls roll (the triple offset point): n_i . C = n_i . p_i + s_i r. It
-* touches F_i at P_i = C - s_i r n_i. The round between F_i and F_j ends on
-* its section through C, the circle of its ball there: centred at C, radius
-* r, in the plane of n_i and n_j through C, from P_i to P_j. So all three end
-* sections are great circles of the one sphere about C, and each round is
-* tangent to that sphere along its end section (both are tangent to the
+* The ball of radius r touching the three faces F_i is centred at C, the
+* point at distance r from each on the side the rounds' balls roll: where
+* the three faces' offsets by r meet (the triple offset point). It touches
+* F_i at P_i = C - s_i r n_i, n_i the offset's normal at C (the face's at
+* P_i). The round between F_i and F_j ends on its section through C, the
+* circle of its ball there: its ball's centre runs square to both contact
+* normals, so the section lies in the plane of n_i and n_j through C,
+* centred at C, radius r, from P_i to P_j, whatever the faces. So all three
+* end sections are great circles of the one sphere about C, and each round
+* is tangent to that sphere along its end section (both are tangent to the
 * ball there). The corner's face is the sphere's triangle P_0 P_1 P_2
 * between the three sections: exact, G1 to every round.
+*
+* C itself, where two faces or more are planes: the line their offsets share
+* meets the third's offset, a plane or a quadric (a quadratic along the
+* line), in closed form; else Newton's method on the offsets' implicit equations,
+* the root taken only where an interval (Krawczyk) test proves it the one
+* root within rounding of the part's size of the rounds' own ball.
 *
 * The face is one rational patch of degree (4, 2) exactly on the sphere
 * whose natural boundary is the triangle (sm_BallTrianglePatch), at every
@@ -35,6 +44,8 @@
 #endif
 
 #include <SmAxis2Placement.h>
+#include <SmFilletExact.h>
+#include <cfloat>
 #include <SmBallPatch.h>
 #include <SmOffsetSurface.h>
 
@@ -47,6 +58,129 @@ void sm_BallRingFaces(const SmTArray<SmEdgeuse*> & crAllEUs, SmFace * apFace[3])
 {
   for (ULONG ii=0; ii<3; ii++)
     { apFace[ii] = sm_GetFaceByTwoEdgeuses( crAllEUs[(ii+2)%3], crAllEUs[ii], NULL ); }
+}
+
+// The quadric (a plane or a natural quadric) a ring face lies on; SM_BQ_NONE where it lies on none.
+SmStatus sm_BallFaceQuadric(const SmFace * pFace, double dTol, SmBlendQuadric & rQuadric)
+{
+  rQuadric = SmBlendQuadric();
+  NER( pFace );
+  NER( pFace->GetSurface() );
+  SER( SmBlendQuadric::FromSurface( pFace->GetSurface(), pFace->GetUVDomain().GetMid(), dTol, rQuadric ));
+  if (   rQuadric.m_eKind != SmBlendQuadric::SM_BQ_PLANE && rQuadric.m_eKind != SmBlendQuadric::SM_BQ_SPHERE
+      && rQuadric.m_eKind != SmBlendQuadric::SM_BQ_CYLINDER && rQuadric.m_eKind != SmBlendQuadric::SM_BQ_CONE )
+    { rQuadric = SmBlendQuadric(); }
+  return SM_SUCCESS;
+}
+
+// A quadric's implicit form f(x) = x.A.x + 2 b.x + c about the origin crAt (x = point - crAt).
+struct SmBallImplicit
+{
+  double a[3][3], b[3], c;
+
+  void Set(const SmBlendQuadric & crQuadric, const SmPoint3d & crAt)
+  {
+    SmBlendQuadric sLocal( crQuadric );
+    sLocal.m_sPoint = SmPoint3d( crQuadric.m_sPoint.x - crAt.x, crQuadric.m_sPoint.y - crAt.y, crQuadric.m_sPoint.z - crAt.z );
+    sLocal.Implicit( a, b, c );
+  }
+  double Value(const double x[3], double * pdBound = NULL) const
+  {
+    double d = c, dAbs = smos_Fabs( c );
+    for (int i=0; i<3; i++)
+      {
+        d += 2.0 * b[i] * x[i];
+        dAbs += smos_Fabs( 2.0 * b[i] * x[i] );
+        for (int j=0; j<3; j++) { d += x[i] * a[i][j] * x[j]; dAbs += smos_Fabs( x[i] * a[i][j] * x[j] ); }
+      }
+    if ( pdBound != NULL ) { *pdBound = dAbs; }
+    return d;
+  }
+  void Gradient(const double x[3], double g[3]) const
+  {
+    for (int i=0; i<3; i++)
+      { g[i] = 2.0 * ( a[i][0] * x[0] + a[i][1] * x[1] + a[i][2] * x[2] + b[i] ); }
+  }
+};
+
+SmBoolean sm_BallInverse(const double m[3][3], double inv[3][3])
+{
+  const double dDet = m[0][0] * ( m[1][1] * m[2][2] - m[1][2] * m[2][1] ) - m[0][1] * ( m[1][0] * m[2][2] - m[1][2] * m[2][0] )
+                    + m[0][2] * ( m[1][0] * m[2][1] - m[1][1] * m[2][0] );
+  double dScale = 0.0;
+  for (int i=0; i<3; i++) for (int j=0; j<3; j++) { dScale = smos_Max( dScale, smos_Fabs( m[i][j] )); }
+  if ( !( smos_Fabs( dDet ) > SM_EFF_ZERO_SQRT * dScale * dScale * dScale ))
+    { return FALSE; }
+  for (int i=0; i<3; i++)
+    for (int j=0; j<3; j++)
+      {
+        const int i1 = (j+1)%3, i2 = (j+2)%3, j1 = (i+1)%3, j2 = (i+2)%3;
+        inv[i][j] = ( m[i1][j1] * m[i2][j2] - m[i1][j2] * m[i2][j1] ) / dDet;
+      }
+  return TRUE;
+}
+
+/*******************************************************************//**
+PURPOSE: The one point where three quadrics' implicit equations vanish near
+    the origin (their offsets about the rounds' ball): Newton's method from
+    the origin, then Krawczyk's test on the box of half-width dHalf about
+    the iterate, which proves it holds exactly one root (the gradients are
+    affine, so the Jacobian over the box is the iterate's plus 2 A times the
+    box, exactly). Rounding is bounded by the sum of the terms' magnitudes.
+    rbProved FALSE where Newton fails or the test does not prove the box.
+***********************************************************************/
+void sm_BallCertifiedRoot(const SmBallImplicit aF[3], double dHalf, double x[3], SmBoolean & rbProved)
+{
+  rbProved = FALSE;
+  x[0] = x[1] = x[2] = 0.0;
+  double J[3][3], Y[3][3], f[3];
+  for (int it=0; it<50; it++)
+    {
+      for (int i=0; i<3; i++) { f[i] = aF[i].Value( x ); aF[i].Gradient( x, J[i] ); }
+      if ( !sm_BallInverse( J, Y ))
+        { return; }
+      double dStep = 0.0;
+      for (int i=0; i<3; i++)
+        {
+          const double d = Y[i][0] * f[0] + Y[i][1] * f[1] + Y[i][2] * f[2];
+          x[i] -= d;
+          dStep = smos_Max( dStep, smos_Fabs( d ));
+        }
+      if ( dStep <= 0.01 * dHalf && it > 0 )
+        { break; }
+    }
+  // Krawczyk: K = x - Y f(x) + (I - Y J(X)) (X - x) inside X proves exactly one root in X. With
+  // J(X) = J(x) + dJ, |dJ_mk| <= 2 dHalf sum_l |A_m,kl|, component i of K - x is within
+  // |(Y f)_i| + dHalf sum_k ( |(I - Y J(x))_ik| + sum_m |Y_im| |dJ_mk| ), each term padded for
+  // rounding (f by its terms' magnitudes).
+  double adBound[3];
+  for (int i=0; i<3; i++) { f[i] = aF[i].Value( x, &adBound[i] ); aF[i].Gradient( x, J[i] ); }
+  if ( !sm_BallInverse( J, Y ))
+    { return; }
+  const double dEps = 16.0 * DBL_EPSILON;
+  double adSpread[3][3];
+  for (int m=0; m<3; m++)
+    for (int k=0; k<3; k++)
+      { adSpread[m][k] = 2.0 * dHalf * ( smos_Fabs( aF[m].a[k][0] ) + smos_Fabs( aF[m].a[k][1] ) + smos_Fabs( aF[m].a[k][2] )); }
+  for (int i=0; i<3; i++)
+    {
+      double dRad = 0.0;
+      for (int k=0; k<3; k++)
+        {
+          dRad += smos_Fabs( Y[i][k] ) * ( smos_Fabs( f[k] ) + dEps * adBound[k] );
+          double dIYJ = ( i == k ) ? 1.0 : 0.0, dScale = 1.0;
+          for (int m=0; m<3; m++)
+            {
+              dIYJ -= Y[i][m] * J[m][k];
+              dScale += smos_Fabs( Y[i][m] * J[m][k] );
+              dRad += smos_Fabs( Y[i][m] ) * adSpread[m][k] * dHalf;
+            }
+          dRad += ( smos_Fabs( dIYJ ) + dEps * dScale ) * dHalf;
+        }
+      if ( !( dRad < dHalf ))
+        { return; }
+    }
+  rbProved = TRUE;
 }
 
 // A polynomial in (s, t) of degree (m, n) in the Bernstein basis: c[i][j] the coefficient of
@@ -269,14 +403,25 @@ SmStatus SmBlendCorner::ClassifyBall
   if ( !( dRadius > dTol ))
     { return SM_SUCCESS; }
 
-  // three planes
+  // three faces, each a plane or a natural quadric (a cylinder or sphere wider than the ball),
+  // their normals at the vertex independent
   SmFace * apFace[3];
   sm_BallRingFaces( crAllEUs, apFace );
   SmVector3d asNormal[3];
   for (ULONG ii=0; ii<3; ii++)
     {
-      if ( apFace[ii] == NULL || apFace[ii]->GetSurface() == NULL || !apFace[ii]->GetSurface()->IsPlanar( dTol, NULL, &asNormal[ii] ))
+      if ( apFace[ii] == NULL )
         { return SM_SUCCESS; }
+      SmBlendQuadric sQuadric;
+      SER( sm_BallFaceQuadric( apFace[ii], dTol, sQuadric ));
+      if ( sQuadric.m_eKind == SmBlendQuadric::SM_BQ_NONE )
+        { return SM_SUCCESS; }
+      asNormal[ii] = sQuadric.Normal( cpVertex->GetPoint() );
+      if ( asNormal[ii].Unitize( FALSE ) != SM_SUCCESS )
+        { return SM_SUCCESS; } // a cone's apex
+      if (   ( sQuadric.m_eKind == SmBlendQuadric::SM_BQ_SPHERE || sQuadric.m_eKind == SmBlendQuadric::SM_BQ_CYLINDER )
+          && !( sQuadric.m_dRadius > dRadius + dTol ))
+        { return SM_SUCCESS; } // a ball as wide as the cylinder or sphere: its offset is its axis or centre
     }
   if ( apFace[0] == apFace[1] || apFace[1] == apFace[2] || apFace[2] == apFace[0] || smos_Fabs( asNormal[0].Dot( asNormal[1] * asNormal[2] )) <= SM_EFF_ZERO_SQRT )
     { return SM_SUCCESS; }
@@ -346,10 +491,10 @@ SmStatus SmBlendCorner::MakeBallTopology()
 } // end SmBlendCorner::MakeBallTopology
 
 /*******************************************************************//**
-PURPOSE: The Ball's sphere and its loop (see the file's head), from the
-    three planes and the processed contacts. The centre is the planes'
-    triple offset point, solved from them; the rounds' balls at the
-    contacts are checked to be it.
+PURPOSE: The Ball's centre and contacts (see the file's head), from the
+    three faces and the processed contacts. The centre is the faces' triple
+    offset point, solved from them; the rounds' balls at the contacts are
+    checked to be it.
 ***********************************************************************/
 SmStatus SmBlendCorner::BallCentre(SmPoint3d & rCentre, double & rdRadius, SmPoint3d asContact[3]) const
 {
@@ -380,34 +525,114 @@ SmStatus SmBlendCorner::BallCentre(SmPoint3d & rCentre, double & rdRadius, SmPoi
   const SmPoint3d sBall = sOn[0];
   rdRadius = smos_Fabs( pFG0->GetOffsetSurface( 0 )->GetOffsetDistance() );
 
-  // the planes, and the centre r from each on the ball's side: n_i . C = n_i . p_i + s_i r
+  // each face's quadric offset by r on the ball's side (the side of it the rounds' ball is on,
+  // seen from vertex i, the contact on it)
   SmFace * apFace[3];
   sm_BallRingFaces( *m_pAllEUs, apFace );
-  SmVector3d asNormal[3];
-  double     adRhs[3], adSide[3];
+  SmBlendQuadric asOffset[3];
+  double         adSide[3];
+  ULONG          lPlanes = 0;
   for (ULONG ii=0; ii<3; ii++)
     {
-      NER( apFace[ii] );
-      NER( apFace[ii]->GetSurface() );
-      SmPoint3d sOnPlane;
-      if ( !apFace[ii]->GetSurface()->IsPlanar( dTol, &sOnPlane, &asNormal[ii] ))
-        { SER( SM_ERR ); } // ClassifyBall took the faces to be planes
-      SER( asNormal[ii].Unitize() );
-      adSide[ii] = ( asNormal[ii].Dot( sBall - sOnPlane ) >= 0.0 ) ? 1.0 : -1.0;
-      adRhs[ii]  = asNormal[ii].x * sOnPlane.x + asNormal[ii].y * sOnPlane.y + asNormal[ii].z * sOnPlane.z + adSide[ii] * rdRadius;
+      SmBlendQuadric sFace;
+      SER( sm_BallFaceQuadric( apFace[ii], dTol, sFace ));
+      if ( sFace.m_eKind == SmBlendQuadric::SM_BQ_NONE )
+        { SER( SM_ERR ); } // ClassifyBall took the faces to be planes or quadrics
+      const SmPoint3d sOn = m_vVertices[ii]->GetPoint();
+      adSide[ii] = ( sFace.Normal( sOn ).Dot( sBall - sOn ) >= 0.0 ) ? 1.0 : -1.0;
+      asOffset[ii] = sFace.Offset( adSide[ii] * rdRadius, dTol );
+      if ( asOffset[ii].m_eKind != sFace.m_eKind || asOffset[ii].m_dSide != sFace.m_dSide )
+        { SER( SM_ERR ); } // ClassifyBall took the quadrics wider than the ball
+      if ( asOffset[ii].m_eKind == SmBlendQuadric::SM_BQ_PLANE )
+        { lPlanes++; }
     }
-  // Cramer's rule: C = (rhs_0 n_1 x n_2 + rhs_1 n_2 x n_0 + rhs_2 n_0 x n_1) / (n_0 . n_1 x n_2)
-  const double dDet = asNormal[0].Dot( asNormal[1] * asNormal[2] );
-  if ( smos_Fabs( dDet ) <= SM_EFF_ZERO )
-    { SER( SM_ERR ); }
-  const SmVector3d sC = ( asNormal[1] * asNormal[2] ) * ( adRhs[0] / dDet ) + ( asNormal[2] * asNormal[0] ) * ( adRhs[1] / dDet )
-                       + ( asNormal[0] * asNormal[1] ) * ( adRhs[2] / dDet );
-  rCentre = SmPoint3d( sC.x, sC.y, sC.z );
+
+  // C: where the offsets meet, about the rounds' ball (each quadric's implicit form there)
+  SmBallImplicit asF[3];
+  ULONG alOrder[3] = { 0, 1, 2 }; // the planes first
+  for (ULONG ii=0, lAt=0; ii<3; ii++)
+    { if ( asOffset[ii].m_eKind == SmBlendQuadric::SM_BQ_PLANE ) { alOrder[lAt++] = ii; } }
+  for (ULONG ii=0, lAt=lPlanes; ii<3; ii++)
+    { if ( asOffset[ii].m_eKind != SmBlendQuadric::SM_BQ_PLANE ) { alOrder[lAt++] = ii; } }
+  for (ULONG ii=0; ii<3; ii++)
+    { asF[ii].Set( asOffset[alOrder[ii]], sBall ); }
+  double x[3] = { 0.0, 0.0, 0.0 };
+  if ( lPlanes >= 2 )
+    {
+      // the two offset planes' line, n_0 . x = -c_0 / 2 and n_1 . x = -c_1 / 2 (2 b = n)
+      const SmVector3d sN0( 2.0 * asF[0].b[0], 2.0 * asF[0].b[1], 2.0 * asF[0].b[2] ), sN1( 2.0 * asF[1].b[0], 2.0 * asF[1].b[1], 2.0 * asF[1].b[2] );
+      const SmVector3d sD = sN0 * sN1;
+      const double dDD = sD.Dot( sD );
+      if ( dDD <= SM_EFF_ZERO )
+        { SER( SM_ERR ); }
+      // its point nearest the origin: (h_0 (n_1 x d) + h_1 (d x n_0)) / |d|^2, h_i = -c_i
+      const SmVector3d sP0 = ( ( sN1 * sD ) * ( -asF[0].c ) + ( sD * sN0 ) * ( -asF[1].c )) * ( 1.0 / dDD );
+      const double p0[3] = { sP0.x, sP0.y, sP0.z }, d[3] = { sD.x, sD.y, sD.z };
+      if ( lPlanes == 3 )
+        {
+          // the third plane: n_2 . (p0 + t d) = -c_2
+          const double dDen = 2.0 * ( asF[2].b[0] * d[0] + asF[2].b[1] * d[1] + asF[2].b[2] * d[2] );
+          if ( smos_Fabs( dDen ) <= SM_EFF_ZERO )
+            { SER( SM_ERR ); }
+          const double t = -asF[2].Value( p0 ) / dDen;
+          for (int k=0; k<3; k++) { x[k] = p0[k] + t * d[k]; }
+        }
+      else
+        {
+          // the quadric along the line: q2 t^2 + 2 q1 t + q0 = 0, the root nearest the rounds' ball
+          double dA = 0.0, dB = 0.0;
+          for (int k=0; k<3; k++)
+            {
+              double dAd = 0.0, dAp = 0.0;
+              for (int m=0; m<3; m++) { dAd += asF[2].a[k][m] * d[m]; dAp += asF[2].a[k][m] * p0[m]; }
+              dA += d[k] * dAd;
+              dB += d[k] * ( dAp + asF[2].b[k] );
+            }
+          const double dC = asF[2].Value( p0 );
+          const double dDisc = dB * dB - dA * dC;
+          if ( dDisc < 0.0 || ( smos_Fabs( dA ) <= SM_EFF_ZERO * dDD && smos_Fabs( dB ) <= SM_EFF_ZERO * dDD ))
+            { SER( SM_ERR ); } // the line misses the offset quadric
+          double adT[2];
+          ULONG  lRoots = 0;
+          if ( smos_Fabs( dA ) <= SM_EFF_ZERO * dDD )
+            { adT[lRoots++] = -dC / ( 2.0 * dB ); }
+          else
+            {
+              // without cancellation: q = -(b + sign(b) sqrt(disc)), t = q / a and c / q
+              const double dQ = -( dB + ( dB >= 0.0 ? 1.0 : -1.0 ) * sqrt( dDisc ));
+              adT[lRoots++] = dQ / dA;
+              if ( dQ != 0.0 ) { adT[lRoots++] = dC / dQ; }
+            }
+          // the root nearest the origin (the rounds' ball): |p0 + t d|, p0 square to d
+          double dBest = adT[0];
+          for (ULONG k=1; k<lRoots; k++) { if ( smos_Fabs( adT[k] ) < smos_Fabs( dBest )) { dBest = adT[k]; } }
+          for (int k=0; k<3; k++) { x[k] = p0[k] + dBest * d[k]; }
+        }
+    }
+  else
+    {
+      // no closed form: the root certified within rounding of the part's size
+      double dSize = 0.0;
+      for (ULONG ii=0; ii<3; ii++)
+        {
+          SmExtent3d sFaceBox;
+          SER( apFace[ii]->CalculateBoundingBox( sFaceBox ));
+          dSize = smos_Max( dSize, ( sFaceBox.GetMax() - sFaceBox.GetMin() ).Length() );
+        }
+      SmBoolean bProved = FALSE;
+      sm_BallCertifiedRoot( asF, 1e-12 * smos_Max( dSize, 1.0 ), x, bProved );
+      if ( !bProved )
+        { SER( SM_ERR ); }
+    }
+  rCentre = SmPoint3d( sBall.x + x[0], sBall.y + x[1], sBall.z + x[2] );
   if ( rCentre.DistanceBetween( sBall ) > dTol )
-    { SER( SM_ERR ); } // the rounds' ball is the planes' triple offset point
+    { SER( SM_ERR ); } // the rounds' ball is the offsets' meeting point
+  // the contacts: the centre moved back along the offset's normal there (the face's at the contact)
   for (ULONG ii=0; ii<3; ii++)
     {
-      asContact[ii] = rCentre - asNormal[ii] * ( adSide[ii] * rdRadius );
+      SmVector3d sN = asOffset[ii].Normal( rCentre );
+      SER( sN.Unitize() );
+      asContact[ii] = rCentre - sN * ( adSide[ii] * rdRadius );
       if ( asContact[ii].DistanceBetween( m_vVertices[ii]->GetPoint() ) > dTol )
         { SER( SM_ERR ); } // vertex i is the ball's contact with face i
     }
