@@ -68,6 +68,13 @@ else()
   set(SMLIB_WARNINGS -w)
 endif()
 
+# The warnings the USD build (premake, FatalCompileWarnings) turns into errors, here on GCC:
+# CI builds with this so SMLib stays clean for that build too.
+option(SMLIB_STRICT_WARNINGS "Compile SMLib with the USD build's warnings as errors (GCC)" OFF)
+if(SMLIB_STRICT_WARNINGS AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  set(SMLIB_WARNINGS -Wall -Wshadow=local -Wunused-parameter -Werror)
+endif()
+
 # SMLib files in which no status is dropped any more: each call's status is passed on or
 # written (void) with its reason. On clang a new dropped status in them fails the build.
 set(SMLIB_STATUS_CLEAN
