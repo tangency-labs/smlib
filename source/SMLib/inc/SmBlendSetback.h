@@ -262,6 +262,12 @@ public:
   // them to 0 after reading.
   static void CurvedCounts(unsigned long long (&raOut)[3], bool bReset = false);
 
+  // A constant round's least normal curvature along its end section (its m_dEnd), II with the unit
+  // normal toward crInto, to rounding (the rounds' part of ruling (a)'s k: sm_SbRoundRowK); 0 where
+  // the section is nowhere concave. Refused where the section is not a circular arc.
+  static SmStatus RoundEndCurvature(const SmContext & crContext, const Round & crRound, const SmVector3d & crInto, double & rdK,
+                                    const TCHAR ** ppReason = NULL);
+
   static SmStatus NoMoreConcave(const SmBSplineSurface & crPatch, const Face & crA, const Face & crB, const SmVector3d & crInto, double dK,
                                 int & riResult);
 };

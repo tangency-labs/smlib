@@ -11090,6 +11090,53 @@ void setback_containment_beside_quadrics()
         }
 }
 
+// SmBlendSetback::RoundEndCurvature (the rounds' part of ruling (a)'s k): a torus round inside a bore
+// (axis z, the tube's centre circle radius 10, tube radius 2), its section from -45 to 45 deg about
+// the tube's innermost point (rho 8), the normal toward the tube's centre: the section's own
+// curvature is 1/2, the circumferential -cos(phi) / (10 - 2 cos phi), least -1/8 at the section's
+// MIDDLE (phi 0, not an end): k = -1/8 to rounding. Ending at u = 0 (the circumferential angle 0).
+// Turned the other way (the normal away from the tube's centre) the section is convex circumferentially
+// but concave across: k = -1/2.
+void setback_round_end_curvature()
+{
+    const SmContext &ctx = *SmApiGetOrCreateContext();
+    const double c45 = std::sqrt(0.5), s2 = std::sqrt(2.0);
+    const double qx[3] = {1, 1, 0}, qy[3] = {0, 1, 1}, qw[3] = {1, c45, 1};
+    const double rho[3] = {10 - s2, 10 - 2 * s2, 10 - s2}, z[3] = {-s2, 0, s2}, sw[3] = {1, c45, 1};
+    SmTArray<SmPoint3d> cps;
+    SmTArray<double> w;
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+        {
+            cps.Add(SmPoint3d(rho[j] * qx[i], rho[j] * qy[i], z[j]));
+            w.Add(qw[i] * sw[j]);
+        }
+    SmTArray<ULONG> m;
+    SmTArray<double> kn;
+    m.Add(3); m.Add(3);
+    kn.Add(0.0); kn.Add(1.0);
+    SmBSplineSurface *torus = nullptr;
+    CHECK(SmBSplineSurface::CreateCanonical(ctx, 2, 2, cps, SM_SF_UNSPECIFIED, m, m, kn, kn, SM_KT_UNSPECIFIED, &w, nullptr, torus) == SM_SUCCESS &&
+          torus != nullptr);
+    if (torus == nullptr)
+    {
+        return;
+    }
+    const SmBlendSetback::Round round = {torus, SM_SP_U, 0.0, FALSE};
+    double k_in = 1.0, k_out = 1.0;
+    const TCHAR *why_in = nullptr, *why_out = nullptr;
+    const SmStatus e_in = SmBlendSetback::RoundEndCurvature(ctx, round, SmVector3d(1, 0, 0), k_in, &why_in);
+    const SmStatus e_out = SmBlendSetback::RoundEndCurvature(ctx, round, SmVector3d(-1, 0, 0), k_out, &why_out);
+    CHECK(e_in == SM_SUCCESS && e_out == SM_SUCCESS);
+    (void)why_out;
+    std::printf("  toward the tube's centre k %.17g (-1/8), away %.17g (-1/2)%s%s\n", k_in, k_out, why_in != nullptr ? " " : "",
+                why_in != nullptr ? why_in : "");
+    // to rounding: each bisection step's certificate accepts values within 1e-12 of its terms' size
+    // (a few times the curvature's here), so k is found within 1e-11 of itself
+    CHECK(std::fabs(k_in + 0.125) <= 1e-11 * 0.125 && std::fabs(k_out + 0.5) <= 1e-11 * 0.5);
+    delete torus;
+}
+
 // SmBlendSetback::SpringCurve on each kind of face: the two halves (homogeneous Bernstein, from P
 // and from Q) of degree 2 on a plane, 4 on a cylinder or sphere, 6 on a cone (the parameter plane's
 // parabola mapped up), on the face to 1e-12 x its size at 65 points each, leaving P along TP and
@@ -11543,6 +11590,7 @@ const TangentEndCase SETBACK_CASES[] = {
     {"spring_curves_on_quadrics", setback_spring_curves_on_quadrics, nullptr},
     {"no_more_concave_on_quadrics", setback_no_more_concave_on_quadrics, nullptr},
     {"containment_beside_quadrics", setback_containment_beside_quadrics, nullptr},
+    {"round_end_curvature", setback_round_end_curvature, nullptr},
     {"curved_d_prism_corner", setback_curved_d_prism_corner, nullptr},
     {"curved_knife_edge_corner", setback_curved_knife_edge_corner,
      "the curved fill tries degree 9 first, whose sector rows run out of memory until they are streamed (#106); at degree 5 it certifies (the normal-field bound) and passes"},

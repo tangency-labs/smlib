@@ -2459,6 +2459,143 @@ int sm_SbNoMoreConcave(const sm_SbNet & crN, const SmBlendSetback::Face & crA, c
   return iResult;
 }
 
+// A round's least normal curvature along its end row (owner's ruling (a), the rounds' part of k),
+// II with the unit normal toward crE's side, to rounding. crJ: its jets there (sm_SbRoundJets, 0 ..
+// 2), the row a circular arc (a constant round's section about its ball's centre C, radius r: its
+// unit normal (P - C) / r, exactly, so |Pu x Pv| is polynomial there). On the degree 2 net with
+// those jets at u = 0 (P0 = H, P1 = H + Hs / 2, P2 = H + Hs + Hss / 2) restricted to u = 0:
+// k is certified a lower bound where s w^4 r (l, m, n) - k sigma Dc J is PSD on the row (sigma Dc =
+// |det(H, Hs, Ht, (H_xyz - w C, 0))| = w^4 r |Hs x Ht|-scaled, s the side of o); the largest such k
+// (bisection to 1e-13 of it, each step certified) is taken, 0 where the row is not concave (to
+// rounding: above -1e-12 / r). Refused
+// where the row is not a circular arc or o or Dc is not one-signed on it.
+SmStatus sm_SbRoundRowK(const std::vector< std::vector<sm_SbH> > & crJ, const SmVector3d & crE, double & rdK, const TCHAR *& rpWhy)
+{
+  rdK = 0.0;
+  if (crJ.size() < 3)
+    { SER(SM_ERR); }
+  const size_t q = crJ[0].size() - 1;
+  sm_SbNet sN;
+  sN.p = 2;
+  sN.q = q;
+  sN.P.assign(3 * (q + 1), sm_SbZero());
+  for (size_t j=0; j<=q; j++)
+    for (int c=0; c<4; c++)
+      {
+        const double h = crJ[0][j].a[c], hs = crJ[1][j].a[c], hss = crJ[2][j].a[c];
+        sN.P[j].a[c] = h;
+        sN.P[(q + 1) + j].a[c] = h + 0.5 * hs;
+        sN.P[2 * (q + 1) + j].a[c] = h + hs + 0.5 * hss;
+      }
+  // the arc's centre: the circumcentre of its ends and its middle
+  auto at = [&](double t) {
+    sm_SbH sH = sm_SbZero();
+    for (size_t j=0; j<=q; j++)
+      sH = sm_SbAxpy(sH, sm_Binomial(static_cast<ULONG>(q), static_cast<ULONG>(j)) * std::pow(t, static_cast<double>(j)) * std::pow(1.0 - t, static_cast<double>(q - j)), crJ[0][j]);
+    return SmVector3d(sH.a[0] / sH.a[3], sH.a[1] / sH.a[3], sH.a[2] / sH.a[3]);
+  };
+  const SmVector3d A = at(0.0), B = at(0.5), Cc = at(1.0);
+  const SmVector3d a = A - Cc, b = B - Cc, axb = a * b;
+  const double dAxb2 = axb.Dot(axb);
+  if (!(dAxb2 > 0.0))
+    { SM_SB_FAIL(rpWhy, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's end section is not a circular arc")); }
+  const SmVector3d sC = Cc + ((b * a.Dot(a) - a * b.Dot(b)) * axb) * (0.5 / dAxb2);
+  const double r = (A - sC).Length();
+  sm_SbT sU[3], sW = sm_SbTMake(2, q);
+  for (size_t i=0; i<sN.P.size(); i++) { sW.c[i] = sN.P[i].a[3]; }
+  for (int c=0; c<3; c++)
+    {
+      const double dC = (c == 0) ? sC.x : (c == 1) ? sC.y : sC.z;
+      sU[c] = sm_SbTMake(2, q);
+      for (size_t i=0; i<sN.P.size(); i++) { sU[c].c[i] = sN.P[i].a[c] - sN.P[i].a[3] * dC; }
+    }
+  auto row = [&](const sm_SbT & crT) {
+    sm_SbT sR = sm_SbTMake(0, crT.q);
+    for (size_t j=0; j<=crT.q; j++) { sR.c[j] = crT.c[j]; }
+    return sR;
+  };
+  {
+    // on the sphere about C of radius r along the row (the section a circular arc)
+    sm_SbT sQ = sm_SbTMake(0, 0);
+    for (int c=0; c<3; c++) { sQ = sm_SbTAxpy(sQ, 1.0, sm_SbTMulFast(row(sU[c]), row(sU[c]))); }
+    const sm_SbT sR2 = sm_SbTMulFast(row(sW), row(sW));
+    const double dScale = sm_SbTScale(sQ) + r * r * sm_SbTScale(sR2);
+    sQ = sm_SbTAxpy(sQ, -r * r, sR2);
+    if (sm_SbTScale(sQ) > 1.0e-11 * dScale)
+      { SM_SB_FAIL(rpWhy, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's end section is not a circular arc")); }
+  }
+  sm_SbT sF[4];
+  sm_SbFundamentals(sN, crE, sF);
+  const sm_SbT sDc = row(sm_SbTDetWith(sN, sU));
+  const sm_SbT sO = row(sF[3]);
+  auto sign = [&](const sm_SbT & crT) {
+    sm_SbT sNeg = crT;
+    for (size_t i=0; i<sNeg.c.size(); i++) { sNeg.c[i] = -sNeg.c[i]; }
+    const double dEps = 1.0e-12 * sm_SbTScale(crT);
+    return (sm_SbTNonneg(crT, dEps, SM_SB_GRAPH_DEPTH) == 1) ? 1.0 : (sm_SbTNonneg(sNeg, dEps, SM_SB_GRAPH_DEPTH) == 1) ? -1.0 : 0.0;
+  };
+  const double s = sign(sO), sigma = sign(sDc);
+  if (s == 0.0 || sigma == 0.0)
+    { SM_SB_FAIL(rpWhy, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's end section turns across the corner's axis")); }
+  sm_SbT h[4], hu[4], hv[4];
+  for (int c=0; c<4; c++)
+    {
+      h[c] = sm_SbTMake(2, q);
+      for (size_t i=0; i<sN.P.size(); i++) { h[c].c[i] = sN.P[i].a[c]; }
+      hu[c] = sm_SbTDu(h[c]);
+      hv[c] = sm_SbTDv(h[c]);
+    }
+  sm_SbT sXu[3], sXv[3], sA[3], sB[3];
+  for (int c=0; c<3; c++)
+    {
+      sXu[c] = sm_SbTAxpy(sm_SbTMulFast(h[3], hu[c]), -1.0, sm_SbTMulFast(hu[3], h[c]));
+      sXv[c] = sm_SbTAxpy(sm_SbTMulFast(h[3], hv[c]), -1.0, sm_SbTMulFast(hv[3], h[c]));
+    }
+  const sm_SbT sW4 = row(sm_SbTMulFast(sm_SbTMulFast(h[3], h[3]), sm_SbTMulFast(h[3], h[3])));
+  double dTerm[3];
+  for (int k=0; k<3; k++)
+    {
+      const sm_SbT * pA = (k == 2) ? sXv : sXu;
+      const sm_SbT * pB = (k == 0) ? sXu : sXv;
+      sm_SbT sJk = sm_SbTMulFast(pA[0], pB[0]);
+      for (int c=1; c<3; c++) { sJk = sm_SbTAxpy(sJk, 1.0, sm_SbTMulFast(pA[c], pB[c])); }
+      sA[k] = sm_SbTMulFast(sW4, row(sF[k]));
+      for (size_t i=0; i<sA[k].c.size(); i++) { sA[k].c[i] *= s * r; }
+      sB[k] = sm_SbTMulFast(sDc, row(sJk));
+      for (size_t i=0; i<sB[k].c.size(); i++) { sB[k].c[i] *= sigma; }
+      dTerm[k] = sm_SbTScale(sA[k]) + sm_SbTScale(sB[k]) / (r > 0.0 ? r : 1.0);
+    }
+  // 1 where sA - k sB is certified PSD on the row
+  auto certified = [&](double dK) {
+    sm_SbT sCm[3];
+    double dT[3];
+    for (int k=0; k<3; k++)
+      {
+        sCm[k] = sm_SbTAxpy(sA[k], -dK, sB[k]);
+        dT[k] = sm_SbTScale(sA[k]) + smos_Fabs(dK) * sm_SbTScale(sB[k]);
+      }
+    const sm_SbT sDisc = sm_SbTAxpy(sm_SbTMulFast(sCm[0], sCm[2]), -1.0, sm_SbTMulFast(sCm[1], sCm[1]));
+    return sm_SbTNonneg(sCm[0], 1.0e-12 * dT[0], SM_SB_GRAPH_DEPTH) == 1 && sm_SbTNonneg(sCm[2], 1.0e-12 * dT[2], SM_SB_GRAPH_DEPTH) == 1
+           && sm_SbTNonneg(sDisc, 1.0e-12 * (dT[0] * dT[2] + dT[1] * dT[1]), SM_SB_GRAPH_DEPTH) == 1;
+  };
+  (void)dTerm;
+  if (certified(0.0))
+    { return SM_SUCCESS; }
+  double dLo = -1.0 / r, dHi = 0.0;
+  for (int i=0; i<64 && !certified(dLo); i++) { dHi = dLo; dLo *= 2.0; }
+  if (!certified(dLo))
+    { SM_SB_FAIL(rpWhy, SM_ERR, _T("SmBlendSetback: a round's least normal curvature at its end cannot be bounded")); }
+  while (dHi - dLo > 1.0e-13 * smos_Fabs(dLo))
+    {
+      const double dMid = 0.5 * (dLo + dHi);
+      if (certified(dMid)) { dLo = dMid; } else { dHi = dMid; }
+    }
+  // 0 to rounding (its scale the round's own curvature 1 / r): a row whose least is 0 exactly (a
+  // round's rail on a plane) is not made concave by the certificate's rounding
+  rdK = (dLo >= -1.0e-12 / r) ? 0.0 : dLo;
+  return SM_SUCCESS;
+}
+
 /*******************************************************************//**
 PURPOSE: The G1 fill of a corner beside curved faces, as a graph over the
     corner's axis (SmBlendSetback.h; #85, the owner's rulings of
@@ -2586,6 +2723,14 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
   // whose material is on the other side than a convex body's, -1 / R; such a cone, -cos / rho over
   // the spring curves' least radius (bounded below by its control points' axial coordinates)
   std::vector<double> sFaceK(n, 0.0);
+  // each round's least normal curvature along its end row (the rounds' part of k)
+  std::vector<double> sRoundK(n, 0.0);
+  for (size_t r=0; r<n; r++)
+    {
+      const TCHAR * pWhy = NULL;
+      if (sm_SbRoundRowK(crJets[r], sE, sRoundK[r], pWhy) != SM_SUCCESS)
+        { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, pWhy != NULL ? pWhy : _T("SmBlendSetback: a round's least normal curvature at its end cannot be found")); }
+    }
 
   // the spring curves: per face m, patch m's half (its v = 0 column) and patch m - 1's (its v = 1
   // column), matched to their rounds and to the interior map; their tangent-plane directions
@@ -3090,7 +3235,7 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
       std::vector<double> sS(2 * n, 0.0), sK(2 * n, 0.0);
       for (size_t m=0; m<n; m++)
         {
-          sK[m] = smos_Min(sFaceK[crFace[m]], sFaceK[crFace[(m + 1) % n]]);
+          sK[m] = smos_Min(smos_Min(sFaceK[crFace[m]], sFaceK[crFace[(m + 1) % n]]), sRoundK[crRound[m]]);
           sK[n + m] = smos_Min(sFaceK[crFace[m]], smos_Min(sK[m], sK[(m + n - 1) % n]));
         }
       for (size_t p=0; p<2*n; p++)
@@ -3403,6 +3548,8 @@ SmStatus sm_SbFillHole(const SmContext & crContext, const std::vector<SmBlendSet
   const size_t n = crRounds.size();
   const ULONG k = lOrder;
   const size_t N = 2 * k + 1; // the setback patches' degree across the hole
+  bool bAnyCurved = false; // beside a curved face the rounds' second derivatives along too (their k)
+  for (size_t f=0; f<crFaces.size(); f++) { bAnyCurved = bAnyCurved || crFaces[f].m_eKind != SmBlendSetback::SM_SB_PLANE; }
 
   // each round's jets at its end, and the faces its across ends lie on
   std::vector< std::vector< std::vector<sm_SbH> > > sJets(n);
@@ -3413,7 +3560,7 @@ SmStatus sm_SbFillHole(const SmContext & crContext, const std::vector<SmBlendSet
   sFaceAt[1].assign(n, n);
   for (size_t r=0; r<n; r++)
     {
-      SER(sm_SbRoundJets(crContext, crRounds[r], k, sJets[r], sQ[r], sDtDs[r], rFill.m_pReason));
+      SER(sm_SbRoundJets(crContext, crRounds[r], bAnyCurved ? smos_Max(k, static_cast<ULONG>(2)) : k, sJets[r], sQ[r], sDtDs[r], rFill.m_pReason));
       for (int e=0; e<2; e++)
         {
           const sm_SbH & crH = sJets[r][0][e == 0 ? 0 : sQ[r]];
@@ -4542,6 +4689,20 @@ SmStatus SmBlendSetback::SpringCurve(const Face & crFace, const SmPoint3d & crP,
 PURPOSE: A face's signed distance and its normal out of the material
     (SmBlendSetback.h).
 ***********************************************************************/
+SmStatus SmBlendSetback::RoundEndCurvature(const SmContext & crContext, const Round & crRound, const SmVector3d & crInto, double & rdK,
+                                           const TCHAR ** ppReason)
+{
+  rdK = 0.0;
+  std::vector< std::vector<sm_SbH> > sJ;
+  size_t lQ = 0;
+  double dDtDs = 1.0;
+  const TCHAR * pLocal = NULL;
+  const TCHAR *& rWhy = (ppReason != NULL) ? *ppReason : pLocal;
+  rWhy = NULL;
+  SER(sm_SbRoundJets(crContext, crRound, 2, sJ, lQ, dDtDs, rWhy));
+  return sm_SbRoundRowK(sJ, crInto, rdK, rWhy);
+}
+
 SmStatus SmBlendSetback::NoMoreConcave(const SmBSplineSurface & crPatch, const Face & crA, const Face & crB, const SmVector3d & crInto, double dK,
                                        int & riResult)
 {
