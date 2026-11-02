@@ -2955,6 +2955,22 @@ PURPOSE: A blend's section of order lOrder (0 to SM_GN_MAX_ORDER) and
     thumbweight dThumbweight (w < 1, or SM_GN_THUMBWEIGHT_EQUAL_AREA, used from order 2). Order 1's
     circles are built as SmArcSection's defaults say.
 ***********************************************************************/
+// the thread's memo of equal area thumbweights (sm_GnEqualAreaW) and its open operation scopes
+static const size_t SM_GN_W_MEMO = 65536;
+static thread_local std::map<std::pair<ULONG, uint64_t>, double> t_sWMemo;
+static thread_local int t_lOperationScopes = 0;
+
+SmGnSectionFSG::OperationScope::OperationScope()
+{
+  if (t_lOperationScopes++ == 0)
+    { t_sWMemo.clear(); }
+}
+
+SmGnSectionFSG::OperationScope::~OperationScope()
+{
+  t_lOperationScopes--;
+}
+
 SmGnSectionFSG::SmGnSectionFSG(ULONG lOrder, double dThumbweight)
   : m_lOrder(lOrder), m_dThumbweight(dThumbweight), m_dCertifiedBound(-1.0), m_lCertifiedSpans(0)
 {
@@ -2964,7 +2980,7 @@ namespace
 {
 // The thumbweight at which the order-n section takes off what the ball's circle does, for half
 // the angle u between the ball's radii (EqualAreaThumbweight): the root of I(w) = target(u).
-SmStatus sm_GnEqualAreaW(ULONG lOrder, double dU, double & rdW)
+SmStatus sm_GnEqualAreaWSolve(ULONG lOrder, double dU, double & rdW)
 {
   SmProceduralBlend::CountAreaRoot();
   rdW = 0.0;
@@ -2987,6 +3003,31 @@ SmStatus sm_GnEqualAreaW(ULONG lOrder, double dU, double & rdW)
       if (sm_GnAreaSum<double>(lOrder, dMid) > dTarget) { dLo = dMid; } else { dHi = dMid; }
     }
   rdW = 0.5 * (dLo + dHi);
+  return SM_SUCCESS;
+}
+
+// The same, each (order, u) solved once on a thread: kept by u's bits (the same u, the same root),
+// the memo emptied as a top-level blend operation opens (SmGnSectionFSG::OperationScope) and
+// when it grows past SM_GN_W_MEMO
+
+SmStatus sm_GnEqualAreaW(ULONG lOrder, double dU, double & rdW)
+{
+  uint64_t lBits = 0;
+  std::memcpy(&lBits, &dU, sizeof lBits);
+  const std::pair<ULONG, uint64_t> sKey(lOrder, lBits);
+  const std::map<std::pair<ULONG, uint64_t>, double>::const_iterator it = t_sWMemo.find(sKey);
+  if (it != t_sWMemo.end())
+    {
+      rdW = it->second;
+      return SM_SUCCESS;
+    }
+  // (its status as it is: the error messages are the solve's own)
+  const SmStatus eStatus = sm_GnEqualAreaWSolve(lOrder, dU, rdW);
+  if (eStatus != SM_SUCCESS)
+    { return eStatus; }
+  if (t_sWMemo.size() >= SM_GN_W_MEMO)
+    { t_sWMemo.clear(); }
+  t_sWMemo.insert(std::make_pair(sKey, rdW));
   return SM_SUCCESS;
 }
 
