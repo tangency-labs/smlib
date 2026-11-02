@@ -953,8 +953,9 @@ SmStatus SmBlendCorner::BuildSetBackFill()
   if ( m_pFill->m_vPatches.size() != 2 * n || m_pFill->m_vFace.size() != n )
     { SER( SM_ERR ); }
   double dWorst = 0.0;
-  if ( !bCurvedFaces ) // WIP: containment beside a curved face not yet certified
-    { SER( SmBlendSetback::Containment( *m_pFill, sPlanes, m_bConvexSetBack, dWorst )); }
+  SER( SmBlendSetback::Containment( *m_pFill, sPlanes, m_bConvexSetBack, dWorst ));
+  if ( dWorst == HUGE_VAL )
+    { return SetBackNotBuilt( _T("Fillet Error: the setback corner's fill is not certified to stay on the material's side of its curved faces") ); }
   if ( dWorst > dTol )
     {
       TCHAR cWhy[SM_TBLOCK_SIZE];

@@ -11030,6 +11030,58 @@ void setback_no_more_concave_on_quadrics()
     }
 }
 
+// SmBlendSetback::Containment beside quadric faces (certified by the face's implicit form over the
+// patch): a quarter-cylinder patch about a bore's axis (R 5, material outside: m_dSide -1) at radius
+// 5.5 lies in the material (contained, rdWorst 0) and at 4.5 in the bore (not certified, HUGE_VAL);
+// likewise about a countersink's axis (radius 4 + z), 0.5 outside and inside it.
+void setback_containment_beside_quadrics()
+{
+    using F = SmBlendSetback::Face;
+    const SmContext &ctx = *SmApiGetOrCreateContext();
+    const double c45 = std::sqrt(0.5), qx[3] = {1, 1, 0}, qy[3] = {0, 1, 1}, qw[3] = {1, c45, 1};
+    F cyl;
+    cyl.m_eKind = SmBlendSetback::SM_SB_CYLINDER;
+    cyl.m_sPoint = SmPoint3d(0, 0, 0);
+    cyl.m_dRadius = 5.0;
+    cyl.m_dSide = -1.0;
+    F cone = cyl;
+    cone.m_eKind = SmBlendSetback::SM_SB_CONE;
+    cone.m_dRadius = 4.0;
+    cone.m_dSlope = 1.0;
+    for (const F &face : {cyl, cone})
+        for (double off : {0.5, -0.5})
+        {
+            SmTArray<SmPoint3d> cps;
+            SmTArray<double> w;
+            for (int i = 0; i < 3; ++i)
+                for (double z : {0.0, 3.0})
+                {
+                    const double rho = face.m_dRadius + face.m_dSlope * z + off;
+                    cps.Add(SmPoint3d(rho * qx[i], rho * qy[i], z));
+                    w.Add(qw[i]);
+                }
+            SmTArray<ULONG> mu, mv;
+            SmTArray<double> uk, vk;
+            mu.Add(3); mu.Add(3);
+            mv.Add(2); mv.Add(2);
+            uk.Add(0.0); uk.Add(1.0);
+            vk.Add(0.0); vk.Add(1.0);
+            SmBSplineSurface *patch = nullptr;
+            CHECK(SmBSplineSurface::CreateCanonical(ctx, 2, 1, cps, SM_SF_UNSPECIFIED, mu, mv, uk, vk, SM_KT_UNSPECIFIED, &w, nullptr, patch) ==
+                      SM_SUCCESS && patch != nullptr);
+            if (patch == nullptr)
+            {
+                continue;
+            }
+            SmBlendSetback::Fill fill;
+            fill.m_vPatches.push_back(patch);
+            double worst = -1.0;
+            CHECK(SmBlendSetback::Containment(fill, {face}, TRUE, worst) == SM_SUCCESS);
+            std::printf("  %s, %+g off it: worst %g\n", face.m_eKind == SmBlendSetback::SM_SB_CONE ? "countersink" : "bore", off, worst);
+            CHECK(off > 0.0 ? worst == 0.0 : worst == HUGE_VAL);
+        }
+}
+
 // SmBlendSetback::SpringCurve on each kind of face: the two halves (homogeneous Bernstein, from P
 // and from Q) of degree 2 on a plane, 4 on a cylinder or sphere, 6 on a cone (the parameter plane's
 // parabola mapped up), on the face to 1e-12 x its size at 65 points each, leaving P along TP and
@@ -11482,6 +11534,7 @@ const TangentEndCase SETBACK_CASES[] = {
     {"concave_corner_rounds", setback_concave_corner_rounds, nullptr},
     {"spring_curves_on_quadrics", setback_spring_curves_on_quadrics, nullptr},
     {"no_more_concave_on_quadrics", setback_no_more_concave_on_quadrics, nullptr},
+    {"containment_beside_quadrics", setback_containment_beside_quadrics, nullptr},
     {"curved_d_prism_corner", setback_curved_d_prism_corner, "a curved face: no Setback (ClassifySetBack asks for planes), the old convex corner's patch"},
     {"curved_knife_edge_corner", setback_curved_knife_edge_corner,
      "ruling (a) is an equality on the concave wall along the spring curve (II + |k| I = 0 circumferentially): the certificate's bound fails there (to be factored out); and the degree-9 attempt runs out of memory until the sector rows are streamed (#106)"},

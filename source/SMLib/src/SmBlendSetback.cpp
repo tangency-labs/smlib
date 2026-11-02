@@ -4246,6 +4246,9 @@ SmStatus SmBlendSetback::Containment(const Fill & crFill, const std::vector<Face
   if (crFill.m_vPatches.empty())
     { SER_MSG(SM_ERR_INVALID_INPUT, _T("SmBlendSetback: an empty fill")); }
   const double dSide = bConvex ? 1.0 : -1.0;
+  bool bAnyCurved = false;
+  for (size_t f=0; f<crFaces.size(); f++) { bAnyCurved = bAnyCurved || crFaces[f].m_eKind != SM_SB_PLANE; }
+  if (bAnyCurved) { rdWorst = 0.0; }
   for (size_t i=0; i<crFill.m_vPatches.size(); i++)
     {
       const SmBSplineSurface * pS = crFill.m_vPatches[i]; NER(pS);
@@ -4261,7 +4264,97 @@ SmStatus SmBlendSetback::Containment(const Fill & crFill, const std::vector<Face
           { SER_MSG(SM_ERR, _T("SmBlendSetback: a patch with a weight not positive")); }
       for (ULONG j=0; j<sPts.GetSize(); j++)
         for (size_t f=0; f<crFaces.size(); f++)
-          { rdWorst = smos_Max(rdWorst, dSide * (sPts[j] - crFaces[f].m_sPoint).Dot(crFaces[f].m_sNormal)); }
+          {
+            if (bAnyCurved)
+              { continue; }
+            rdWorst = smos_Max(rdWorst, dSide * (sPts[j] - crFaces[f].m_sPoint).Dot(crFaces[f].m_sNormal));
+          }
+      // a quadric face: its implicit form at the patch, Qh = |U - h a|^2 - rho_w^2 (cylinder, cone) or
+      // |U|^2 - R^2 w^2 (sphere), U = H_xyz - w X0, h = U . a, rho_w = R w + slope h, of the sign of
+      // the face's distance times m_dSide: certified dSide m_dSide Qh <= 0 over the patch (Bernstein,
+      // subdivision). Along a column on the face (the setback patch's v = 0 or 1) Qh vanishes to
+      // second order (the column on the face, the patch G1 to it): there Qh = v^2 R (or (1 - v)^2 R),
+      // the division exact in Bernstein form, and R is certified instead (its dropped coefficients
+      // checked to be rounding).
+      const size_t n = crFill.m_vFace.size();
+      for (size_t f=0; f<crFaces.size(); f++)
+        {
+          const Face & crF = crFaces[f];
+          if (!bAnyCurved)
+            { continue; }
+          const ULONG p = lUDeg, q = lVDeg;
+          sm_SbT sW = sm_SbTMake(p, q), sH = sm_SbTMake(p, q), sU[3];
+          const double dP[3] = { crF.m_sPoint.x, crF.m_sPoint.y, crF.m_sPoint.z }, dA[3] = { crF.m_sAxis.x, crF.m_sAxis.y, crF.m_sAxis.z };
+          for (ULONG k=0; k<sPts.GetSize(); k++) { sW.c[k] = (sWeights.GetSize() == sPts.GetSize()) ? sWeights[k] : 1.0; }
+          for (int c=0; c<3; c++)
+            {
+              sU[c] = sm_SbTMake(p, q);
+              for (ULONG k=0; k<sPts.GetSize(); k++)
+                {
+                  const double x = (c == 0) ? sPts[k].x : (c == 1) ? sPts[k].y : sPts[k].z;
+                  sU[c].c[k] = sW.c[k] * (x - dP[c]);
+                }
+              if (crF.m_eKind != SM_SB_SPHERE)
+                for (ULONG k=0; k<sPts.GetSize(); k++) { sH.c[k] += sU[c].c[k] * dA[c]; }
+            }
+          sm_SbT sQ, sA = sm_SbTMake(0, 0), sB = sm_SbTMake(0, 0);
+          double dScale = 0.0;
+          if (crF.m_eKind == SM_SB_PLANE)
+            {
+              // a plane beside a curved face: w (X - X0) . N, Distance's sign already
+              sQ = sm_SbTMake(p, q);
+              for (int c=0; c<3; c++)
+                {
+                  const double dN = (c == 0) ? crF.m_sNormal.x : (c == 1) ? crF.m_sNormal.y : crF.m_sNormal.z;
+                  sQ = sm_SbTAxpy(sQ, dN, sU[c]);
+                  dScale += smos_Fabs(dN) * sm_SbTScale(sU[c]);
+                }
+              for (size_t k=0; k<sQ.c.size(); k++) { sQ.c[k] *= -dSide; }
+            }
+          else
+          {
+          for (int c=0; c<3; c++)
+            {
+              const sm_SbT sR = (crF.m_eKind == SM_SB_SPHERE) ? sU[c] : sm_SbTAxpy(sU[c], -dA[c], sH);
+              sA = sm_SbTAxpy(sA, 1.0, sm_SbTMulFast(sR, sR));
+            }
+          const sm_SbT sRho = (crF.m_eKind == SM_SB_SPHERE) ? sm_SbTAxpy(sm_SbTMake(p, q), crF.m_dRadius, sW)
+                                                             : sm_SbTAxpy(sm_SbTAxpy(sm_SbTMake(p, q), crF.m_dRadius, sW), crF.m_dSlope, sH);
+          sB = sm_SbTMulFast(sRho, sRho);
+          sQ = sm_SbTAxpy(sA, -1.0, sB);
+          dScale = sm_SbTScale(sA) + sm_SbTScale(sB);
+          for (size_t k=0; k<sQ.c.size(); k++) { sQ.c[k] *= -dSide * crF.m_dSide; } // >= 0 where contained
+          }
+          // a column of this patch on this face
+          int iCol = -1;
+          if (i < n)
+            {
+              if (crFill.m_vFace[i] == f) { iCol = 0; }
+              else if (crFill.m_vFace[(i + 1) % n] == f) { iCol = 1; }
+            }
+          if (iCol >= 0)
+            {
+              const size_t Q = sQ.q;
+              if (Q < 2)
+                { SER(SM_ERR); }
+              sm_SbT sR = sm_SbTMake(sQ.p, Q - 2);
+              double dDropped = 0.0;
+              for (size_t a=0; a<=sQ.p; a++)
+                for (size_t j=0; j<=Q; j++)
+                  {
+                    const double c = sQ.c[a * (Q + 1) + j];
+                    const size_t jj = (iCol == 0) ? j : Q - j; // the power of v (or 1 - v)
+                    if (jj < 2) { dDropped = smos_Max(dDropped, smos_Fabs(c)); continue; }
+                    const double f2 = static_cast<double>(Q) * static_cast<double>(Q - 1) / (static_cast<double>(jj) * static_cast<double>(jj - 1));
+                    sR.c[a * (Q - 1) + ((iCol == 0) ? j - 2 : j)] = c * f2;
+                  }
+              if (dDropped > 1.0e-11 * dScale)
+                { rdWorst = HUGE_VAL; return SM_SUCCESS; }
+              sQ = sR;
+            }
+          if (sm_SbTNonneg(sQ, 1.0e-12 * dScale, SM_SB_GRAPH_DEPTH) != 1)
+            { rdWorst = HUGE_VAL; return SM_SUCCESS; }
+        }
     }
   return SM_SUCCESS;
 }

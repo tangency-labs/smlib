@@ -245,7 +245,10 @@ public:
 
   // The most any patch of crFill stands past a face out of the corner (positive: past it): out
   // of the material for a convex corner (bConvex), into it for a concave one. A certified bound:
-  // every patch lies in the convex hull of its control points (weights positive).
+  // every patch lies in the convex hull of its control points (weights positive). Beside a
+  // quadric face, certified by the face's implicit form over each patch (Bernstein, subdivision;
+  // divided by v^2 or (1 - v)^2 along the patch's column on that face): rdWorst HUGE_VAL where
+  // that is not certified.
   static SmStatus Containment(const Fill & crFill, const std::vector<Face> & crFaces, SmBoolean bConvex, double & rdWorst);
 
   // Owner's ruling (a) on one setback patch (a single Bezier span, as FillHole makes them) G1 to
