@@ -402,8 +402,7 @@ SmBlendCorner::SmBlendCorner
    m_lFillOrder(1),
    m_bConvexSetBack(TRUE),
    m_bSetBackOverflows(FALSE),
-   m_pFill(NULL),
-   m_pBallSurface(NULL)
+   m_pFill(NULL)
 {
   m_apMixedSurface[0] = m_apMixedSurface[1] = NULL;
 }

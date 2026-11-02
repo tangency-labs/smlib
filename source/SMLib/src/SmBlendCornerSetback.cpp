@@ -290,8 +290,10 @@ SmStatus SmBlendCorner::ClassifySetBack
   if ( bOpen || ( !bAsked && !bOneKind ))
     { return SM_SUCCESS; } // a corner left open keeps the patch its caller removes
   const SmBoolean bG2 = ( bOneKind && eKind == SM_FSG_BLEND_CURVE ) ? TRUE : FALSE;
-  // rounds of one radius meet a common ball where three faces meet: not a setback unless asked
-  if ( !bAsked && !bG2 && dMaxR - dMinR <= dTol )
+  // three rounds of one radius meet a common ball (the Ball): not a setback unless asked. Four or
+  // more meet one only where every face's offset passes through one point (ClassifyBall, first);
+  // elsewhere they are set back (owner via coordinator, 2026-11-02).
+  if ( !bAsked && !bG2 && dMaxR - dMinR <= dTol && n == 3 )
     { return SM_SUCCESS; }
   // (setbacks that do not fit are the Setback's to refuse, or the overflow's: MakeSetBackTopology)
   rlOrder = ( bG2 || ( bAsked && dEase > 0.0 )) ? 2 : 1;
