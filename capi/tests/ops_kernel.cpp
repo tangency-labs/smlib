@@ -1539,6 +1539,80 @@ void shelled_rounded_box_rim()
     smlib_brep_free(b);
 }
 
+// A 40 x 30 x 60 box, all 12 edges rounded r 1.5 (each corner three equal rounds of planes: a
+// Ball, its patch on the ball's sphere, SmBallPatch), shelled 2 inward, open at the front (y = 0)
+// only (SolidCraft shell_tangent_chain_that_opens_every_face_explains_how_to_keep_walls, its
+// chain off; smlib#102). The rounds and the balls, thinner than the wall, have no offset: the
+// cavity is the sharp box 36 x 28 x 56, open through the front. The body is the rounded box (its
+// core, its faces' slabs, its rounds' quarter cylinders and its corners' eighth balls) less that.
+// With `round_trip`, the rounded box goes through the flat arrays first, as SolidCraft keeps it
+// between commands: each corner face must come back on its sphere, its definition kept (a bare
+// NURBS has no offset that collapses, and the shell cannot close across its rounds).
+static void shelled_ball_box_open_at_the_front(bool round_trip)
+{
+    const double r = 1.5, t = 2.0, dx = 40, dy = 30, dz = 60;
+    smlib_brep *b = box(0, 0, 0, dx, dy, dz), *round = nullptr, *shell = nullptr;
+    const double edges[36] = {dx / 2, 0, 0,  dx / 2, dy, 0,  dx / 2, 0, dz,  dx / 2, dy, dz,
+                              0, dy / 2, 0,  dx, dy / 2, 0,  0, dy / 2, dz,  dx, dy / 2, dz,
+                              0, 0, dz / 2,  dx, 0, dz / 2,  0, dy, dz / 2,  dx, dy, dz / 2};
+    CHECK(smlib_fillet(b, edges, 12, 0.1, r, &round, nullptr) == SMLIB_OK);
+    if (round_trip && round != nullptr)
+    {
+        smlib_flat *f = nullptr;
+        smlib_brep *back = nullptr;
+        CHECK(smlib_brep_export(round, &f) == SMLIB_OK);
+        CHECK(f != nullptr && smlib_brep_import(f, &back) == SMLIB_OK);
+        smlib_flat_free(f);
+        smlib_brep_free(round);
+        round = back;
+        // the eight corners: each on the sphere r 1.5 about its ball's centre, as before
+        int balls = 0;
+        if (round != nullptr)
+        {
+            SmTArray<SmFace *> faces;
+            round->p->GetFaces(faces);
+            for (ULONG i = 0; i < faces.GetSize(); i++)
+            {
+                const SmBallPatch *ball = SM_CAST_PTR(SmBallPatch, faces[i]->GetSurface());
+                if (ball == nullptr)
+                {
+                    continue;
+                }
+                const SmPoint3d c = ball->GetCentre();
+                const bool at_corner = std::fabs(std::fabs(c.x - dx / 2) - (dx / 2 - r)) < 1e-12 &&
+                                       std::fabs(std::fabs(c.y - dy / 2) - (dy / 2 - r)) < 1e-12 &&
+                                       std::fabs(std::fabs(c.z - dz / 2) - (dz / 2 - r)) < 1e-12;
+                balls += (at_corner && ball->GetRadius() == r) ? 1 : 0;
+            }
+        }
+        std::printf("box rounded all round r %g, through the flat arrays: %d corners on their balls' spheres\n", r, balls);
+        CHECK(balls == 8);
+    }
+    const double front[3] = {dx / 2, 0, dz / 2};
+    const double a = dx - 2 * r, bb = dy - 2 * r, c = dz - 2 * r;
+    const double rounded = a * bb * c + 2 * r * (a * bb + bb * c + a * c) + PI * r * r * (a + bb + c) + 4.0 / 3.0 * PI * r * r * r;
+    const double want = rounded - (dx - 2 * t) * (dz - 2 * t) * (dy - t);
+    const int32_t got = round != nullptr ? smlib_shell(round, front, 1, 0.1, -t, &shell, nullptr) : -1;
+    std::printf("box rounded all round r %g%s, shelled %g open at the front: status %d", r, round_trip ? " (through the flat arrays)" : "", t,
+                static_cast<int>(got));
+    CHECK(got == SMLIB_OK && shell != nullptr);
+    if (shell != nullptr)
+    {
+        std::printf(", volume %.9f, expected %.9f", volume_of(shell), want);
+        CHECK(sound(shell));
+        CHECK(near(volume_of(shell), want, 2e-7));
+    }
+    std::printf("\n");
+    smlib_brep_free(shell);
+    smlib_brep_free(round);
+    smlib_brep_free(b);
+}
+
+void shelled_ball_box_open_at_the_front()
+{
+    shelled_ball_box_open_at_the_front(false);
+}
+
 // A 40 x 40 x 20 box with one upright edge rounded R5, as SolidCraft hands it over
 // (tests/data/rounded-corner-box.txt: the round an SmCylinder in one rational span), shelled 2
 // inward, open at its top. The round's offset is the cylinder R3 about the same axis, which the
@@ -7678,6 +7752,13 @@ void ball_knife_edge_arc_corner()
 }
 
 
+// shelled_ball_box_open_at_the_front with the rounded box through the flat arrays first, as
+// SolidCraft keeps a body between commands (smlib#102).
+void ball_box_shelled_after_a_round_trip()
+{
+    shelled_ball_box_open_at_the_front(true);
+}
+
 // The Ball corner's cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--balls-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase BALL_CASES[] = {
@@ -7692,6 +7773,8 @@ const TangentEndCase BALL_CASES[] = {
     {"cone_frustum_volume", ball_cone_frustum_volume,
      "smlib#103: the flat's trim curves along the flat-cone rounds' hyperbolas are fitted, not exact (SmPlane::DropCurve clamps the rational rail's control points to the plane's domain and falls to the general drop), and the cone's along its rails too: 2.5e-6 off Steiner's (the sharp part alone 5e-9)"},
     {"knife_edge_arc_corner", ball_knife_edge_arc_corner, nullptr},
+    {"box_shelled_after_a_round_trip", ball_box_shelled_after_a_round_trip,
+     "status 1034 (smlib#102): the flat arrays write the Ball's SmBallPatch as a bare NURBS and read it back as an SmBSplineSurface, its sphere lost; its offset 2 in no longer collapses (OffsetCollapses), the rounds' beside it do, and the shell cannot mate across them (SmOffsetExecutive, unbridged)"},
 };
 
 int ball_cases(bool known_failing, const char *only)
@@ -14323,6 +14406,7 @@ int main(int argc, char **argv)
     shelled_dome_rim();
     chamfered_hole_rim_is_a_cone();
     shelled_rounded_box_rim();
+    shelled_ball_box_open_at_the_front();
     shelled_single_round_stays_a_cylinder();
     shelled_box_with_a_drilled_hole();
     shell_thicker_than_a_step();
