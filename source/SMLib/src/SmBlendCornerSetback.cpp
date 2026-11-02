@@ -881,7 +881,6 @@ SmStatus SmBlendCorner::BuildSetBackFill()
           rpFill = NULL;
           SmBoolean bPlaced = FALSE;
           SER( place( k, bPlaced ));
-          if ( getenv("SBDBG") ) { fprintf( stderr, "SBDBG grow k %.4f placed %d:", k, (int)bPlaced ); for (ULONG i=0; i<n; i++) fprintf( stderr, " %.4f (most %.4f)", m_vSetBacks[i], sMost[i] ); fprintf( stderr, "\n" ); }
           if ( !bPlaced )
             { return SM_SUCCESS; }
           SmBlendSetback::Fill * pFill = new SmBlendSetback::Fill;

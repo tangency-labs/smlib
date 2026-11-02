@@ -2685,12 +2685,10 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
                 for (int c=0; c<4; c++) { rSide.m_vT[t][i].a[c] = crT[lOff + 4 * i + c] * dP; }
             }
           rSide.m_dLambda = dLambda;
-          if (getenv("SBDBG")) fprintf(stderr, "SBDBG face %zu side %d (patch %zu): kind %d ds %zu rho %.4g c %.4g lambda %.4g kappa %.4g q2 %.4g q3 %.4g\n", (size_t)crFace[m], s, lPatch, (int)crF.m_eKind, ds, dRho, dC, dLambda, dKappa, q2, q3);
           // the field: minus the column's derivative at the base point, in the plane
           const sm_SbH & crL = rSide.m_vCol[ds + 3], & crL1 = rSide.m_vCol[ds + 2];
           const SmVector3d sDer = SmVector3d(crL.a[0] - crL1.a[0], crL.a[1] - crL1.a[1], crL.a[2] - crL1.a[2]) * static_cast<double>(ds + 3);
           rSide.m_sD = inPlane(sDer * -1.0);
-          if (getenv("SBDBG")) fprintf(stderr, "SBDBG   field |d| %.4g, rail end to base %.4g\n", rSide.m_sD.Length(), SmVector3d(crL.a[0] - sP.x, crL.a[1] - sP.y, crL.a[2] - sP.z).Length());
           if (s == 0)
             {
               const SmVector2d sXi2 = inPlane(SmVector3d(crL.a[0], crL.a[1], crL.a[2]));
@@ -2718,7 +2716,6 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
   for (size_t lD=0; lD<sDegrees.size(); lD++)
     {
       const size_t d = sDegrees[lD];
-      if (getenv("SBONLYD") && d != static_cast<size_t>(atoi(getenv("SBONLYD")))) { continue; }
       const std::vector< std::pair<int, int> > sMono = sm_SbMonomials(static_cast<int>(d));
       const size_t M = sMono.size();
       std::vector<size_t> sNc(n), sQv(n), sFirstFree(n);
@@ -2865,18 +2862,6 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
               for (size_t i=0; i<sb.size(); i++) { dSz = smos_Max(dSz, smos_Fabs(sb[i])); }
               if (!sm_SbAffineSolutions(sA, sb, sb.size(), lU, 1.0e-9 * (1.0 + dSz), sY0, sZ0))
                 {
-                  if (getenv("SBDBG"))
-                    {
-                      fprintf(stderr, "SBDBG d %zu patch %zu side %d: constructive column inconsistent (lU %zu rows %zu) k1 %zu k2 %zu Nc %zu\n", d, m, e, lU, sb.size(), k1, k2, Nc);
-                      // each group alone
-                      for (int g=0; g<4; g++)
-                        {
-                          std::vector<double> sA2, sb2, y2; std::vector< std::vector<double> > z2;
-                          size_t r0 = (g == 0) ? 0 : (g == 1) ? 4 : (g == 2) ? 0 : 8, r1 = (g == 0) ? 4 : (g == 1) ? 8 : (g == 2) ? 8 : 14;
-                          for (size_t r=r0; r<r1; r++) { sA2.insert(sA2.end(), sA.begin() + r * lU, sA.begin() + (r + 1) * lU); sb2.push_back(sb[r]); }
-                          fprintf(stderr, "   group %d rows %zu..%zu consistent %d\n", g, r0, r1, (int)sm_SbAffineSolutions(sA2, sb2, sb2.size(), lU, 1.0e-9 * (1.0 + dSz), y2, z2));
-                        }
-                    }
                   bFailed = true; break;
                 }
               // the rest: column 1's middle rows as near as they can be to the interpolated rows the
@@ -2924,17 +2909,6 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
                 {
                   sNext[i] = sCol[i];
                   for (size_t u=0; u<lU; u++) { sNext[i] = sm_SbAxpy(sNext[i], sY0[u], sBasis[u][i]); }
-                }
-              if (getenv("SBDBG"))
-                {
-                  double dRes[4] = { 0, 0, 0, 0 };
-                  for (size_t r=0; r<sb.size(); r++)
-                    {
-                      double acc = -sb[r];
-                      for (size_t u=0; u<lU; u++) { acc += sA[r * lU + u] * sY0[u]; }
-                      dRes[r < 4 ? 0 : r < 8 ? 1 : r < 11 ? 2 : 3] = smos_Max(dRes[r < 4 ? 0 : r < 8 ? 1 : r < 11 ? 2 : 3], smos_Fabs(acc));
-                    }
-                  fprintf(stderr, "SBDBG d %zu patch %zu side %d: constructive residuals row0 %.3g row1 %.3g row N-1 %.3g row N %.3g\n", d, m, e, dRes[0], dRes[1], dRes[2], dRes[3]);
                 }
               sNext[0] = sRows[0][jNext];
               sNext[1] = sRows[1][jNext];
@@ -3043,9 +3017,8 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
       double dSize = 0.0;
       for (size_t i=0; i<sBeq.size(); i++) { dSize = smos_Max(dSize, smos_Fabs(sBeq[i])); }
       if (!sm_SbAffineSolutions(sAeq, sBeq, sBeq.size(), lUnknowns, 1.0e-9 * (1.0 + dSize), sYp, sZn) || sZn.empty())
-        { if (getenv("SBDBG")) fprintf(stderr, "SBDBG d %zu: equalities inconsistent or no freedom (unknowns %zu, rows %zu)\n", d, lUnknowns, sBeq.size()); continue; }
+        { continue; }
       const size_t lFree = sZn.size();
-      if (getenv("SBDBG")) fprintf(stderr, "SBDBG d %zu: %zu unknowns, %zu equalities, %zu free\n", d, lUnknowns, sBeq.size(), lFree);
 
       // the energy (as sm_SbGraphG1's)
       auto energyRows = [&](const sm_SbNet & crN, std::vector<double> & rRows)
@@ -3110,7 +3083,6 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
           for (size_t p=0; p<2*n; p++) { rNets[p] = sm_SbAffineNet(sPatches[p], sYv, sE); }
         };
 
-      if (getenv("SBDBG")) fprintf(stderr, "SBDBG stage %s\n", "A energy done");
       // each patch's ruling-(a) matrix: w^3 (l, m, n) + |k| o J (J the projection's w^4 I), affine
       // in the heights; o's sign certified
       std::vector< std::array<sm_SbT, 3> > sQ0(2 * n);
@@ -3132,7 +3104,6 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
           sS[p] = (sm_SbTNonneg(sOp, dO, SM_SB_GRAPH_DEPTH) == 1) ? 1.0 : (sm_SbTNonneg(sNegO, dO, SM_SB_GRAPH_DEPTH) == 1) ? -1.0 : 0.0;
           if (sS[p] == 0.0)
             {
-              if (getenv("SBDBG")) fprintf(stderr, "SBDBG d %zu: patch %zu folds (o not one-signed)\n", d, p);
               SM_SB_FAIL(rFill.m_pReason, SM_ERR, _T("SmBlendSetback: the fill folds (a patch's normal turns across the corner's axis)"));
             }
           // w^3 and the projection's J
@@ -3181,7 +3152,6 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
               for (size_t t=0; t<sQjp[k].size(); t++) { sQj[p][k].push_back((sK[p] < 0.0) ? sm_SbTMulFast(sW3, sQjp[k][t]) : sQjp[k][t]); }
             }
         }
-      if (getenv("SBDBG")) fprintf(stderr, "SBDBG stage %s\n", "B fundamentals done");
       // the QP (as sm_SbGraphG1's, without the base points' kernel directions: the faces' columns
       // are fixed here)
       std::vector<double> sG(lFree * lFree, 0.0), sg(lFree, 0.0);
@@ -3216,7 +3186,6 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
           if (th >= SM_PI) { th -= SM_PI; }
           sKernel[n + q] = th;
         }
-      if (getenv("SBDBG")) fprintf(stderr, "SBDBG stage %s\n", "C kernel done");
       std::vector<double> sC, sb;
       for (size_t p=0; p<2*n; p++)
         {
@@ -3280,43 +3249,9 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
       s_lCurvedDegrees++;
       s_lCurvedRows += sb.size();
       bool bProven = false;
-      if (getenv("SBDBG2"))
-        {
-          // energy only: where its fill fails the ruling's matrix, per patch (sampled, debug only)
-          std::vector<double> sT0, sNoC, sNob;
-          sm_SbDualQPRows(sG, sg, sNoC, sNob, lFree, 0, 1.0e-13, sT0);
-          std::vector<sm_SbNet> sN0;
-          netsAt(sT0, sN0);
-          for (size_t p=0; p<2*n; p++)
-            {
-              sm_SbT sF[4];
-              sm_SbFundamentals(sN0[p], sE, sF);
-              double dWorst = HUGE_VAL, dAtU = 0, dAtV = 0;
-              for (int a=0; a<=20; a++) for (int b=0; b<=20; b++)
-                {
-                  const double u = a / 20.0, v = b / 20.0;
-                  double val[4];
-                  for (int k=0; k<4; k++)
-                    {
-                      double acc = 0.0;
-                      const sm_SbT & T = sF[k];
-                      for (size_t ii=0; ii<=T.p; ii++) for (size_t jj=0; jj<=T.q; jj++)
-                        acc += T.c[ii * (T.q + 1) + jj] * sm_Binomial((ULONG)T.p, (ULONG)ii) * pow(u, (double)ii) * pow(1 - u, (double)(T.p - ii)) * sm_Binomial((ULONG)T.q, (ULONG)jj) * pow(v, (double)jj) * pow(1 - v, (double)(T.q - jj));
-                      val[k] = acc;
-                    }
-                  const double sg0 = val[3] >= 0 ? 1.0 : -1.0;
-                  const double l = sg0 * val[0], nn = sg0 * val[2], mm = sg0 * val[1];
-                  const double lam = 0.5 * (l + nn) - sqrt(0.25 * (l - nn) * (l - nn) + mm * mm);
-                  const double sc = fabs(l) + fabs(nn) + fabs(mm) + 1e-300;
-                  if (lam / sc < dWorst) { dWorst = lam / sc; dAtU = u; dAtV = v; }
-                }
-              fprintf(stderr, "SBDBG2 d %zu patch %zu (%s, Nc %zu x %zu): least eigen/scale %.3g at (%.2f, %.2f)\n", d, p, p < n ? "setback" : "interior", sN0[p].p, sN0[p].q, dWorst, dAtU, dAtV);
-            }
-        }
       const SmStatus eQP = sm_SbDualQPRows(sG, sg, sC, sb, lFree, sb.size(), 1.0e-13, sT, &bProven);
       if (eQP != SM_SUCCESS && bProven && d == 9)
         { break; }
-      if (getenv("SBDBG")) fprintf(stderr, "SBDBG d %zu: QP %d proven %d (%zu conditions)\n", d, (int)eQP, (int)bProven, sb.size());
       if (eQP != SM_SUCCESS)
         { continue; }
       std::vector<sm_SbNet> sNets;
@@ -3338,21 +3273,6 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
               const int iNo = sm_SbNoMoreConcave(sNets[p], crFaces[crFace[p]], crFaces[crFace[(p + 1) % n]], sE, sK[p]);
               if (iNo != 1)
                 {
-                  if (getenv("SBDBG")) fprintf(stderr, "SBDBG d %zu: certificate fails on patch %zu (%d), k %.4g\n", d, p, iNo, sK[p]);
-                  if (getenv("SBDBG3"))
-                    for (int a=0; a<=10; a++) { for (int b=0; b<=10; b++)
-                      {
-                        const double u = a / 10.0, v = b / 10.0;
-                        SmVector3d P, Xu, Xv; double R2[3][3];
-                        sm_SbFirst(sNets[p], u, v, P, Xu, Xv); sm_SbSecond(sNets[p], u, v, R2);
-                        SmVector3d N = Xu * Xv; N.Unitize(); if (N.Dot(sE) < 0) N = N * -1.0;
-                        const double E = Xu.Dot(Xu), F = Xu.Dot(Xv), G = Xv.Dot(Xv);
-                        const double L = SmVector3d(R2[0][0], R2[0][1], R2[0][2]).Dot(N), M = SmVector3d(R2[1][0], R2[1][1], R2[1][2]).Dot(N), NN = SmVector3d(R2[2][0], R2[2][1], R2[2][2]).Dot(N);
-                        // least normal curvature: det(II - x I) = 0
-                        const double qa = E * G - F * F, qb = -(E * NN - 2 * F * M + G * L), qc = L * NN - M * M;
-                        const double x = (-qb - sqrt(fmax(0.0, qb * qb - 4 * qa * qc))) / (2 * qa);
-                        fprintf(stderr, " %+.3f", x);
-                      } fprintf(stderr, "\n"); }
                   bCertified = false;
                 }
               continue;
@@ -3400,12 +3320,10 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
               const int iNon = sm_SbTNonneg(*pChecks[k], 1.0e-12 * sm_SbTScale(*pChecks[k]), SM_SB_GRAPH_DEPTH);
               if (iNon != 1)
                 {
-                  if (getenv("SBDBG")) fprintf(stderr, "SBDBG d %zu: certificate fails on patch %zu check %d (%s), k %.4g\n", d, p, k, iNon == 0 ? "negative" : "undecided", sK[p]);
                   bCertified = false;
                 }
             }
         }
-      if (getenv("SBDBG")) fprintf(stderr, "SBDBG d %zu: certified %d\n", d, (int)bCertified);
       if (!bCertified)
         { continue; }
       // back to the world
@@ -3554,7 +3472,7 @@ SmStatus sm_SbFillHole(const SmContext & crContext, const std::vector<SmBlendSet
       }
   }
 
-  bool bCurved = getenv("SBFORCE") != NULL && pProbe == NULL;
+  bool bCurved = false;
   for (size_t f=0; f<n; f++) { bCurved = bCurved || crFaces[f].m_eKind != SmBlendSetback::SM_SB_PLANE; }
   if (bCurved)
     {
