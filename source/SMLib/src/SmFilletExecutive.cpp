@@ -5592,6 +5592,24 @@ SmBoolean bDebugMe = FALSE ;
             } // end iter every Brep Edge marking all edges with OtherEdge mates
         } // end mark all common edges scope block
 
+      // SolidCraft change: an edge of the body with more than two faces (where two lumps of the
+      // body touch along a line, as a bore's wall touching the bottom face) bounds the material a
+      // blend takes off on one side of it: the faces beyond it are not the blend's, however the
+      // band's pieces meet it. Unmarked, the faces a fillet's rail encloses (TrimOriginalSurfaces)
+      // were collected across it into the whole body, the trim was dropped as leaking, and the
+      // fillet's faces were merged into a body left whole.
+        {
+          SmTArray<SmEdge*> sBrepEdges;
+          m_pTargetBrep->GetEdges(sBrepEdges);
+          for (ii=0; ii<sBrepEdges.GetSize(); ii++)
+            {
+              SmTArray<SmFace*> sEdgeFaces;
+              sBrepEdges[ii]->GetFaces( sEdgeFaces );
+              if ( sEdgeFaces.GetSize() > 2 )
+                { sBrepEdges[ii]->Mark(eOrigMarkType); }
+            }
+        }
+
 #ifdef SM_DEBUG_CODE
       ULONG lLastDelFace= 0, lLastKeepFace = 0;
 
