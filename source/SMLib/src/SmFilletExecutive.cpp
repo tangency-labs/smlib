@@ -3648,6 +3648,28 @@ SmStatus SmFilletExecutive::CreateFilletBrep
         else if ( pWorst != NULL && !sWorst.m_bBall && !sWorst.m_bLaw && pWorst->GetSolverType() == SM_FS_CONST_RADIUS
                   && sWorst.m_dRadius > 0.0 && sWorst.m_dWorks > 0.0 && sWorst.m_dWorks < SM_BIG_DOUBLE )
           { SER( NoteOpenFit( TRUE, sWorst.m_dWorks / sWorst.m_dRadius, SM_FIT_SCALE, *pWorst )); }
+        // An End's rail that runs past its side edge's far end is a second cause, which the
+        // corner would refuse once built (SmBlendCorner::RefuseEndPastSideEdge): the refusal
+        // names the smaller of the two radii.
+        if ( m_dFitRadius > 0.0 && m_lFitKind == SM_FIT_RADIUS )
+          {
+            for (ULONG c=0; c<m_vFilletCorners.GetSize(); c++)
+              {
+                SmFilletCorner * pCorner = m_vFilletCorners[c];
+                if ( pCorner == NULL || pCorner->GetCornerType() != SM_FCR_BLEND )
+                  { continue; }
+                SmBoolean bFound = FALSE;
+                double    dFit   = 0.0;
+                SmEdge  * pEdge  = NULL;
+                SER( ((SmBlendCorner*)pCorner)->FitOfEndPastSideEdges( bFound, dFit, pEdge ));
+                if ( bFound && dFit < m_dFitRadius )
+                  {
+                    SER( SmBlendCorner::DescribeEndPastSideEdge( dFit, cWhy ));
+                    GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, cWhy );
+                    NoteFitRadius( dFit, pEdge );
+                  }
+              }
+          }
         return SM_ERR;
       }
   }
@@ -4286,8 +4308,10 @@ SmStatus SmFilletExecutive::CreateFilletBrep
       if(SM_SUCCESS != pCorner->CalcCornerEdgeGeom())
         {
           // SolidCraft change: a corner that noted why it refused (a setback corner's fill,
-          // SmBlendCorner) keeps that reason
-          if ( GetFilletErrorInfo()->GetErrorCode() != eNotedBefore )
+          // SmBlendCorner), or one refused as one the blends cannot pass (SM_FILERR_NO_ROOM, noted
+          // by the corner), keeps that reason
+          if (   GetFilletErrorInfo()->GetErrorCode() != eNotedBefore
+              || GetFilletErrorInfo()->GetErrorCode() == SM_FILERR_NO_ROOM )
             { SER( SM_ERR ); }
           // when CalcCornerEdgeGeom failed - note the error
           pCorner->GetName( sBuff, SM_TBLOCK_SIZE );

@@ -2317,9 +2317,10 @@ smlib_brep *rounded_corner(double radius)
 }
 
 // The constant-distance blend (SMLIB_BLEND_CHORD) of tangency-labs/solidcore#453's back rim, on
-// the 20 cube bored r5 along y with the bore's wall on its bottom face: refused (main has the
-// case), after its solver has computed points across the rim.
-void failed_chord_blend()
+// the 20 cube bored r5 along y with the bore's wall on its bottom face: its solver computes points
+// across the rim (main checks the body it builds; it was refused, by an error of its corner, until
+// the rim's End at the bore's seam was built).
+void chord_blend_first()
 {
     smlib_brep *cube = box(0, 0, 0, 20, 20, 20);
     SmBrep *bore = nullptr;
@@ -2332,20 +2333,21 @@ void failed_chord_blend()
     const double back_rim[3] = {10, 20, 10};
     const double size = 3.0;
     smlib_brep *r = nullptr;
-    CHECK(holed != nullptr && smlib_blend(holed, SMLIB_BLEND_CHORD, back_rim, &size, 1, 0.1, &r, nullptr) != SMLIB_OK && r == nullptr);
+    CHECK(holed != nullptr && smlib_blend(holed, SMLIB_BLEND_CHORD, back_rim, &size, 1, 0.1, &r, nullptr) == SMLIB_OK && r != nullptr);
+    smlib_brep_free(r);
     smlib_brep_free(holed);
     smlib_brep_free(cube);
     delete bore;
 }
 
 // A run of this program as a child (tangency-labs/solidcore#1173): the corner of rounded_corner
-// rounded r2.5, either first thing in the process (`order` "first") or after the failed blend
-// above ("after"), written to `path`. 0 if the body is sound.
+// rounded r2.5, either first thing in the process (`order` "first") or after the blend above
+// ("after"), written to `path`. 0 if the body is sound.
 int corner_child(const char *order, const char *path)
 {
     if (std::strcmp(order, "after") == 0)
     {
-        failed_chord_blend();
+        chord_blend_first();
     }
     smlib_brep *corner = rounded_corner(2.5);
     const bool ok = corner != nullptr && sound(corner);
@@ -8749,6 +8751,10 @@ void scenario_three_edges_at_the_knife_edge_arc_corner()
 // x = 55 square to its edge, and at x = 0 on the end face. Removed: (1 - pi/4) r^2 along 55,
 // for r 1, 2, 3; the end at x = 55 a plane face of area (1 - pi/4) r^2. (Built with no slope,
 // the shim's law curve could not be extended past the edge's end and the round failed, 1001.)
+// A law round is traced by the variable solver, a certified B-spline: graded, as ladder 012, to
+// its certified bound, 100 times the part's tolerance times the round's ruled area (its
+// section's arc, pi r / 2, along 55) for the volume, times the end's perimeter (2 r + pi r / 2)
+// for the area.
 void scenario_constant_law_ending_at_the_r5_corner()
 {
     smlib_brep *block = box(0, 0, 0, 60, 40, 20);
@@ -8779,7 +8785,7 @@ void scenario_constant_law_ending_at_the_r5_corner()
         {
             SmExtent3d bx;
             CHECK(faces[i]->CalculateTightBoundingBox(bx) == SM_SUCCESS);
-            if (SM_CAST_PTR(SmPlane, faces[i]->GetSurface()) != nullptr && bx.GetMin().x == 55.0 && bx.GetMax().x == 55.0)
+            if (SM_CAST_PTR(SmPlane, faces[i]->GetSurface()) != nullptr && std::fabs(bx.GetMin().x - 55.0) < 1e-9 && std::fabs(bx.GetMax().x - 55.0) < 1e-9)
             {
                 ends++;
                 CHECK(SmApiFaceComputeArea(faces[i], 1e-10, area) == SM_SUCCESS);
@@ -8787,9 +8793,10 @@ void scenario_constant_law_ending_at_the_r5_corner()
         }
         std::printf("  r %g: removed %.9f, want %.9f; %d end face(s) at x = 55, area %.12f, want %.12f\n", radius, removed, 55.0 * radius * radius * quarter,
                     ends, area, radius * radius * quarter);
-        CHECK(near(removed, 55.0 * radius * radius * quarter, 1e-8));
+        const double tol = 100.0 * static_cast<double>(rounded->p->GetTolerance());
+        CHECK(std::fabs(removed - 55.0 * radius * radius * quarter) <= tol * 55.0 * PI * radius / 2.0);
         CHECK(ends == 1);
-        CHECK(near(area, radius * radius * quarter, 1e-8));
+        CHECK(std::fabs(area - radius * radius * quarter) <= tol * (2.0 * radius + PI * radius / 2.0));
         CHECK(sound(r));
         done(r);
     }
@@ -8899,7 +8906,7 @@ void scenario_variable_round_ending_at_the_r5_corner()
         {
             SmExtent3d bx;
             CHECK(faces[i]->CalculateTightBoundingBox(bx) == SM_SUCCESS);
-            if (SM_CAST_PTR(SmPlane, faces[i]->GetSurface()) != nullptr && bx.GetMin().x == 55.0 && bx.GetMax().x == 55.0)
+            if (SM_CAST_PTR(SmPlane, faces[i]->GetSurface()) != nullptr && std::fabs(bx.GetMin().x - 55.0) < 1e-9 && std::fabs(bx.GetMax().x - 55.0) < 1e-9)
             {
                 ends++;
                 CHECK(SmApiFaceComputeArea(faces[i], 1e-10, area) == SM_SUCCESS);
@@ -9531,10 +9538,8 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"chamfers_of_an_arc_wall_and_the_top_front", scenario_chamfers_of_an_arc_wall_and_the_top_front, nullptr},
     {"chamfers_taking_a_square_top_refused", scenario_chamfers_taking_a_square_top_refused,
      "SMLib fails with \"Fillet Surface Computation Failure\" before it judges the top taken whole, so the refusal is not SMLIB_ERR_NO_ROOM and names no size"},
-    {"variable_round_ending_at_the_r5_corner", scenario_variable_round_ending_at_the_r5_corner,
-     "status 0, but the round runs on past x = 55 into the R5 round, no End at the smooth vertex"},
-    {"constant_law_ending_at_the_r5_corner", scenario_constant_law_ending_at_the_r5_corner,
-     "status 0, but the round runs on past x = 55 into the R5 round, no End at the smooth vertex"},
+    {"variable_round_ending_at_the_r5_corner", scenario_variable_round_ending_at_the_r5_corner, nullptr},
+    {"constant_law_ending_at_the_r5_corner", scenario_constant_law_ending_at_the_r5_corner, nullptr},
     {"chord_on_a_60_degree_edge", scenario_chord_on_a_60_degree_edge, nullptr},
     {"chord_past_a_wall_refused", scenario_chord_past_a_wall_refused, nullptr},
     {"cube_corner_rounds_as_wide_as_faces_refused", scenario_cube_corner_rounds_as_wide_as_faces_refused, nullptr},
@@ -9542,15 +9547,13 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"hole_in_band_kept", scenario_hole_in_band_kept, nullptr},
     {"hole_in_band_taken", scenario_hole_in_band_taken, nullptr},
     {"hole_short_of_band", scenario_hole_short_of_band, nullptr},
-    {"middle_edge_of_an_arc_tangent_chain_r0_25", scenario_middle_edge_of_an_arc_tangent_chain_r0_25,
-     "status -1100 (not a solid), no reason, not SMLIB_ERR_NO_ROOM with no size building it: the round leaves a cut in the arc wall"},
+    {"middle_edge_of_an_arc_tangent_chain_r0_25", scenario_middle_edge_of_an_arc_tangent_chain_r0_25, nullptr},
     {"middle_edge_of_an_arc_tangent_chain_r2", scenario_middle_edge_of_an_arc_tangent_chain_r2,
      "status 1001, Fillet Surface Computation Failure (SmFilletSolver::CalcFilletGeom): a ball of the front round's own radius, its offset of that round the round's axis; not refused naming a smaller radius"},
     {"round_at_a_pin_on_a_slope_folds_refused", scenario_round_at_a_pin_on_a_slope_folds_refused, nullptr},
     {"round_at_a_pin_on_a_slope_just_inside", scenario_round_at_a_pin_on_a_slope_just_inside, nullptr},
     {"round_ending_on_a_cylinder", scenario_round_ending_on_a_cylinder, nullptr},
-    {"round_ending_where_its_edge_runs_on", scenario_round_ending_where_its_edge_runs_on,
-     "status 0, but no End at the smooth vertex (the End on the end face takes the tangent side edge): 2373.945975411, 1.585 below the closed form, and no end face at x = 20"},
+    {"round_ending_where_its_edge_runs_on", scenario_round_ending_where_its_edge_runs_on, nullptr},
     {"round_cutting_a_bridge_refused", scenario_round_cutting_a_bridge_refused, nullptr},
     {"round_just_under_a_boss_footprint", scenario_round_just_under_a_boss_footprint,
      "status 1001 with no reason: SMLib does not build the round that leaves a 0.001 wide annulus of the can's top round the boss (4.29 builds)"},
@@ -12396,9 +12399,51 @@ int main(int argc, char **argv)
     // tangency-labs/solidcore#453: a 20 cube with a hole r5 along y whose wall touches the
     // bottom face along one line, its back rim chamfered 3. With the rim's tangent chain the
     // bottom edge came too, four filleted edges met at the touching point among five, a corner
-    // no corner type handles, and the smooth-sequence walk called it as a corner (a crash). No
-    // chamfer of that size exists there (the rim has no face below it): refused, every kind.
+    // no corner type handles, and the smooth-sequence walk called it as a corner (a crash). The
+    // point picks the rim's arc from the bore's seam at (15, 20, 5) over the top down to the
+    // touching point V = (10, 20, 0) (SMLib blends exactly the edges it is given, §25): it ends
+    // at the seam, where it runs on into the rest of the rim (the End at a smooth vertex, cut by
+    // the plane z = 5 square to it), and at V on the bottom face (its rail on the back face
+    // reaches the bottom edge before V). Each kind builds there: the blend's section swept about
+    // the bore's axis over the 270 degrees of the arc, less what lies below the bottom face
+    // (sections at angle g from V past the bottom face's reach, t < 5 / cos g - 5 from the bore),
+    // integrated by Simpson's rule (converged to 1e-9 mm^3). The body was left whole and the
+    // blend's faces added to it (a blend that took nothing off, returned as built): the faces its
+    // rails enclose were collected across the touching line, an edge of four faces, into the
+    // whole body, and the trim dropped. Within 1e-7 of the volume: each blend's end rib on the
+    // bottom face is the corner's certified intersection, the round's 8.6e-6 off its torus
+    // (2.8e-4 mm^3 of volume), the chamfer's 3.5e-7 off its cone. The curvature-continuous blend
+    // is refused (a rail rolls over the touching line while one leaves the back face).
     {
+        auto simpson = [](const std::function<double(double)> &f, double a, double b) {
+            const int n = 2000;
+            const double h = (b - a) / n;
+            double s = f(a) + f(b);
+            for (int i = 1; i < n; ++i)
+            {
+                s += (i % 2 ? 4.0 : 2.0) * f(a + i * h);
+            }
+            return s * h / 3.0;
+        };
+        // the material a round of radius rr takes off (in the section, t from the bore and s in
+        // from the back face, outside the ball's circle about (rr, rr), substituted t = rr (1 -
+        // cos p)), and a chamfer of legs d (t + s < d)
+        auto round_takes = [&](double rr) {
+            auto section = [&](double up) {
+                return up <= 0.0 ? 0.0 : simpson([&](double p) { return (5.0 + rr - rr * std::cos(p)) * rr * (1.0 - std::sin(p)) * rr * std::sin(p); }, 0.0,
+                                                 std::acos(1.0 - up / rr));
+            };
+            const double g0 = std::acos(5.0 / (5.0 + rr));
+            return section(rr) * (1.5 * PI - g0) + simpson([&](double g) { return section(std::min(rr, 5.0 / std::cos(g) - 5.0)); }, 0.0, g0);
+        };
+        auto chamfer_takes = [&](double d) {
+            const double g0 = std::acos(5.0 / (5.0 + d));
+            auto clipped = [&](double g) {
+                const double t = 5.0 / std::cos(g) - 5.0;
+                return 5.0 * d * t - 2.5 * t * t + 0.5 * d * t * t - t * t * t / 3.0;
+            };
+            return (2.5 * d * d + d * d * d / 6.0) * (1.5 * PI - g0) + simpson(clipped, 0.0, g0);
+        };
         SmBrep *bore = nullptr;
         CHECK(SmApiCreateCylinder(SmVector3d(0, 0, 0), 5.0, 20.0, bore) == SM_SUCCESS && bore != nullptr);
         CHECK(SmApiRotate(bore, SmVector3d(0, 0, 0), SmVector3d(1, 0, 0), 90.0) == SM_SUCCESS);
@@ -12408,12 +12453,31 @@ int main(int argc, char **argv)
         CHECK(smlib_boolean(cube, &tool, SMLIB_BOOLEAN_SUBTRACT, &holed_low) == SMLIB_OK);
         CHECK(near(volume_of(holed_low), 8000.0 - PI * 25.0 * 20.0, 1e-6));
         const double back_rim[3] = {10, 20, 10};
-        CHECK(smlib_chamfer(holed_low, back_rim, 1, 0.1, 3.0, &r, nullptr) != SMLIB_OK && r == nullptr);
-        for (int32_t kind : {SMLIB_BLEND_ROUND, SMLIB_BLEND_CURVATURE, SMLIB_BLEND_CHORD, SMLIB_BLEND_CHAMFER})
+        const double whole = 8000.0 - PI * 25.0 * 20.0;
+        CHECK(smlib_chamfer(holed_low, back_rim, 1, 0.1, 3.0, &r, nullptr) == SMLIB_OK && sound(r));
+        if (r != nullptr)
+        {
+            CHECK(near(volume_of(r), whole - chamfer_takes(3.0), 1e-7));
+            done(r);
+        }
+        // the chord-distance blend of chord 3 between the square faces: the round of 3 / sqrt 2
+        const std::pair<int32_t, double> kinds[3] = {
+            {SMLIB_BLEND_ROUND, whole - round_takes(3.0)}, {SMLIB_BLEND_CHORD, whole - round_takes(3.0 / std::sqrt(2.0))}, {SMLIB_BLEND_CHAMFER, whole - chamfer_takes(3.0)}};
+        for (const auto &kind : kinds)
         {
             const double size = 3.0;
             int64_t failed = -1;
-            CHECK(smlib_blend(holed_low, kind, back_rim, &size, 1, 0.1, &r, &failed) != SMLIB_OK && r == nullptr);
+            CHECK(smlib_blend(holed_low, kind.first, back_rim, &size, 1, 0.1, &r, &failed) == SMLIB_OK && sound(r));
+            if (r != nullptr)
+            {
+                CHECK(near(volume_of(r), kind.second, 1e-7));
+                done(r);
+            }
+        }
+        {
+            const double size = 3.0;
+            int64_t failed = -1;
+            CHECK(smlib_blend(holed_low, SMLIB_BLEND_CURVATURE, back_rim, &size, 1, 0.1, &r, &failed) != SMLIB_OK && r == nullptr);
         }
         smlib_brep_free(holed_low);
         delete bore;
@@ -13218,7 +13282,7 @@ int main(int argc, char **argv)
     // (tangency-labs/solidcore#1173: r2.5 and r2.9 came out unsound here, after the earlier
     // blends of this run, and sound in a fresh process: the finite-difference step at a tangent
     // point was a static, set by the first point any blend of the process computed. Run as a
-    // child first thing in a process and after a failed constant-distance blend, r2.5 must make
+    // child first thing in a process and after a constant-distance blend, r2.5 must make
     // the same body byte for byte.)
     {
         const double quarter = 1.0 - PI / 4.0;
@@ -13264,7 +13328,7 @@ int main(int argc, char **argv)
         bool after_sound = false;
         const std::string first = corner_child_run(argv[0], "first", first_sound);
         const std::string after = corner_child_run(argv[0], "after", after_sound);
-        std::printf("corner r2.5 in a fresh process: sound %d, after a failed chord blend: sound %d, same body %d\n", first_sound, after_sound,
+        std::printf("corner r2.5 in a fresh process: sound %d, after a chord blend: sound %d, same body %d\n", first_sound, after_sound,
                     !first.empty() && first == after);
         CHECK(first_sound && after_sound);
         CHECK(!first.empty() && first == after);

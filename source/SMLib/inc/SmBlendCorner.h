@@ -47,7 +47,8 @@ enum SmBlendEnd
 {
   SM_BEND_ON_END_FACE, // on the end face(s) between its side edges (an end rib), capped at a mixed convexity
   SM_BEND_OPEN,        // at a lamina edge (a sheet): its end section
-  SM_BEND_RUNS_OUT     // its side faces continue each other through the vertex: its rails meet there
+  SM_BEND_RUNS_OUT,    // its side faces continue each other through the vertex: its rails meet there
+  SM_BEND_AT_SMOOTH    // its edge runs on tangentially into an edge not blended: cut square to the edge there
 };
 
 enum SmBlendTurn
@@ -81,6 +82,7 @@ protected:
   SmBlendCornerEvent        m_eEvent;       // the corner's event (Classify)
   SmBlendTurn               m_eTurn;        // a Turn's mode
   SmBlendEnd                m_eEnd;         // an End's kind
+  SmSurface               * m_pEndCap;      // an End at a smooth vertex: the plane square to its edge there
   SmBoolean                 m_bG1Case;      // the two blended edges meet G1 (MakeTwoBlendTopology)
   SmBoolean                 m_bMitre;       // the two blends are mitred at the common face's concave corner
   SmEdgeuse               * m_pSideEU;      // Swept: the side edge E's edgeuse the rails of the first round meet
@@ -156,6 +158,11 @@ protected:
   SmStatus  MakeEndOnEndFace();
   SmStatus  MakeEndOpen();
   SmStatus  MakeEndRunningOut();
+  SmStatus  MakeEndAtSmoothVertex();
+  SmStatus  CalcEndCapEdges();
+  SmStatus  RefuseEndPastSideEdge(SmEdgeuse * pFilEdgeuse, SmEdgeuse * pSideEU, SmFace * pOtherFace);
+  SmStatus  RadiusReachingSideEdgeEnd(SmEdgeuse * pFilEdgeuse, SmEdgeuse * pSideEU, SmFace * pOtherFace,
+                                      SmBoolean & rbPast, double & rdFit);
   SmStatus  CalcEndEdgeGeom();
   SmStatus  CreateEndPatchOfEnd();
 
@@ -255,6 +262,15 @@ public:
   void SetEnd( SmBlendEnd eEnd ) { m_eEnd = eEnd; }
   // whether a round ending at cpCornerVert runs out there: its side faces continue each other
   static SmBoolean EndRunsOut( const SmVertex * pCornerVert, SmEdgeuse * pFilEdgeuse );
+  // whether the blended edge runs on at cpCornerVert, tangentially, into an edge of its convexity
+  // that is not blended (crAllEUs: the edgeuses round the vertex)
+  static SmBoolean EndAtSmoothVertex( const SmVertex * cpCornerVert, SmEdgeuse * pFilEdgeuse,
+                                      const SmTArray<SmEdgeuse*> & crAllEUs, double dTanTolDeg );
+  virtual SmSurface * GetEndCapSurface() const { return m_pEndCap; }
+  // an End on its end face, before it is built: the least radius at which a rail reaches its
+  // side edge's far end, where the rail runs past it (the refusal's reason: DescribeEndPastSideEdge)
+  SmStatus FitOfEndPastSideEdges( SmBoolean & rbFound, double & rdFit, SmEdge *& rpEdge );
+  static SmStatus DescribeEndPastSideEdge( double dFit, TCHAR * cWhy );
 
   virtual double   GetSetBackDistAlong(const SmEdge * pEdge);
   void             SetFillOrder(ULONG lOrder) { m_lFillOrder = lOrder; }

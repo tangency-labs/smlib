@@ -227,6 +227,8 @@ public:
   virtual SmBoolean IsClosedJoin()             const { return FALSE; }
   // SolidCraft change: an End on its end face(s) (SmBlendCorner)
   virtual SmBoolean IsEndOnEndFace()           const { return FALSE; }
+  // SolidCraft change: the surface an End at a smooth vertex is cut by (SmBlendCorner), or NULL
+  virtual SmSurface * GetEndCapSurface()       const { return NULL; }
 
   // utilities
   void RecordFilletError(SmFilletErrorType  eErrorType,

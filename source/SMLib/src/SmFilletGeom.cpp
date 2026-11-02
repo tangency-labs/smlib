@@ -6320,8 +6320,13 @@ iDebugLevel = DebugLevel();
       SM_FILLETSURF_TYPE * pFilletSurface1 = pFilletGeom1->GetFilletSurface();
       NER(pFilletSurface1);
 
+      // SolidCraft change: an End at a smooth vertex is cut by its plane square to its edge there
+      if ( pCorner != NULL && pCorner->GetEndCapSurface() != NULL )
+        {
+          pSurface = pCorner->GetEndCapSurface();
+        }
       // when endFace->Surface is defined by sideFace->ExtendedSurface
-      if(pCorner->IsExtendedSurfacePatch())
+      else if(pCorner->IsExtendedSurfacePatch())
         {
           // get endFace->Surface = sideFace->ExtendedSurface
           SmFace * pFace = GetOriginalFace(); NER(pFace);
