@@ -37,6 +37,9 @@ struct SmBlendCounts
                                        // station just solved (the same s, another t) takes it from a memo
   unsigned long long lNewtonSteps;     // Newton steps of those solves
   unsigned long long lMostNewtonSteps; // the most one solve took
+  unsigned long long lCertifiedPieces; // the pieces of spans a G^n or circle certificate enclosed (each a span's or a
+                                       // sub-span's feet and jets over it, Krawczyk's operator and their series),
+                                       // the certificate's work, definition or not
 };
 
 /*******************************************************************//**
@@ -157,6 +160,8 @@ public:
   // the counts of every procedural blend's exact evaluations since the last reset
   static SmBlendCounts GetCounts();
   static void          ResetCounts();
+  // one more piece a certificate enclosed (SmBlendCounts::lCertifiedPieces)
+  static void          CountCertifiedPiece();
 
   // SmSurface
   virtual SmBoolean operator==(const SmSurface & crOther) const;
