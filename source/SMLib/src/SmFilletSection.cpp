@@ -124,6 +124,8 @@ inline sm_Ivl    sm_Sqrt(const sm_Ivl & x)
   return sm_Checked(smos_Sqrt(std::max(x.lo, 0.0)), smos_Sqrt(x.hi));
 }
 inline double sm_Mag(const sm_Ivl & x) { return std::max(std::fabs(x.lo), std::fabs(x.hi)); }
+// the least |x| over x: 0 where x holds 0
+inline double sm_Mig(const sm_Ivl & x) { return (x.lo > 0.0) ? x.lo : ((x.hi < 0.0) ? -x.hi : 0.0); }
 inline double sm_Mid(const sm_Ivl & x) { return 0.5 * (x.lo + x.hi); }
 inline sm_Ivl sm_Hull(const sm_Ivl & a, const sm_Ivl & b) { return sm_Ivl(std::min(a.lo, b.lo), std::max(a.hi, b.hi)); }
 
@@ -1657,7 +1659,7 @@ struct sm_GnSpanAt
 SmStatus sm_GnEncloseOver(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader, const sm_GnSpanAt & crAt,
                           const double (&crR)[2], const double (&crSide)[2], int n, int lOrderS, sm_VSer<sm_Ivl> (&rF)[2], SmBoolean & rbProved,
                           sm_Ser<sm_Ivl> (*pX)[4] = NULL, double (*pDS)[2] = NULL, sm_VSer<sm_Ivl> * pV = NULL, const sm_GnLaw * pLaw = NULL,
-                          sm_GnDefs * pDefs = NULL)
+                          sm_GnDefs * pDefs = NULL, double (*pDSLo)[2] = NULL)
 {
   rbProved = FALSE;
   const sm_Ivl sS = crAt.sS;
@@ -1837,6 +1839,17 @@ SmStatus sm_GnEncloseOver(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
           (*pDS)[f] = dU + dV;
         }
     }
+  if (pDSLo != NULL)
+    {
+      // the same, least: |S_u| + |S_v| no smaller anywhere in the box
+      for (int f=0; f<2; f++)
+        {
+          const sm_V3<sm_Ivl> & crU = asP[f].P[1][0], & crV = asP[f].P[0][1];
+          const double dU = smos_Sqrt(sm_Mig(crU.x) * sm_Mig(crU.x) + sm_Mig(crU.y) * sm_Mig(crU.y) + sm_Mig(crU.z) * sm_Mig(crU.z));
+          const double dV = smos_Sqrt(sm_Mig(crV.x) * sm_Mig(crV.x) + sm_Mig(crV.y) * sm_Mig(crV.y) + sm_Mig(crV.z) * sm_Mig(crV.z));
+          (*pDSLo)[f] = dU + dV;
+        }
+    }
   rbProved = TRUE;
   return SM_SUCCESS;
 }
@@ -1849,7 +1862,7 @@ SmStatus sm_GnEncloseOver(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
 SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader, const sm_GnStation & crA, const sm_GnStation & crB,
                       const double (&crR)[2], const double (&crSide)[2], int n, int lOrderS, sm_VSer<sm_Ivl> (&rF)[2], SmBoolean & rbProved,
                       sm_Ser<sm_Ivl> (*pX)[4] = NULL, double (*pDS)[2] = NULL, sm_VSer<sm_Ivl> * pV = NULL, const sm_GnLaw * pLaw = NULL,
-                      sm_GnDefs * pDefs = NULL)
+                      sm_GnDefs * pDefs = NULL, double (*pDSLo)[2] = NULL)
 {
   sm_GnSpanAt sAt;
   sAt.sS = sm_Ivl(crA.dS, crB.dS);
@@ -1869,7 +1882,7 @@ SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader
       sAt.akv[f] = sm_Span(apFace[f]->V, apFace[f]->q, apFace[f]->nv, 0.5 * (crA.asX[2*f+1].c[0][0] + crB.asX[2*f+1].c[0][0]));
     }
   sAt.lLeader = -1;
-  return sm_GnEncloseOver(apFace, crLeader, sAt, crR, crSide, n, lOrderS, rF, rbProved, pX, pDS, pV, pLaw, pDefs);
+  return sm_GnEncloseOver(apFace, crLeader, sAt, crR, crSide, n, lOrderS, rF, rbProved, pX, pDS, pV, pLaw, pDefs, pDSLo);
 }
 
 /*******************************************************************//**
@@ -1992,10 +2005,14 @@ sm_Tay<sm_Ivl> sm_Centred(const sm_Ivl * acMid, const sm_Ivl & crTop, int K, con
 // middle over the piece.
 SmStatus sm_GnRowTermsOver(const sm_GnVarying & crVary, const sm_VSer<sm_Ivl> (&crF)[2], const sm_VSer<sm_Ivl> & crCentre,
                            const sm_VSer<sm_Ivl> (&crFm)[2], const sm_VSer<sm_Ivl> & crCm, const sm_Ivl & crD, double dGuess,
-                           const sm_GnSectionFormT<sm_Ivl> & crBar, const double (&crO)[3], sm_GnRowTerms & rT, SmBoolean & rbProved)
+                           const sm_GnSectionFormT<sm_Ivl> & crBar, const double (&crO)[3], sm_GnRowTerms & rT, SmBoolean & rbProved,
+                           SmBoolean bLower = FALSE)
 {
   rbProved = FALSE;
   const ULONG n = crVary.n;
+  // (bLower: the terms' least values, |.| the least over each enclosure and W the greatest: at a
+  // point, crD 0, a lower bound on what the terms over any piece holding it can be)
+  auto mag = [bLower](const sm_Ivl & x) { return bLower ? sm_Mig(x) : sm_Mag(x); };
   const int K = 4 + SM_GN_TAYLOR;
   // x = (F1 - V).(F2 - V) / (r1 r2): at the middle to order K - 1, over the piece at order K
   sm_Ivl axMid[K], sxTop(0.0);
@@ -2057,7 +2074,7 @@ SmStatus sm_GnRowTermsOver(const sm_GnVarying & crVary, const sm_VSer<sm_Ivl> (&
               c[f][k][q] = sm_Centred(acMid, crF[f].a[q].c[K][k], K, crD);
               if (k == 0)
                 { c[f][k][q].c[0] = c[f][k][q].c[0] - sm_Ivl(crO[q]); }
-              dSq += sm_Mag(c[f][k][q].c[0]) * sm_Mag(c[f][k][q].c[0]);
+              dSq += mag(c[f][k][q].c[0]) * mag(c[f][k][q].c[0]);
             }
           dSum += smos_Sqrt(dSq);
         }
@@ -2078,9 +2095,9 @@ SmStatus sm_GnRowTermsOver(const sm_GnVarying & crVary, const sm_VSer<sm_Ivl> (&
                 dg.c[0] = dg.c[0] - crBar.aG[f][k][j];
                 for (int i=0; i<=SM_GN_TAY; i++) { s4 = s4 + dg.c[i] * c[f][k][q].c[SM_GN_TAY - i]; }
               }
-          dSq += sm_Mag(s4) * sm_Mag(s4);
+          dSq += mag(s4) * mag(s4);
         }
-      const double dX = 24.0 * smos_Sqrt(dSq), dY = 24.0 * sm_Mag(sForm.W[j].c[SM_GN_TAY]), dWlo = sForm.W[j].c[0].lo;
+      const double dX = 24.0 * smos_Sqrt(dSq), dY = 24.0 * mag(sForm.W[j].c[SM_GN_TAY]), dWlo = bLower ? sForm.W[j].c[0].hi : sForm.W[j].c[0].lo;
           if (!(std::isfinite(dX) && std::isfinite(dY) && dWlo > 0.0))
         { return SM_SUCCESS; }
       rT.X[j] = std::max(rT.X[j], dX);
@@ -2140,9 +2157,11 @@ template <class S> SmBoolean sm_ArcRows(const sm_Tay<S> (&crRho1)[3], const sm_T
 // m + ((rho1 - m) . m' / m' . m') m' (crCentre and crCm one order more, for m').
 SmStatus sm_ArcRowTermsOver(const sm_VSer<sm_Ivl> (&crF)[2], const sm_VSer<sm_Ivl> & crCentre, const sm_VSer<sm_Ivl> (&crFm)[2],
                             const sm_VSer<sm_Ivl> & crCm, const sm_Ivl & crD, const double (&crO)[3], sm_GnRowTerms & rT, SmBoolean & rbProved,
-                            SmBoolean bTouch = FALSE)
+                            SmBoolean bTouch = FALSE, SmBoolean bLower = FALSE)
 {
   rbProved = FALSE;
+  // (bLower: the terms' least values, as sm_GnRowTermsOver's)
+  auto mag = [bLower](const sm_Ivl & x) { return bLower ? sm_Mig(x) : sm_Mag(x); };
   const int K = 4 + SM_GN_TAYLOR;
   sm_Tay<sm_Ivl> asRho[2][3], asM[3];
   for (int q=0; q<3; q++)
@@ -2184,17 +2203,17 @@ SmStatus sm_ArcRowTermsOver(const sm_VSer<sm_Ivl> (&crF)[2], const sm_VSer<sm_Iv
   double dMO = 0.0, dRad = 0.0;
   for (int q=0; q<3; q++)
     {
-      const double d = sm_Mag(asM[q].c[0] - sm_Ivl(crO[q]));
+      const double d = mag(asM[q].c[0] - sm_Ivl(crO[q]));
       dMO += d * d;
-      const double b = sm_Mag(asRho[0][q].c[0] - asM[q].c[0]);
+      const double b = mag(asRho[0][q].c[0] - asM[q].c[0]);
       dRad += b * b;
     }
   const double dR = smos_Sqrt(dMO) + smos_Sqrt(dRad);
   for (size_t j=0; j<3; j++)
     {
       double dSq = 0.0;
-      for (int q=0; q<3; q++) { dSq += sm_Mag(asH[j][q].c[SM_GN_TAY]) * sm_Mag(asH[j][q].c[SM_GN_TAY]); }
-      const double dX = 24.0 * smos_Sqrt(dSq), dY = 24.0 * sm_Mag(asW[j].c[SM_GN_TAY]), dWlo = asW[j].c[0].lo;
+      for (int q=0; q<3; q++) { dSq += mag(asH[j][q].c[SM_GN_TAY]) * mag(asH[j][q].c[SM_GN_TAY]); }
+      const double dX = 24.0 * smos_Sqrt(dSq), dY = 24.0 * mag(asW[j].c[SM_GN_TAY]), dWlo = bLower ? asW[j].c[0].hi : asW[j].c[0].lo;
       if (!(std::isfinite(dX) && std::isfinite(dY) && dWlo > 0.0))
         { return SM_SUCCESS; }
       rT.X[j] = std::max(rT.X[j], dX);
@@ -2221,18 +2240,24 @@ SmStatus sm_GnFourthOver(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLea
                          const sm_GnStation & crA, const sm_GnStation & crB, const double (&crR)[2], const double (&crSide)[2], int n,
                          double (&rM4)[2][SM_GN_MAXE + 1], double (&rUV4)[2], sm_VSer<sm_Ivl> (*pF)[2] = NULL, sm_VSer<sm_Ivl> * pV = NULL,
                          sm_VSer<sm_Ivl> (*pFm)[2] = NULL, sm_VSer<sm_Ivl> * pVm = NULL, double * pdMid = NULL,
-                         const sm_GnLaw * pLaw = NULL, int lExtra = 0, sm_GnDefs * pDefs = NULL)
+                         const sm_GnLaw * pLaw = NULL, int lExtra = 0, sm_GnDefs * pDefs = NULL,
+                         double (*pM4Lo)[2][SM_GN_MAXE + 1] = NULL, double (*pUV4Lo)[2] = NULL)
 {
+  SmProceduralBlend::CountCertifiedPiece();
   for (int f=0; f<2; f++)
     {
       for (int k=0; k<=SM_GN_MAXE; k++)
-        rM4[f][k] = HUGE_VAL;
+        {
+          rM4[f][k] = HUGE_VAL;
+          if (pM4Lo != NULL) { (*pM4Lo)[f][k] = 0.0; }
+        }
       rUV4[f] = HUGE_VAL;
     }
   const double h = crB.dS - crA.dS;
   sm_VSer<sm_Ivl> asF5[2], asF4[2];
   sm_Ser<sm_Ivl> asX5[4], asX4[4];
-  double adDS[2] = { 0.0, 0.0 }, adDSm[2] = { 0.0, 0.0 };
+  double adDS[2] = { 0.0, 0.0 }, adDSm[2] = { 0.0, 0.0 }, adDSmLo[2] = { 0.0, 0.0 };
+  if (pUV4Lo != NULL) { (*pUV4Lo)[0] = (*pUV4Lo)[1] = 0.0; }
   SmBoolean bProved = FALSE;
   SM_GN_TRY(sm_GnEnclose(apFace, crLeader, crA, crB, crR, crSide, n, 4 + SM_GN_TAYLOR + lExtra, asF5, bProved, &asX5, &adDS, pV, pLaw, pDefs));
   if (!bProved)
@@ -2252,7 +2277,7 @@ SmStatus sm_GnFourthOver(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLea
   SM_GN_TRY(sm_LawSeries(pLaw, dMid, 0, sMidR, pMidR));
   SM_GN_TRY(sm_GnSolveStation(apSurf, crCenter, dMid, adSeed, crR, crSide, sPointTr, 1.0e-9 * smos_Max(1.0, SmVector3d(sM).Length()), sMid, pMidR));
   SM_GN_TRY(sm_GnEnclose(apFace, crLeader, sMid, sMid, crR, crSide, n, 4 + SM_GN_TAYLOR - 1 + lExtra, asF4, bProved, &asX4, &adDSm, pVm, pLaw,
-                         pDefs));
+                         pDefs, &adDSmLo));
   if (!bProved)
     { return SM_SUCCESS; }
   if (pFm != NULL)
@@ -2276,11 +2301,18 @@ SmStatus sm_GnFourthOver(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLea
           dMax = std::max(dMax, m);
         }
       rUV4[f] = dMax * adDS[f];
+      // the uv curves' fourth derivatives at the middle, least, times the faces' least |S_u| + |S_v| there
+      if (pUV4Lo != NULL)
+        {
+          double dLo = 0.0;
+          for (int c=2*f; c<2*f+2; c++) { dLo = std::max(dLo, 24.0 * sm_Mig(asX4[c].c[4][0])); }
+          (*pUV4Lo)[f] = dLo * adDSmLo[f];
+        }
     }
   for (int f=0; f<2; f++)
     for (int k=0; k<=n; k++)
       {
-        double dSq = 0.0;
+        double dSq = 0.0, dSqLo = 0.0;
         for (int c=0; c<3; c++)
           {
             // c^(4+j)(m) = (4+j)! F[4+j]: the Taylor polynomial's bound over |s - m| <= h/2, and the remainder
@@ -2293,8 +2325,11 @@ SmStatus sm_GnFourthOver(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLea
             dFact *= (4 + SM_GN_TAYLOR); dPow *= 0.5 * h; dJ *= SM_GN_TAYLOR;
             m += dFact * sm_Mag(asF5[f].a[c].c[4+SM_GN_TAYLOR][k]) * dPow / dJ;
             dSq += m * m;
+            dSqLo += 24.0 * sm_Mig(asF4[f].a[c].c[4][k]) * 24.0 * sm_Mig(asF4[f].a[c].c[4][k]);
           }
         rM4[f][k] = smos_Sqrt(dSq);
+        // the fourth derivative at the middle, least: no piece holding it bounds it lower
+        if (pM4Lo != NULL) { (*pM4Lo)[f][k] = smos_Sqrt(dSqLo); }
       }
   return SM_SUCCESS;
 }
@@ -2375,25 +2410,35 @@ SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
       sRows.Y.assign(sBar.W.size(), 0.0);
       sRows.Wlo.assign(sBar.W.size(), HUGE_VAL);
       sRows.R = 0.0;
+      // the same terms' least values at the pieces' middles: the bound no level can go under
+      double adM4Lo[2][SM_GN_MAXE + 1];
+      for (int f=0; f<2; f++)
+        for (int k=0; k<=SM_GN_MAXE; k++)
+          adM4Lo[f][k] = 0.0;
+      double adUV4Lo[2] = { 0.0, 0.0 };
+      sm_GnRowTerms sRowsLo = sRows;
+      SmBoolean bLoProved = TRUE;
       for (int i=0; i<lPieces && bProved; i++)
         {
-          double adP[2][SM_GN_MAXE + 1], adPUV[2];
+          double adP[2][SM_GN_MAXE + 1], adPUV[2], adPLo[2][SM_GN_MAXE + 1], adPUVLo[2];
           sm_VSer<sm_Ivl> asF[2], sV, asFm[2], sVm;
           double dMid = 0.0;
           const sm_GnStation & crPA = sEnds[static_cast<size_t>(i)], & crPB = sEnds[static_cast<size_t>(i + 1)];
           // the touch circle of a varying ball takes the centre's s-derivative: one order more
           SM_GN_TRY(sm_GnFourthOver(apFace, crLeader, apSurf, crCenter, crPA, crPB, crR, crSide, lJets, adP, adPUV,
                                     bRows ? &asF : NULL, bRows ? &sV : NULL, bRows ? &asFm : NULL, bRows ? &sVm : NULL, &dMid,
-                                    pLaw, (bArc && pLaw != NULL) ? 1 : 0, pDefs));
+                                    pLaw, (bArc && pLaw != NULL) ? 1 : 0, pDefs, &adPLo, &adPUVLo));
           for (int f=0; f<2; f++)
             {
               for (int k=0; k<=lJets; k++)
                 {
                   if (!(adP[f][k] < HUGE_VAL)) { bProved = FALSE; }
                   adM4[f][k] = std::max(adM4[f][k], adP[f][k]);
+                  adM4Lo[f][k] = std::max(adM4Lo[f][k], adPLo[f][k]);
                 }
               if (!(adPUV[f] < HUGE_VAL)) { bProved = FALSE; }
               adUV4[f] = std::max(adUV4[f], adPUV[f]);
+              adUV4Lo[f] = std::max(adUV4Lo[f], adPUVLo[f]);
             }
           if (bProved && pVary != NULL)
             {
@@ -2401,11 +2446,19 @@ SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
               const double t = (dMid - crA.dS) / h;
               const sm_Ivl sD = sm_Ivl(crPA.dS, crPB.dS) - sm_Ivl(dMid);
               SM_GN_TRY(sm_GnRowTermsOver(*pVary, asF, sV, asFm, sVm, sD, (1.0 - t) * crA.dW + t * crB.dW, sBar, adO, sRows, bProved));
+              SmBoolean bLo = FALSE;
+              if (bProved)
+                { SM_GN_TRY(sm_GnRowTermsOver(*pVary, asF, sV, asFm, sVm, sm_Ivl(0.0), (1.0 - t) * crA.dW + t * crB.dW, sBar, adO, sRowsLo, bLo, TRUE)); }
+              if (!bLo) { bLoProved = FALSE; }
             }
           if (bProved && bArc)
             {
               const sm_Ivl sD = sm_Ivl(crPA.dS, crPB.dS) - sm_Ivl(dMid);
               SM_GN_TRY(sm_ArcRowTermsOver(asF, sV, asFm, sVm, sD, adO, sRows, bProved, pLaw != NULL ? TRUE : FALSE));
+              SmBoolean bLo = FALSE;
+              if (bProved)
+                { SM_GN_TRY(sm_ArcRowTermsOver(asF, sV, asFm, sVm, sm_Ivl(0.0), adO, sRowsLo, bLo, pLaw != NULL ? TRUE : FALSE, TRUE)); }
+              if (!bLo) { bLoProved = FALSE; }
             }
         }
       if (!bProved)
@@ -2436,9 +2489,36 @@ SmStatus sm_GnCertifySpan(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLe
       if (!std::isfinite(dBound))
         { continue; }
       rdBound = std::min(rdBound, sm_Up(dBound * (1.0 + 1.0e-12)));
+      if (rdBound <= dTarget)
+        { break; }
+      // The bound no finer level goes under: the same sum with each term's least value at the
+      // pieces' middles (every piece's enclosure holds its middle's value, and the bound grows
+      // with the terms). Over the target, no level certifies the span: it is halved now.
+      if (bLoProved)
+        {
+          const double K = h * h * h * h / 384.0;
+          double dLo = 0.0, dALo = 0.0;
+          for (int f=0; f<2; f++)
+            {
+              double dSum = 0.0;
+              for (int k=0; k<=lJets; k++) { dSum += K * adM4Lo[f][k]; }
+              dALo = std::max(dALo, dSum);
+              dLo = std::max(dLo, std::max(bRows ? 0.0 : dSum, K * adUV4Lo[f]));
+            }
+          if (bArc)
+            { dALo = 0.0; }
+          for (size_t j=0; j<sBar.W.size() && bRows; j++)
+            {
+              const double dDen = sRowsLo.Wlo[j] - K * sRowsLo.Y[j];
+              const double dNum = sBar.W[j].lo * dALo + K * sRowsLo.X[j] + K * sRowsLo.Y[j] * sRowsLo.R;
+              if (dDen > 0.0) { dLo = std::max(dLo, dNum / dDen); }
+            }
+          if (sm_Dn(dLo * (1.0 - 1.0e-12)) > dTarget)
+            { break; }
+        }
       // once proved, one finer level more only where the bound is over the target and the last
       // one halved it
-      if (rdBound <= dTarget || dBound > 0.5 * dLast)
+      if (dBound > 0.5 * dLast)
         { break; }
       dLast = dBound;
     }

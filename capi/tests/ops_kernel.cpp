@@ -3813,12 +3813,12 @@ void tangent_end_front_round_r2()
 // the front face, (0, 8), to the one on the top, (2, 10): y = 2 (1 - f) t, z = 10 - 2 f (1 - t),
 // f = (1 - t)^3 / ((1 - t)^3 + t^3).
 // The thumbweight at which the order-2 section between square planes takes off the circle's area,
-// (1 - pi/4) s^2: the root of that area's equation in w, bisected with a trapezium-rule area.
-double square_corner_equal_area_w()
+// (1 - pi/4) s^2: the root of that area's equation in w, bisected with a trapezium-rule area of N
+// chords (its error falls as 1 / N^2: w to about 1e-9 at the default).
+double square_corner_equal_area_w(int N = 20000)
 {
-    auto cut = [](double w)
+    auto cut = [N](double w)
     {
-        const int N = 20000;
         auto ab = [w](double t, double &a, double &b)
         {
             const double p = std::pow(1 - t, 3), q = std::pow(t, 3), f = p / (p + q);
@@ -4682,6 +4682,7 @@ struct SectionGrade
     unsigned long long most_evaluations = 0;      // the definition's evaluations the operation may make (a count, not a time),
     unsigned long long most_solves = 0;           // the station solves they may take,
     unsigned long long most_newton_steps = 2;     // and the Newton steps any one solve may take (seeded within the bound)
+    unsigned long long most_pieces = 0;           // the pieces its certificate may enclose (0: not graded)
 };
 
 // Builds a blend by `build` and grades it by `g`: status, SMLib's check, volume, every point of
@@ -4696,12 +4697,16 @@ void section_blend(const std::function<int32_t(smlib_brep **)> &build, const Sec
     const int32_t s = build(&b);
     const SmBlendCounts counts = SmProceduralBlend::GetCounts();
     std::printf("  status %d\n", static_cast<int>(s));
-    std::printf("  definition: %llu evaluations, %llu station solves, %llu Newton steps, at most %llu in one solve\n", counts.lEvaluations,
-                counts.lSolves, counts.lNewtonSteps, counts.lMostNewtonSteps);
+    std::printf("  definition: %llu evaluations, %llu station solves, %llu Newton steps, at most %llu in one solve; %llu certified pieces\n",
+                counts.lEvaluations, counts.lSolves, counts.lNewtonSteps, counts.lMostNewtonSteps, counts.lCertifiedPieces);
     if (g.definition)
     {
         CHECK(counts.lEvaluations <= g.most_evaluations && counts.lSolves <= g.most_solves);
         CHECK(counts.lMostNewtonSteps <= g.most_newton_steps);
+    }
+    if (g.most_pieces > 0)
+    {
+        CHECK(counts.lCertifiedPieces <= g.most_pieces);
     }
     CHECK(s == SMLIB_OK && b != nullptr);
     if (b == nullptr)
@@ -4888,6 +4893,13 @@ SectionGrade counted(SectionGrade g, unsigned long long evaluations, unsigned lo
     return g;
 }
 
+// g with the pieces its certificate may enclose
+SectionGrade pieced(SectionGrade g, unsigned long long pieces)
+{
+    g.most_pieces = pieces;
+    return g;
+}
+
 // smlib_blend_order on one edge of `body` (consumed).
 std::function<int32_t(smlib_brep **)> by_order(smlib_brep *body, std::array<double, 3> pick, int order, double w, double size)
 {
@@ -4956,7 +4968,7 @@ void section_box_edge_round()
 // corner (Green's theorem on the section).
 void section_box_edge_g2_thumbweight_zero()
 {
-    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, 0.0, 3.0), counted(box_edge_grade(2, 0.0, 0.154192655384275), 13800, 3100));
+    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, 0.0, 3.0), pieced(counted(box_edge_grade(2, 0.0, 0.154192655384275), 12100, 2840), 3));
 }
 
 // The area the order-n section between the box's top and back cuts off the edge's corner, over s^2:
@@ -5001,7 +5013,7 @@ void section_box_edge_g2_equal_area()
     // whose truncation grows with ((1 - w) / r)^k: 1.3e-5 at this w (1e-5 is G3's bar), 7.5e-7 at
     // half the step (a cubic term would not halve), where round-off takes over at other stations.
     // So the grade asks G2 at least and G3 at most, the measure's limit here, not the section's.
-    SectionGrade g = counted(box_edge_grade(2, w, 1.0 - PI / 4), 16400, 3600);
+    SectionGrade g = pieced(counted(box_edge_grade(2, w, 1.0 - PI / 4), 14200, 3180), 3);
     g.order = 2;
     g.order_max = 3;
     section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, SMLIB_BLEND_THUMBWEIGHT, 3.0), g);
@@ -5107,7 +5119,7 @@ void section_twisted_wedge_g2_equal_area()
     g.spans = 274;
     // its definition carries the equal area rule and resolves w at every point from its own
     // station's wedge, as the net's stations did: the net within its certified bound of it
-    g = counted(g, 39000, 13200);
+    g = pieced(counted(g, 34700, 12850), 6530);
     g.definition = true;
     int stations = 0;
     g.also = [&stations](const SmSurface *srf)
@@ -5166,7 +5178,7 @@ const double W_STAR = 0.034293402266607321;
 
 void section_box_edge_g2_thumbweight_w_star()
 {
-    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, W_STAR, 3.0), counted(box_edge_grade(2, W_STAR, 113.0 / 756.0), 14100, 3300));
+    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, W_STAR, 3.0), pieced(counted(box_edge_grade(2, W_STAR, 113.0 / 756.0), 12100, 2940), 3));
 }
 
 // The twisted wedge's round across the top's knot lines. The top is a cubic spline in x, C2 across
@@ -5249,7 +5261,7 @@ void section_twisted_wedge_g2_equal_area_net_on_definition()
 // face, s / 4 at 0, s / 6 at 1/2, and the area it cuts off from 0.1541927 s^2 to 0.0744373 s^2.
 void section_box_edge_g2_thumbweight_half()
 {
-    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, 0.5, 3.0), counted(box_edge_grade(2, 0.5, 0.0744372522086925), 15400, 3400));
+    section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, 0.5, 3.0), pieced(counted(box_edge_grade(2, 0.5, 0.0744372522086925), 13250, 3150), 3));
 }
 
 // A plate 60 x 40 x 10 and a boss R 8, 10 tall, at (30, 20) on it; the boss's root rounded at size
@@ -5270,7 +5282,7 @@ smlib_brep *boss_on_plate()
     return combined(box(0, 0, 0, 60, 40, 10), cylinder(30, 20, 10, 8, 10), SMLIB_BOOLEAN_UNION);
 }
 
-SectionGrade boss_root_grade(int order, double volume)
+SectionGrade boss_root_grade(int order, double volume, double w = 0.0)
 {
     SectionGrade g;
     g.volume = volume;
@@ -5288,7 +5300,7 @@ SectionGrade boss_root_grade(int order, double volume)
     else
     {
         g.off = [=](const SmPoint3d &x)
-        { return distance_to_curve([&](double t) { return gn_section(order, 0.0, plate, wall, t); }, rho_z(x)); };
+        { return distance_to_curve([&](double t) { return gn_section(order, w, plate, wall, t); }, rho_z(x)); };
     }
     g.off_tol = order >= 2 ? 4e-6 : 1e-9;
     g.definition = order >= 2;
@@ -5319,7 +5331,7 @@ void section_boss_root_round()
 void section_boss_root_g2()
 {
     // certified span by span at a tenth of the tolerance: 227 spans along the root
-    SectionGrade g = counted(boss_root_grade(2, 26043.0880831714), 14000, 6950);
+    SectionGrade g = pieced(counted(boss_root_grade(2, 26043.0880831714), 9340, 4510), 1880);
     g.spans = 227;
     // the G^n section is taken in the leader's planes, as its certificate is: the leader is the
     // fitted centre line, whose planes tilt off the meridians by its tangent's error, and that
@@ -5329,6 +5341,20 @@ void section_boss_root_g2()
     // was the feet's own)
     g.definition_tol = 1e-9;
     section_blend(by_order(boss_on_plate(), {30 + 4 * std::sqrt(2.0), 20 + 4 * std::sqrt(2.0), 10}, 2, 0.0, 2.0), g);
+}
+
+// The same root at the curvature round's default, the equal area thumbweight: the wedge is square
+// all round, so w is the square corner's, -0.5252124, at every station (the rig's
+// cov-fillet-section-curvature-boss-root-r2, V = 26056.152954783724). Its certificate's work is
+// gated: the pieces it encloses (a span whose bound no finer piece can bring under the target is
+// halved at once, not refined to the last level first).
+void section_boss_root_g2_equal_area()
+{
+    // (w to about 1e-11: the definition is graded to 1e-9 against the exact section at w)
+    const double w = square_corner_equal_area_w(200000);
+    SectionGrade g = pieced(counted(boss_root_grade(2, 26056.152954783724, w), 9280, 4480), 4410);
+    g.definition_tol = 1e-9;
+    section_blend(by_order(boss_on_plate(), {30 + 4 * std::sqrt(2.0), 20 + 4 * std::sqrt(2.0), 10}, 2, SMLIB_BLEND_THUMBWEIGHT, 2.0), g);
 }
 
 // A plate 60 x 40 x 10 and a pipe R 10 along x (0 to 60), its axis at (y, z) = (20, 16), joined:
@@ -5419,12 +5445,12 @@ void section_pipe_on_plate_round()
 void section_pipe_on_plate_g2()
 {
     section_blend(by_order(pipe_on_plate(), {30, 28, 10}, 2, 0.0, 2.0),
-                  counted(pipe_on_plate_grade(2, 0.0, 2.0, 40267.7092506500), 10700, 2100));
+                  pieced(counted(pipe_on_plate_grade(2, 0.0, 2.0, 40267.7092506500), 6460, 1430), 25));
 }
 
 void section_pipe_on_plate_g2_thumbweight_half()
 {
-    section_blend(by_order(pipe_on_plate(), {30, 28, 10}, 2, 0.5, 2.0), counted(pipe_on_plate_grade(2, 0.5, 2.0, 40228.8303942483), 12000, 2350));
+    section_blend(by_order(pipe_on_plate(), {30, 28, 10}, 2, 0.5, 2.0), pieced(counted(pipe_on_plate_grade(2, 0.5, 2.0, 40228.8303942483), 6920, 1540), 25));
 }
 
 // A variable round: the top back edge (y = 30, z = 20) of a box 20 x 30 x 20, its radius r = 1 + x/5
@@ -5508,7 +5534,7 @@ void section_variable_round_on_a_cone_is_its_definition()
     g.size = 3.0;
     g.definition = true;
     g.spans = 16;
-    g = counted(g, 9100, 5250);
+    g = pieced(counted(g, 7740, 4640), 4700);
     section_blend(
         [body](smlib_brep **out)
         {
@@ -5540,7 +5566,7 @@ void section_variable_round_quadratic_law_is_its_definition()
     g.size = 3.0;
     g.definition = true;
     g.spans = 22;
-    g = counted(g, 9600, 5450);
+    g = pieced(counted(g, 8280, 4840), 7440);
     section_blend(
         [body](smlib_brep **out)
         {
@@ -6765,6 +6791,7 @@ const TangentEndCase SECTION_CASES[] = {
     {"boss_root_chamfer", section_boss_root_chamfer, nullptr},
     {"boss_root_round", section_boss_root_round, nullptr},
     {"boss_root_g2", section_boss_root_g2, nullptr},
+    {"boss_root_g2_equal_area", section_boss_root_g2_equal_area, nullptr},
     {"pipe_on_plate_chamfer", section_pipe_on_plate_chamfer, nullptr},
     {"pipe_on_plate_round", section_pipe_on_plate_round, nullptr},
     {"pipe_on_plate_g2", section_pipe_on_plate_g2, nullptr},
