@@ -183,6 +183,12 @@ public:
     TfSpan<const GfVec3d> SphereSurfaceRefDirections() const;
     TfSpan<const double> SphereSurfaceRadii() const;
 
+    // Face definitions (BrepSurfaceDefinitionAPI): the kinds of this Brep's faces (empty when the
+    // BrepArray has none), and the counts and reals of its faces whose kind is not 0
+    TfSpan<const uint32_t> FaceDefinitionKinds() const;
+    TfSpan<const uint32_t> FaceDefinitionRealCounts() const;
+    TfSpan<const double> FaceDefinitionReals() const;
+
     TfSpan<const GfVec3d> TorusSurfaceOrigins() const;
     TfSpan<const GfVec3d> TorusSurfaceAxes() const;
     TfSpan<const GfVec3d> TorusSurfaceRefDirections() const;

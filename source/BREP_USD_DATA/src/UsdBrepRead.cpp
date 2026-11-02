@@ -1016,6 +1016,29 @@ bool BrepReadFromUsdStage(
             );
         }
 
+        // face definitions (BrepSurfaceDefinitionAPI), authored only when some face has one
+        if (crUsdBrepArray.HasAPI(UsdBrepSurfaceTokens->brepSurfaceDefinitionAPI))
+        {
+            bRtn &= UsdBrepGetAttribute(
+                crUsdBrepArray,
+                UsdBrepSurfaceTokens->faceDefinitionKind,
+                rArrays.m_sFace_DefinitionKindArray,
+                "face definition kind"
+            );
+            bRtn &= UsdBrepGetAttribute(
+                crUsdBrepArray,
+                UsdBrepSurfaceTokens->faceDefinitionRealCount,
+                rArrays.m_sFace_DefinitionRealCountArray,
+                "face definition realCount"
+            );
+            bRtn &= UsdBrepGetAttribute(
+                crUsdBrepArray,
+                UsdBrepSurfaceTokens->faceDefinitionReals,
+                rArrays.m_sFace_DefinitionRealsArray,
+                "face definition reals"
+            );
+        }
+
         // face PlaneSurface arrays in USD format
         if (crUsdBrepArray.HasAPI(UsdBrepSurfaceTokens->brepSurfacePlaneAPI))
         {

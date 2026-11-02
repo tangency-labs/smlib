@@ -363,6 +363,33 @@ class "BrepSurfaceNurbAPI" (
     )
 }
 
+class "BrepSurfaceDefinitionAPI" (
+    customData = {
+        string userDocBrief = """Associated definitions of brep:faces whose surface is defined beyond its NURBS net: the
+    surface is the NURBS surface of the face (face:surfaceType = BrepSurfaceNurbAPI, its net in the
+    BrepSurfaceNurbAPI arrays, its face:range and UV trims in that net's parameters), and the
+    definition says what that net exactly is."""
+    }
+)
+{
+    uniform uint[] face:definition:kind (
+        customData = {
+            string userDocBrief = "face_ii's definition kind: 0 = none, 6 = ball patch (see the API's doc)."
+        }
+    )
+    uniform uint[] face:definition:realCount (
+        customData = {
+            string userDocBrief = """the number of reals of each face's definition, for the faces whose face:definition:kind is not 0,
+        in face order; each the count its kind fixes (a ball patch: 4)."""
+        }
+    )
+    uniform double[] face:definition:reals (
+        customData = {
+            string userDocBrief = "the definitions' reals, packed in face order as face:definition:realCount counts them."
+        }
+    )
+}
+
 class "BrepSurfaceSphereAPI" (
     customData = {
         string userDocBrief = "Associated analytic 3d sphere surface descriptions of brep:faces."

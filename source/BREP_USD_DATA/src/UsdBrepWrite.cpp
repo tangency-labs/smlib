@@ -936,6 +936,32 @@ bool BrepWriteToUsdStage(
             );
         }
 
+        // move face definitions to UsdBrepArraySpecHandle: written only when some face has one
+        if (std::any_of(rArrays.m_sFace_DefinitionKindArray.cbegin(), rArrays.m_sFace_DefinitionKindArray.cend(),
+                        [](uint32_t lKind) { return lKind != USDBREP_FACE_DEFINITION_NONE; }))
+        {
+            AddAppliedSchema(sUsdBrepArraySpecHandle, UsdBrepSurfaceTokens->brepSurfaceDefinitionAPI);
+
+            setAttributeSpec(
+                sUsdBrepArraySpecHandle,
+                UsdBrepSurfaceTokens->faceDefinitionKind,
+                SdfValueTypeNames->UIntArray,
+                VtValue(rArrays.m_sFace_DefinitionKindArray)
+            );
+            setAttributeSpec(
+                sUsdBrepArraySpecHandle,
+                UsdBrepSurfaceTokens->faceDefinitionRealCount,
+                SdfValueTypeNames->UIntArray,
+                VtValue(rArrays.m_sFace_DefinitionRealCountArray)
+            );
+            setAttributeSpec(
+                sUsdBrepArraySpecHandle,
+                UsdBrepSurfaceTokens->faceDefinitionReals,
+                SdfValueTypeNames->DoubleArray,
+                VtValue(rArrays.m_sFace_DefinitionRealsArray)
+            );
+        }
+
         // move PlaneSurfaces to UsdBrepArraySpecHandle
         if (rArrays.m_sFace_SurfacePlane_OriginArray.size() > 0)
         {

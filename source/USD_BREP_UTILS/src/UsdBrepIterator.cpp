@@ -409,6 +409,20 @@ TfSpan<const double> UsdBrepView::SphereSurfaceRadii() const
     return Sub(m_rArrays.m_sFace_SurfaceSphere_RadiusArray, m_sSpans.m_lFaceSphereSurface_StartIndex, m_sSpans.m_lFaceSphereSurface_Count);
 }
 
+// Face definitions
+TfSpan<const uint32_t> UsdBrepView::FaceDefinitionKinds() const
+{
+    return Sub(m_rArrays.m_sFace_DefinitionKindArray, m_sSpans.m_lFaceStartIndex, m_sSpans.m_lFaceCount);
+}
+TfSpan<const uint32_t> UsdBrepView::FaceDefinitionRealCounts() const
+{
+    return Sub(m_rArrays.m_sFace_DefinitionRealCountArray, m_sSpans.m_lFaceDefinition_StartIndex, m_sSpans.m_lFaceDefinition_Count);
+}
+TfSpan<const double> UsdBrepView::FaceDefinitionReals() const
+{
+    return Sub(m_rArrays.m_sFace_DefinitionRealsArray, m_sSpans.m_lFaceDefinitionReal_StartIndex, m_sSpans.m_lFaceDefinitionReal_Count);
+}
+
 // Torus
 TfSpan<const GfVec3d> UsdBrepView::TorusSurfaceOrigins() const
 {

@@ -6374,8 +6374,6 @@ else:
         self.assertIsNone(sm.usd.ensure_plugin_registered())
         self.assertIsNone(sm.usd.ensure_plugin_registered())
 
-    # Known failing (smlib#102): the BrepArray has no face definitions yet.
-    @unittest.expectedFailure
     def test_ball_corners_keep_their_spheres_through_usd(self):
         # smlib#102: a 40 x 30 x 60 box with all 12 edges rounded r 1.5 has eight Ball corners, each
         # a rational patch on its ball's sphere (SmBallPatch). Through a BrepArray each corner face

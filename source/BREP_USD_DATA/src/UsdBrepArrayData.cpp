@@ -541,6 +541,11 @@ void UsdBrepArrayData::ReSet()
     m_sFace_SurfaceSphere_RefDirectionArray.clear();
     m_sFace_SurfaceSphere_RadiusArray.clear();
 
+    // Face definitions
+    m_sFace_DefinitionKindArray.clear();
+    m_sFace_DefinitionRealCountArray.clear();
+    m_sFace_DefinitionRealsArray.clear();
+
     // Face PlaneSurface geometry
     m_sFace_SurfacePlane_OriginArray.clear();
     m_sFace_SurfacePlane_AxisArray.clear();
@@ -642,6 +647,10 @@ void UsdBrepArraySpans::ClearStartsAndCounts()
 
     m_lFaceSphereSurface_StartIndex = 0;
     m_lFaceSphereSurface_Count = 0;
+    m_lFaceDefinition_StartIndex = 0;
+    m_lFaceDefinition_Count = 0;
+    m_lFaceDefinitionReal_StartIndex = 0;
+    m_lFaceDefinitionReal_Count = 0;
     m_lFacePlaneSurface_StartIndex = 0;
     m_lFacePlaneSurface_Count = 0;
     m_lFaceCylinderSurface_StartIndex = 0;
@@ -707,6 +716,8 @@ void UsdBrepArraySpans::ClearCounts()
     m_lFaceBSplineSurface_VKnotCount = 0;
 
     m_lFaceSphereSurface_Count = 0;
+    m_lFaceDefinition_Count = 0;
+    m_lFaceDefinitionReal_Count = 0;
     m_lFacePlaneSurface_Count = 0;
     m_lFaceCylinderSurface_Count = 0;
     m_lFaceConeSurface_Count = 0;
@@ -766,6 +777,8 @@ void UsdBrepArraySpans::IncrementStartIndices // eff: increment StartIndex value
     m_lFaceBSplineSurface_VKnotStartIndex += m_lFaceBSplineSurface_VKnotCount;
 
     m_lFaceSphereSurface_StartIndex += m_lFaceSphereSurface_Count;
+    m_lFaceDefinition_StartIndex += m_lFaceDefinition_Count;
+    m_lFaceDefinitionReal_StartIndex += m_lFaceDefinitionReal_Count;
     m_lFacePlaneSurface_StartIndex += m_lFacePlaneSurface_Count;
     m_lFaceCylinderSurface_StartIndex += m_lFaceCylinderSurface_Count;
     m_lFaceConeSurface_StartIndex += m_lFaceConeSurface_Count;
@@ -878,6 +891,10 @@ bool UsdBrepArraySpans::SetStartsForNextBrepAdd(const UsdBrepArrayData& rArrays)
 
     m_lFaceSphereSurface_StartIndex = static_cast<uint32_t>(rArrays.m_sFace_SurfaceSphere_RadiusArray.size());
     m_lFaceSphereSurface_Count = 0;
+    m_lFaceDefinition_StartIndex = static_cast<uint32_t>(rArrays.m_sFace_DefinitionRealCountArray.size());
+    m_lFaceDefinition_Count = 0;
+    m_lFaceDefinitionReal_StartIndex = static_cast<uint32_t>(rArrays.m_sFace_DefinitionRealsArray.size());
+    m_lFaceDefinitionReal_Count = 0;
     m_lFacePlaneSurface_StartIndex = static_cast<uint32_t>(rArrays.m_sFace_SurfacePlane_OriginArray.size());
     m_lFacePlaneSurface_Count = 0;
     m_lFaceCylinderSurface_StartIndex = static_cast<uint32_t>(rArrays.m_sFace_SurfaceCylinder_RadiusArray.size());
@@ -1009,6 +1026,24 @@ bool UsdBrepArraySpans::SetStartsAndCountsForBrepIndex(
         {
             // accumulate topology and shape counts
             m_lLoopCount += GetArraySubscript(rArrays.m_sFaceLoopCountArray, iGlobal);
+
+            // a face's definition (BrepSurfaceDefinitionAPI): its count's entry, and its reals
+            if (iGlobal < rArrays.m_sFace_DefinitionKindArray.size() && rArrays.m_sFace_DefinitionKindArray[iGlobal] != 0)
+            {
+                const uint32_t iDefinition = m_lFaceDefinition_StartIndex + m_lFaceDefinition_Count;
+                if (iDefinition >= rArrays.m_sFace_DefinitionRealCountArray.size())
+                {
+                    USDBREP_ERROR("Malformed BrepArray: truncated face definition data");
+                    return false;
+                }
+                m_lFaceDefinition_Count++;
+                m_lFaceDefinitionReal_Count += rArrays.m_sFace_DefinitionRealCountArray[iDefinition];
+                if (m_lFaceDefinitionReal_StartIndex + m_lFaceDefinitionReal_Count > rArrays.m_sFace_DefinitionRealsArray.size())
+                {
+                    USDBREP_ERROR("Malformed BrepArray: truncated face definition reals");
+                    return false;
+                }
+            }
 
             // accumulate shape counts
             if (rArrays.m_sFaceSurfaceTypeArray.size() > 0 && rArrays.m_sFaceSurfaceTypeArray[iGlobal] == UsdBrepSurfaceTokens->brepSurfaceNurbAPI)

@@ -46,6 +46,7 @@
 #include "SmPlane.h"
 #include "SmSphere.h"
 #include "SmTorus.h"
+#include "SmBallPatch.h"
 #include "SmBrep.h"
 #include "SmBrepData.h"
 #include "SmEdge.h"
@@ -2365,6 +2366,22 @@ SmStatus BrepAppend_SMLibToUsdBrep
                 // face surface
                 SmSurface        * pSurface        = pBrepData_ii->m_vSurfaces[rFaceData.m_lSurface] ;
 
+                // a ball patch's definition: its net goes out as a NURBS face (below), its sphere as the
+                // face's definition (BrepSurfaceDefinitionAPI: kind, then center x, y, z and radius)
+                if (pSurface != NULL && pSurface->IsKindOf(SmBallPatch_TYPE) && tFaceSurfaceType == UsdBrepSurfaceTokens->brepSurfaceNurbAPI)
+                  {
+                    const SmBallPatch * pBall = static_cast<const SmBallPatch *>(pSurface) ;
+                    const SmPoint3d   & sCentre = pBall->GetCentre() ;
+                    rArrays.m_sFace_DefinitionKindArray.emplace_back(USDBREP_FACE_DEFINITION_BALL_PATCH) ;
+                    rArrays.m_sFace_DefinitionRealCountArray.emplace_back(USDBREP_FACE_DEFINITION_BALL_PATCH_REALS) ;
+                    rArrays.m_sFace_DefinitionRealsArray.emplace_back(sCentre.x) ;
+                    rArrays.m_sFace_DefinitionRealsArray.emplace_back(sCentre.y) ;
+                    rArrays.m_sFace_DefinitionRealsArray.emplace_back(sCentre.z) ;
+                    rArrays.m_sFace_DefinitionRealsArray.emplace_back(pBall->GetRadius()) ;
+                  }
+                else
+                  { rArrays.m_sFace_DefinitionKindArray.emplace_back(USDBREP_FACE_DEFINITION_NONE) ; }
+
                 if (tFaceSurfaceType == UsdBrepSurfaceTokens->brepSurfaceSphereAPI)
                   {
                     // Extract SmSphere analytic data and pack into sphere arrays
@@ -3514,12 +3531,21 @@ SmBoolean bDebugMe = FALSE;
         // Faces
         prSmBrepData_ii->m_vFaces.SetSize(rSpans.m_lFaceCount) ;
         uint32_t lLoopIndex = 0 ;
+        // the next of this Brep's face definitions (BrepSurfaceDefinitionAPI) and its reals
+        uint32_t lDefinition = rSpans.m_lFaceDefinition_StartIndex ;
+        uint32_t lDefinitionReal = rSpans.m_lFaceDefinitionReal_StartIndex ;
         for(iGlobal=rSpans.m_lFaceStartIndex, iLocal=0; iLocal<rSpans.m_lFaceCount; iGlobal++, iLocal++)
           {
             AERN_MSG(static_cast<size_t>(iGlobal) < rArrays.m_sFaceSurfaceTypeArray.size() &&
                      static_cast<size_t>(iGlobal) < rArrays.m_sFaceLoopCountArray.size(),
                      SM_ERR,
                     _T("BrepMove_OneUsdBrepToSMLibData: iGlobal face index out of bounds - this is a bug"));
+            // a definition is of a NURBS face's net only
+            AERN_MSG(static_cast<size_t>(iGlobal) >= rArrays.m_sFace_DefinitionKindArray.size()
+                     || rArrays.m_sFace_DefinitionKindArray[iGlobal] == 0
+                     || rArrays.m_sFaceSurfaceTypeArray[iGlobal] == UsdBrepSurfaceTokens->brepSurfaceNurbAPI,
+                     SM_ERR_INVALID_INPUT,
+                     _T("BrepMove_OneUsdBrepToSMLibData: a face definition on a face that is not a NURBS face"));
 
             SmFaceData & rFaceData = prSmBrepData_ii->m_vFaces[iLocal];
             rFaceData.ReSet();
@@ -3872,6 +3898,32 @@ SmBoolean bDebugMe = FALSE;
                     ERR_MSG(sMessage);
                     return(SM_ERR);
 
+                  }
+                // a definition of the net: SMLib takes a kind it knows only once its certificate
+                // shows the net agrees with it, and refuses any other kind
+                const uint32_t lKind = static_cast<size_t>(iGlobal) < rArrays.m_sFace_DefinitionKindArray.size()
+                                     ? rArrays.m_sFace_DefinitionKindArray[iGlobal] : 0u ;
+                if (lKind != 0)
+                  {
+                    SmObjDelete sNetCleanup(pBSplineSurface);
+                    AERN_MSG(lDefinition < rArrays.m_sFace_DefinitionRealCountArray.size(), SM_ERR_INVALID_INPUT,
+                             _T("BrepMove_OneUsdBrepToSMLibData: a face definition without its count"));
+                    const uint32_t lCount = rArrays.m_sFace_DefinitionRealCountArray[lDefinition] ;
+                    AERN_MSG(static_cast<size_t>(lDefinitionReal) + lCount <= rArrays.m_sFace_DefinitionRealsArray.size(), SM_ERR_INVALID_INPUT,
+                             _T("BrepMove_OneUsdBrepToSMLibData: a face definition without its reals"));
+                    AERN_MSG(lKind == USDBREP_FACE_DEFINITION_BALL_PATCH && lCount == USDBREP_FACE_DEFINITION_BALL_PATCH_REALS, SM_ERR_INVALID_INPUT,
+                             _T("BrepMove_OneUsdBrepToSMLibData: a face definition of a kind SMLib does not know"));
+                    const double * pReals = rArrays.m_sFace_DefinitionRealsArray.cdata() + lDefinitionReal ;
+                    const SmPoint3d sCentre(pReals[0], pReals[1], pReals[2]) ;
+                    SmBoolean bOn = FALSE ;
+                    SmBallPatch * pBall = NULL ;
+                    SER( SmBallPatch::IsOnSphere(*pBSplineSurface, sCentre, pReals[3], 1e-12, bOn) );
+                    AERN_MSG(bOn == TRUE, SM_ERR_INVALID_INPUT,
+                             _T("BrepMove_OneUsdBrepToSMLibData: a ball patch's net is not on its sphere"));
+                    SER( SmBallPatch::Create(*prSmBrepData_ii->GetContext(), *pBSplineSurface, sCentre, pReals[3], pBall) );
+                    pBSplineSurface = pBall ;
+                    lDefinition++ ;
+                    lDefinitionReal += lCount ;
                   }
                 prSmBrepData_ii->m_vSurfaces.Add(pBSplineSurface);
                 rSpans.m_lFaceBSplineSurface_StartIndex++ ;

@@ -161,7 +161,11 @@ PXR_NAMESPACE_OPEN_SCOPE
        ((brepSurfaceTorusAxis,                "brep:surface:torus:axis"))           \
        ((brepSurfaceTorusRefDirection,        "brep:surface:torus:refDirection"))   \
        ((brepSurfaceTorusMajorRadius,         "brep:surface:torus:majorRadius"))    \
-       ((brepSurfaceTorusMinorRadius,         "brep:surface:torus:minorRadius"))
+       ((brepSurfaceTorusMinorRadius,         "brep:surface:torus:minorRadius"))    \
+    ((brepSurfaceDefinitionAPI,            "BrepSurfaceDefinitionAPI"))             \
+       ((faceDefinitionKind,                  "face:definition:kind"))              \
+       ((faceDefinitionRealCount,             "face:definition:realCount"))         \
+       ((faceDefinitionReals,                 "face:definition:reals"))
 
 // clang-format on
 

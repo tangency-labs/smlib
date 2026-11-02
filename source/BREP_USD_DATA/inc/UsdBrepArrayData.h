@@ -27,6 +27,11 @@
 
 // Math constants
 inline constexpr unsigned long USDBREP_NO_OBJECT_INDEX = 9999999UL; // LoopVertexIndex val when Loops are edgeuse loops
+// face:definition:kind values (BrepSurfaceDefinitionAPI): 0 none; a ball patch (a rational patch on one
+// sphere), its reals the sphere's center x, y, z and radius
+inline constexpr uint32_t USDBREP_FACE_DEFINITION_NONE = 0u;
+inline constexpr uint32_t USDBREP_FACE_DEFINITION_BALL_PATCH = 6u;
+inline constexpr uint32_t USDBREP_FACE_DEFINITION_BALL_PATCH_REALS = 4u;
 
 namespace UsdBrepData
 {
@@ -621,6 +626,12 @@ public:
     VtArray<GfVec3d> m_sFace_SurfaceSphere_RefDirectionArray; // {x,y,z}, one per sphere face, sized:[TotalSphereFaceCount]
     VtArray<double> m_sFace_SurfaceSphere_RadiusArray; // {radius},    one per sphere face, sized:[TotalSphereFaceCount]
 
+    // Face definitions (BrepSurfaceDefinitionAPI): what a NURBS face's net exactly is (kinds:
+    // USDBREP_FACE_DEFINITION_*)
+    VtArray<uint32_t> m_sFace_DefinitionKindArray;      // {kind: 0 none, 6 ball patch}, one per Face, sized:[TotalFaceCount] or 0 (no definitions)
+    VtArray<uint32_t> m_sFace_DefinitionRealCountArray; // {count}, one per Face of kind != 0, in Face order
+    VtArray<double>   m_sFace_DefinitionRealsArray;     // {reals}, packed as counted; a ball patch: center x, y, z, radius
+
     // Face Plane Surface geometry
     VtArray<GfVec3d> m_sFace_SurfacePlane_OriginArray;
     VtArray<GfVec3d> m_sFace_SurfacePlane_AxisArray;
@@ -854,6 +865,13 @@ public:
     // Face SphereSurface geometry
     uint32_t m_lFaceSphereSurface_StartIndex = 0;
     uint32_t m_lFaceSphereSurface_Count = 0;
+
+    // Face definitions: the first of this Brep's entries in m_sFace_DefinitionRealCountArray and
+    // m_sFace_DefinitionRealsArray
+    uint32_t m_lFaceDefinition_StartIndex = 0;
+    uint32_t m_lFaceDefinition_Count = 0;
+    uint32_t m_lFaceDefinitionReal_StartIndex = 0;
+    uint32_t m_lFaceDefinitionReal_Count = 0;
 
     // Face PlaneSurface geometry
     uint32_t m_lFacePlaneSurface_StartIndex = 0;

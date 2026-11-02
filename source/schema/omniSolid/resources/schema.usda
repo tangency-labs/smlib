@@ -75,6 +75,7 @@ class BrepArray  "BrepArray" (
                                                             BrepSurfaceConeAPI     = face_ii shape is an analytic 3d cone (see BrepSurfaceConeAPI).
                                                             BrepSurfaceSphereAPI   = face_ii shape is an analytic 3d sphere (see BrepSurfaceSphereAPI).
                                                             BrepSurfaceTorusAPI    = face_ii shape is an analytic 3d torus (see BrepSurfaceTorusAPI).
+                                                            A NURBS face may also carry a definition of its net (see BrepSurfaceDefinitionAPI).
                                                             size() = number of faces. """ )
     uniform token[]   face:trimType             ( allowedTokens = ["rectangular", "general"]
                                                   doc = """ rectangular = face_ii's outerLoop is a rectangle in the face's parameter space consisting of 4 isoparameter UVTrimCurves. 
@@ -161,6 +162,7 @@ class BrepArray  "BrepArray" (
     # HasAPI(SduSolidTokens->brepSurfaceConeAPI)                                            packed in order used by cone faces
     # HasAPI(SduSolidTokens->brepSurfaceSphereAPI)                                          packed in order used by sphere faces
     # HasAPI(SduSolidTokens->brepSurfaceTorusAPI)                                           packed in order used by torus faces
+    # HasAPI(SduSolidTokens->brepSurfaceDefinitionAPI)                                      face:definition:kind per face, its reals packed in order used by faces with a definition
 
 
 } # end class BrepArray "BrepArray"              
@@ -622,6 +624,64 @@ class "BrepSurfaceNurbAPI" (
     )
 
 } # end class "BrepSurfaceNurbAPI" 
+
+#************************************************************************************
+# BrepSurfaceDefinitionAPI
+#************************************************************************************
+class "BrepSurfaceDefinitionAPI" (
+    inherits = </APISchemaBase>
+    doc = """ Associated definitions of brep:faces whose surface is defined beyond its NURBS net: the
+    surface is the NURBS surface of the face (face:surfaceType = BrepSurfaceNurbAPI, its net in the
+    BrepSurfaceNurbAPI arrays, its face:range and UV trims in that net's parameters), and the
+    definition says what that net exactly is.
+
+    Kinds (face:definition:kind):
+        0 = no definition: the face is its NURBS surface (or its analytic surface), nothing more.
+        6 = ball patch: a rational patch every point of which lies on one sphere; its reals are
+            the sphere's center x, y, z and its radius R (R > 0), 4 reals.
+    Further kinds take further values; they need no change to this schema.
+
+    face:definition:realCount stays, although each kind fixes its count, so that a reader may
+    skip a definition it does not know: such a reader keeps the face's NURBS net and treats the
+    face as a plain NURBS face, and loses only what the definition adds. A reader that does know
+    a kind may require more: SMLib's own import refuses a kind it does not know, and takes a known
+    one only once a certificate shows the net agrees with it (for a ball patch, that every point
+    of the net lies on the sphere, decided on the net to rounding); otherwise it refuses the
+    Brep. The two behaviours differ in what they trust, not in what the record means.
+    """
+    customData = { token apiSchemaType = "singleApply"
+                   token[] apiSchemaCanOnlyApplyTo = ["OmniSolidBrepArray"]
+                 }
+)
+{
+    uniform uint[] face:definition:kind (
+        doc = """ face_ii's definition kind: 0 = none, 6 = ball patch (see the API's doc). A kind other than 0
+        is only on a face whose face:surfaceType is BrepSurfaceNurbAPI.
+        size() = number of faces. """
+        customData = {
+            string apiName = "faceDefinitionKind"
+        }
+    )
+
+    uniform uint[] face:definition:realCount (
+        doc = """ the number of reals of each face's definition, for the faces whose face:definition:kind is not 0,
+        in face order; each the count its kind fixes (a ball patch: 4).
+        size() = number of faces whose face:definition:kind is not 0. """
+        customData = {
+            string apiName = "faceDefinitionRealCount"
+        }
+    )
+
+    uniform double[] face:definition:reals (
+        doc = """ the definitions' reals, packed in face order as face:definition:realCount counts them.
+        A ball patch: center x, y, z, radius R (R > 0).
+        size() = SUM(face:definition:realCount). """
+        customData = {
+            string apiName = "faceDefinitionReals"
+        }
+    )
+
+} # end class "BrepSurfaceDefinitionAPI"
 
 #************************************************************************************
 # BrepSurfaceSphereAPI

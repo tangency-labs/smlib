@@ -1800,6 +1800,60 @@ class BrepArrayRequirements(Requirement, Enum):
         ("correctness", "geometric-consistency"),
     )
 
+    BA_766 = (
+        "BA.766",
+        "brep-face-definition-kind-size",
+        "When authored, face:definition:kind has one entry per face (the size of face:surfaceType).",
+        "capabilities/visualization/brep/requirements/brep-face-definition-kind-size.html",
+        "Core USD",
+        ("correctness",),
+    )
+
+    BA_767 = (
+        "BA.767",
+        "brep-face-definition-nurbs-face",
+        "A face whose face:definition:kind is not 0 has face:surfaceType BrepSurfaceNurbAPI (the definition is of its net).",
+        "capabilities/visualization/brep/requirements/brep-face-definition-nurbs-face.html",
+        "Core USD",
+        ("correctness",),
+    )
+
+    BA_768 = (
+        "BA.768",
+        "brep-face-definition-real-count",
+        "face:definition:realCount has one entry per face whose kind is not 0, each the count its kind fixes (a ball patch, kind 6: 4).",
+        "capabilities/visualization/brep/requirements/brep-face-definition-real-count.html",
+        "Core USD",
+        ("correctness",),
+    )
+
+    BA_769 = (
+        "BA.769",
+        "brep-face-definition-reals-size",
+        "face:definition:reals has SUM(face:definition:realCount) finite values.",
+        "capabilities/visualization/brep/requirements/brep-face-definition-reals-size.html",
+        "Core USD",
+        ("correctness",),
+    )
+
+    BA_770 = (
+        "BA.770",
+        "brep-face-definition-ball-patch-radius",
+        "A ball patch's definition (kind 6) has a positive radius, its fourth real.",
+        "capabilities/visualization/brep/requirements/brep-face-definition-ball-patch-radius.html",
+        "Core USD",
+        ("correctness",),
+    )
+
+    BA_771 = (
+        "BA.771",
+        "brep-face-definition-api",
+        "face:definition attributes are authored only with BrepSurfaceDefinitionAPI applied, and with it applied face:definition:kind is authored.",
+        "capabilities/visualization/brep/requirements/brep-face-definition-api.html",
+        "Core USD",
+        ("correctness",),
+    )
+
 cap.BrepArrayRequirements = BrepArrayRequirements
 
 class BrepConstants:
@@ -5746,6 +5800,82 @@ class BrepValidator(BaseRuleChecker):
                     )
                     break  # Report only first violation per brep to avoid spam
 
+    # Face definition kinds (BrepSurfaceDefinitionAPI) and the number of reals each fixes; a kind not
+    # listed is one this validator does not know: its record is checked for structure only.
+    FACE_DEFINITION_REALS = {6: 4}
+
+    def _validate_face_definitions(self, brep_array: Usd.Prim) -> None:
+        """BA_766-BA_771: the face definition record (BrepSurfaceDefinitionAPI). Its structure only:
+        whether a definition agrees with its face's NURBS net is the reader's certificate."""
+        names = ("face:definition:kind", "face:definition:realCount", "face:definition:reals")
+        authored = {name: brep_array.GetAttribute(name) for name in names}
+        authored = {name: attr for name, attr in authored.items() if attr and attr.HasAuthoredValue()}
+        applied = "BrepSurfaceDefinitionAPI" in set(brep_array.GetAppliedSchemas())
+        if authored and not applied:
+            self._AddFailedCheck(
+                requirement=cap.BrepArrayRequirements.BA_771,
+                message=f"{', '.join(sorted(authored))} authored without BrepSurfaceDefinitionAPI applied.",
+                at=brep_array,
+            )
+        if applied and "face:definition:kind" not in authored:
+            self._AddFailedCheck(
+                requirement=cap.BrepArrayRequirements.BA_771,
+                message="BrepSurfaceDefinitionAPI applied without face:definition:kind.",
+                at=brep_array,
+            )
+        if "face:definition:kind" not in authored:
+            return
+        kinds = list(authored["face:definition:kind"].Get() or [])
+        surface_types = list(BrepConstants.safe_get_attribute(brep_array, "face:surfaceType") or [])
+        if len(kinds) != len(surface_types):
+            self._AddFailedCheck(
+                requirement=cap.BrepArrayRequirements.BA_766,
+                message=f"face:definition:kind size ({len(kinds)}) does not match the number of faces ({len(surface_types)}).",
+                at=brep_array,
+            )
+            return
+        defined = [(face, kind) for face, kind in enumerate(kinds) if kind != 0]
+        for face, kind in defined:
+            if surface_types[face] != "BrepSurfaceNurbAPI":
+                self._AddFailedCheck(
+                    requirement=cap.BrepArrayRequirements.BA_767,
+                    message=f"face {face} has face:definition:kind {kind} but face:surfaceType {surface_types[face]}.",
+                    at=brep_array,
+                )
+        counts = list(authored["face:definition:realCount"].Get() or []) if "face:definition:realCount" in authored else []
+        reals = list(authored["face:definition:reals"].Get() or []) if "face:definition:reals" in authored else []
+        if len(counts) != len(defined):
+            self._AddFailedCheck(
+                requirement=cap.BrepArrayRequirements.BA_768,
+                message=f"face:definition:realCount size ({len(counts)}) does not match the number of faces with a definition ({len(defined)}).",
+                at=brep_array,
+            )
+            return
+        for (face, kind), count in zip(defined, counts):
+            want = self.FACE_DEFINITION_REALS.get(kind)
+            if want is not None and count != want:
+                self._AddFailedCheck(
+                    requirement=cap.BrepArrayRequirements.BA_768,
+                    message=f"face {face}: face:definition:realCount {count}, its kind {kind} has {want}.",
+                    at=brep_array,
+                )
+        if len(reals) != sum(counts) or not all(math.isfinite(x) for x in reals):
+            self._AddFailedCheck(
+                requirement=cap.BrepArrayRequirements.BA_769,
+                message=f"face:definition:reals size ({len(reals)}) does not match SUM(face:definition:realCount) ({sum(counts)}), or a value is not finite.",
+                at=brep_array,
+            )
+            return
+        at = 0
+        for (face, kind), count in zip(defined, counts):
+            if kind == 6 and count == 4 and not reals[at + 3] > 0.0:
+                self._AddFailedCheck(
+                    requirement=cap.BrepArrayRequirements.BA_770,
+                    message=f"face {face}: a ball patch's radius ({reals[at + 3]}) is not positive.",
+                    at=brep_array,
+                )
+            at += count
+
     def _validate_required_geometry_apis(self, brep_array: Usd.Prim) -> None:
         """Validate the applied APIs required to interpret authored geometry."""
         applied_schemas = set(brep_array.GetAppliedSchemas())
@@ -8177,6 +8307,7 @@ class BrepValidator(BaseRuleChecker):
         # print("Validating face attributes...")
         self._validate_faceuse_arrays(prim, brep_offsets["faces"])
         self._validate_face_arrays(prim)
+        self._validate_face_definitions(prim)
         self._validate_face_loop_count_minimum(prim)
         self._validate_faceuse_pairing(prim)
         self._validate_face_ranges(prim)

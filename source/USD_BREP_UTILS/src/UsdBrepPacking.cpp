@@ -91,6 +91,25 @@ bool AppendBrepToArray(const UsdBrepView& brep, UsdBrepArrayData& rDest)
     Append(brep.FaceuseOrientationTypes(), rDest.m_sFaceuseOrientationTypeArray);
 
     // Faces
+    // face definitions: a kind per face once any face has one (the faces before it kind 0)
+    {
+        const size_t destFaces = rDest.m_sFaceLoopCountArray.size();
+        auto kinds = brep.FaceDefinitionKinds();
+        if (!kinds.empty() || !rDest.m_sFace_DefinitionKindArray.empty())
+        {
+            rDest.m_sFace_DefinitionKindArray.resize(destFaces, 0u);
+            if (kinds.empty())
+            {
+                rDest.m_sFace_DefinitionKindArray.resize(destFaces + brep.FaceLoopCounts().size(), 0u);
+            }
+            else
+            {
+                Append(kinds, rDest.m_sFace_DefinitionKindArray);
+            }
+        }
+        Append(brep.FaceDefinitionRealCounts(), rDest.m_sFace_DefinitionRealCountArray);
+        Append(brep.FaceDefinitionReals(), rDest.m_sFace_DefinitionRealsArray);
+    }
     Append(brep.FaceLoopCounts(), rDest.m_sFaceLoopCountArray);
     Append(brep.FaceSurfaceTypes(), rDest.m_sFaceSurfaceTypeArray);
     Append(brep.FaceTrimTypes(), rDest.m_sFaceTrimTypeArray);

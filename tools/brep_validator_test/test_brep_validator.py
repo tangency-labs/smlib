@@ -23,14 +23,7 @@ _UNAUTHORED = object()
 
 # Expected-invalid fixtures whose requirement the validator does not check yet, each with its
 # reason; an entry leaves the list when the validator reports it.
-KNOWN_FAILING_FIXTURES = {
-    "Test_BA_766_Wrong_face_definition_kind_size.usda": "smlib#102: face definitions not validated yet",
-    "Test_BA_767_Face_definition_on_a_non_NURBS_face.usda": "smlib#102: face definitions not validated yet",
-    "Test_BA_768_Face_definition_real_count_not_that_of_its_kind.usda": "smlib#102: face definitions not validated yet",
-    "Test_BA_769_Wrong_face_definition_reals_size.usda": "smlib#102: face definitions not validated yet",
-    "Test_BA_770_Non_positive_ball_patch_radius.usda": "smlib#102: face definitions not validated yet",
-    "Test_BA_771_Face_definitions_without_BrepSurfaceDefinitionAPI.usda": "smlib#102: face definitions not validated yet",
-}
+KNOWN_FAILING_FIXTURES: dict[str, str] = {}
 
 
 def _expected_requirement(test_file: Path) -> str | None:
