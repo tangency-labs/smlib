@@ -596,6 +596,19 @@ public:
                                            SmBSplineCurve    * pUV2,
                                            SmBSplineSurface *& rpFilletSurface);
 
+  // The scope of a blend operation (an SmFilletExecutive's life): the thread's memo of equal
+  // area thumbweights is emptied as the outermost scope opens, so no operation reads another's
+  // (nested scopes keep it)
+  class SM_EXPORT OperationScope
+  {
+  public:
+    OperationScope();
+    ~OperationScope();
+  private:
+    OperationScope(const OperationScope &);
+    OperationScope & operator=(const OperationScope &);
+  };
+
   // whether an order and a thumbweight make a G^n section: 2 <= n <= SM_GN_MAX_ORDER, and
   // w < 1 (the section's weights 1 - w + w t and 1 - w t stay positive on [0, 1] and its
   // reparametrizations monotone) or the equal area default

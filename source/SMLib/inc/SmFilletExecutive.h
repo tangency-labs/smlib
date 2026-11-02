@@ -179,6 +179,9 @@ class SM_EXPORT SmFilletExecutive : public SmMerge
   friend class SmFilletSolver;
   friend class SmFilletCorner;
 protected:
+  // the operation's scope, first: the thread's equal area thumbweights solved for another
+  // operation are not read in this one (SmGnSectionFSG::OperationScope)
+  SmGnSectionFSG::OperationScope m_sGnScope;
   const SmContext &         m_crContext;            // Context for all temporary and permanent object allocation.
 
   SmBrep *                  m_pTargetBrep;          // Brep to be filleted (can be NULL). Set in SmFilletExecutive constructor.
