@@ -62,6 +62,86 @@ SmStatus SmBallPatch::Create
   return SM_SUCCESS;
 }
 
+namespace
+{
+double sm_Binomial(ULONG n, ULONG k)
+{
+  double d = 1.0;
+  for (ULONG i=1; i<=k; i++) { d = d * double( n - k + i ) / double( i ); }
+  return d;
+}
+} // namespace
+
+SmStatus SmBallPatch::IsOnSphere
+  (const SmBSplineSurface & crNet,
+   const SmPoint3d        & crCentre,
+   double                   dRadius,
+   double                   dRelTol,
+   SmBoolean              & rbOn)
+{
+  rbOn = FALSE;
+  if ( !crNet.IsRational() || !( dRadius > 0.0 ))
+    { return SM_SUCCESS; }
+  // the net cut into Bezier pieces: every interior knot to the degree's multiplicity
+  SmBSplineSurface sNet( crNet );
+  const ULONG alDeg[2] = { sNet.GetDegree( SM_SP_U ), sNet.GetDegree( SM_SP_V ) };
+  const SmSurfParamType aeDir[2] = { SM_SP_U, SM_SP_V };
+  for (ULONG d=0; d<2; d++)
+    {
+      SmTArray<double> sKnots, sAdd;
+      SmTArray<ULONG>  sMults;
+      SER( sNet.GetKnots( aeDir[d], sKnots, &sMults ));
+      for (ULONG k=1; k+1<sKnots.GetSize(); k++)
+        {
+          for (ULONG m=sMults[k]; m<alDeg[d]; m++)
+            { sAdd.Add( sKnots[k] ); }
+        }
+      if ( sAdd.GetSize() > 0 )
+        { SER( sNet.InsertKnots( aeDir[d], sAdd )); }
+    }
+  ULONG lU = 0, lV = 0;
+  SmTArray<SmPoint3d> sPoints;
+  SmTArray<double>    sWeights;
+  SER( sNet.GetControlPointNet( lU, lV, sPoints, sWeights ));
+  const ULONG p = alDeg[0], q = alDeg[1];
+  if ( p == 0 || q == 0 || ( lU - 1 ) % p != 0 || ( lV - 1 ) % q != 0 || sWeights.GetSize() != lU * lV )
+    { SER( SM_ERR ); }
+  double dWMax = 0.0;
+  for (ULONG k=0; k<sWeights.GetSize(); k++)
+    { dWMax = smos_Max( dWMax, smos_Fabs( sWeights[k] )); }
+  const double dScale = ( dRadius + crCentre.DistanceBetween( SmPoint3d( 0.0, 0.0, 0.0 ))) * dWMax;
+  const double dTol = dRelTol * dScale * dScale;
+  // per piece: the homogeneous coordinates' Bernstein coefficients H = w (P - C), W = w
+  for (ULONG bu=0; bu+1<lU; bu+=p)
+    for (ULONG bv=0; bv+1<lV; bv+=q)
+      {
+        // F = |H|^2 - R^2 W^2, of degree (2p, 2q)
+        for (ULONG i=0; i<=2*p; i++)
+          for (ULONG j=0; j<=2*q; j++)
+            {
+              double dF = 0.0;
+              for (ULONG a=0; a<=p; a++)
+                {
+                  if ( a > i || i - a > p ) { continue; }
+                  for (ULONG b=0; b<=q; b++)
+                    {
+                      if ( b > j || j - b > q ) { continue; }
+                      const ULONG k1 = ( bu + a ) * lV + ( bv + b ), k2 = ( bu + i - a ) * lV + ( bv + j - b );
+                      const double w1 = sWeights[k1], w2 = sWeights[k2];
+                      const SmVector3d h1 = ( sPoints[k1] - crCentre ) * w1, h2 = ( sPoints[k2] - crCentre ) * w2;
+                      const double dC = sm_Binomial( p, a ) * sm_Binomial( p, i - a ) * sm_Binomial( q, b ) * sm_Binomial( q, j - b );
+                      dF += dC * ( h1.Dot( h2 ) - dRadius * dRadius * w1 * w2 );
+                    }
+                }
+              dF /= sm_Binomial( 2 * p, i ) * sm_Binomial( 2 * q, j );
+              if ( smos_Fabs( dF ) > dTol )
+                { return SM_SUCCESS; }
+            }
+      }
+  rbOn = TRUE;
+  return SM_SUCCESS;
+}
+
 SmBoolean SmBallPatch::operator==(const SmSurface & crOther) const
 {
   if ( this == &crOther )
