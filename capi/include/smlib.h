@@ -381,6 +381,11 @@ typedef struct smlib_flat smlib_flat;
  * clockwise about its axis, or the circle made has another NURBS. */
 #define SMLIB_FLAT_EDGE_NURBS_FORM 34
 #define SMLIB_FLAT_WIRE_EDGE_NURBS_FORM 35
+/* Per face whose kind carries a definition (SMLIB_FLAT_SURFACE_BALL_PATCH; later kinds of a
+ * surface defined beyond its net will too), in face order: how many reals of
+ * FACE_DEFINITION_REALS are its definition (a ball patch: 4). Length n_definition_faces, or 0
+ * (no such face). */
+#define SMLIB_FLAT_FACE_DEFINITION_REAL_COUNT 36
 
 /* --- double arrays --- */
 /* The B-rep's intersection tolerance (twice its largest face/edge/vertex tolerance). Length 1. */
@@ -482,6 +487,9 @@ typedef struct smlib_flat smlib_flat;
  * only it then carries more. */
 #define SMLIB_FLAT_EDGE_TOLERANCE 164
 #define SMLIB_FLAT_VERTEX_TOLERANCE 165
+/* The definitions of the faces counted in FACE_DEFINITION_REAL_COUNT, packed in face order
+ * (sum(FACE_DEFINITION_REAL_COUNT)). A ball patch: its sphere's center x, y, z and radius. */
+#define SMLIB_FLAT_FACE_DEFINITION_REALS 166
 
 /* FACE_SURFACE_TYPE values. */
 #define SMLIB_FLAT_SURFACE_NURBS 0
@@ -490,6 +498,14 @@ typedef struct smlib_flat smlib_flat;
 #define SMLIB_FLAT_SURFACE_CONE 3
 #define SMLIB_FLAT_SURFACE_SPHERE 4
 #define SMLIB_FLAT_SURFACE_TORUS 5
+/* A rational patch on a sphere, given by its net and its sphere (SMLib's SmBallPatch, the corner
+ * of three equal rounds): its NURBS block, range and UV trims as a NURBS face's (a reader that
+ * does not know the kind may take it as one); its definition (FACE_DEFINITION_REAL_COUNT 4,
+ * FACE_DEFINITION_REALS the sphere's center and radius) keeps the sphere, whose offsets are exact
+ * and collapse when they pass its center. Import makes the face that patch only when every point
+ * of its net is on that sphere (SmBallPatch::IsOnSphere, decided on the net to rounding), and
+ * refuses the B-rep (status 1007, SM_ERR_INVALID_INPUT) otherwise. */
+#define SMLIB_FLAT_SURFACE_BALL_PATCH 6
 
 /* EDGE_CURVE_TYPE and WIRE_EDGE_CURVE_TYPE values. Export writes LINE, CIRCLE and ELLIPSE for
  * SMLib's SmLine, SmCircle and SmEllipse curves and NURBS for everything else. */
