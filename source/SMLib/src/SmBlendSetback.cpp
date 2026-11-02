@@ -3113,7 +3113,8 @@ NOTES: The face's rational parameter plane: a plane's own coordinates
         centre, degree 4.
 ***********************************************************************/
 SmStatus SmBlendSetback::SpringCurve(const Face & crFace, const SmPoint3d & crP, const SmVector3d & crTP, const SmPoint3d & crQ, const SmVector3d & crTQ,
-                                     std::vector<double> & rFromP, std::vector<double> & rFromQ, const TCHAR ** ppReason)
+                                     std::vector<double> & rFromP, std::vector<double> & rFromQ, const TCHAR ** ppReason,
+                                     std::vector<double> * pTanP, std::vector<double> * pTanQ)
 {
   rFromP.clear();
   rFromQ.clear();
@@ -3278,26 +3279,72 @@ SmStatus SmBlendSetback::SpringCurve(const Face & crFace, const SmPoint3d & crP,
       for (size_t i=0; i+k<d; i++)
         { sWork[i] = sm_SbAxpy( sm_SbAxpy( sm_SbZero(), 0.5, sWork[i] ), 0.5, sWork[i + 1] ); }
     }
-  auto normalized = [&](const std::vector<sm_SbH> & crHalf, std::vector<double> & rOut) -> SmStatus
+  auto out = [&](const std::vector<sm_SbH> & crHalf, std::vector<double> & rOut)
     {
-      const double dW1 = crHalf[d].a[3], dDW1 = static_cast<double>(d) * ( crHalf[d].a[3] - crHalf[d - 1].a[3] );
-      const double l1 = 1.0 / dW1, l0 = l1 * ( 1.0 + dDW1 / dW1 );
-      if ( !( l0 > 0.0 ))
-        { rWhy = _T("SmBlendSetback: a spring curve's weight would not stay positive"); return SM_ERR_INVALID_INPUT; }
-      const sm_SbB sL = { l0, l1 };
-      rOut.assign( 4 * ( d + 2 ), 0.0 );
-      for (int c=0; c<4; c++)
-        {
-          sm_SbB sComp( d + 1 );
-          for (size_t i=0; i<=d; i++) { sComp[i] = crHalf[i].a[c]; }
-          const sm_SbB sProd = sm_SbMul( sComp, sL );
-          for (size_t i=0; i<=d+1; i++) { rOut[4 * i + c] = sProd[i]; }
-        }
-      rOut[4 * ( d + 1 ) + 3] = 1.0; // exactly
-      rOut[4 * d + 3] = 1.0;
-      return SM_SUCCESS;
+      rOut.assign( 4 * ( d + 1 ), 0.0 );
+      for (size_t i=0; i<=d; i++)
+        for (int c=0; c<4; c++) { rOut[4 * i + c] = crHalf[i].a[c]; }
     };
-  SmStatus eStatus = normalized( sLeft, rFromP );
-  if ( eStatus != SM_SUCCESS ) { return eStatus; }
-  return normalized( sRight, rFromQ );
+  out( sLeft, rFromP );
+  out( sRight, rFromQ );
+
+  // the tangent directions along each half: the parameter-plane parabola split at its middle
+  // (from P, and from Q), the face's partials there
+  auto tangents = [&](const sm_SbB & crU, const sm_SbB & crV, std::vector<double> & rOut)
+    {
+      std::vector< std::vector<SmVector3d> > sXYZ( 2 );
+      std::vector< std::vector<double> > sW( 2 );
+      switch ( crFace.m_eKind )
+        {
+        case SM_SB_PLANE:
+          sXYZ[0] = { sE1 }; sW[0] = { 0.0 };
+          sXYZ[1] = { sE2 }; sW[1] = { 0.0 };
+          break;
+        case SM_SB_SPHERE:
+          // S(a, b) = O (1 + a^2 + b^2) + R (2 a e1 + 2 b e2 + (1 - a^2 - b^2) m), w = 1 + a^2 + b^2:
+          // S_a = (2 a O + R (2 e1 - 2 a m), 2 a), S_b likewise; affine in (a, b), quadratic along it
+          for (int k=0; k<2; k++)
+            for (size_t i=0; i<3; i++)
+              {
+                const double dA = ( k == 0 ) ? crU[i] : crV[i];
+                const SmVector3d & crE = ( k == 0 ) ? sE1 : sE2;
+                sXYZ[k].push_back( sO * ( 2.0 * dA ) + ( crE * 2.0 - sE3 * ( 2.0 * dA )) * R );
+                sW[k].push_back( 2.0 * dA );
+              }
+          break;
+        default:
+          {
+            // the circumferential direction -2 t e1 + (1 - t^2) e2 (degree 4), and the cylinder's axis or
+            // the cone's generator kappa (1 - t^2) e1 + 2 kappa t e2 + (1 + t^2) e3 (degree 4)
+            const sm_SbB sTT = sm_SbMul( crU, crU );
+            const sm_SbB sT4 = sm_SbElevate( crU, 4 );
+            for (size_t i=0; i<5; i++)
+              {
+                sXYZ[0].push_back( sE1 * ( -2.0 * sT4[i] ) + sE2 * ( 1.0 - sTT[i] ));
+                sW[0].push_back( 0.0 );
+              }
+            if ( crFace.m_eKind == SM_SB_CYLINDER )
+              { sXYZ[1] = { sE3 }; sW[1] = { 0.0 }; }
+            else
+              for (size_t i=0; i<5; i++)
+                {
+                  const double k = crFace.m_dSlope;
+                  sXYZ[1].push_back( sE1 * ( k * ( 1.0 - sTT[i] )) + sE2 * ( 2.0 * k * sT4[i] ) + sE3 * ( 1.0 + sTT[i] ));
+                  sW[1].push_back( 0.0 );
+                }
+            break;
+          }
+        }
+      rOut.clear();
+      for (int k=0; k<2; k++)
+        for (size_t i=0; i<sXYZ[k].size(); i++)
+          { rOut.insert( rOut.end(), { sXYZ[k][i].x, sXYZ[k][i].y, sXYZ[k][i].z, sW[k][i] } ); }
+    };
+  const sm_SbB sUL = { sU[0], 0.5 * ( sU[0] + sU[1] ), 0.25 * ( sU[0] + 2.0 * sU[1] + sU[2] ) };
+  const sm_SbB sVL = { sV[0], 0.5 * ( sV[0] + sV[1] ), 0.25 * ( sV[0] + 2.0 * sV[1] + sV[2] ) };
+  const sm_SbB sUR = { sU[2], 0.5 * ( sU[1] + sU[2] ), sUL[2] };
+  const sm_SbB sVR = { sV[2], 0.5 * ( sV[1] + sV[2] ), sVL[2] };
+  if ( pTanP != NULL ) { tangents( sUL, sVL, *pTanP ); }
+  if ( pTanQ != NULL ) { tangents( sUR, sVR, *pTanQ ); }
+  return SM_SUCCESS;
 }

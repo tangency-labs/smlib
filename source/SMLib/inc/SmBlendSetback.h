@@ -107,12 +107,19 @@ public:
   // a cylinder (the axial coordinate a quartic with the parabola's end jets, its middle coefficient
   // the mean of its neighbours) or a sphere, 6 on a cone. Returned as its two halves meeting at its
   // middle (the base point), each in homogeneous Bernstein coefficients (x w, y w, z w, w), from its
-  // rail end to the base point, each multiplied by the linear factor that makes its last two weights
-  // 1 (so a polynomial interior map meets it there). Refused (SM_ERR_INVALID_INPUT, ppReason) where
-  // the tangent lines' images cross behind P or Q (no corner region between the rails) or a weight
-  // would not stay positive.
+  // rail end to the base point (the fill matches them to its rounds and to its interior map).
+  // Refused (SM_ERR_INVALID_INPUT, ppReason) where the tangent lines' images cross behind P or Q (no
+  // corner region between the rails) or a weight would not stay positive.
+  // With each half, two homogeneous polynomials along it (Bernstein, (x, y, z, w)) that with the half
+  // span the face's tangent plane there projectively: the face's parametric partials along the
+  // parameter-plane parabola (a plane's two directions, degree 0; a cylinder's circumferential
+  // direction, 4, and its axis, 0; a cone's circumferential direction and generator, 4 and 4; a
+  // sphere's stereographic partials, 2 and 2). A column next to the half is G1 to the face exactly
+  // where it differs from the half by alpha T1 + beta T2 + gamma H0 (Hahn's connecting functions).
   static SmStatus SpringCurve(const Face & crFace, const SmPoint3d & crP, const SmVector3d & crTP, const SmPoint3d & crQ, const SmVector3d & crTQ,
-                              std::vector<double> & rFromP, std::vector<double> & rFromQ, const TCHAR ** ppReason = NULL);
+                              std::vector<double> & rFromP, std::vector<double> & rFromQ, const TCHAR ** ppReason = NULL,
+                              std::vector<double> * pTanP = NULL, std::vector<double> * pTanQ = NULL);
+  // (pTanP / pTanQ: T1's coefficients then T2's, 4 (k1 + 1) + 4 (k2 + 1) values, k1 and k2 as above.)
 
   // A rounded edge at the corner, for the setbacks: m_sAway its unit direction away from the
   // vertex, m_dRadius the round's radius there, m_alFaces its two faces (indices into the faces).

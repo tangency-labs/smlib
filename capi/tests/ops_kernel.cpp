@@ -10832,10 +10832,11 @@ void curved_setback_graded(smlib_brep *r, const SmPoint3d &v, double reach, bool
 }
 
 // SmBlendSetback::SpringCurve on each kind of face: the two halves (homogeneous Bernstein, from P
-// and from Q) of degree 3 on a plane, 5 on a cylinder or sphere, 7 on a cone (the parameter plane's
-// parabola mapped up, 2, 4, 4, 6, each half times its weights' linear factor), on the face to 1e-12 x
-// its size at 65 points each, leaving P along TP and arriving at Q along TQ (unit tangents within
-// 1e-12), meeting at one base point, their last two weights exactly 1.
+// and from Q) of degree 2 on a plane, 4 on a cylinder or sphere, 6 on a cone (the parameter plane's
+// parabola mapped up), on the face to 1e-12 x its size at 65 points each, leaving P along TP and
+// arriving at Q along TQ (unit tangents within 1e-12), meeting at one base point; with each half its
+// two tangent-plane directions (the face's parametric partials along it), square to the face's
+// normal there (within 1e-12 of their length) and independent, at 33 points along each half.
 void setback_spring_curves_on_quadrics()
 {
     using F = SmBlendSetback::Face;
@@ -10866,18 +10867,19 @@ void setback_spring_curves_on_quadrics()
     const double a0 = 1.3, a1 = 1.1; // angles about z of P and Q on the cylinder and cone
     auto on_cone = [&](double ang, double h) { const double r = 10.0 + cone.m_dSlope * h; return SmPoint3d(r * std::cos(ang), r * std::sin(ang), h); };
     const std::vector<Case> cases = {
-        {"plane", plane, SmPoint3d(2, 6, 10), SmPoint3d(4, 3, 10), unit(SmVector3d(0, -1, 0)), unit(SmVector3d(1, 0, 0)), 3},
+        {"plane", plane, SmPoint3d(2, 6, 10), SmPoint3d(4, 3, 10), unit(SmVector3d(0, -1, 0)), unit(SmVector3d(1, 0, 0)), 2},
         {"cylinder", cyl, SmPoint3d(10 * std::cos(a0), 10 * std::sin(a0), 7), SmPoint3d(10 * std::cos(a1), 10 * std::sin(a1), 8.5),
-         SmVector3d(0, 0, 1), unit(SmVector3d(std::sin(a1), -std::cos(a1), 0)), 5},
+         SmVector3d(0, 0, 1), unit(SmVector3d(std::sin(a1), -std::cos(a1), 0)), 4},
         {"sphere", sph, SmPoint3d(4, 2.5, std::sqrt(100 - 16 - 6.25)), SmPoint3d(2.5, 4, std::sqrt(100 - 16 - 6.25)), unit(SmVector3d(0, std::sqrt(100 - 16 - 6.25), -2.5)),
-         unit(SmVector3d(std::sqrt(100 - 16 - 6.25), 0, -2.5)) * -1.0, 5},
+         unit(SmVector3d(std::sqrt(100 - 16 - 6.25), 0, -2.5)) * -1.0, 4},
         {"cone", cone, on_cone(a0, 2.0), on_cone(a1, 4.0), unit(SmVector3d(0, 0, 1) + SmVector3d(std::cos(a0), std::sin(a0), 0) * cone.m_dSlope),
-         unit(SmVector3d(std::sin(a1), -std::cos(a1), 0)), 7}};
+         unit(SmVector3d(std::sin(a1), -std::cos(a1), 0)), 6}};
     for (const Case &c : cases)
     {
         std::vector<double> fp, fq;
         const TCHAR *why = nullptr;
-        const SmStatus st = SmBlendSetback::SpringCurve(c.face, c.p, c.tp, c.q, c.tq, fp, fq, &why);
+        std::vector<double> tp, tq;
+        const SmStatus st = SmBlendSetback::SpringCurve(c.face, c.p, c.tp, c.q, c.tq, fp, fq, &why, &tp, &tq);
         std::printf("  %s: status %d%s%s\n", c.name, static_cast<int>(st), why != nullptr ? ": " : "", why != nullptr ? why : "");
         CHECK(st == SM_SUCCESS && fp.size() == 4 * (c.degree + 1) && fq.size() == 4 * (c.degree + 1));
         if (st != SM_SUCCESS || fp.size() != 4 * (c.degree + 1) || fq.size() != 4 * (c.degree + 1))
@@ -10921,6 +10923,61 @@ void setback_spring_curves_on_quadrics()
                 off = std::max(off, std::fabs(g));
             }
         }
+        // the tangent directions: square to the face's normal, independent
+        const size_t k1 = c.face.m_eKind == SmBlendSetback::SM_SB_PLANE ? 0 : c.face.m_eKind == SmBlendSetback::SM_SB_SPHERE ? 2 : 4;
+        const size_t k2 = c.face.m_eKind == SmBlendSetback::SM_SB_PLANE || c.face.m_eKind == SmBlendSetback::SM_SB_CYLINDER ? 0 : k1;
+        double square = 0.0, indep = HUGE_VAL;
+        for (int half = 0; half < 2; ++half)
+        {
+            const std::vector<double> &h = half == 0 ? fp : fq, &t = half == 0 ? tp : tq;
+            CHECK(t.size() == 4 * (k1 + 1) + 4 * (k2 + 1));
+            if (t.size() != 4 * (k1 + 1) + 4 * (k2 + 1))
+            {
+                continue;
+            }
+            for (int k = 0; k <= 32; ++k)
+            {
+                SmPoint3d x;
+                SmVector3d dx;
+                eval(h, k / 32.0, x, dx);
+                SmVector3d v[2];
+                for (int j = 0; j < 2; ++j)
+                {
+                    const size_t deg = j == 0 ? k1 : k2, off = j == 0 ? 0 : 4 * (k1 + 1);
+                    double a[4] = {0, 0, 0, 0};
+                    for (size_t i = 0; i <= deg; ++i)
+                    {
+                        const double b = binomial(deg, i) * std::pow(k / 32.0, static_cast<double>(i)) * std::pow(1 - k / 32.0, static_cast<double>(deg - i));
+                        for (int q = 0; q < 4; ++q) a[q] += b * t[off + 4 * i + q];
+                    }
+                    v[j] = SmVector3d(a[0] - a[3] * x.x, a[1] - a[3] * x.y, a[2] - a[3] * x.z);
+                }
+                SmVector3d n;
+                const SmVector3d u = x - c.face.m_sPoint;
+                switch (c.face.m_eKind)
+                {
+                case SmBlendSetback::SM_SB_PLANE: n = c.face.m_sNormal; break;
+                case SmBlendSetback::SM_SB_SPHERE: n = u; break;
+                case SmBlendSetback::SM_SB_CYLINDER: n = SmVector3d(u.x, u.y, 0); break;
+                default:
+                {
+                    const double r = std::hypot(u.x, u.y);
+                    n = SmVector3d(u.x / r, u.y / r, -c.face.m_dSlope);
+                }
+                }
+                n.Unitize(FALSE);
+                for (int j = 0; j < 2; ++j)
+                {
+                    square = std::max(square, std::fabs(n.Dot(v[j])) / v[j].Length());
+                }
+                SmVector3d a0 = v[0], a1 = v[1];
+                a0.Unitize(FALSE);
+                a1.Unitize(FALSE);
+                indep = std::min(indep, (a0 * a1).Length());
+            }
+        }
+        std::printf("    tangent directions off the tangent plane by %.3g, their least sine %.3g\n", square, indep);
+        CHECK(square <= 1e-12 && indep >= 0.1);
         SmPoint3d p0, b0, q0, b1;
         SmVector3d dp0, db0, dq0, db1;
         eval(fp, 0.0, p0, dp0);
@@ -10931,12 +10988,10 @@ void setback_spring_curves_on_quadrics()
         dq0.Unitize(FALSE);
         const double tan_off = std::max((dp0 - c.tp).Length(), (dq0 + c.tq).Length());
         const double size = 20.0;
-        std::printf("    off the face by %.3g, ends off by %.3g, tangents by %.3g, base points apart %.3g, weights at it %.17g %.17g\n", off,
-                    std::max(p0.DistanceBetween(c.p), q0.DistanceBetween(c.q)), tan_off, b0.DistanceBetween(b1), fp[fp.size() - 1],
-                    fp[fp.size() - 5]);
+        std::printf("    off the face by %.3g, ends off by %.3g, tangents by %.3g, base points apart %.3g\n", off,
+                    std::max(p0.DistanceBetween(c.p), q0.DistanceBetween(c.q)), tan_off, b0.DistanceBetween(b1));
         CHECK(off <= 1e-12 * size && p0.DistanceBetween(c.p) <= 1e-12 * size && q0.DistanceBetween(c.q) <= 1e-12 * size);
         CHECK(tan_off <= 1e-12 && b0.DistanceBetween(b1) <= 1e-12 * size);
-        CHECK(fp[fp.size() - 1] == 1.0 && fp[fp.size() - 5] == 1.0 && fq[fq.size() - 1] == 1.0 && fq[fq.size() - 5] == 1.0);
     }
 }
 
