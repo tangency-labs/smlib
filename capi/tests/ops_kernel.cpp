@@ -4439,6 +4439,73 @@ double peg_corner_worst_seam(const smlib_brep *b, const PegFrame &f, double s, d
     return worst;
 }
 
+// The largest crease (radians) inside any face of `b`: G1 across a face's interior, not only at
+// its edges. A B-spline surface is analytic within each knot span, so a fold inside a face can
+// only lie on an interior knot line; there the normals just either side (d = 1e-11 of the
+// domain's span off the line, where a smooth surface's normal moves by under 1e-10) are compared
+// at stations along the line. The crease along a line is the cross product of the two sides'
+// normals, whose homogeneous numerator is a polynomial of degree at most 12 p (p the surface's
+// degree along the line) on each span: zero at all of 12 p + 1 stations of a span only if zero on
+// all of it, so a crease is never missed; its largest value at the stations is reported. Only
+// the part of a line within the face's uv box counts. `lines` counts the knot lines measured.
+double worst_interior_crease(const smlib_brep *b, int &lines)
+{
+    SmTArray<SmFace *> fs;
+    b->p->GetFaces(fs);
+    double worst = 0.0;
+    lines = 0;
+    for (ULONG k = 0; k < fs.GetSize(); ++k)
+    {
+        const SmBSplineSurface *srf = dynamic_cast<const SmBSplineSurface *>(fs[k]->GetSurface());
+        if (srf == nullptr)
+        {
+            continue;
+        }
+        const SmExtent2d box = fs[k]->GetUVDomain(), dom = srf->GetNaturalUVDomain();
+        for (int dir = 0; dir < 2; ++dir)
+        {
+            const SmSurfParamType across = dir == 0 ? SM_SP_U : SM_SP_V, along = dir == 0 ? SM_SP_V : SM_SP_U;
+            SmTArray<double> knots, alongKnots;
+            if (srf->GetKnots(across, knots) != SM_SUCCESS || srf->GetKnots(along, alongKnots) != SM_SUCCESS)
+            {
+                worst = HUGE_VAL;
+                continue;
+            }
+            const double lo = dir == 0 ? box.GetMin().x : box.GetMin().y, hi = dir == 0 ? box.GetMax().x : box.GetMax().y;
+            const double alo = dir == 0 ? box.GetMin().y : box.GetMin().x, ahi = dir == 0 ? box.GetMax().y : box.GetMax().x;
+            const double span = dir == 0 ? dom.GetMax().x - dom.GetMin().x : dom.GetMax().y - dom.GetMin().y;
+            const double d = 1e-11 * span;
+            const int per = 12 * static_cast<int>(srf->GetDegree(along)) + 1;
+            for (ULONG q = 1; q + 1 < knots.GetSize(); ++q)
+            {
+                const double t = knots[q];
+                if (t <= lo + d || t >= hi - d)
+                {
+                    continue;
+                }
+                lines++;
+                for (ULONG a = 0; a + 1 < alongKnots.GetSize(); ++a)
+                {
+                    const double a0 = std::max(alongKnots[a], alo), a1 = std::min(alongKnots[a + 1], ahi);
+                    for (int j = 0; j < per && a1 > a0; ++j)
+                    {
+                        const double w = a0 + (a1 - a0) * (j + 0.5) / per;
+                        const SmPoint2d m0 = dir == 0 ? SmPoint2d(t - d, w) : SmPoint2d(w, t - d);
+                        const SmPoint2d m1 = dir == 0 ? SmPoint2d(t + d, w) : SmPoint2d(w, t + d);
+                        SmVector3d n0, n1;
+                        if (srf->EvaluateNormal(m0, TRUE, TRUE, n0) != SM_SUCCESS || srf->EvaluateNormal(m1, TRUE, TRUE, n1) != SM_SUCCESS)
+                        {
+                            continue; // a pole's normal: no tangent plane to fold
+                        }
+                        worst = std::max(worst, std::atan2((n0 * n1).Length(), n0.Dot(n1)));
+                    }
+                }
+            }
+        }
+    }
+    return worst;
+}
+
 // The blended peg's corner graded, as above (`order` 1 for rounds, 0 for chamfers; `faces` the
 // result's face count; `x_tol` how near X a vertex must be: rounding at the part's scale, 1e-12 x
 // 50, on the exact peg, the residues' 1e-9 on the rig's). Frees `r`.
@@ -4493,6 +4560,10 @@ void peg_corner_graded(smlib_brep *&r, const PegFrame &f, double s, bool chamfer
         const double worst = peg_corner_worst_seam(r, f, s, 0.0, seams);
         std::printf("  %d seams within the corner's box, worst angle %.3g rad\n", seams, worst);
         CHECK(seams > 0 && worst <= 1e-9);
+        int lines = 0;
+        const double crease = worst_interior_crease(r, lines);
+        std::printf("  %d interior knot lines, worst crease across them %.3g rad\n", lines, crease);
+        CHECK(crease <= 1e-9);
     }
     // the volume outside B and B', in closed form
     {
@@ -4535,6 +4606,10 @@ void peg_drafted_corner_graded(smlib_brep *&r, int faces)
     const double worst = peg_corner_worst_seam(r, PEG_EXACT, 2.0, std::tan(5.0 * PI / 180.0), seams);
     std::printf("  %d seams near the corner, worst angle %.3g rad\n", seams, worst);
     CHECK(seams > 0 && worst <= 1e-9);
+    int lines = 0;
+    const double crease = worst_interior_crease(r, lines);
+    std::printf("  %d interior knot lines, worst crease across them %.3g rad\n", lines, crease);
+    CHECK(crease <= 1e-9);
     done(r);
 }
 
@@ -4570,12 +4645,14 @@ const TangentEndCase MIXED_CORNER_CASES[] = {
     {"chamfers_together_d2", mixed_chamfers_together_d2, nullptr},
     {"drafted_rounds_together_r2", mixed_drafted_rounds_together_r2,
      "status 1001, Unable to Make Topology: the corner on the cones is the blend corner's Mixed, whose topology there is not built yet"},
-    {"residue_rounds_together_r2", mixed_residue_rounds_together_r2, nullptr},
+    {"residue_rounds_together_r2", mixed_residue_rounds_together_r2,
+     "creased inside: the corner's faces L, U fold by up to 0.0161 rad across the trimline's interior knot lines (its uv curve is a C1 cubic fit, and the ribbons' c' term carries c'' into the patch)"},
     {"residue_rounds_together_r5", mixed_residue_rounds_together_r5,
      "status 1001, Vertex Computation Failure: traced past V, the concave round splits into several fillet geoms, and the Mixed corner takes the first, the piece past the front point, whose rail on the cylinder does not cross the seam's line"},
     {"residue_rounds_together_r7", mixed_residue_rounds_together_r7,
      "status 1001, Vertex Computation Failure: traced past V, the concave round splits into several fillet geoms, and the Mixed corner takes the first, the piece past the front point, whose rail on the cylinder does not cross the seam's line"},
-    {"rounds_together_r2", mixed_rounds_together_r2, nullptr},
+    {"rounds_together_r2", mixed_rounds_together_r2,
+     "creased inside: the corner's faces L, U fold by up to 0.0161 rad across the trimline's interior knot lines (its uv curve is a C1 cubic fit, and the ribbons' c' term carries c'' into the patch)"},
     {"rounds_together_r5", mixed_rounds_together_r5,
      "status 1001, Vertex Computation Failure: traced past V, the concave round splits into several fillet geoms, and the Mixed corner takes the first, the piece past the front point, whose rail on the cylinder does not cross the seam's line"},
 };
