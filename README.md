@@ -1,5 +1,7 @@
 # USD BRep
 
+> **Frozen at [v1.1.0-alpha](https://github.com/tangency-labs/smlib/releases/tag/v1.1.0-alpha).** This SolidCraft fork of SMLib takes no new construction. The generic rolling-ball blend and the rest of the work continue in [tangency-labs/solidcore](https://github.com/tangency-labs/solidcore), which is based on SMLib (its [`docs/generic-blend.md`](https://github.com/tangency-labs/solidcore/blob/main/docs/generic-blend.md); open work from [solidcore #2243](https://github.com/tangency-labs/solidcore/issues/2243)). Work branches are kept as `archive/<name>` tags.
+
 Solid modeling for [OpenUSD](https://openusd.org/). USD BRep creates and edits
 boundary-representation (BRep) solids and reads and writes them in USD as
 `BrepArray` prims.
