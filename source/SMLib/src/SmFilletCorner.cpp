@@ -1229,6 +1229,17 @@ static int iDebugLevel = 0; // Note: Can't call DebugLevel() from a static metho
                     if (    pEU0->IsConvexRadialSector(4)
                          != pEU1->IsConvexRadialSector(4) )
                       {
+                        // SolidCraft change: a convex and a concave blend continuing each other
+                        // across a tangent seam are the blend corner's Mixed (SmBlendCornerMixed.cpp)
+                        SmBlendCornerEvent eMixed = SM_BCE_NONE;
+                        if ( SmBlendCorner::ClassifyMixed( cpVertex, *pSolverEUs, *pAllEUs, pExec, dTanTolDeg, eMixed ) != SM_SUCCESS )
+                          { break; }
+                        if ( eMixed == SM_BCE_MIXED )
+                          {
+                            pNewCorner = new(crContext) SmBlendCorner(crContext, cpVertex, pSolverEUs, pAllEUs, pExec,
+                                                                      dApproxTol3d, dTangencyTolRadians, SM_BCE_MIXED, SM_BT_MITRE);
+                            break;
+                          }
                         pNewCorner = new(crContext) SmFillet3x2MixedConvexityCorner(crContext,
                                                                                     cpVertex,
                                                                                     pSolverEUs,
