@@ -44,6 +44,7 @@
 #include <SmLine.h>
 #include <SmVector3d.h>
 #include <SmVertex.h>
+#include <SmWorkCounters.h>
 
 #include <algorithm>
 #include <array>
@@ -11267,12 +11268,18 @@ int main(int argc, char **argv)
     // grows every face's plane to cover the whole sheet, so the coincident-surface check passed
     // for every pair of faces and each pair classified its edges on the other face, and each
     // hole imprinted in the plate classified every hole imprinted before it: time in n^2 (a
-    // thousand holes over 20 minutes in SolidCraft, 256 here 14 times as long as 64). Four times
-    // the holes must take well under sixteen times as long, and the plate keeps its exact area.
+    // thousand holes over 20 minutes in SolidCraft, 256 here 14 times as long as 64). The work
+    // is counted, not timed (a ratio of times tripped under load): the pairs of faces examined for
+    // intersection and the inner loops classified (SmWorkCounters). The holes' boxes lie apart
+    // (r 2 on a 20 mm pitch), so the unions pair no faces; the cut pairs the plate's one face with
+    // each hole, k^2 pairs; each hole imprinted in the plate lies outside the others' boxes, so no
+    // inner loop is classified. Four times the holes, four times the pairs; and the plate keeps its
+    // exact area.
     {
         const double radius = 2.0, pitch = 20.0;
-        auto plate_seconds = [&](int k) -> double {
+        auto plate_pairs = [&](int k) -> int64_t {
             const auto t0 = std::chrono::steady_clock::now();
+            CHECK(smlib_work_counters_reset() == SMLIB_OK);
             std::vector<smlib_brep *> holes;
             for (int i = 0; i < k; i++)
             {
@@ -11310,19 +11317,24 @@ int main(int argc, char **argv)
             CHECK(holes.size() == 1 && holes[0] != nullptr && holes[0]->p->GetNumFaces() == static_cast<ULONG>(k * k));
             CHECK(plate != nullptr && smlib_boolean2d(plate, holes[0], SMLIB_BOOLEAN_SUBTRACT, &cut) == SMLIB_OK);
             const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            int64_t work[3] = {0, 0, 0};
+            CHECK(smlib_work_counters(work) == SMLIB_OK);
+            const int64_t loops = SmWorkCounters::Get(SmWorkCounters::eLoopsClassified);
             double area = 0.0;
             CHECK(cut != nullptr && smlib_brep_area(cut, 1e-9, &area) == SMLIB_OK);
             const double exact = w * w - k * k * PI * radius * radius;
             std::printf("plate with %d holes in 2D: %.3f s, area %.6f, exact %.6f\n", k * k, seconds, area, exact);
+            std::printf("  %lld face pairs examined, %lld inner loops classified\n", static_cast<long long>(work[1]), static_cast<long long>(loops));
             CHECK(near(area, exact, 1e-7));
+            CHECK(work[1] == static_cast<int64_t>(k) * k && loops == 0);
             for (smlib_brep *x : {holes[0], plate, cut})
             {
                 smlib_brep_free(x);
             }
-            return seconds;
+            return work[1];
         };
-        const double t64 = plate_seconds(8), t256 = plate_seconds(16);
-        CHECK(t256 <= 8.0 * t64 + 0.1);
+        const int64_t pairs64 = plate_pairs(8), pairs256 = plate_pairs(16);
+        CHECK(pairs256 == 4 * pairs64);
     }
 
     smlib_brep *rod = cylinder(10, 10, -1, 4, 22);
