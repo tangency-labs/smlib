@@ -381,7 +381,7 @@ The rework lands in seven steps, each behind tests committed failing first.
 | 1 | the tangent end as an event; the end rib built outward, order 2 in t = √s; the march into P deleted | merged, [smlib #76](https://github.com/tangency-labs/smlib/pull/76) |
 | 2 | one classification of the exact rounds, each built as its rational surface; the try-chain deleted | merged, [smlib #77](https://github.com/tangency-labs/smlib/pull/77) |
 | 3 | one Gⁿ section generator (chord, circle, curvature) certified per span; variable rounds as the union of their balls | merged, [smlib #78](https://github.com/tangency-labs/smlib/pull/78) |
-| 4 | corners: Turn (Mitre, Swept), Join, Ball, End ([#79](https://github.com/tangency-labs/smlib/pull/79)); Setback with its certified convex fill ([#104](https://github.com/tangency-labs/smlib/pull/104)); the Ball on cylinders, cones and spheres ([#110](https://github.com/tangency-labs/smlib/pull/110)); the unreachable old corner code deleted ([#113](https://github.com/tangency-labs/smlib/pull/113)); the smooth-vertex End (#81), N ≥ 4 rounds and open setbacks (#86) and mixed convexity (#82) landing; the rest moved to solidcore | part merged |
+| 4 | corners: Turn (Mitre, Swept), Join, Ball, End ([#79](https://github.com/tangency-labs/smlib/pull/79)); Setback with its certified convex fill ([#104](https://github.com/tangency-labs/smlib/pull/104)); the Ball on cylinders, cones and spheres ([#110](https://github.com/tangency-labs/smlib/pull/110)); the unreachable old corner code deleted ([#113](https://github.com/tangency-labs/smlib/pull/113)); the smooth-vertex End (#81) and mixed convexity (#82) merged; N ≥ 4 rounds and open setbacks (#86) landing; the rest moved to solidcore | part merged |
 | 5 | fold and room checks, exact; refusals sized through `smlib_blend_fit_size` | merged in #79; remaining classes open |
 | 6 | overflow trimmed at the crease, in place | merged in #79 |
 | 7 | the round stored as its definition, with a certified net; the Ball's sphere patch kept through the C API's flat arrays ([#102](https://github.com/tangency-labs/smlib/issues/102)) | merged in #79 and #102; nesting, the fading end and USD's definition record open |
@@ -398,7 +398,7 @@ solidcore issue named.
 
 | issue | topic | where |
 |---|---|---|
-| [#81](https://github.com/tangency-labs/smlib/issues/81) | a round ending at the smooth vertex of a partly selected tangent chain | landing in SMLib |
+| [#81](https://github.com/tangency-labs/smlib/issues/81) | a round ending at the smooth vertex of a partly selected tangent chain | merged |
 | [#82](https://github.com/tangency-labs/smlib/issues/82) | mixed convexity: convex and concave blends at one vertex (the test peg) | merged |
 | [#83](https://github.com/tangency-labs/smlib/issues/83) | delete the old corner hierarchy | phase 1 merged (#113); the setback paths go with #86 |
 | [#84](https://github.com/tangency-labs/smlib/issues/84) | several concave rounds at one vertex, unequal or N ≥ 4 | solidcore #2361 |
