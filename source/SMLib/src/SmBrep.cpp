@@ -13632,6 +13632,7 @@ SmBoolean bDebugMe=FALSE;
               // no move - TestPoint is outside pNewF->OuterLoop's box, even at the retry tolerance below
               if (bHaveNewFOuterBox && !sNewFOuterBox.ContainsPoint3d(sTestPoint, dPointTol*100.0))
                 { continue ; }
+              SmWorkCounters::Add(SmWorkCounters::eLoopsClassified); // SolidCraft fork: work count
 
 #ifdef SM_DEBUG_CODE
               // draw TestPoint(red), LoopBeingClassified(blue), pNewF(green)
