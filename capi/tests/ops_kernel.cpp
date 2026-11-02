@@ -9729,9 +9729,49 @@ void scenario_junction_boss_tilt_00_root_round()
 {
     junction_boss("boss upright", 0.0);
 }
+// Tilted 20 degrees the cylinder's bottom cap rises out of the plate on the -x side, by
+// 6 sin 20 - 2 cos 20 = 0.173 at its top: a wedge of air under the overhanging cap. The root
+// edge's round ends at the two vertices where the root ellipse meets the cap's chord on the plate,
+// Ends of mixed convexity (the chord concave, the cap's rim convex), each on the cap: its rail on
+// the wall must end on the rim, so its ball's centre lies in the cap's plane. That centre, at
+// axial height 0 and 6 + r from the axis, at angle phi from the cap's frame x (cos 20, 0, -sin 20)
+// and r above the plate: -2 cos 20 - (6 + r) sin 20 cos phi = r, so cos phi =
+// -(r + 2 cos 20) / ((6 + r) sin 20), which has a root only while r <= r* = (6 sin 20 -
+// 2 cos 20) / (1 - sin 20) = 0.262524174; at r* both Ends' rails reach the rim at its top, phi = pi
+// (the bound is open: the two Ends meet in a point). Past it the round's rail on the wall passes
+// over the whole rim, and the round would bridge the wedge's mouth: a concave overflow. Owner's
+// ruling (2026-11-02): refused, naming the largest radius whose rail still ends on the rim, r*
+// less the fit margin (a thousand of the root edge's tolerance as SMLib works it, 1.657e-5 here,
+// though the body's edge reads 1e-5): SMLIB_ERR_NO_ROOM at r 1.5, smlib_blend_fit_size under r*
+// by at most 0.02 (two thousand tolerances), the reason naming it, the round at that size built
+// sound, and one 0.001 past r* refused. (SolidCraft's recipe, which expected a body, is re-pinned
+// with the ruling.)
 void scenario_junction_boss_tilt_20_root_round()
 {
-    junction_boss("boss tilted 20 degrees", 20.0);
+    const double a = 20.0 * PI / 180.0;
+    smlib_brep *body = combined(box(-30, -30, -10, 60, 60, 10), cylinder_on({-2.0 * std::sin(a), 0, -2.0 * std::cos(a)}, {std::sin(a), 0, std::cos(a)}, 6.0, 25.0),
+                                SMLIB_BOOLEAN_UNION);
+    const std::vector<double> chain = body != nullptr ? tangent_chain_points(body, {0, 6, 0}) : std::vector<double>();
+    smlib_brep *out = nullptr;
+    const int32_t s = body == nullptr ? SMLIB_ERR_ARG : smlib_fillet(body, chain.data(), static_cast<int64_t>(chain.size() / 3), 0.1, 1.5, &out, nullptr);
+    std::printf("  boss tilted 20 degrees, rounded 1.5: status %d%s%s\n", static_cast<int>(s), s == SMLIB_OK ? "" : ": ", s == SMLIB_OK ? "" : last_blend_reason().c_str());
+    const double bound = (6.0 * std::sin(a) - 2.0 * std::cos(a)) / (1.0 - std::sin(a));
+    CHECK(s == SMLIB_ERR_NO_ROOM && out == nullptr);
+    const double fit = blend_fit();
+    std::printf("  named %.9f, the bound r* %.9f less %.6g\n", fit, bound, bound - fit);
+    CHECK(fit < bound && fit >= bound - 0.02);
+    CHECK(std::fabs(blend_reason_number("a radius below ") - fit) <= 1e-6);
+    // the size named builds, and one just past the bound does not
+    for (const double r : {fit, bound + 1e-3})
+    {
+        smlib_brep *at = nullptr;
+        const int32_t st = body == nullptr ? SMLIB_ERR_ARG : smlib_fillet(body, chain.data(), static_cast<int64_t>(chain.size() / 3), 0.1, r, &at, nullptr);
+        std::printf("  rounded %.9f: status %d\n", r, static_cast<int>(st));
+        CHECK(r == fit ? st == SMLIB_OK && at != nullptr && sound(at) : st == SMLIB_ERR_NO_ROOM);
+        smlib_brep_free(at);
+    }
+    smlib_brep_free(out);
+    smlib_brep_free(body);
 }
 void scenario_junction_boss_tilt_40_root_round()
 {
@@ -9773,7 +9813,7 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"junction_tee_oblique_unequal_round", scenario_junction_tee_oblique_unequal_round, nullptr},
     {"junction_boss_tilt_00_root_round", scenario_junction_boss_tilt_00_root_round, nullptr},
     {"junction_boss_tilt_20_root_round", scenario_junction_boss_tilt_20_root_round,
-     "status 1001, Corner Edge Computation Failure: the End at (-5.848, +-2.409, 0), where the root ellipse meets the chord of the cylinder's bottom cap rising out of the plate, is of mixed convexity (the chord concave, the cap's rim convex); the round's rail on the wall, about 1.5 up, passes over the whole rim, which rises only 0.173 above the plate (-2 cos 20 + 6 sin 20), so the rail meets no side edge there and the end rib has no end; not refused naming a size"},
+     "status 1001, Corner Edge Computation Failure, no size: the mixed End's rail on the wall misses the cap's rim, a concave overflow not refused as SMLIB_ERR_NO_ROOM naming r* less the fit margin"},
     {"junction_boss_tilt_40_root_round", scenario_junction_boss_tilt_40_root_round,
      "status 1001, Corner Edge Computation Failure: at the End at (-3.111, 5.506, 0) (mixed convexity, as tilt 20) the cap's rim is split by the cylinder's seam vertex at (-3.93, 4.91, 0.69), and the rail on the wall crosses the rim past it, on the next edge of the same two faces: the side edge's rail end is not found (built with the seam elsewhere)"},
     {"round_just_under_a_boss_footprint", scenario_round_just_under_a_boss_footprint,
