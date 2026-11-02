@@ -323,6 +323,7 @@ SmBlendCorner::SmBlendCorner
    m_eEvent(eEvent),
    m_eTurn(eTurn),
    m_eEnd(SM_BEND_ON_END_FACE),
+   m_pEndCap(NULL),
    m_bG1Case(FALSE),
    m_bMitre(FALSE),
    m_pSideEU(NULL),
@@ -337,6 +338,7 @@ SmBlendCorner::SmBlendCorner
 
 SmBlendCorner::~SmBlendCorner()
 {
+  delete m_pEndCap;
   DeleteSweptSurface();
   DeleteBallSurface();
   delete m_pFill;
@@ -1434,7 +1436,12 @@ SmStatus SmBlendCorner::MakeCornerTopology()
   if ( m_eEvent == SM_BCE_JOIN )
     { return MakeJoinTopology(); }
   if ( m_eEvent == SM_BCE_END )
-    { return ( m_eEnd == SM_BEND_OPEN ) ? MakeEndOpen() : ( m_eEnd == SM_BEND_RUNS_OUT ) ? MakeEndRunningOut() : MakeEndOnEndFace(); }
+    {
+      return   ( m_eEnd == SM_BEND_OPEN )      ? MakeEndOpen()
+             : ( m_eEnd == SM_BEND_RUNS_OUT )  ? MakeEndRunningOut()
+             : ( m_eEnd == SM_BEND_AT_SMOOTH ) ? MakeEndAtSmoothVertex()
+             :                                   MakeEndOnEndFace();
+    }
   if ( IsSetBack() )
     { return MakeSetBackTopology(); }
   return IsSwept() ? MakeSweptTopology() : IsMitreTurn() ? MakeMitreTopology() : MakeTwoBlendTopology();
