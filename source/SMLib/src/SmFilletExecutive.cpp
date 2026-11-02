@@ -3648,6 +3648,28 @@ SmStatus SmFilletExecutive::CreateFilletBrep
         else if ( pWorst != NULL && !sWorst.m_bBall && !sWorst.m_bLaw && pWorst->GetSolverType() == SM_FS_CONST_RADIUS
                   && sWorst.m_dRadius > 0.0 && sWorst.m_dWorks > 0.0 && sWorst.m_dWorks < SM_BIG_DOUBLE )
           { SER( NoteOpenFit( TRUE, sWorst.m_dWorks / sWorst.m_dRadius, SM_FIT_SCALE, *pWorst )); }
+        // An End's rail that runs past its side edge's far end is a second cause, which the
+        // corner would refuse once built (SmBlendCorner::RefuseEndPastSideEdge): the refusal
+        // names the smaller of the two radii.
+        if ( m_dFitRadius > 0.0 && m_lFitKind == SM_FIT_RADIUS )
+          {
+            for (ULONG c=0; c<m_vFilletCorners.GetSize(); c++)
+              {
+                SmFilletCorner * pCorner = m_vFilletCorners[c];
+                if ( pCorner == NULL || pCorner->GetCornerType() != SM_FCR_BLEND )
+                  { continue; }
+                SmBoolean bFound = FALSE;
+                double    dFit   = 0.0;
+                SmEdge  * pEdge  = NULL;
+                SER( ((SmBlendCorner*)pCorner)->FitOfEndPastSideEdges( bFound, dFit, pEdge ));
+                if ( bFound && dFit < m_dFitRadius )
+                  {
+                    SER( SmBlendCorner::DescribeEndPastSideEdge( dFit, cWhy ));
+                    GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, cWhy );
+                    NoteFitRadius( dFit, pEdge );
+                  }
+              }
+          }
         return SM_ERR;
       }
   }
@@ -4286,8 +4308,10 @@ SmStatus SmFilletExecutive::CreateFilletBrep
       if(SM_SUCCESS != pCorner->CalcCornerEdgeGeom())
         {
           // SolidCraft change: a corner that noted why it refused (a setback corner's fill,
-          // SmBlendCorner) keeps that reason
-          if ( GetFilletErrorInfo()->GetErrorCode() != eNotedBefore )
+          // SmBlendCorner), or one refused as one the blends cannot pass (SM_FILERR_NO_ROOM, noted
+          // by the corner), keeps that reason
+          if (   GetFilletErrorInfo()->GetErrorCode() != eNotedBefore
+              || GetFilletErrorInfo()->GetErrorCode() == SM_FILERR_NO_ROOM )
             { SER( SM_ERR ); }
           // when CalcCornerEdgeGeom failed - note the error
           pCorner->GetName( sBuff, SM_TBLOCK_SIZE );
@@ -5274,7 +5298,7 @@ SmBoolean bDebugMe = FALSE ;
 
   // SolidCraft change: a feature standing inside a round's band is kept (m_bKeepFeatures): the
   // round is trimmed round it in place and sewn in instead of merged (SmFilletKeepFeatures.cpp).
-  if ( m_bKeepFeatures && !m_bCliffOverflow )
+  if ( m_bKeepFeatures && !m_bCliffOverflow && !HasOpenSetBack() )
     {
       SmBoolean bKept = FALSE;
       SmStatus  eKept = KeepFeaturesInBands( bKept );
@@ -5290,8 +5314,10 @@ SmBoolean bDebugMe = FALSE ;
     }
 
   // SolidCraft change: a cliff overflow closes the fillet faces into the region the blends
-  // remove and subtracts it from the target, instead of merging the fillet faces in.
-  if ( m_bCliffOverflow )
+  // remove and subtracts it from the target, instead of merging the fillet faces in. So is an
+  // open G1 setback corner's hole made (no patches: its spring curves are imprinted on its faces
+  // with the sheet's boundary, TrimAtCreases).
+  if ( m_bCliffOverflow || HasOpenSetBack() )
     {
       SmStatus eSubtracted = TrimAtCreases();
       if ( eSubtracted != SM_SUCCESS )
@@ -5591,6 +5617,24 @@ SmBoolean bDebugMe = FALSE ;
                 } // end edge has an OtherEdge mate check
             } // end iter every Brep Edge marking all edges with OtherEdge mates
         } // end mark all common edges scope block
+
+      // SolidCraft change: an edge of the body with more than two faces (where two lumps of the
+      // body touch along a line, as a bore's wall touching the bottom face) bounds the material a
+      // blend takes off on one side of it: the faces beyond it are not the blend's, however the
+      // band's pieces meet it. Unmarked, the faces a fillet's rail encloses (TrimOriginalSurfaces)
+      // were collected across it into the whole body, the trim was dropped as leaking, and the
+      // fillet's faces were merged into a body left whole.
+        {
+          SmTArray<SmEdge*> sBrepEdges;
+          m_pTargetBrep->GetEdges(sBrepEdges);
+          for (ii=0; ii<sBrepEdges.GetSize(); ii++)
+            {
+              SmTArray<SmFace*> sEdgeFaces;
+              sBrepEdges[ii]->GetFaces( sEdgeFaces );
+              if ( sEdgeFaces.GetSize() > 2 )
+                { sBrepEdges[ii]->Mark(eOrigMarkType); }
+            }
+        }
 
 #ifdef SM_DEBUG_CODE
       ULONG lLastDelFace= 0, lLastKeepFace = 0;

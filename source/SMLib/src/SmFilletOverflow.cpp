@@ -36,6 +36,7 @@
 #include <SmFilletExecutive.h>
 #include <SmFilletGeom.h>
 #include <SmFilletSolver.h>
+#include <SmBlendCorner.h>
 #include <SmFilletStandardSolver.h>
 #include <SmBrep.h>
 #include <SmFace.h>
@@ -1307,8 +1308,19 @@ SmStatus SmFilletExecutive::TrimAtCreases()
         }
     }
 
-  // 1, 2: each sheet face split along its creases, the pieces outside the body (beyond the
-  // cliffs, or past an end) deleted, whether a crease split it or not
+  // each round's side of the body: a convex blend's sheet lies in the material it takes off, a
+  // concave blend's (an open setback corner's concave rounds; a concave overflow is refused before)
+  // in the void it fills. A sheet face of no round (a corner's) takes the blends' one side.
+  std::vector<SmBoolean> sAdds( m_vFilletSolvers.GetSize(), FALSE );
+  SmBoolean bAnyAdds = FALSE, bAnyTakes = FALSE;
+  for (ULONG i=0; i<m_vFilletSolvers.GetSize(); i++)
+    {
+      SER( SmFilletSolver::IsConcaveEdge( *m_vFilletSolvers[i]->GetEdgeuse(0)->GetEdge(), sAdds[i] ));
+      if ( sAdds[i] ) { bAnyAdds = TRUE; } else { bAnyTakes = TRUE; }
+    }
+
+  // 1, 2: each sheet face split along its creases, the pieces off their side of the body (beyond
+  // the cliffs, or past an end) deleted, whether a crease split it or not
   SmTArray<SmFace*> sSheetFaces;
   m_pFilletBrep->GetFaces( sSheetFaces );
   for (ULONG s=0; s<sSheetFaces.GetSize(); s++)
@@ -1408,7 +1420,15 @@ SmStatus SmFilletExecutive::TrimAtCreases()
               GetFilletErrorInfo()->NoteError( SM_FILERR_BAD_MERGE, _T("Fillet Error: a blend past its faces lies on the body's boundary away from its creases") );
               return SM_ERR;
             }
-          if ( !bInside )
+          SmBoolean bAdds = bAnyAdds;
+          if ( sRoundOf.count( pSheet ))
+            { bAdds = sAdds[sRoundOf[pSheet]]; }
+          else if ( bAnyAdds && bAnyTakes )
+            {
+              GetFilletErrorInfo()->NoteError( SM_FILERR_CORNER_UNSUPPORTED, _T("Fillet Error: a corner's face between blends that add and blends that take off material, past their faces or at an open setback, is not built") );
+              return SM_ERR;
+            }
+          if ( bAdds ? bInside : !bInside )
             {
               SER( m_pFilletBrep->DeleteFace( sAll[p], TRUE ));
               sAll[p] = NULL;
@@ -1526,6 +1546,24 @@ SmStatus SmFilletExecutive::TrimAtCreases()
           SmExtent1d sIvl = pEdge->GetInterval();
           if ( !( sIvl == pCopy->GetNaturalInterval() ))
             { SER( pCopy->Trim( sIvl )); }
+        }
+      // an open G1 setback corner's spring curves on this face: with the rails they bound the
+      // corner's hole on it (SmBlendCorner::OpenSetBackSprings)
+      for (ULONG c=0; c<m_vFilletCorners.GetSize(); c++)
+        {
+          SmFilletCorner * pCorner = m_vFilletCorners[c];
+          if ( pCorner == NULL || pCorner->GetCornerType() != SM_FCR_BLEND || !((SmBlendCorner*)pCorner)->IsSetBackOpen() )
+            { continue; }
+          for (ULONG k=0; k<pCorner->m_vEdges.GetSize(); k++)
+            {
+              SmFilletEdge * pSpring = pCorner->m_vEdges[k];
+              if ( pSpring == NULL || pSpring->GetFilletEdgeType() != SM_FE_PRECOMPUTED || pSpring->GetOriginalFace() != pFace || pSpring->GetCurve() == NULL )
+                { continue; }
+              SmCurve * pCopy = NULL;
+              SER( pSpring->GetCurve()->Copy( m_crContext, pCopy ));
+              NER( pCopy );
+              sOn.Add( pCopy );
+            }
         }
       if ( sOn.GetSize() == 0 )
         { continue; }
@@ -1707,10 +1745,18 @@ SmStatus SmFilletExecutive::TrimAtCreases()
       for (ULONG e=0; e<sEdges.GetSize(); e++)
         { sEdges[e]->SetTolerance( smos_Max( dTol, smos_Max( dVertexGap, dEdgeGap ))); }
     }
+  // an open G1 setback corner's hole: its n sections and 2 n spring halves stay free
+  ULONG lOpen = 0;
+  for (ULONG c=0; c<m_vFilletCorners.GetSize(); c++)
+    {
+      SmFilletCorner * pCorner = m_vFilletCorners[c];
+      if ( pCorner != NULL && pCorner->GetCornerType() == SM_FCR_BLEND && ((SmBlendCorner*)pCorner)->IsSetBackOpen() && pCorner->m_pAllEUs != NULL )
+        { lOpen += 3 * pCorner->m_pAllEUs->GetSize(); }
+    }
   SmBoolean bMaybeOpen = FALSE;
-  if ( lLamina == 0 )
+  if ( lLamina == lOpen )
     { SER( m_pTargetBrep->OrientTrimmedSurfaces( TRUE, bMaybeOpen, FALSE )); }
-  if ( lLamina != 0 || bMaybeOpen || !m_pTargetBrep->IsManifoldSolid() )
+  if ( lLamina != lOpen || ( lOpen == 0 && ( bMaybeOpen || !m_pTargetBrep->IsManifoldSolid() )))
     {
       GetFilletErrorInfo()->NoteError( SM_FILERR_BAD_MERGE, _T("Fillet Error: a blend past its faces does not sew into the body along its creases and rails") );
       return SM_ERR;
@@ -1752,3 +1798,18 @@ SmStatus SmFilletExecutive::TrimAtCreases()
   }
   return SM_SUCCESS;
 } // end SmFilletExecutive::TrimAtCreases
+
+/*******************************************************************//**
+PURPOSE: Whether a corner is an open G1 setback (its hole made by
+    TrimAtCreases' imprint, no patches).
+***********************************************************************/
+SmBoolean SmFilletExecutive::HasOpenSetBack() const
+{
+  for (ULONG c=0; c<m_vFilletCorners.GetSize(); c++)
+    {
+      SmFilletCorner * pCorner = m_vFilletCorners[c];
+      if ( pCorner != NULL && pCorner->GetCornerType() == SM_FCR_BLEND && ((SmBlendCorner*)pCorner)->IsSetBackOpen() )
+        { return TRUE; }
+    }
+  return FALSE;
+}

@@ -1176,9 +1176,10 @@ static int iDebugLevel = 0; // Note: Can't call DebugLevel() from a static metho
                                                                     dTangencyTolRadians,
                                                                     SM_BCE_END,
                                                                     SM_BT_MITRE);
-                pEnd->SetEnd(   SmBlendCorner::EndRunsOut( cpVertex, pEU0 ) ? SM_BEND_RUNS_OUT
-                              : bIsOpenEndCorner                          ? SM_BEND_OPEN
-                              :                                             SM_BEND_ON_END_FACE );
+                pEnd->SetEnd(   SmBlendCorner::EndRunsOut( cpVertex, pEU0 )                           ? SM_BEND_RUNS_OUT
+                              : bIsOpenEndCorner                                                    ? SM_BEND_OPEN
+                              : SmBlendCorner::EndAtSmoothVertex( cpVertex, pEU0, *pAllEUs, dTanTolDeg ) ? SM_BEND_AT_SMOOTH
+                              :                                                                       SM_BEND_ON_END_FACE );
                 pNewCorner = pEnd;
               }
           }
@@ -1325,6 +1326,18 @@ static int iDebugLevel = 0; // Note: Can't call DebugLevel() from a static metho
               {
                 SmBlendCornerEvent eEvent = SM_BCE_NONE;
                 ULONG              lOrder = 1;
+                // four or more rounds that one ball touches: the Ball (SmBlendCorner::ClassifyBall)
+                if ( lTotalEUs > 3 )
+                  {
+                    if ( SmBlendCorner::ClassifyBall( cpVertex, *pSolverEUs, *pAllEUs, pExec, eEvent ) != SM_SUCCESS )
+                      { break; }
+                    if ( eEvent == SM_BCE_BALL )
+                      {
+                        pNewCorner = new(crContext) SmBlendCorner(crContext, cpVertex, pSolverEUs, pAllEUs, pExec, dApproxTol3d,
+                                                                  dTangencyTolRadians, SM_BCE_BALL, SM_BT_MITRE);
+                        break;
+                      }
+                  }
                 if ( SmBlendCorner::ClassifySetBack( cpVertex, *pSolverEUs, *pAllEUs, pExec, dTanTolDeg, eEvent, lOrder ) != SM_SUCCESS )
                   { break; }
                 if ( eEvent == SM_BCE_SETBACK )
@@ -4917,12 +4930,6 @@ NOTES:
 SmStatus SmFilletConcaveNxNCorner::MakeCornerTopology
   ()
 {
-    // Determine if this is a setback corner
-    if (m_dSetBackDist > this->m_dThisApproxTol3d*100.0) {
-        // Let SmFilletConvexNxNCorner handle setbacks
-        return SmFilletConvexNxNCorner::MakeCornerTopology();
-    }
-
 int iDebugLevel = 0;
 #ifdef SM_DEBUG_CODE
     iDebugLevel = DebugLevel();
@@ -5363,12 +5370,6 @@ NOTES:
 SmStatus SmFilletConvexNxNCorner::MakeCornerTopology
   ()
 {
-    // Determine if this is a setback corner
-    SmBoolean bIsSetBack = FALSE;
-    if (m_dSetBackDist > this->m_dThisApproxTol3d*100.0) {
-        bIsSetBack = TRUE;
-    }
-
 #ifdef SM_DEBUG_CODE
     if ( DebugLevel() > 0 ) {
         for (ULONG f=0; f<m_pAllEUs->GetSize(); f++) {
@@ -5409,31 +5410,14 @@ SmStatus SmFilletConvexNxNCorner::MakeCornerTopology
 
         SmFilletGeom * pPrevFilletGeom = pPrevFilSolver->GetFirstFilletGeom();
         SmFilletGeom * pCurrFilletGeom = pCurrFilSolver->GetFirstFilletGeom();
-        if (!bIsSetBack) { // Regular corner, no setbacks
-            pCurrFV->SetFilletVertexType(SM_FV_RAIL_X_RAIL);
-            // Setup rails of fillets
-            SmFilletEdgeuse * pNewEdgeuse = NULL;
-            SER(pPrevFilletGeom->MakeRailEdgeuse(m_pPseudoBrep,
-                lPrevRailIndex,pCurrFV,pNewEdgeuse));
-            SER(pCurrFilletGeom->MakeRailEdgeuse(m_pPseudoBrep,
-                lCurrRailIndex,pCurrFV,pNewEdgeuse));
-            m_vVertices.Add(pCurrFV);
-        }
-        else {
-            // Will insert a new vertex before curr vert
-            SmFilletVertex * pNewV = new (m_pPseudoBrep) SmFilletVertex(this);
-            pNewV->SetPointClass(SM_PC_FACE, pCommonFace);
-            pNewV->SetFilletVertexType(SM_FV_MATE);
-            m_vVertices.Add(pNewV);
-            m_vVertices.Add(pCurrFV);
-            // Setup rails of fillets
-            SmFilletEdgeuse * pNewEdgeuse = NULL;
-            SER(pPrevFilletGeom->MakeRailEdgeuse(m_pPseudoBrep,
-                lPrevRailIndex,pNewV,pNewEdgeuse));
-            pCurrFV->SetFilletVertexType(SM_FV_SETBACK);
-            SER(pCurrFilletGeom->MakeRailEdgeuse(m_pPseudoBrep,
-                lCurrRailIndex,pCurrFV,pNewEdgeuse));
-        }
+        pCurrFV->SetFilletVertexType(SM_FV_RAIL_X_RAIL);
+        // Setup rails of fillets
+        SmFilletEdgeuse * pNewEdgeuse = NULL;
+        SER(pPrevFilletGeom->MakeRailEdgeuse(m_pPseudoBrep,
+            lPrevRailIndex,pCurrFV,pNewEdgeuse));
+        SER(pCurrFilletGeom->MakeRailEdgeuse(m_pPseudoBrep,
+            lCurrRailIndex,pCurrFV,pNewEdgeuse));
+        m_vVertices.Add(pCurrFV);
         pPrevFilSolver = pCurrFilSolver;
         pPrevEU = pCurrEU;
     }
@@ -5471,24 +5455,6 @@ SmStatus SmFilletConvexNxNCorner::MakeCornerTopology
         // Get next vertex
         lCount = (lCount+1)%lTotal;
         SmFilletVertex * pNextFV = m_vVertices[lCount];
-        if (bIsSetBack) {
-            // Insert a rail-rail-interpo edge
-            SmFilletEdge * pE = NULL;
-            SER(SmFilletEdge::MakeFilletEdge(m_pPseudoBrep, // in : target Brep to receive new topology objects
-                                             pCurrFV,       // in : start of new FilletEdge
-                                             pNextFV,       // in : end   of new FilletEdge
-                                             pE,            // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                             this));        // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                            //      NULL to ignore, default:[NULL]
-            pE->SetFilletEdgeType(SM_FE_RAIL_RAIL_INTERPOLATION);
-            SmFace *pCommonFace = SM_CAST_PTR(SmFace,
-                pNextFV->GetPointClassObject()); NER(pCommonFace);
-            pE->SetOriginalFace(pCommonFace);
-            m_vEdges.Add(pE);
-            pCurrFV = pNextFV;
-            lCount = (lCount+1)%lTotal;
-            pNextFV = m_vVertices[lCount];
-        }
         SmFilletEdge * pFilletEdge = NULL;
         if (m_bBevel) {
             // Make edge from curr vert to center
@@ -5517,10 +5483,6 @@ SmStatus SmFilletConvexNxNCorner::MakeCornerTopology
             SmFilletEdgeuse * pPrimEU = (SmFilletEdgeuse*)pFilletEdge->
                 GetPrimaryEdgeuse();
             pPrimEU->SetFilletGeom(pCurrFilletGeom);
-            if (bIsSetBack) {
-                pCurrFV->SetMate(0,pNextFV);
-                pNextFV->SetMate(0,pCurrFV);
-            }
         }
         m_vEdges.Add(pFilletEdge);
 

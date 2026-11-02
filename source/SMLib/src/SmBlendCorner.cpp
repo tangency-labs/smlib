@@ -87,6 +87,77 @@ SmEdgeuse * sm_FindSideEdgeuse      // rtn: edgeuse
 
 } // end sm_FindSideEdgeuse
 
+/*******************************************************************//**
+PURPOSE: A side edge continued across its end pAt, where it is split only
+    by a seam: the next edge's edgeuse on pEU's faceuse, or NULL.
+
+NOTES: The rail on a side face F ends on the side edge E, between F and
+    the end face; E ends at pAt. When pAt's only other edges are N, which
+    continues E G1 at pAt between the same two faces, and a seam of F or
+    of the end face (both its sides on that one face: a periodic
+    surface's seam ending on E), pAt is no corner of the body: it splits
+    one boundary of the two faces only because the seam ends there, and
+    the rail that runs past it ends on N. A third edge that is no seam
+    (a real edge between two faces) is a corner, and E is not continued.
+***********************************************************************/
+SmEdgeuse * sm_SideEdgeuseAcrossSeamVertex
+  (SmEdgeuse      * pEU,         // in : the side edgeuse, on the rail's face
+   const SmVertex * pAt,         // in : the side edge's end to continue it across
+   double           dAngTolDeg)  // in : tangency tolerance (degrees)
+{
+  if ( pEU == NULL || pAt == NULL || pEU->GetRadial() == NULL )
+    { return NULL; }
+  SmEdge * pE = pEU->GetEdge();
+  if (   pE == NULL || pE->IsClosed()
+      || ( pE->GetStartVertex() != pAt && pE->GetEndVertex() != pAt ))
+    { return NULL; }
+  SmFace * pF = pEU->GetFace();
+  SmFace * pG = pEU->GetRadial()->GetFace();
+  if ( pF == NULL || pG == NULL || pF == pG )
+    { return NULL; }
+
+  SmTArray<SmEdge*> sEdges;
+  pAt->GetEdges( sEdges );
+  if ( sEdges.GetSize() != 3 )
+    { return NULL; }
+  SmEdge * pN = NULL;
+  SmEdge * pSeam = NULL;
+  for (ULONG ii=0; ii<3; ii++)
+    {
+      SmEdge * pX = sEdges[ii];
+      if ( pX == pE )
+        { continue; }
+      SmTArray<SmFace*> sFaces;
+      pX->GetFaces( sFaces );
+      SmBoolean bOneFace = ( sFaces.GetSize() > 0 && ( sFaces[0] == pF || sFaces[0] == pG ) ) ? TRUE : FALSE;
+      for (ULONG kk=1; kk<sFaces.GetSize(); kk++)
+        { bOneFace = ( bOneFace && sFaces[kk] == sFaces[0] ) ? TRUE : FALSE; }
+      if ( bOneFace && pX->IsSeam() )
+        { pSeam = pX; }
+      else
+        { pN = pX; }
+    }
+  if ( pN == NULL || pSeam == NULL || pN->IsClosed() )
+    { return NULL; }
+
+  SmTArray<SmEdgeuse*> sEUs;
+  if ( pN->GetEdgeuses( sEUs ) != SM_SUCCESS )
+    { return NULL; }
+  SmEdgeuse * pNext = NULL;
+  for (ULONG ii=0; ii<sEUs.GetSize() && pNext == NULL; ii++)
+    {
+      SmEdgeuse * pX = sEUs[ii];
+      if (   pX->GetFaceuse() == pEU->GetFaceuse()
+          && pX->GetRadial() != NULL
+          && pX->GetRadial()->GetFace() == pG )
+        { pNext = pX; }
+    }
+  if ( pNext == NULL || ! sm_TestG1Continuity( pAt, pE, pN, dAngTolDeg, NULL, 0 ))
+    { return NULL; }
+  return pNext;
+
+} // end sm_SideEdgeuseAcrossSeamVertex
+
 /********************************************************************
 PURPOSE:  Determine if two adjacent edges are tangent to each other
              at a given vertex
@@ -323,6 +394,7 @@ SmBlendCorner::SmBlendCorner
    m_eEvent(eEvent),
    m_eTurn(eTurn),
    m_eEnd(SM_BEND_ON_END_FACE),
+   m_pEndCap(NULL),
    m_bG1Case(FALSE),
    m_bMitre(FALSE),
    m_pSideEU(NULL),
@@ -330,14 +402,14 @@ SmBlendCorner::SmBlendCorner
    m_lFillOrder(1),
    m_bConvexSetBack(TRUE),
    m_bSetBackOverflows(FALSE),
-   m_pFill(NULL),
-   m_pBallSurface(NULL)
+   m_pFill(NULL)
 {
   m_apMixedSurface[0] = m_apMixedSurface[1] = NULL;
 }
 
 SmBlendCorner::~SmBlendCorner()
 {
+  delete m_pEndCap;
   DeleteSweptSurface();
   DeleteBallSurface();
   delete m_pFill;
@@ -1442,7 +1514,12 @@ SmStatus SmBlendCorner::MakeCornerTopology()
   if ( m_eEvent == SM_BCE_JOIN )
     { return MakeJoinTopology(); }
   if ( m_eEvent == SM_BCE_END )
-    { return ( m_eEnd == SM_BEND_OPEN ) ? MakeEndOpen() : ( m_eEnd == SM_BEND_RUNS_OUT ) ? MakeEndRunningOut() : MakeEndOnEndFace(); }
+    {
+      return   ( m_eEnd == SM_BEND_OPEN )      ? MakeEndOpen()
+             : ( m_eEnd == SM_BEND_RUNS_OUT )  ? MakeEndRunningOut()
+             : ( m_eEnd == SM_BEND_AT_SMOOTH ) ? MakeEndAtSmoothVertex()
+             :                                   MakeEndOnEndFace();
+    }
   if ( IsSetBack() )
     { return MakeSetBackTopology(); }
   return IsSwept() ? MakeSweptTopology() : IsMitreTurn() ? MakeMitreTopology() : MakeTwoBlendTopology();

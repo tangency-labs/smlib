@@ -124,7 +124,8 @@ NOTES: One corner edge, SM_FE_CROSS_SECTION, the shared section: the first
    no farther: the section through the vertex can lie beyond them): its
    end there on the edge (SM_FV_RAIL_X_EDGEUSE), its mate on the other
    side (or, with such an edge on both sides, where the rails cross the
-   other one too). More than one edge on a side: refused.
+   other one too). More than one edge on a side: refused, no size building
+   it.
 ***********************************************************************/
 SmStatus SmBlendCorner::MakeJoinTopology()
 {
@@ -136,10 +137,13 @@ SmStatus SmBlendCorner::MakeJoinTopology()
   SER( sm_JoinSides( *m_pSolverEUs, *m_pAllEUs, apSide, asBetween ));
   // the section's ends: on a side with an edge between the blends (where they change face, or
   // cross a face's seam) where the rails cross it, else (the first side) through the vertex
+  // No size builds it: the edges between the blends do not change with it. Refused as too large
+  // with no size that builds (smlib_blend_fit_size's 0).
   if ( asBetween[0].GetSize() > 1 || asBetween[1].GetSize() > 1 )
     {
-      GetFilletExecutive()->GetFilletErrorInfo()->NoteError( m_cpVertex, SM_FIL_FAILURE, SM_FILERR_CORNER_UNSUPPORTED,
-          _T("Fillet Error: blends continuing each other across more than one edge on a side") );
+      GetFilletExecutive()->GetFilletErrorInfo()->NoteError( m_cpVertex, SM_FIL_FAILURE, SM_FILERR_NO_ROOM,
+          _T("Fillet Error: blends continuing each other across more than one edge on a side have no section both reach: no size builds it") );
+      GetFilletExecutive()->NoteFitRadius( 0.0, (*m_pSolverEUs)[0]->GetEdge() );
       SER( SM_ERR );
     }
   const SmBoolean abOnEdge[2] = { asBetween[0].GetSize() == 1, asBetween[1].GetSize() == 1 };

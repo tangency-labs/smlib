@@ -717,15 +717,12 @@ int32_t round_edges(SmBrep *b, const std::vector<SmEdge *> &edges, const std::ve
         {
             return SMLIB_ERR_ARG;
         }
-        // SMLib sets back an N x N corner whose edges all have one convexity (its
-        // SmFilletConvexNxNCorner, convex or concave alike). A mixed one (SmFilletConcaveNxNCorner)
-        // hands its setback to that same topology, which takes the rails of neighbouring rounds to
-        // meet within their edges; at a mixed corner those on the face between the two rounds of
-        // one convexity do not, and its sections there come out kinked (a coincident pair of
-        // control points) and the result no solid.
+        // SMLib sets back only the blend corner's Setback (every face a plane, every edge
+        // straight, one convexity: SmBlendCorner::ClassifySetBack); any other corner asked to be
+        // set back is refused (#86: the old N x N corners' setbacks are gone).
         SmFilletCornerType type = corner->GetCornerType();
         const bool filled = type == SM_FCR_BLEND && static_cast<SmBlendCorner *>(corner)->GetEvent() == SM_BCE_SETBACK;
-        if (type != SM_FCR_N_x_N_CONVEX && !filled)
+        if (!filled)
         {
             if (refused != nullptr)
             {
@@ -793,7 +790,10 @@ int32_t round_edges(SmBrep *b, const std::vector<SmEdge *> &edges, const std::ve
                     patch.push_back(faces[i]);
                 }
             }
-            if (patch.empty())
+            // An open G1 setback corner has no patch: SMLib leaves its hole (its sections and
+            // spring curves free), read off the sheet's free edges (open_holes).
+            const bool open_hole = corner->GetCornerType() == SM_FCR_BLEND && static_cast<SmBlendCorner *>(corner)->IsSetBackOpen();
+            if (patch.empty() && !open_hole)
             {
                 return SMLIB_ERR_UNSUPPORTED;
             }
@@ -1584,6 +1584,110 @@ struct HoleEdge
     bool forward;
 };
 
+// The holes SMLib leaves at open G1 setback corners (no patch: their sections and spring curves
+// free): the sheet `b`'s free edges, each with the one face beside it and whether that face's
+// boundary, run counter-clockwise about its outward normal (the body's), runs it from its start
+// vertex to its end, chained into loops (each edge's start the previous one's end). Each loop goes
+// to the corner `at[k]` (k where `open[k]`) nearest its vertices' mean; every such corner takes one
+// loop and every loop one corner, else SMLIB_ERR_UNSUPPORTED.
+int32_t open_holes(SmBrep *b, const std::vector<SmPoint3d> &at, const std::vector<bool> &open, std::vector<std::vector<HoleEdge>> &holes)
+{
+    holes.assign(at.size(), std::vector<HoleEdge>());
+    SmTArray<SmEdge *> edges;
+    b->GetEdges(edges);
+    std::vector<HoleEdge> rim;
+    for (ULONG k = 0; k < edges.GetSize(); ++k)
+    {
+        SmTArray<SmFace *> beside;
+        edges[k]->GetFaces(beside);
+        if (beside.GetSize() != 1)
+        {
+            continue;
+        }
+        SmFaceuse *fu = outer_faceuse(b, beside[0]);
+        SmTArray<SmEdgeuse *> uses;
+        if (fu == nullptr || edges[k]->GetEdgeuses(uses) != SM_SUCCESS)
+        {
+            return SMLIB_ERR_UNSUPPORTED;
+        }
+        SmEdgeuse *use = nullptr;
+        for (ULONG i = 0; i < uses.GetSize(); ++i)
+        {
+            if (uses[i]->GetFaceuse() == fu)
+            {
+                use = uses[i];
+            }
+        }
+        if (use == nullptr)
+        {
+            return SMLIB_ERR_UNSUPPORTED;
+        }
+        rim.push_back({edges[k], beside[0], use->GetOrientation() == SM_OT_SAME});
+    }
+    auto start = [](const HoleEdge &h) { return h.forward ? h.edge->GetStartVertex() : h.edge->GetEndVertex(); };
+    auto end = [](const HoleEdge &h) { return h.forward ? h.edge->GetEndVertex() : h.edge->GetStartVertex(); };
+    std::vector<bool> used(rim.size(), false);
+    for (size_t first = 0; first < rim.size(); ++first)
+    {
+        if (used[first])
+        {
+            continue;
+        }
+        std::vector<HoleEdge> loop{rim[first]};
+        used[first] = true;
+        while (end(loop.back()) != start(loop.front()))
+        {
+            size_t next = rim.size();
+            for (size_t i = 0; i < rim.size(); ++i)
+            {
+                if (!used[i] && start(rim[i]) == end(loop.back()))
+                {
+                    if (next != rim.size())
+                    {
+                        return SMLIB_ERR_UNSUPPORTED;
+                    }
+                    next = i;
+                }
+            }
+            if (next == rim.size())
+            {
+                return SMLIB_ERR_UNSUPPORTED;
+            }
+            used[next] = true;
+            loop.push_back(rim[next]);
+        }
+        SmVector3d mean(0.0, 0.0, 0.0);
+        for (const HoleEdge &h : loop)
+        {
+            mean = mean + start(h)->GetPoint();
+        }
+        mean = mean * (1.0 / static_cast<double>(loop.size()));
+        size_t which = at.size();
+        double best = HUGE_VAL;
+        for (size_t k = 0; k < at.size(); ++k)
+        {
+            if (open[k] && (at[k] - mean).Length() < best)
+            {
+                best = (at[k] - mean).Length();
+                which = k;
+            }
+        }
+        if (which == at.size() || !holes[which].empty())
+        {
+            return SMLIB_ERR_UNSUPPORTED;
+        }
+        holes[which] = std::move(loop);
+    }
+    for (size_t k = 0; k < at.size(); ++k)
+    {
+        if (open[k] && holes[k].empty())
+        {
+            return SMLIB_ERR_UNSUPPORTED;
+        }
+    }
+    return SMLIB_OK;
+}
+
 // The faces of each patch in `patches` removed from the solid `b`, with the edges and vertices
 // only they used: `holes[j]` the edges round patch j's hole, as the faces beside it run them,
 // each edge's start the previous one's end. Read on the solid before anything is removed, where
@@ -1984,17 +2088,51 @@ int32_t blend_call(const char *fn, const smlib_brep *brep, const Section &sectio
             {
                 return s != SMLIB_OK ? s : finish(std::move(w), solid_in, out);
             }
-            // Each corner opened: its patch removed, the edges round its hole in the result's
-            // orders, once per corner point (a vertex picked twice gives its hole twice).
-            if (!w->IsManifoldSolid())
+            // Each corner opened: its patch removed, or (an open G1 setback, no patch) its hole as
+            // SMLib left it, the edges round its hole in the result's orders, once per corner point
+            // (a vertex picked twice gives its hole twice).
+            std::vector<bool> holed(patches.size(), false);
+            bool any_holed = false;
+            for (size_t k = 0; k < patches.size(); ++k)
+            {
+                holed[k] = patches[k].empty();
+                any_holed = any_holed || holed[k];
+            }
+            if (patches.size() != at_points.size())
+            {
+                return SMLIB_ERR_UNSUPPORTED;
+            }
+            std::vector<std::vector<HoleEdge>> left;
+            if (any_holed)
+            {
+                s = open_holes(w.get(), at_points, holed, left);
+                if (s != SMLIB_OK)
+                {
+                    return s;
+                }
+            }
+            else if (!w->IsManifoldSolid())
             {
                 return SMLIB_ERR_NOT_SOLID;
             }
-            std::vector<std::vector<HoleEdge>> rims;
-            s = open_corners(w.get(), patches, rims);
+            std::vector<std::vector<SmFace *>> filled;
+            for (size_t k = 0; k < patches.size(); ++k)
+            {
+                if (!holed[k])
+                {
+                    filled.push_back(patches[k]);
+                }
+            }
+            std::vector<std::vector<HoleEdge>> opened;
+            s = filled.empty() ? SMLIB_OK : open_corners(w.get(), filled, opened);
             if (s != SMLIB_OK)
             {
                 return s;
+            }
+            std::vector<std::vector<HoleEdge>> rims;
+            for (size_t k = 0, o = 0; k < patches.size(); ++k)
+            {
+                rims.push_back(holed[k] ? left[k] : opened[o++]);
             }
             SmTArray<SmEdge *> all_edges;
             SmTArray<SmFace *> all_faces;

@@ -36,7 +36,7 @@ enum SmBlendCornerEvent
   SM_BCE_NONE, // not an event of the blend corner (yet): the corner hierarchy builds it
   SM_BCE_TURN, // two blends turn at the unblended side edge(s) between their faces
   SM_BCE_JOIN, // two blends whose edges continue each other (G1) at the vertex
-  SM_BCE_BALL, // three rounds of one radius and convexity, the common ball's sphere between them (SmBlendCornerBall.cpp)
+  SM_BCE_BALL, // three or more rounds of one radius and convexity, the common ball's sphere between them (SmBlendCornerBall.cpp)
   SM_BCE_END,     // one blend ends at the vertex, its side faces there not blended
   SM_BCE_SETBACK, // three or more blends, every edge there blended, each set back and the hole filled (SmBlendSetback)
   SM_BCE_MIXED    // a convex and a concave blend continuing each other G1 across a tangent seam (SmBlendCornerMixed.cpp)
@@ -47,7 +47,8 @@ enum SmBlendEnd
 {
   SM_BEND_ON_END_FACE, // on the end face(s) between its side edges (an end rib), capped at a mixed convexity
   SM_BEND_OPEN,        // at a lamina edge (a sheet): its end section
-  SM_BEND_RUNS_OUT     // its side faces continue each other through the vertex: its rails meet there
+  SM_BEND_RUNS_OUT,    // its side faces continue each other through the vertex: its rails meet there
+  SM_BEND_AT_SMOOTH    // its edge runs on tangentially into an edge not blended: cut square to the edge there
 };
 
 enum SmBlendTurn
@@ -81,6 +82,7 @@ protected:
   SmBlendCornerEvent        m_eEvent;       // the corner's event (Classify)
   SmBlendTurn               m_eTurn;        // a Turn's mode
   SmBlendEnd                m_eEnd;         // an End's kind
+  SmSurface               * m_pEndCap;      // an End at a smooth vertex: the plane square to its edge there
   SmBoolean                 m_bG1Case;      // the two blended edges meet G1 (MakeTwoBlendTopology)
   SmBoolean                 m_bMitre;       // the two blends are mitred at the common face's concave corner
   SmEdgeuse               * m_pSideEU;      // Swept: the side edge E's edgeuse the rails of the first round meet
@@ -95,19 +97,22 @@ protected:
   ULONG                     m_lFillOrder;
   SmBoolean                 m_bConvexSetBack;
   SmBoolean                 m_bSetBackOverflows; // the rule's setbacks do not fit: the blends overflow (refused if the corner is built)
+  SmBoolean                 m_bSetBackOpen = FALSE; // an open G1 corner: its spring curves, no fill, no patches (OpenSetBackSprings)
   SmBlendSetback::Fill    * m_pFill;
 
   // the Ball (SmBlendCornerBall.cpp)
-  SmSurface               * m_pBallSurface; // the corner's face's sphere, from CalcCornerEdgeGeom until CreateCornerPatch hands it to its face
-  SmTArray<SmCurve*>        m_vBall3d;      // its loop's 3D curves (natural iso-curves, the pole left out)
-  SmTArray<SmBSplineCurve*> m_vBallUV;      // and their uv lines
-  SmTArray<SmOrientType>    m_vBallOrients; // and their orientations in the loop
+  SmTArray<SmSurface*>      m_vBallSurfaces; // the corner's faces' patches on its sphere (n - 2 of them, the n-gon fanned from
+                                             // contact 0), from CalcCornerEdgeGeom until CreateCornerPatch hands them to their faces
+  SmTArray<ULONG>           m_vBallLoops;    // each patch's loop: its count of curves in the arrays below, in turn
+  SmTArray<SmCurve*>        m_vBall3d;       // the loops' 3D curves (natural iso-curves, the pole left out)
+  SmTArray<SmBSplineCurve*> m_vBallUV;       // and their uv lines
+  SmTArray<SmOrientType>    m_vBallOrients;  // and their orientations in the loop
 
   SmBoolean IsBall() const { return ( m_eEvent == SM_BCE_BALL ) ? TRUE : FALSE; }
   SmStatus  MakeBallTopology();
-  SmStatus  BuildBallSurface();  // m_pBallSurface and its loop, from the faces and the processed contacts
+  SmStatus  BuildBallSurface();  // m_vBallSurfaces and their loops, from the faces and the processed contacts
   void      DeleteBallSurface();
-  SmStatus  BallCentre(SmPoint3d & rCentre, double & rdRadius, SmPoint3d asContact[3]) const; // the faces' triple offset point, the contacts
+  SmStatus  BallCentre(SmPoint3d & rCentre, double & rdRadius, std::vector<SmPoint3d> & rvContact) const; // the faces' common offset point, the contacts
   SmStatus  PlaceBallContacts(); // the contacts and the rounds' sections there in closed form
   SmStatus  CreateBallPatch();
 
@@ -156,6 +161,15 @@ protected:
   SmStatus  MakeEndOnEndFace();
   SmStatus  MakeEndOpen();
   SmStatus  MakeEndRunningOut();
+  SmStatus  MakeEndAtSmoothVertex();
+  SmStatus  CalcEndCapEdges();
+  SmStatus  RefuseEndPastSideEdge(SmEdgeuse * pFilEdgeuse, SmEdgeuse * pSideEU, SmFace * pOtherFace);
+  SmStatus  RadiusReachingSideEdgeEnd(SmEdgeuse * pFilEdgeuse, SmEdgeuse * pSideEU, SmFace * pOtherFace,
+                                      SmBoolean & rbPast, double & rdFit);
+  SmStatus  BallTouchingAt(SmEdgeuse * pFilEdgeuse, SmEdgeuse * pSideEU, SmFace * pOtherFace, const SmPoint3d & crP,
+                           SmBoolean & rbOnG, SmBoolean & rbWithin, double & rdRho);
+  SmStatus  RefuseEndOverflowingSideEdge(SmEdgeuse * pFilEdgeuse, const SmTArray<SmEdgeuse*> & crSideEUs, SmFace * pOtherFace);
+  SmStatus  SideEdgeChainTo(SmEdgeuse * pLast, SmTArray<SmEdgeuse*> & rChain);
   SmStatus  CalcEndEdgeGeom();
   SmStatus  CreateEndPatchOfEnd();
 
@@ -165,6 +179,8 @@ protected:
   // curve (SM_FE_PRECOMPUTED) and each round's end section (SM_FE_CROSS_SECTION)
   SmStatus MakeSetBackTopology();
   SmStatus BuildSetBackFill();     // the fill, its base points and the spring curves, from the processed rail ends and the rounds' surfaces
+  // an open G1 corner's spring curves in closed form, no fill (from BuildSetBackFill)
+  SmStatus OpenSetBackSprings(const std::vector<SmBlendSetback::Face> & crPlanes, const std::vector<SmBlendSetback::Edge> & crEdges);
   SmStatus CreateSetBackPatches(); // the fill's patches as faces
   SmStatus SetBackNotBuilt(const TCHAR * cpWhy);
 
@@ -213,10 +229,11 @@ public:
                                 double                       dTangencyTolDeg,
                                 SmBlendCornerEvent         & reEvent);
 
-  // The Ball at a filleted vertex where all three edges are blended (pAllEUs, the corner's ring):
-  // constant circular rounds of one radius, all convex or all concave, between three faces each a
-  // plane or a natural quadric (a sphere, a cylinder or a cone; a cylinder or sphere wider than the
-  // ball) whose normals at the vertex are independent, the vertex not set back
+  // The Ball at a filleted vertex where all its n >= 3 edges are blended (pAllEUs, the corner's
+  // ring): constant circular rounds of one radius, all convex or all concave, between n faces that
+  // one ball touches: three faces each a plane or a natural quadric (a sphere, a cylinder or a cone;
+  // a cylinder or sphere wider than the ball) whose normals at the vertex are independent, or four
+  // or more planes whose offsets by the radius meet in a point; the vertex not set back
   // (SmFilletExecutive::IsSetBackVertex).
   // reEvent SM_BCE_BALL, else SM_BCE_NONE (the corner hierarchy builds it).
   static SmStatus ClassifyBall(const SmVertex             * cpVertex,
@@ -255,11 +272,22 @@ public:
   void SetEnd( SmBlendEnd eEnd ) { m_eEnd = eEnd; }
   // whether a round ending at cpCornerVert runs out there: its side faces continue each other
   static SmBoolean EndRunsOut( const SmVertex * pCornerVert, SmEdgeuse * pFilEdgeuse );
+  // whether the blended edge runs on at cpCornerVert, tangentially, into an edge of its convexity
+  // that is not blended (crAllEUs: the edgeuses round the vertex)
+  static SmBoolean EndAtSmoothVertex( const SmVertex * cpCornerVert, SmEdgeuse * pFilEdgeuse,
+                                      const SmTArray<SmEdgeuse*> & crAllEUs, double dTanTolDeg );
+  virtual SmSurface * GetEndCapSurface() const { return m_pEndCap; }
+  // an End on its end face, before it is built: the least radius at which a rail reaches its
+  // side edge's far end, where the rail runs past it (the refusal's reason: DescribeEndPastSideEdge)
+  SmStatus FitOfEndPastSideEdges( SmBoolean & rbFound, double & rdFit, SmEdge *& rpEdge );
+  static SmStatus DescribeEndPastSideEdge( double dFit, TCHAR * cWhy );
 
   virtual double   GetSetBackDistAlong(const SmEdge * pEdge);
   void             SetFillOrder(ULONG lOrder) { m_lFillOrder = lOrder; }
 
   SmBlendCornerEvent GetEvent() const { return m_eEvent; }
+  // an open G1 setback corner: its hole bounded by its sections and spring curves, no patches
+  SmBoolean IsSetBackOpen() const { return ( m_eEvent == SM_BCE_SETBACK && m_bSetBackOpen ) ? TRUE : FALSE; }
   SmBlendTurn        GetTurn()  const { return m_eTurn; }
 
   // whether the two blends are mitred at the common face's concave corner (MakeTwoBlendTopology),
@@ -280,6 +308,12 @@ public:
 // Of a side edgeuse at a corner, itself or its radial: the one whose face also holds
 // pFilEdgeuse's edge (the one the solver's rail/side-edge solve takes). NULL when neither.
 SmEdgeuse * sm_FindSideEdgeuse(SmEdgeuse * pFilEdgeuse, SmEdgeuse * pSideEU, int iDebugLevel);
+
+// A side edge continued across its end pAt: the edge N that continues pEU's edge E G1 at pAt between
+// the same two faces, where pAt's only other edge is a seam of one of them (a cylinder's seam ending
+// on its rim splits the rim there and nothing else): N's edgeuse on pEU's faceuse. NULL otherwise,
+// and for a closed E, or a pAt not E's end.
+SmEdgeuse * sm_SideEdgeuseAcrossSeamVertex(SmEdgeuse * pEU, const SmVertex * pAt, double dAngTolDeg);
 
 // Whether two edges at a vertex are tangent there (end tangents within dAngTolDeg); the angle
 // between them (degrees, folded to [0, 90]) in *pdAngDeg when not NULL.

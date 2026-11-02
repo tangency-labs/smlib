@@ -4,6 +4,14 @@
 ### Added
 - `smlib_blend` and `smlib_fillet` blend a convex and a concave edge that continue each other tangentially at a vertex across a tangent seam, such as a bar's front top edge and the concave arc where its top runs into a cylinder, or the same part with drafted walls. The corner is two faces tangent to both blends and to the walls, smooth inside; it used to fold or fail. ([smlib #82](https://github.com/tangency-labs/smlib/issues/82))
 
+### Changed
+- `smlib_fillet` ends a round selected on part of a tangent chain at the smooth vertex where its edge runs on into an edge that is not rounded, on the plane square to its edge there, instead of failing.
+- `smlib_fillet` refuses a round whose contact line runs past its side edge, or passes over the side edge of the other convexity where a concave round ends on a face, with `SMLIB_ERR_NO_ROOM`, and `smlib_blend_fit_size` names the largest radius whose contact line still ends on that edge. It used to fail with a corner error.
+- `smlib_fillet` no longer depends on where a cylinder's seam meets a side edge: the round's contact line is followed across the seam's vertex onto the next edge of the same two faces. A boss tilted 40 degrees into a plate now rounds; it used to be refused with a size that came from the seam's position.
+- `smlib_fillet` rounds a vertex of four or more planes whose edges are all rounded alike as an exact sphere patch where one ball touches every face, and with a setback elsewhere. It used to build a fitted patch that was not tangent to the rounds and stood past the faces.
+- `smlib_blend_setback_open` and `smlib_blend_setback_open_eased` leave the setback corner's hole with no fill surface: for a G1 setback its edges are the exact spring curves on the faces, and the hole has nine edges. The sheet's faces round the hole keep their side of the body for concave rounds too.
+- `smlib_blend_setback` and its open variants refuse a setback asked at a corner that cannot be set back with `SMLIB_ERR_UNSUPPORTED`, naming the corner, instead of building another corner there.
+
 ### Fixed
 - The C API's flat B-rep arrays (`smlib_brep_export` / `smlib_brep_import`) carry a Ball corner's
   `SmBallPatch` as itself. It used to be written as a bare NURBS and read back as an

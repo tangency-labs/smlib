@@ -1342,3 +1342,35 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   temporary full circle, whose closed-curve rule turned an open arc ending 1.17e-6 degrees short of
   360 into 360, its analytic domain then 1.45e-8 off its NURB (SmEllipse test 1). Only a closed NURB
   takes that rule now.
+- **A round ending at a smooth vertex** (`SmBlendCornerEnd.cpp`, `SM_BEND_AT_SMOOTH`): a round
+  selected on part of a tangent chain, whose edge runs on tangentially into an edge of its
+  convexity that is not rounded, ends there on the plane through the vertex square to its edge,
+  capped by a plane face. Upstream did not end it there: the End took the tangent edge for its
+  side edge, or the corner failed.
+- **A rail past its side edge is refused, naming its size** (`SmBlendCornerEnd.cpp`,
+  `RadiusReachingSideEdgeEnd`, `RefuseEndOverflowingSideEdge`; `SmFilletExecutive.cpp`): a rail
+  that runs past its side edge's far end, or a concave round whose rail passes over the side edge
+  of the other convexity at a mixed End (the round would add material over the end face), is
+  refused `SMLIB_ERR_NO_ROOM`, naming the largest radius whose rail still ends on that edge (less
+  the part's tolerance where the bound is open), instead of failing with a corner error.
+- **A side edge continued across a seam's vertex** (`SmBlendCorner.cpp`,
+  `sm_SideEdgeuseAcrossSeamVertex`; `SmFilletGeom.cpp`, `SmFilletVertex::CalcRailIntEdgeuse`,
+  `SmFilletEdge::CalcEdgeOnEdge`): where a periodic face's seam ends on a side edge and nothing
+  else meets it there, the rail's end is looked for on the next edge too, and the round's end
+  takes in the seam's vertex. Upstream looked on the first edge only, so whether a round built
+  depended on where a cylinder's seam fell. A real edge at that vertex is still a corner.
+- **Four or more rounds at a vertex** (`SmBlendCornerBall.cpp`, `SmBlendCorner::ClassifyBall`;
+  `SmBlendCornerSetback.cpp`; `SmFilletCorner.cpp`): where n >= 4 edges between planes are rounded
+  alike and one ball touches every face, the corner is that ball's sphere, its n-gon fanned into
+  n - 2 exact rational patches of degree (4, 2); elsewhere it is the setback corner. Upstream built
+  a fitted patch there (6e-3 rad off G1 and 1e-3 past the faces at an irregular apex).
+- **Open setbacks with no fill** (`SmBlendCornerSetback.cpp`, `OpenSetBackSprings`;
+  `SmFilletOverflow.cpp`, `TrimAtCreases`; `capi/src/smlib_ops.cpp`): an open G1 setback corner
+  is the setback's hole, its face curves the exact spring parabolas imprinted on the faces with no
+  fill surface; an open G2 one takes its face curves from the order-2 fill, stored non-rational
+  (their weights are 1 by construction). The hole now has nine edges (a box corner's sheet
+  [9, 27, 19]). The overflow's merge keeps each blend's sheet on its own side of the body: a
+  convex one in the material, a concave one in the void.
+- **Setbacks only at setback corners** (`SmFilletCorner.cpp`, `capi/src/smlib_ops.cpp`): the old
+  convex and concave n-edge corners' setback paths are deleted; a setback asked at a corner the
+  setback corner does not build is refused `SMLIB_ERR_UNSUPPORTED`, naming the corner.

@@ -201,6 +201,24 @@ SmStatus sm_SbSetBacks(const SmVertex * cpVertex, const SmTArray<SmEdgeuse*> & c
   return SM_SUCCESS;
 }
 
+// A curve whose weights are all one weight is the polynomial it is: stored so (its points
+// unchanged), as one polynomial span a caller's polynomial patch holds exactly.
+SmStatus sm_SbOneWeightPolynomial(SmBSplineCurve & rCurve)
+{
+  if ( !rCurve.IsRational() )
+    { return SM_SUCCESS; }
+  ULONG lPoints = 0;
+  double * pCP = NULL;
+  SER( rCurve.GetControlPointsPointer( lPoints, pCP ));
+  NER( pCP );
+  for (ULONG i=1; i<lPoints; i++)
+    {
+      if ( pCP[4 * i + 3] != pCP[3] )
+        { return SM_SUCCESS; }
+    }
+  return rCurve.MakeNonRational();
+}
+
 } // namespace
 
 /*******************************************************************//**
@@ -287,11 +305,15 @@ SmStatus SmBlendCorner::ClassifySetBack
   double dSetBack = 0.0, dEase = 0.0;
   SmBoolean bOpen = FALSE;
   const SmBoolean bAsked = pExec->GetSetBackFill( cpVertex, dSetBack, dEase, bOpen );
-  if ( bOpen || ( !bAsked && !bOneKind ))
-    { return SM_SUCCESS; } // a corner left open keeps the patch its caller removes
+  if ( !bAsked && !bOneKind )
+    { return SM_SUCCESS; }
+  // a corner left open (bOpen) is the Setback's hole: its fill is built uncertified and left out
+  // by the caller (owner via coordinator, 2026-11-02)
   const SmBoolean bG2 = ( bOneKind && eKind == SM_FSG_BLEND_CURVE ) ? TRUE : FALSE;
-  // rounds of one radius meet a common ball where three faces meet: not a setback unless asked
-  if ( !bAsked && !bG2 && dMaxR - dMinR <= dTol )
+  // three rounds of one radius meet a common ball (the Ball): not a setback unless asked. Four or
+  // more meet one only where every face's offset passes through one point (ClassifyBall, first);
+  // elsewhere they are set back (owner via coordinator, 2026-11-02).
+  if ( !bAsked && !bG2 && dMaxR - dMinR <= dTol && n == 3 )
     { return SM_SUCCESS; }
   // (setbacks that do not fit are the Setback's to refuse, or the overflow's: MakeSetBackTopology)
   rlOrder = ( bG2 || ( bAsked && dEase > 0.0 )) ? 2 : 1;
@@ -396,7 +418,8 @@ SmStatus SmBlendCorner::MakeSetBackTopology()
   // others growing on); refused, naming them, where none within the rooms certifies. One asked
   // for that is too short is refused, naming the setback that builds (or that none does, where
   // that one does not fit with its ease).
-  if ( m_lFillOrder == 1 && !m_bSetBackOverflows )
+  // (a corner left open is not filled: its fill is not certified, nor its setbacks grown)
+  if ( m_lFillOrder == 1 && !m_bSetBackOverflows && !bOpen )
     {
       std::vector<double> sMost( n );
       for (ULONG i=0; i<n; i++)
@@ -611,6 +634,17 @@ SmStatus SmBlendCorner::BuildSetBackFill()
       sRounds[i].m_bCornerAbove = ( sHi.DistanceBetween( m_cpVertex->GetPoint() ) < sLo.DistanceBetween( m_cpVertex->GetPoint() )) ? TRUE : FALSE;
     }
 
+  // A corner left open (smlib_blend_setback_open) is the Setback's hole, not filled (owner via
+  // coordinator, 2026-11-02). G1: its face curves are the spring curves, in closed form whatever a
+  // fill's heights (SmBlendSetback.cpp, the spring curves): no fill is made (OpenSetBackSprings).
+  // G2: they come from the fill's least-energy interior, no closed form: the order-2 fill is made,
+  // its sides taken, and its patches handed to the caller, which removes them.
+  double dAsked = 0.0, dEase = 0.0;
+  SmBoolean bOpen = FALSE;
+  const SmBoolean bAsked = pExec->GetSetBackFill( m_cpVertex, dAsked, dEase, bOpen );
+  bOpen = ( bAsked && bOpen ) ? TRUE : FALSE;
+  if ( bOpen && m_lFillOrder == 1 )
+    { return OpenSetBackSprings( sPlanes, sEdges ); }
   delete m_pFill;
   m_pFill = new SmBlendSetback::Fill;
   NER( m_pFill );
@@ -618,13 +652,16 @@ SmStatus SmBlendCorner::BuildSetBackFill()
     { return SetBackNotBuilt( m_pFill->m_pReason != NULL ? m_pFill->m_pReason : _T("Fillet Error: the setback corner's hole cannot be filled") ); }
   if ( m_pFill->m_vPatches.size() != 2 * n || m_pFill->m_vFace.size() != n )
     { SER( SM_ERR ); }
-  double dWorst = 0.0;
-  SER( SmBlendSetback::Containment( *m_pFill, sPlanes, m_bConvexSetBack, dWorst ));
-  if ( dWorst > dTol )
+  if ( !bOpen )
     {
-      TCHAR cWhy[SM_TBLOCK_SIZE];
-      smos_sprintf( cWhy, _T("Fillet Error: the setback corner's fill stands %g past a face it meets"), dWorst );
-      return SetBackNotBuilt( cWhy );
+      double dWorst = 0.0;
+      SER( SmBlendSetback::Containment( *m_pFill, sPlanes, m_bConvexSetBack, dWorst ));
+      if ( dWorst > dTol )
+        {
+          TCHAR cWhy[SM_TBLOCK_SIZE];
+          smos_sprintf( cWhy, _T("Fillet Error: the setback corner's fill stands %g past a face it meets"), dWorst );
+          return SetBackNotBuilt( cWhy );
+        }
     }
 
   // the base points: interior part q's corner (1, 1) on its face
@@ -694,6 +731,10 @@ SmStatus SmBlendCorner::BuildSetBackFill()
               if ( eStatus != SM_SUCCESS )
                 { delete pBest; SER( eStatus ); }
             }
+          // a side whose weights are all one weight is the polynomial it is (the fill's face
+          // curves on planar faces: one polynomial span, which a caller's polynomial patch holds
+          // exactly)
+          SER( sm_SbOneWeightPolynomial( *pBest ));
           pEdge->SetCurve( pBest, TRUE );
           pBest->SetOwner( pEdge );
         }
@@ -701,6 +742,94 @@ SmStatus SmBlendCorner::BuildSetBackFill()
   return SM_SUCCESS;
 
 } // end SmBlendCorner::BuildSetBackFill
+
+/*******************************************************************//**
+PURPOSE: An open G1 setback corner's face curves: on each face its spring
+    curve, the parabola tangent to the two rails at their ends, in its two
+    halves at its base point, exactly; no fill.
+
+NOTES: On face f, P is the rail end of the blend before it (vertex M), Q
+    the blend after's (vertex S), each rail a line parallel to its edge (a
+    constant round between planes along a straight edge), X where they
+    cross. The parabola (P, X, Q), quadratic Bezier, is tangent to the rails
+    at P and Q; halved at t = 1/2 it is (P, (P + X) / 2, B) and
+    (B, (X + Q) / 2, Q), B = (P + 2 X + Q) / 4 the base point. Each half is
+    certified on the face's plane (its control points) and tangent to its
+    rail at its rail end (its first leg along the rail), else refused.
+***********************************************************************/
+SmStatus SmBlendCorner::OpenSetBackSprings
+  (const std::vector<SmBlendSetback::Face> & crPlanes,
+   const std::vector<SmBlendSetback::Edge> & crEdges)
+{
+  NER( m_pAllEUs );
+  const ULONG n = m_pAllEUs->GetSize();
+  if ( m_vVertices.GetSize() != 3 * n || m_vEdges.GetSize() != 3 * n || crPlanes.size() != n || crEdges.size() != n )
+    { SER( SM_ERR ); }
+  const double dTol = GetThisApproxTol3d();
+  for (ULONG f=0; f<n; f++)
+    {
+      SmFilletVertex * pM = m_vVertices[3 * f];
+      SmFilletVertex * pB = m_vVertices[3 * f + 1];
+      SmFilletVertex * pS = m_vVertices[3 * f + 2];
+      NER( pM );
+      NER( pB );
+      NER( pS );
+      if ( !pM->IsProcessed() || !pS->IsProcessed() )
+        { SER( SM_ERR ); }
+      const SmPoint3d  sP = pM->GetPoint(), sQ = pS->GetPoint();
+      const SmVector3d sDP = crEdges[( f + n - 1 ) % n].m_sAway, sDQ = crEdges[f].m_sAway;
+      // X = P + a dP = Q + b dQ, by least squares on (dP, -dQ)
+      const SmVector3d sQP = sQ - sP;
+      const double d11 = sDP.Dot( sDP ), d12 = -sDP.Dot( sDQ ), d22 = sDQ.Dot( sDQ );
+      const double r1 = sDP.Dot( sQP ), r2 = -sDQ.Dot( sQP ), dDet = d11 * d22 - d12 * d12;
+      if ( !( smos_Fabs( dDet ) > SM_EFF_ZERO ))
+        { SER( SM_ERR ); } // rails along one line: ClassifySetBack takes no two edges G1
+      const double dA = ( r1 * d22 - r2 * d12 ) / dDet;
+      const SmPoint3d sX = sP + sDP * dA;
+      const SmPoint3d sB = ( sP + sX * 2.0 + sQ ) * 0.25;
+      pB->SetPoint( sB );
+      pB->SetStatus( SM_FIL_PROCESSED );
+      for (ULONG k=0; k<2; k++)
+        {
+          SmFilletEdge * pEdge = m_vEdges[3 * f + k];
+          NER( pEdge );
+          // M-B: P to B; B-S: B to Q
+          SmTArray<SmPoint3d> sPoints;
+          if ( k == 0 )
+            { sPoints.Add( sP ); sPoints.Add( ( sP + sX ) * 0.5 ); sPoints.Add( sB ); }
+          else
+            { sPoints.Add( sB ); sPoints.Add( ( sX + sQ ) * 0.5 ); sPoints.Add( sQ ); }
+          SmTArray<ULONG>  sMults;
+          SmTArray<double> sKnots;
+          sMults.Add( 3 ); sMults.Add( 3 );
+          sKnots.Add( 0.0 ); sKnots.Add( 1.0 );
+          SmBSplineCurve * pHalf = NULL;
+          SER( SmBSplineCurve::CreateCanonical( m_crContext, 3, 2, sPoints, SM_CF_UNSPECIFIED, sMults, sKnots, SM_KT_UNSPECIFIED,
+                                                NULL, NULL, pHalf ));
+          NER( pHalf );
+          // certified: on the face's plane, tangent to its rail at its rail end
+          double dOff = 0.0;
+          for (ULONG i=0; i<3; i++)
+            { dOff = smos_Max( dOff, smos_Fabs( crPlanes[f].m_sNormal.Dot( sPoints[i] - crPlanes[f].m_sPoint ))); }
+          const SmVector3d sLeg  = ( k == 0 ) ? sPoints[1] - sPoints[0] : sPoints[2] - sPoints[1];
+          const SmVector3d sRail = ( k == 0 ) ? sDP : sDQ;
+          const double dLeg = sLeg.Length();
+          const double dTurn = ( dLeg > 0.0 ) ? ( sLeg * sRail ).Length() / ( dLeg * sRail.Length() ) : 1.0;
+          if ( dOff > dTol || dTurn > SM_EFF_ZERO_SQRT )
+            {
+              delete pHalf;
+              TCHAR cWhy[SM_TBLOCK_SIZE];
+              smos_sprintf( cWhy, _T("Fillet Error: an open setback corner's face curve leaves its face (by %g) or its rail's tangent (by %g)"), dOff, dTurn );
+              return SetBackNotBuilt( cWhy );
+            }
+          pEdge->SetCurve( pHalf, TRUE );
+          pHalf->SetOwner( pEdge );
+        }
+    }
+  m_bSetBackOpen = TRUE;
+  return SM_SUCCESS;
+
+} // end SmBlendCorner::OpenSetBackSprings
 
 /*******************************************************************//**
 PURPOSE: The fill's patches as faces of the fillet Brep, each bounded by
@@ -711,6 +840,8 @@ PURPOSE: The fill's patches as faces of the fillet Brep, each bounded by
 ***********************************************************************/
 SmStatus SmBlendCorner::CreateSetBackPatches()
 {
+  if ( m_bSetBackOpen )
+    { return SM_SUCCESS; } // an open G1 corner: its hole is left (OpenSetBackSprings)
   NER( m_pFill );
   NER( m_pAllEUs );
   const ULONG n = m_pAllEUs->GetSize();
@@ -758,6 +889,7 @@ SmStatus SmBlendCorner::CreateSetBackPatches()
           double dGap = 0.0;
           SER( pPatch->CreateIsoParametricCurve( m_crContext, crS.eIso, crS.dAt, 0.0, pIso, &sSub, &dGap ));
           NER( pIso );
+          SER( sm_SbOneWeightPolynomial( *pIso ));
           s3d.Add( pIso );
           SmLine * pLine = NULL;
           SER( SmLine::CreateLineSegment( m_crContext, 2, SmVector3d( sSub.GetMin().x, sSub.GetMin().y, 0.0 ),
