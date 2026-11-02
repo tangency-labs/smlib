@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+### Fixed
+- The C API's flat B-rep arrays (`smlib_brep_export` / `smlib_brep_import`) carry a Ball corner's
+  `SmBallPatch` as itself. It used to be written as a bare NURBS and read back as an
+  `SmBSplineSurface`, losing its sphere, so a box rounded all round and then shelled failed after a
+  round trip (status 1034). Such a face is now surface kind `SMLIB_FLAT_SURFACE_BALL_PATCH` (6), with
+  its NURBS block as before and its sphere's centre and radius in the new arrays
+  `SMLIB_FLAT_FACE_DEFINITION_REAL_COUNT` (36) and `SMLIB_FLAT_FACE_DEFINITION_REALS` (166). Import
+  makes it an `SmBallPatch` only after certifying that the net lies on that sphere (`IsOnSphere`), and
+  refuses the B-rep otherwise. A reader that doesn't know kind 6 can take it as NURBS, but must write
+  arrays 36 and 166 back unchanged. ([smlib #102](https://github.com/tangency-labs/smlib/issues/102))
+
 ## [1.0.1] - 2026-10-21
 ### Added
 - `SmApiUsdGeometryValidate.h`: run `SmBrep::AssertValid` on one BrepArray prim without changing the stage; `brep_geometry_validator` uses it.

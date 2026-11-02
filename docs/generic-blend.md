@@ -381,10 +381,10 @@ The rework lands in seven steps, each behind tests committed failing first.
 | 1 | the tangent end as an event; the end rib built outward, order 2 in t = √s; the march into P deleted | merged, [smlib #76](https://github.com/tangency-labs/smlib/pull/76) |
 | 2 | one classification of the exact rounds, each built as its rational surface; the try-chain deleted | merged, [smlib #77](https://github.com/tangency-labs/smlib/pull/77) |
 | 3 | one Gⁿ section generator (chord, circle, curvature) certified per span; variable rounds as the union of their balls | merged, [smlib #78](https://github.com/tangency-labs/smlib/pull/78) |
-| 4 | corners: Turn (Mitre, Swept), Join, Ball, End merged; Setback with its convex fill, mixed convexity and the remaining old corner classes open | part merged, [smlib #79](https://github.com/tangency-labs/smlib/pull/79) |
+| 4 | corners: Turn (Mitre, Swept), Join, Ball, End ([#79](https://github.com/tangency-labs/smlib/pull/79)); Setback with its certified convex fill ([#104](https://github.com/tangency-labs/smlib/pull/104)); the Ball on cylinders, cones and spheres ([#110](https://github.com/tangency-labs/smlib/pull/110)); the unreachable old corner code deleted ([#113](https://github.com/tangency-labs/smlib/pull/113)); the smooth-vertex End (#81), N ≥ 4 rounds and open setbacks (#86) and mixed convexity (#82) landing; the rest moved to solidcore | part merged |
 | 5 | fold and room checks, exact; refusals sized through `smlib_blend_fit_size` | merged in #79; remaining classes open |
 | 6 | overflow trimmed at the crease, in place | merged in #79 |
-| 7 | the round stored as its definition, with a certified net | merged in #79; nesting and the fading end open |
+| 7 | the round stored as its definition, with a certified net; the Ball's sphere patch kept through the C API's flat arrays ([#102](https://github.com/tangency-labs/smlib/issues/102)) | merged in #79 and #102; nesting, the fading end and USD's definition record open |
 
 The code is in `source/SMLib/src`: `SmBlendCorner*.cpp` (classification and the corner events),
 `SmFilletSection.cpp` (`SmGnSectionFSG`, the section generator), `SmFilletSolver.cpp` (the trace
@@ -392,29 +392,30 @@ and the §3.3 checks), `SmFilletOverflow.cpp` (the crease trim), `SmFilletExact.
 classes), `SmProceduralBlend.cpp` (the definition), `SmBallPatch.cpp` (the Ball's sphere patch) and
 `SmBlendSetback.cpp` (the setback fill); the C API is in `capi/include/smlib.h`.
 
-**Open work**, each an issue to claim:
+**Open work.** SMLib construction ended on 2026-11-02, so remaining corner work continues in
+solidcore. Each item's port brief, with its design, proofs, tests and WIP branch, is on the
+solidcore issue named.
 
-| issue | topic |
-|---|---|
-| [#80](https://github.com/tangency-labs/smlib/issues/80) | Setback with a certified convex fill (G1) and setback growth |
-| [#81](https://github.com/tangency-labs/smlib/issues/81) | a round ending at the smooth vertex of a partly selected tangent chain |
-| [#82](https://github.com/tangency-labs/smlib/issues/82) | mixed convexity: convex and concave blends at one vertex (the test peg) |
-| [#83](https://github.com/tangency-labs/smlib/issues/83) | delete the old corner hierarchy |
-| [#84](https://github.com/tangency-labs/smlib/issues/84) | several concave rounds at one vertex, unequal or N ≥ 4 |
-| [#85](https://github.com/tangency-labs/smlib/issues/85) | a ball or setback corner with a curved face |
-| [#86](https://github.com/tangency-labs/smlib/issues/86) | four or more equal rounds at a vertex, and open setbacks |
-| [#87](https://github.com/tangency-labs/smlib/issues/87) | the G2 setback fill held convex |
-| [#88](https://github.com/tangency-labs/smlib/issues/88) | four blends over three faces |
-| [#89](https://github.com/tangency-labs/smlib/issues/89) | chamfers meeting at a vertex |
-| [#90](https://github.com/tangency-labs/smlib/issues/90) | a closed edge meeting itself at an angle |
-| [#91](https://github.com/tangency-labs/smlib/issues/91) | size the remaining refusal classes; refuse the collapsed offset |
-| [#92](https://github.com/tangency-labs/smlib/issues/92) | a round on a definition face; the fading end |
-| [#93](https://github.com/tangency-labs/smlib/issues/93) | the pipe-on-plate curvature round grades a seam G3 where G2 is wanted |
-| [#94](https://github.com/tangency-labs/smlib/issues/94) | a tangent chain over an earlier round's curved end curve fails |
-| [#95](https://github.com/tangency-labs/smlib/issues/95) | building near a refusal's size bound fails |
-| [#96](https://github.com/tangency-labs/smlib/issues/96) | performance of the order-2 section certificate and of a grown setback |
-| [#97](https://github.com/tangency-labs/smlib/issues/97) | follow-ups: refitted frames, exact plane∩cylinder/torus edges, pcurves, untested paths |
-| [#98](https://github.com/tangency-labs/smlib/issues/98) | a rail that rolls over a tangent edge before a smooth-vertex End |
+| issue | topic | where |
+|---|---|---|
+| [#81](https://github.com/tangency-labs/smlib/issues/81) | a round ending at the smooth vertex of a partly selected tangent chain | landing in SMLib |
+| [#82](https://github.com/tangency-labs/smlib/issues/82) | mixed convexity: convex and concave blends at one vertex (the test peg) | landing in SMLib |
+| [#83](https://github.com/tangency-labs/smlib/issues/83) | delete the old corner hierarchy | phase 1 merged (#113); the setback paths go with #86 |
+| [#84](https://github.com/tangency-labs/smlib/issues/84) | several concave rounds at one vertex, unequal or N ≥ 4 | solidcore #2361 |
+| [#85](https://github.com/tangency-labs/smlib/issues/85) | a ball or setback corner with a curved face | Ball merged (#110); Setback: solidcore #2343 |
+| [#86](https://github.com/tangency-labs/smlib/issues/86) | four or more equal rounds at a vertex, and open setbacks | landing in SMLib |
+| [#87](https://github.com/tangency-labs/smlib/issues/87) | the G2 setback fill held convex | solidcore #2347 |
+| [#88](https://github.com/tangency-labs/smlib/issues/88) | four blends over three faces | solidcore #2348 |
+| [#89](https://github.com/tangency-labs/smlib/issues/89) | chamfers meeting at a vertex | solidcore #2345 |
+| [#90](https://github.com/tangency-labs/smlib/issues/90) | a closed edge meeting itself at an angle | solidcore #2349 |
+| [#91](https://github.com/tangency-labs/smlib/issues/91) | size the remaining refusal classes; refuse the collapsed offset | open |
+| [#92](https://github.com/tangency-labs/smlib/issues/92) | a round on a definition face; the fading end | open |
+| [#93](https://github.com/tangency-labs/smlib/issues/93) | the pipe-on-plate curvature round grades a seam G3 where G2 is wanted | open |
+| [#94](https://github.com/tangency-labs/smlib/issues/94) | a tangent chain over an earlier round's curved end curve fails | open |
+| [#95](https://github.com/tangency-labs/smlib/issues/95) | building near a refusal's size bound fails | open |
+| [#96](https://github.com/tangency-labs/smlib/issues/96) | performance of the order-2 section certificate and of a grown setback | open |
+| [#97](https://github.com/tangency-labs/smlib/issues/97) | follow-ups: refitted frames, exact plane∩cylinder/torus edges, pcurves, untested paths | open |
+| [#98](https://github.com/tangency-labs/smlib/issues/98) | a rail that rolls over a tangent edge before a smooth-vertex End | open |
 
 ## 7. Case gallery
 
