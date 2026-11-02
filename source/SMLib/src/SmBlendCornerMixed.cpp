@@ -469,19 +469,21 @@ SmMxCrv sm_MxUnitWeights(const SmMxCrv & c)
   return sm_MxTimes( l, c );
 }
 
-// c (and pc, on the same breaks: the curve in the parameters c is the image of) made C1 in R^4
-// at every joint, the same curves: a round's rational arcs meet G1 in R^3 with a jump in their
+// c (and its companions on the same breaks: the curve in the parameters c is the image of, and a
+// field along c of c's degree, which then keeps its own continuity) made C1 in R^4 at every
+// joint, the same curves: a round's rational arcs meet G1 in R^3 with a jump in their
 // weights' derivative, which a patch blending c's homogeneous derivatives would carry into its
 // interior as a fold. At a joint Q (weight 1), left derivative D_L = l D0 + m Q with D0 = n (R_1
 // - R_0) the right segment's own: its control points scaled by k^i (a Moebius reparametrization,
 // the same for any degree) on a span h give (k D0 + n (k - 1) Q) / h, which is D_L for
 // h = n / (n l - m), k = l h; the segments after it scaled by k^n to meet it. The breaks are
 // then rescaled to c's interval. A joint already C1 has m = 0, l = 1 / h: unchanged.
-SmStatus sm_MxC1(SmMxCrv & c, SmMxCrv & pc)
+SmStatus sm_MxC1(SmMxCrv & c, std::vector<SmMxCrv*> aCompanions)
 {
-  if ( c.seg.size() != pc.seg.size() )
-    { return SM_ERR; }
-  const int n = c.Deg(), np = pc.Deg();
+  for (SmMxCrv * pC : aCompanions)
+    if ( pC->seg.size() != c.seg.size() )
+      { return SM_ERR; }
+  const int n = c.Deg();
   const double a0 = c.brk.front(), a1 = c.brk.back();
   std::vector<double> h( c.seg.size() );
   for (size_t s=0; s<h.size(); s++) h[s] = c.brk[s+1] - c.brk[s];
@@ -505,13 +507,20 @@ SmStatus sm_MxC1(SmMxCrv & c, SmMxCrv & pc)
       const double hs = double( n ) / ( n * l - m ), k = l * hs;
       double f = 1.0;
       for (int i=0; i<=n; i++) { R[i] = sm_MxMul( R[i], f ); f *= k; }
-      f = 1.0;
-      for (int i=0; i<=np; i++) { pc.seg[s][i] = sm_MxMul( pc.seg[s][i], f ); f *= k; }
-      const double kn = std::pow( k, n ), knp = std::pow( k, np );
+      for (SmMxCrv * pC : aCompanions)
+        {
+          f = 1.0;
+          for (auto & q : pC->seg[s]) { q = sm_MxMul( q, f ); f *= k; }
+        }
+      const double kn = std::pow( k, n );
       for (size_t t=s+1; t<c.seg.size(); t++)
         {
           for (auto & q : c.seg[t]) q = sm_MxMul( q, kn );
-          for (auto & q : pc.seg[t]) q = sm_MxMul( q, knp );
+          for (SmMxCrv * pC : aCompanions)
+            {
+              const double kd = std::pow( k, pC->Deg() );
+              for (auto & q : pC->seg[t]) q = sm_MxMul( q, kd );
+            }
         }
       h[s] = hs;
     }
@@ -520,7 +529,7 @@ SmStatus sm_MxC1(SmMxCrv & c, SmMxCrv & pc)
   double t = a0;
   for (size_t s=0; s<h.size(); s++) { c.brk[s] = t; t += h[s] * ( a1 - a0 ) / dSum; }
   c.brk.back() = a1;
-  pc.brk = c.brk;
+  for (SmMxCrv * pC : aCompanions) pC->brk = c.brk;
   return SM_SUCCESS;
 }
 
@@ -782,6 +791,26 @@ SmStatus sm_MxCompose(const SmMxSrf & S, const SmMxCrv & crPc, SmMxCrv & rOut)
   return SM_SUCCESS;
 }
 
+// S's homogeneous derivative in v: each patch's control rows differenced (degree dv - 1)
+SmMxSrf sm_MxSrfDerivV(const SmMxSrf & S)
+{
+  SmMxSrf R;
+  R.du = S.du; R.dv = S.dv - 1; R.ub = S.ub; R.vb = S.vb;
+  const size_t nus = S.ub.size() - 1, nvs = S.vb.size() - 1;
+  R.P.assign( nus * nvs, std::vector<SmMxV4>( ( R.du + 1 ) * ( R.dv + 1 )));
+  for (size_t i=0; i<nus; i++)
+    for (size_t j=0; j<nvs; j++)
+      {
+        const double dLen = S.vb[j+1] - S.vb[j];
+        for (int a=0; a<=S.du; a++)
+          for (int b=0; b<S.dv; b++)
+            R.P[i * nvs + j][a * ( R.dv + 1 ) + b] = sm_MxMul( sm_MxSub( S.At( i, j )[a * ( S.dv + 1 ) + b + 1], S.At( i, j )[a * ( S.dv + 1 ) + b] ), double( S.dv ) / dLen );
+      }
+  return R;
+}
+
+
+
 // the least-norm solution of A x = b (rows of A given), by the eigen decomposition of A^T A
 // (Jacobi); rdResidual |A x - b|
 void sm_MxSolve(const std::vector<std::vector<double>> & A, const std::vector<double> & b, std::vector<double> & x, double & rdResidual)
@@ -853,7 +882,11 @@ void sm_MxSolve(const std::vector<std::vector<double>> & A, const std::vector<do
 // its four sides and their cross-derivative ribbons. A side is a curve c on [0, 1] with end
 // weights 1, and its ribbon g = alpha c + beta c' + gamma D, D a direction field whose span with
 // the curve's point and tangent projects onto the neighbour's tangent plane along it: G1 to the
-// neighbour exactly, whatever the cubic Hermite scalars alpha, beta, gamma. Their end values come
+// neighbour exactly, whatever the cubic Hermite scalars alpha, beta, gamma. Where c is only C1
+// (a trimline over its intersection's C1 fit, a wall rail across its round's knot), c' in g
+// would put c'' into the patch's derivative across the side, a fold at every break: there a
+// field T tangent to the neighbour along c, C1 wherever c is, takes c''s place (the round's
+// cross partial along the trimline, the wall's turn along the rail). Their end values come
 // from the adjacent sides' tangents at the corners, their end derivatives from the corners'
 // twists, solved (least-norm) where both ribbons meet; each solve's residual is checked.
 
@@ -865,6 +898,8 @@ struct SmMxSide
   double v[2][3] = {};       // alpha, beta, gamma at u = 0, 1
   double d[2][3] = {};       // their derivatives
   SmMxV4 Dv[2], Dd[2], Dk[2]; // D and D' at the ends (Dk: D''s part per unit of k)
+  SmMxCrv   T;               // the cross field in c''s place, where c is only C1 (its round's or face's
+  SmBoolean bT = FALSE;      //   tangent field along it, C1 wherever c is): g = alpha c + beta T + gamma D
 };
 
 // the side's D at its ends (an unshared side's own)
@@ -891,7 +926,7 @@ SmMxV4 sm_MxCrvDerivAt(const SmMxCrv & c, double t, int k)
 SmStatus sm_MxFirstOrder(SmMxSide & rS, int e, const SmMxV4 & crTarget, double dScale)
 {
   const double t = e;
-  const SmMxV4 c = sm_MxEval( rS.c, t ), c1 = sm_MxCrvDerivAt( rS.c, t, 1 ), D = rS.Dv[e];
+  const SmMxV4 c = sm_MxEval( rS.c, t ), c1 = rS.bT ? sm_MxEval( rS.T, t ) : sm_MxCrvDerivAt( rS.c, t, 1 ), D = rS.Dv[e];
   std::vector<std::vector<double>> A( 4, std::vector<double>( 3 ));
   std::vector<double> b( 4 ), x;
   for (int k=0; k<4; k++) { A[k][0] = c[k]; A[k][1] = c1[k]; A[k][2] = D[k]; b[k] = crTarget[k]; }
@@ -930,14 +965,17 @@ SmStatus sm_MxTwists(std::vector<std::array<SmMxTwistTerm,2>> & rEqs, double dSc
           SmMxTwistTerm & T = rEqs[qi][h];
           const size_t idx = 3 * ( 2 * qi + h );
           const double t = T.e;
-          const SmMxV4 c = sm_MxEval( T.pS->c, t ), c1 = sm_MxCrvDerivAt( T.pS->c, t, 1 ), c2 = sm_MxCrvDerivAt( T.pS->c, t, 2 );
+          const SmMxV4 c = sm_MxEval( T.pS->c, t ), c1 = sm_MxCrvDerivAt( T.pS->c, t, 1 );
+          // beta's field and its derivative: T where the side has one, else c' and c''
+          const SmMxV4 f  = T.pS->bT ? sm_MxEval( T.pS->T, t ) : c1;
+          const SmMxV4 f1 = T.pS->bT ? sm_MxCrvDerivAt( T.pS->T, t, 1 ) : sm_MxCrvDerivAt( T.pS->c, t, 2 );
           const SmMxV4 D = T.pS->Dv[T.e];
           const double al = T.pS->v[T.e][0], be = T.pS->v[T.e][1], ga = T.pS->v[T.e][2];
-          SmMxV4 known = sm_MxAdd( sm_MxAdd( sm_MxMul( c1, al ), sm_MxMul( c2, be )), sm_MxMul( T.pS->Dd[T.e], ga ));
+          SmMxV4 known = sm_MxAdd( sm_MxAdd( sm_MxMul( c1, al ), sm_MxMul( f1, be )), sm_MxMul( T.pS->Dd[T.e], ga ));
           for (int k=0; k<4; k++)
             {
               rows[k][idx+0] += T.sign * c[k];
-              rows[k][idx+1] += T.sign * c1[k];
+              rows[k][idx+1] += T.sign * f[k];
               rows[k][idx+2] += T.sign * D[k];
               if ( pK != NULL )
                 rows[k][n-1] += T.sign * ga * T.pS->Dk[T.e][k];
@@ -964,7 +1002,7 @@ SmMxCrv sm_MxRibbon(const SmMxSide & crS)
   const SmMxCrv b = sm_MxHermite( crS.v[0][1], crS.v[1][1], crS.d[0][1], crS.d[1][1] );
   const SmMxCrv g = sm_MxHermite( crS.v[0][2], crS.v[1][2], crS.d[0][2], crS.d[1][2] );
   SmMxCrv r = sm_MxTimes( a, crS.c );
-  r = sm_MxSum( r, sm_MxTimes( b, sm_MxDeriv( crS.c )));
+  r = sm_MxSum( r, sm_MxTimes( b, crS.bT ? crS.T : sm_MxDeriv( crS.c )));
   r = sm_MxSum( r, sm_MxTimes( g, crS.D ));
   return r;
 }
@@ -1488,7 +1526,7 @@ SmStatus SmBlendCorner::CalcMixedEdgeGeom()
   double dOut = 1.0;
 
   // the trimlines: uv on B_i from X to its rail end, then B_i over it
-  SmMxCrv asTrim[2], asPc[2];
+  SmMxCrv asTrim[2], asTrimT[2], asPc[2];
   for (ULONG ii=0; ii<2; ii++)
     {
       SmBSplineSurface * pWall = NULL;
@@ -1533,11 +1571,25 @@ SmStatus SmBlendCorner::CalcMixedEdgeGeom()
         }
       SmMxSrf S;
       SER( sm_MxSrfFromBSpline( *pRound, S ));
-      SmMxCrv c;
+      // pc's pieces within the round's spans (where it crosses them)
+      {
+        SmMxCrv sCut;
+        SER( sm_MxCompose( S, pc, sCut ));
+        pc = sm_MxRefine( pc, sCut.brk );
+      }
+      // the trimline and the round's cross partial along it (the ribbon's field, C1 wherever pc
+      // is), at one degree. Across a knot of the round's turn (a torus's rational arcs, G1 but not
+      // C1 in R^4 there) both are made C1 in R^4 by one reparametrization (with pc, the uv curve
+      // on the round): on a surface of revolution the homogeneous turn's derivative jumps there by
+      // a multiple of the point, the same for every meridian, so the cross partial's jumps by the
+      // same multiple of itself, and the map that removes c's removes it too.
+      SmMxCrv c, cT;
       SER( sm_MxCompose( S, pc, c ));
-      pc = sm_MxRefine( pc, c.brk );
-      SER( sm_MxC1( c, pc ));
+      SER( sm_MxCompose( sm_MxSrfDerivV( S ), pc, cT ));
+      cT = sm_MxElevate( cT, c.Deg() );
+      SER( sm_MxC1( c, { &pc, &cT } ));
       asTrim[ii] = sm_MxUnitWeights( c );
+      asTrimT[ii] = cT;
       asPc[ii] = pc;
       if ( ii == 0 )
         {
@@ -1563,9 +1615,8 @@ SmStatus SmBlendCorner::CalcMixedEdgeGeom()
     SER( sm_MixedParam( *apRailWall[1], pQ->GetPoint(), dTol, dQ ));
     // the rail pieces made C1 in R^4 where they cross their round's knots (a rational arc's)
     SmMxCrv sPieceAP = sm_MxPiece( r0, dA, dP ), sPieceBQ = sm_MxPiece( r1, dB, dQ );
-    SmMxCrv sSameAP = sPieceAP, sSameBQ = sPieceBQ;
-    SER( sm_MxC1( sPieceAP, sSameAP ));
-    SER( sm_MxC1( sPieceBQ, sSameBQ ));
+    SER( sm_MxC1( sPieceAP, {} ));
+    SER( sm_MxC1( sPieceBQ, {} ));
     sAP = sm_MxUnitWeights( sPieceAP );
     sBQ = sm_MxUnitWeights( sPieceBQ );
     // their ends exactly the vertices (A and B the trimlines' ends)
@@ -1701,6 +1752,11 @@ SmStatus SmBlendCorner::CalcMixedEdgeGeom()
   U[1].c = sBQ;               U[1].D = sm_MxMap( sBQ, meridian );
   U[2].c = asTrim[1];         U[2].D = sm_MxMap( asTrim[1], circumferential );
   U[3].c = sVQ;               U[3].D = sm_MxConst( sm_MxDir( sChain ));
+  // the cross fields where a side is only C1 (the trimlines' fits, the wall rail across the round's
+  // knot): the round's cross partial along its trimline, the wall's turn along B-Q
+  L[0].T = asTrimT[0]; L[0].bT = TRUE;
+  U[2].T = asTrimT[1]; U[2].bT = TRUE;
+  U[1].T = sm_MxMap( sBQ, circumferential ); U[1].bT = TRUE;
   {
     // A-P's direction (its tangent at A)
     const SmMxV4 t = sm_MxCrvDerivAt( sAP, 0.0, 1 ), p = sm_MxEval( sAP, 0.0 );
