@@ -20,6 +20,7 @@
 #include <SmBSplineSurface.h>
 #include <SmCone.h>
 #include <SmCylinder.h>
+#include <SmEllipse.h>
 #include <SmExtent3d.h>
 #include <SmEdge.h>
 #include <SmEdgeuse.h>
@@ -9125,6 +9126,55 @@ void scenario_chamfers_taking_a_square_top_refused()
 
 // The scenario cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--scenarios-known-failing` runs the failing ones and fails if one passes.
+// An ellipse arc ending at its seam (313.53 to 360 degrees, radii 0.5 and 0.7071: a round's End on a
+// sloped basin wall, solidcraft#1080's), trimmed 2.57e-8 of its NURBS parameter short of its end,
+// 1.17e-6 degrees short of 360. The trimmed curve is the same curve over the shorter interval
+// (B-spline subdivision), and its analytic form must agree with it: its STEP domain ends at the
+// trimmed end's own angle, every STEP angle evaluates where its NURBS parameter does (SmEllipse
+// test 1, to 100 SM_EFF_ZERO of its size), and its points are the untrimmed arc's.
+void scenario_ellipse_trimmed_just_short_of_its_seam()
+{
+    const SmContext &ctx = *SmApiGetOrCreateContext();
+    const SmPoint3d o(79.95, 1.0, 29.5);
+    const SmVector3d x(0.0, 0.0, 1.0), y(1.0, 0.0, 0.0);
+    const double rx = 0.5, ry = std::sqrt(0.5);
+    const SmExtent1d arc(313.53119928922644, 360.0);
+    SmEllipse *whole = new (ctx) SmEllipse(o, x, y, arc, rx, ry, 3, &ctx, nullptr, FALSE);
+    SmEllipse *e = new (ctx) SmEllipse(o, x, y, arc, rx, ry, 3, &ctx, nullptr, FALSE);
+    SmExtent1d piece(e->GetNaturalInterval().GetMin(), e->GetNaturalInterval().Evaluate(0.99999997427990961));
+    CHECK(e->Trim(piece) == SM_SUCCESS);
+    const SmExtent1d nurb = e->GetNaturalInterval(), step = e->GetSTEPInterval();
+    // the trimmed end's own angle
+    SmPoint3d end;
+    CHECK(e->EvaluatePoint(nurb.GetMax(), end) == SM_SUCCESS);
+    const SmVector3d d = end - o;
+    double angle = std::atan2(rx / ry * d.Dot(y), d.Dot(x)) * 180.0 / PI;
+    if (angle < 0.0)
+    {
+        angle += 360.0;
+    }
+    // STEP against NURBS, as SmEllipse test 1 samples it, and the trimmed curve against the whole
+    double off = 0.0, moved = 0.0;
+    for (int i = 0; i <= 64; ++i)
+    {
+        double t = 0.0;
+        SmPoint3d a, b, c;
+        CHECK(e->ConvertTFromSTEPToNURBS(step.Evaluate(i / 64.0), t) == SM_SUCCESS);
+        CHECK(e->EvaluatePoint(t, a) == SM_SUCCESS && e->EvaluateSTEPPoint(step.Evaluate(i / 64.0), b) == SM_SUCCESS);
+        off = std::max(off, (a - b).Length());
+        CHECK(e->EvaluatePoint(nurb.Evaluate(i / 64.0), a) == SM_SUCCESS && whole->EvaluatePoint(nurb.Evaluate(i / 64.0), c) == SM_SUCCESS);
+        moved = std::max(moved, (a - c).Length());
+    }
+    std::printf("  STEP domain ends at %.12f deg, the trimmed end's angle %.12f; STEP and NURBS points %.3g apart, the whole arc's %.3g\n",
+                step.GetMax(), angle, off, moved);
+    CHECK(std::fabs(step.GetMax() - angle) <= 1e-9);
+    CHECK(off <= 1e-10); // the polar conversion over a span whose end weights differ after the trim is refined by point inversion, to its tolerance
+    CHECK(moved <= 1e-14 * 100.0);
+    CHECK(e->AssertValid(nullptr, SM_LEVEL_0, SM_NO_WALK));
+    delete e;
+    delete whole;
+}
+
 const TangentEndCase SCENARIO_CASES[] = {
     {"boss_in_band_kept", scenario_boss_in_band_kept, nullptr},
     {"boss_in_band_taken", scenario_boss_in_band_taken, nullptr},
@@ -9139,6 +9189,8 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"chord_on_a_60_degree_edge", scenario_chord_on_a_60_degree_edge, nullptr},
     {"chord_past_a_wall_refused", scenario_chord_past_a_wall_refused, nullptr},
     {"cube_corner_rounds_as_wide_as_faces_refused", scenario_cube_corner_rounds_as_wide_as_faces_refused, nullptr},
+    {"ellipse_trimmed_just_short_of_its_seam", scenario_ellipse_trimmed_just_short_of_its_seam,
+     "the trimmed arc's STEP domain ends at 360, not at its end's angle 1.17e-6 degrees short of it: SmPolarConversion's setup finds the end angles by STEPInversion over a full circle, whose closed-curve rule takes a point at its seam's end as its start (0), then 360; STEP and NURBS points 1.43e-8 apart, SmEllipse test 1 failing"},
     {"hole_in_band_kept", scenario_hole_in_band_kept, nullptr},
     {"hole_in_band_taken", scenario_hole_in_band_taken, nullptr},
     {"hole_short_of_band", scenario_hole_short_of_band, nullptr},
