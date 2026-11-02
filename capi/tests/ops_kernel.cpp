@@ -9240,6 +9240,88 @@ SmBSplineSurface *box_corner_round_reparametrized(int a, double r, double s, dou
     return srf;
 }
 
+// The fill is the rounds' geometry's ACROSS them too (owner, section 24; 12201 (a)): the box
+// corner's G1 rounds r 2, 3, 4 at the grown setbacks, and the same rounds with each end section
+// reparametrized across (a Mobius map of the section, w_j times rho^j: the same surface, its
+// across parameter moved), give the same fill, patch for patch, at every (u, v) to 1e-12 x its
+// size (6e-12, as along).
+void setback_fill_is_the_geometry_across()
+{
+    SmContext &ctx = *SmApiGetOrCreateContext();
+    const std::array<double, 3> radii = {2, 3, 4};
+    std::vector<double> rule;
+    CHECK(SmBlendSetback::Distances(box_corner_faces(), box_corner_edges(radii), rule) == SM_SUCCESS && rule.size() == 3);
+    if (rule.size() != 3)
+    {
+        return;
+    }
+    const std::vector<double> setbacks = box_corner_g1_setbacks(radii, rule);
+    std::vector<SmBSplineSurface *> sets[2];
+    for (int a = 0; a < 3; a++)
+    {
+        const double r = radii[static_cast<size_t>(a)], sb = setbacks[static_cast<size_t>(a)];
+        sets[0].push_back(box_corner_round(a, r, sb, 10.0, 1));
+        SmBSplineSurface *lin = box_corner_round(a, r, sb, 10.0, 1);
+        ULONG ud = 0, vd = 0;
+        SmTArray<SmPoint3d> pts;
+        SmBSplineSurfaceForm form;
+        SmTArray<ULONG> um, vm;
+        SmTArray<double> uk, vk, w;
+        SmKnotType kt;
+        CHECK(lin != nullptr && lin->GetCanonical(ud, vd, pts, form, um, vm, uk, vk, kt, w) == SM_SUCCESS);
+        SmTArray<double> w2;
+        for (ULONG i = 0; i < pts.GetSize(); i++)
+        {
+            const ULONG j = i % (vd + 1);
+            w2.Add((w.GetSize() > 0 ? w[i] : 1.0) * std::pow(1.7, static_cast<double>(j)));
+        }
+        SmBSplineSurface *moved = nullptr;
+        CHECK(SmBSplineSurface::CreateCanonical(ctx, ud, vd, pts, SM_SF_UNSPECIFIED, um, vm, uk, vk, SM_KT_UNSPECIFIED, &w2, nullptr, moved) == SM_SUCCESS &&
+              moved != nullptr);
+        delete lin;
+        sets[1].push_back(moved);
+    }
+    SmBlendSetback::Fill fills[2];
+    for (int k = 0; k < 2; k++)
+    {
+        std::vector<SmBlendSetback::Round> in;
+        for (SmBSplineSurface *q : sets[k])
+        {
+            if (q != nullptr)
+            {
+                in.push_back({q, SM_SP_U, q->GetNaturalUVDomain().GetMin().x, FALSE});
+            }
+        }
+        const SmStatus st = in.size() == 3 ? SmBlendSetback::FillHole(ctx, box_corner_faces(), in, 1, 1e-9, fills[k]) : SM_ERR;
+        std::printf("  fill %d: status %d %s\n", k, static_cast<int>(st), fills[k].m_pReason != nullptr ? fills[k].m_pReason : "");
+        CHECK(st == SM_SUCCESS && fills[k].m_vPatches.size() == 6);
+    }
+    double worst = 0.0;
+    if (fills[0].m_vPatches.size() == 6 && fills[1].m_vPatches.size() == 6)
+    {
+        for (size_t m = 0; m < 6; m++)
+            for (int i = 0; i <= 8; i++)
+                for (int j = 0; j <= 8; j++)
+                {
+                    SmPoint3d p, q;
+                    CHECK(fills[0].m_vPatches[m]->EvaluatePoint(SmPoint2d(i / 8.0, j / 8.0), p) == SM_SUCCESS &&
+                          fills[1].m_vPatches[m]->EvaluatePoint(SmPoint2d(i / 8.0, j / 8.0), q) == SM_SUCCESS);
+                    worst = std::max(worst, p.DistanceBetween(q));
+                }
+    }
+    else
+    {
+        worst = HUGE_VAL;
+    }
+    std::printf("  the rounds moved across: the fill off by %.3g\n", worst);
+    CHECK(worst <= 6e-12);
+    for (int k = 0; k < 2; k++)
+        for (SmBSplineSurface *q : sets[k])
+        {
+            delete q;
+        }
+}
+
 // The fill is the rounds' geometry's: the box corner's rounds r 2, 3, 4 (for G1 at the setbacks
 // grown to a certified convex fill, box_corner_g1_setbacks) (box_corner_round,
 // linear along their edges) and the same rounds in other parameters along them
@@ -11576,6 +11658,8 @@ const TangentEndCase SETBACK_CASES[] = {
     {"corner_setback_8", setback_corner_setback_8, nullptr},
     {"corner_setback_8_volume", corner_setback, nullptr},
     {"fill_is_the_geometry_s", setback_fill_is_the_geometry_s, nullptr},
+    {"fill_is_the_geometry_across", setback_fill_is_the_geometry_across,
+     "the planar G1 fill takes its rows 0, 1 from the round's parametrization across its end section: a Mobius-moved round (the same surface) is not certified (12201 (a); the fix: sm_SbGeometricRows in sm_SbGraphG1)"},
     {"g1_convex_rounds_2_3_4", setback_g1_convex_rounds_2_3_4, nullptr},
     {"g1_base_points_on_the_spring_conics", setback_g1_base_points_on_the_spring_conics, nullptr},
     {"g1_convex_grows_with_the_setback", setback_g1_convex_grows_with_the_setback, nullptr},

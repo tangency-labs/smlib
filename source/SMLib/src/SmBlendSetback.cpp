@@ -2460,6 +2460,98 @@ int sm_SbNoMoreConcave(const sm_SbNet & crN, const SmBlendSetback::Face & crA, c
   return iResult;
 }
 
+// A round's end rows from its GEOMETRY (owner, section 24): rJets (its jets at its end, 0 and 1)
+// replaced by its end section as the rational quadratic arc about its ball's centre (raised to the
+// degree of the derivative's) and its derivative across the end T + beta(t) V(t) in the round's
+// tangent plane (T the unit normal of the section's plane toward the rails' increasing parameter,
+// V the arc's homogeneous tangent, beta linear, set so that it runs along the rails at the ends):
+// two parametrizations of one round give the same rows. rlQ: their degree.
+SmStatus sm_SbGeometricRows(std::vector< std::vector<sm_SbH> > & rJets, size_t & rlQ, const TCHAR *& rpWhy)
+{
+  const size_t q = rlQ;
+  auto pt = [&](const sm_SbH & crH) { return SmVector3d(crH.a[0] / crH.a[3], crH.a[1] / crH.a[3], crH.a[2] / crH.a[3]); };
+  sm_SbH sMid = sm_SbZero();
+  for (size_t j=0; j<=q; j++) { sMid = sm_SbAxpy(sMid, sm_Binomial(static_cast<ULONG>(q), static_cast<ULONG>(j)) / std::pow(2.0, static_cast<double>(q)), rJets[0][j]); }
+  const SmVector3d A = pt(rJets[0][0]), M = pt(sMid), B = pt(rJets[0][q]);
+  const SmVector3d a0 = A - B, b0 = M - B, axb = a0 * b0;
+  const double dAxb2 = axb.Dot(axb);
+  if (!(dAxb2 > 0.0))
+    { SM_SB_FAIL(rpWhy, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's end section is not a circular arc")); }
+  const SmVector3d C = B + ((b0 * a0.Dot(a0) - a0 * b0.Dot(b0)) * axb) * (0.5 / dAxb2);
+  SmVector3d ua = A - C, ub = B - C;
+  const double dR = ua.Length();
+  SER(ua.Unitize());
+  SER(ub.Unitize());
+  const double dCos = ua.Dot(ub);
+  if (!(dCos > -1.0 + 1.0e-9))
+    { SM_SB_FAIL(rpWhy, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's end section spans half its ball or more")); }
+  const double dSpeed = 1.0;
+  SmVector3d sT = ua * ub;
+  SER(sT.Unitize());
+  // T toward the round's rails' increasing parameter (its raw derivative along, at the middle)
+  sm_SbH sD = sm_SbZero();
+  for (size_t j=0; j<=q; j++) { sD = sm_SbAxpy(sD, sm_Binomial(static_cast<ULONG>(q), static_cast<ULONG>(j)) / std::pow(2.0, static_cast<double>(q)), rJets[1][j]); }
+  const SmVector3d sDx(sD.a[0] - sD.a[3] * M.x, sD.a[1] - sD.a[3] * M.y, sD.a[2] - sD.a[3] * M.z);
+  if (sDx.Dot(sT) < 0.0) { sT = sT * -1.0; }
+  const double w1 = std::sqrt(0.5 * (1.0 + dCos));
+  const SmVector3d P1 = C + (ua + ub) * (dR / (1.0 + dCos));
+  // the arc, degree 2, and its homogeneous tangent V = w H' - w' H (spatial, degree 2 after the
+  // cancellation, computed as degree 3)
+  const SmVector3d sPts[3] = { A, P1, B };
+  const double dW[3] = { 1.0, w1, 1.0 };
+  sm_SbB sHc[4];
+  for (int c=0; c<4; c++)
+    {
+      sHc[c].resize(3);
+      for (int j=0; j<3; j++) { sHc[c][j] = (c == 3) ? dW[j] : ((c == 0) ? sPts[j].x : (c == 1) ? sPts[j].y : sPts[j].z) * dW[j]; }
+    }
+  auto deriv = [](const sm_SbB & crB) { sm_SbB d(crB.size() - 1); for (size_t i=0; i+1<crB.size(); i++) { d[i] = static_cast<double>(crB.size() - 1) * (crB[i + 1] - crB[i]); } return d; };
+  sm_SbB sV[3];
+  for (int c=0; c<3; c++)
+    {
+      const sm_SbB t1 = sm_SbMul(sHc[3], deriv(sHc[c])), t2 = sm_SbMul(deriv(sHc[3]), sHc[c]);
+      sV[c].resize(t1.size());
+      for (size_t i=0; i<t1.size(); i++) { sV[c][i] = t1[i] - t2[i]; }
+    }
+  // the derivative across the end: T + beta(t) V(t), beta linear, its ends set so that it runs
+  // along the rails there (the raw derivative's direction at each rail end: the rail's tangent,
+  // a direction of the geometry): T + beta V in the round's tangent plane all along (G1)
+  double dBeta[2];
+  for (int e=0; e<2; e++)
+    {
+      const sm_SbH & crH0 = rJets[0][e == 0 ? 0 : q], & crH1 = rJets[1][e == 0 ? 0 : q];
+      const SmVector3d sP0 = pt(crH0);
+      const SmVector3d sD1(crH1.a[0] - crH1.a[3] * sP0.x, crH1.a[1] - crH1.a[3] * sP0.y, crH1.a[2] - crH1.a[3] * sP0.z);
+      const size_t i = (e == 0) ? 0 : sV[0].size() - 1;
+      const SmVector3d sV0(sV[0][i], sV[1][i], sV[2][i]);
+      const double dAlong = sD1.Dot(sT);
+      if (!(dAlong > 0.0))
+        { SM_SB_FAIL(rpWhy, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's rail turns back across its end section")); }
+      dBeta[e] = sD1.Dot(sV0) / (sV0.Dot(sV0) * dAlong);
+    }
+  const sm_SbB sBeta = { dBeta[0], dBeta[1] };
+  const size_t lDeg = sV[0].size(); // beta V's degree
+  std::vector<sm_SbH> sRow(lDeg + 1), sAcross(lDeg + 1);
+  for (int c=0; c<4; c++)
+    {
+      const sm_SbB sUp = sm_SbElevate(sHc[c], lDeg);
+      for (size_t j=0; j<=lDeg; j++) { sRow[j].a[c] = sUp[j]; }
+    }
+  for (int c=0; c<3; c++)
+    {
+      const sm_SbB sBV = sm_SbMul(sBeta, sV[c]);
+      const double dTc = (c == 0) ? sT.x : (c == 1) ? sT.y : sT.z;
+      for (size_t j=0; j<=lDeg; j++) { sAcross[j].a[c] = dTc + sBV[j]; }
+    }
+  for (size_t j=0; j<=lDeg; j++) { sAcross[j].a[3] = 0.0; }
+  (void)dSpeed;
+  rJets.assign(2, std::vector<sm_SbH>());
+  rJets[0] = sRow;
+  rJets[1] = sAcross;
+  rlQ = lDeg;
+  return SM_SUCCESS;
+}
+
 // Whether a constant round between faces crA (its row's start crEnd[0] on it) and crB (crEnd[1])
 // has a line for its spine, by the one classification (sm_ClassifyBlendSpine): the faces as their
 // natural quadrics, offset through the ball's centre (the row's circumcentre).
@@ -2731,53 +2823,16 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
   // (radius r) in the plane square to the spine there (unit normal T, toward the round's rails'
   // increasing parameter): its rational quadratic arc from its rail end A to its rail end B (the
   // middle point C + r (a + b) / (1 + a . b), weight cos of half the angle, a, b the unit radii),
-  // and its derivative across the end the spine's unit tangent T at every point, (T w, 0) (the
-  // round's tangent plane holds T all along its section: the fill is G1 to it whatever the speed).
+  // and its derivative across the end in the round's tangent plane: T + beta(t) V(t) (T the spine's
+  // unit tangent, V the arc's tangent, beta linear, running along the rails at the ends).
   // The raw jets stay for the round's curvature (sm_SbRoundRowK: of its geometry).
   const std::vector< std::vector< std::vector<sm_SbH> > > crRawJets(crJets);
   const std::vector<size_t> crRawQ(crQ);
   for (size_t r=0; r<crJets.size(); r++)
     {
-      const size_t q = crQ[r];
-      auto pt = [&](const sm_SbH & crH) { return SmVector3d(crH.a[0] / crH.a[3], crH.a[1] / crH.a[3], crH.a[2] / crH.a[3]); };
-      sm_SbH sMid = sm_SbZero();
-      for (size_t j=0; j<=q; j++) { sMid = sm_SbAxpy(sMid, sm_Binomial(static_cast<ULONG>(q), static_cast<ULONG>(j)) / std::pow(2.0, static_cast<double>(q)), crJets[r][0][j]); }
-      const SmVector3d A = pt(crJets[r][0][0]), M = pt(sMid), B = pt(crJets[r][0][q]);
-      const SmVector3d a0 = A - B, b0 = M - B, axb = a0 * b0;
-      const double dAxb2 = axb.Dot(axb);
-      if (!(dAxb2 > 0.0))
-        { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's end section is not a circular arc")); }
-      const SmVector3d C = B + ((b0 * a0.Dot(a0) - a0 * b0.Dot(b0)) * axb) * (0.5 / dAxb2);
-      SmVector3d ua = A - C, ub = B - C;
-      const double dR = ua.Length();
-      SER(ua.Unitize());
-      SER(ub.Unitize());
-      const double dCos = ua.Dot(ub);
-      if (!(dCos > -1.0 + 1.0e-9))
-        { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: a round's end section spans half its ball or more")); }
-      SmVector3d sT = ua * ub;
-      SER(sT.Unitize());
-      // T toward the round's rails' increasing parameter (its raw derivative along, at the middle)
-      sm_SbH sD = sm_SbZero();
-      for (size_t j=0; j<=q; j++) { sD = sm_SbAxpy(sD, sm_Binomial(static_cast<ULONG>(q), static_cast<ULONG>(j)) / std::pow(2.0, static_cast<double>(q)), crJets[r][1][j]); }
-      const SmVector3d sDx(sD.a[0] - sD.a[3] * M.x, sD.a[1] - sD.a[3] * M.y, sD.a[2] - sD.a[3] * M.z);
-      if (sDx.Dot(sT) < 0.0) { sT = sT * -1.0; }
-      // (its scale is free: each side's speed lambda is matched to it)
-      const double w1 = std::sqrt(0.5 * (1.0 + dCos));
-      const SmVector3d P1 = C + (ua + ub) * (dR / (1.0 + dCos));
-      const double dSpeed = 1.0;
-      std::vector<sm_SbH> sRow(3), sAcross(3);
-      const SmVector3d sPts[3] = { A, P1, B };
-      const double dW[3] = { 1.0, w1, 1.0 };
-      for (int j=0; j<3; j++)
-        {
-          sRow[j].a[0] = sPts[j].x * dW[j]; sRow[j].a[1] = sPts[j].y * dW[j]; sRow[j].a[2] = sPts[j].z * dW[j]; sRow[j].a[3] = dW[j];
-          sAcross[j].a[0] = sT.x * dW[j] * dSpeed; sAcross[j].a[1] = sT.y * dW[j] * dSpeed; sAcross[j].a[2] = sT.z * dW[j] * dSpeed; sAcross[j].a[3] = 0.0;
-        }
-      crJets[r].assign(2, std::vector<sm_SbH>());
-      crJets[r][0] = sRow;
-      crJets[r][1] = sAcross;
-      crQ[r] = 2;
+      const TCHAR * pWhy = NULL;
+      if (sm_SbGeometricRows(crJets[r], crQ[r], pWhy) != SM_SUCCESS)
+        { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, pWhy != NULL ? pWhy : _T("SmBlendSetback: a round's end rows cannot be made")); }
     }
 
   // each cycle patch's round rows, its rails' ends and their directions toward the corner
@@ -3761,7 +3816,7 @@ SmStatus sm_SbFillHole(const SmContext & crContext, const std::vector<SmBlendSet
       if (k != 1 || (pProbe != NULL && !pProbe->m_bFill))
         { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: beside a curved face only a G1 fill is built, and probed only as the fill itself")); }
       s_lCurvedFills++;
-      return sm_SbGraphG1Curved(crContext, crFaces, crRounds, sJets, sQ, sRound, sFace, sRev, dTol, rFill, pProbe != NULL);
+      return sm_SbGraphG1Curved(crContext, crFaces, crRounds, sJets, sQ, sRound, sFace, sRev, dTol, rFill, true);
     }
   if (k == 1)
     { return sm_SbGraphG1(crContext, crFaces, crRounds, sJets, sQ, sRound, sFace, sRev, dTol, rFill, pProbe); }
