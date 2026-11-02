@@ -10609,6 +10609,29 @@ struct CurvedFace
     }
 };
 
+// A curved face's normal direction at x (its distance's gradient, in closed form).
+SmVector3d cf_grad(const CurvedFace &cf, const SmPoint3d &x, double)
+{
+    const SmVector3d d = x - cf.at;
+    switch (cf.kind)
+    {
+    case CurvedFace::PLANE:
+        return cf.axis;
+    case CurvedFace::SPHERE:
+        return d;
+    case CurvedFace::CYLINDER:
+        return d - cf.axis * d.Dot(cf.axis);
+    case CurvedFace::CONE:
+    {
+        const double h = d.Dot(cf.axis);
+        SmVector3d r = d - cf.axis * h;
+        r.Unitize(FALSE);
+        return r - cf.axis * cf.slope;
+    }
+    }
+    return d;
+}
+
 // One rounded edge at the corner, for its setback: `along` its coordinate along the edge from the
 // vertex (a straight edge's projection, an arc's length about its axis), `on` a point of its round
 // away from the corner (to find the round's face), `least` its least setback (where its rails
@@ -10719,14 +10742,79 @@ void curved_setback_graded(smlib_brep *r, const SmPoint3d &v, double reach, bool
     double worst_seam = 0.0, worst_on = 0.0, worst_k = HUGE_VAL, worst_out = -HUGE_VAL;
     int on_edges = 0;
     bool single = true, regular = true;
+    size_t patch_at = 0;
     for (SmFace *p : patches)
     {
         const SmSurface *s = p->GetSurface();
         const SmBSplineSurface *b = SM_CAST_PTR(SmBSplineSurface, s);
         single = single && b != nullptr && b->GetNumberControlPoints(SM_SP_U) == b->GetDegree(SM_SP_U) + 1 &&
                  b->GetNumberControlPoints(SM_SP_V) == b->GetDegree(SM_SP_V) + 1;
+        // seams with the fill's other patches and with the rounds through the edges' faces; with
+        // the corner's own faces against the face's exact normal (a curved face's trim curve in its
+        // own parameters is not exact, smlib#103: an angle taken through it measures that)
         int seams = 0;
-        worst_seam = std::max(worst_seam, worst_seam_angle(p, seams));
+        double this_seam = 0.0;
+        {
+            SmTArray<SmEdge *> es;
+            p->GetEdges(es);
+            for (ULONG k = 0; k < es.GetSize(); ++k)
+            {
+                SmEdgeuse *a = es[k]->GetPrimaryEdgeuse(), *o = a != nullptr ? a->GetRadial() : nullptr;
+                if (a == nullptr || o == nullptr || a == o || es[k]->GetCurve() == nullptr)
+                {
+                    this_seam = HUGE_VAL;
+                    continue;
+                }
+                seams++;
+                const SmExtent1d ivl = es[k]->GetInterval();
+                const CurvedFace *on = nullptr;
+                SmPoint3d mid;
+                es[k]->GetCurve()->EvaluatePoint(ivl.Evaluate(0.5), mid);
+                for (const CurvedFace &cf : faces)
+                {
+                    if (std::fabs(cf.g(mid)) <= 1e-6)
+                    {
+                        on = &cf;
+                    }
+                }
+                for (int q = 1; q < 32; ++q)
+                {
+                    if (on == nullptr)
+                    {
+                        SmPoint3d pa, pb;
+                        SmVector3d ba, bb;
+                        if (a->EvaluateBinormal(ivl.Evaluate(q / 32.0), FALSE, pa, ba) != SM_SUCCESS ||
+                            o->EvaluateBinormal(ivl.Evaluate(q / 32.0), FALSE, pb, bb) != SM_SUCCESS || ba.Unitize(FALSE) != SM_SUCCESS ||
+                            bb.Unitize(FALSE) != SM_SUCCESS)
+                        {
+                            this_seam = HUGE_VAL;
+                            continue;
+                        }
+                        this_seam = std::max(this_seam, std::atan2((ba * bb).Length(), -ba.Dot(bb)));
+                        continue;
+                    }
+                    // the patch's normal there against the face's (either way round)
+                    SmPoint3d x;
+                    es[k]->GetCurve()->EvaluatePoint(ivl.Evaluate(q / 32.0), x);
+                    SmSolutionArray sols;
+                    SmVector3d np;
+                    if (s->GlobalPointSolve(s->GetNaturalUVDomain(), SM_SO_MINIMIZE, x, 1e-12, nullptr, SM_SR_SINGLE, sols) != SM_SUCCESS ||
+                        sols.GetSize() == 0 || s->EvaluateNormal(SmPoint2d(sols[0].m_vStart[0], sols[0].m_vStart[1]), TRUE, TRUE, np) != SM_SUCCESS)
+                    {
+                        this_seam = HUGE_VAL;
+                        continue;
+                    }
+                    SmVector3d nf = cf_grad(*on, x, 1e-6);
+                    nf.Unitize(FALSE);
+                    np.Unitize(FALSE);
+                    this_seam = std::max(this_seam, std::atan2((np * nf).Length(), std::fabs(np.Dot(nf))));
+                }
+            }
+        }
+        worst_seam = std::max(worst_seam, this_seam);
+        std::printf("    patch %zu: degree %lu x %lu, %d seams within %.3g rad\n", patch_at++,
+                    b != nullptr ? static_cast<unsigned long>(b->GetDegree(SM_SP_U)) : 0ul, b != nullptr ? static_cast<unsigned long>(b->GetDegree(SM_SP_V)) : 0ul,
+                    seams, this_seam);
         const SmExtent2d dom = p->GetUVDomain();
         for (int i = 0; i <= 16; ++i)
         {
@@ -11012,7 +11100,9 @@ void setback_curved_d_prism_corner()
     const double av = std::atan2(h, a);
     smlib_brep *prism = d_prism(R, a, 0.0, H), *r = nullptr;
     const double points[9] = {a, 0, H, a, h, 5, -R, 0, H}, radii[3] = {2.0, 2.5, 3.0};
-    CHECK(prism != nullptr && smlib_blend(prism, SMLIB_BLEND_ROUND, points, radii, 3, 0.1, &r, nullptr) == SMLIB_OK && r != nullptr);
+    const int32_t st = prism != nullptr ? smlib_blend(prism, SMLIB_BLEND_ROUND, points, radii, 3, 0.1, &r, nullptr) : SMLIB_ERR_ARG;
+    std::printf("  blend status %d %s\n", static_cast<int>(st), st == SMLIB_OK ? "" : last_blend_reason().c_str());
+    CHECK(st == SMLIB_OK && r != nullptr);
     smlib_brep_free(prism);
     const std::vector<CurvedFace> faces = {{CurvedFace::PLANE, SmPoint3d(0, 0, H), SmVector3d(0, 0, 1), 0, 0, 1},
                                            {CurvedFace::PLANE, SmPoint3d(a, 0, 0), SmVector3d(1, 0, 0), 0, 0, 1},

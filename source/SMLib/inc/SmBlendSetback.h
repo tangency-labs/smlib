@@ -99,6 +99,10 @@ public:
     double     m_dSide   = 1.0;
   };
 
+  // A face's signed distance at crX (negative in the material; a cone's in the plane through its
+  // axis) and, in pNormal, its unit normal out of the material there.
+  static double Distance(const Face & crFace, const SmPoint3d & crX, SmVector3d * pNormal = NULL);
+
   // The spring curve on a face from P to Q, tangent there to the unit directions crTP (leaving P) and
   // crTQ (arriving at Q): in the face's rational parameter plane (a plane's own coordinates; a
   // cylinder's or cone's tan(theta / 2) and its axial coordinate; a sphere's stereographic plane from

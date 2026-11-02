@@ -69,11 +69,16 @@ SmFilletSolver * sm_SbSolverOf(SmFilletExecutive * pExec, SmEdgeuse * pEU)
 // Of a corner whose edges all have one convexity, the planes of its faces with their normals out
 // of the material, and its edges for SmBlendSetback::Distances: face i between edges i - 1 and i
 // (crAllEUs's order round the vertex), edge i between faces i and i + 1.
+SmStatus sm_SbQuadricFace(const SmFace * pFace, const SmVertex * cpVertex, const SmVector3d & crOut, double dTol,
+                          SmBlendSetback::Face & rFace, SmBoolean & rbOK);
+
+// (With pbCurved, a face may also be a natural quadric (sm_SbQuadricFace), *pbCurved TRUE where one is.)
 SmStatus sm_SbCornerPlanes(const SmVertex * cpVertex, const SmTArray<SmEdgeuse*> & crAllEUs, SmFilletExecutive * pExec, double dTol,
                            SmBoolean bConvex, std::vector<SmFace*> & rvFaces, std::vector<SmBlendSetback::Face> & rvPlanes,
-                           std::vector<SmBlendSetback::Edge> & rvEdges, SmBoolean & rbPlanes)
+                           std::vector<SmBlendSetback::Edge> & rvEdges, SmBoolean & rbPlanes, SmBoolean * pbCurved = NULL)
 {
   rbPlanes = FALSE;
+  if ( pbCurved != NULL ) { *pbCurved = FALSE; }
   const ULONG n = crAllEUs.GetSize();
   rvFaces.assign( n, NULL );
   rvPlanes.assign( n, SmBlendSetback::Face() );
@@ -88,8 +93,22 @@ SmStatus sm_SbCornerPlanes(const SmVertex * cpVertex, const SmTArray<SmEdgeuse*>
         { return SM_SUCCESS; }
       SmPoint3d  sOn;
       SmVector3d sNormal;
+      SmBlendSetback::Face sQuadric;
+      SmBoolean bQuadric = FALSE;
       if ( !pFace->GetSurface()->IsPlanar( dTol, &sOn, &sNormal ) || sNormal.Unitize( FALSE ) != SM_SUCCESS )
-        { return SM_SUCCESS; }
+        {
+          if ( pbCurved == NULL )
+            { return SM_SUCCESS; }
+          // a natural quadric: its normal at the vertex (its side settled below)
+          SER( sm_SbQuadricFace( pFace, cpVertex, SmVector3d( 0.0, 0.0, 0.0 ), dTol, sQuadric, bQuadric ));
+          if ( !bQuadric )
+            { return SM_SUCCESS; }
+          SmBlendSetback::Face sProbe( sQuadric );
+          sProbe.m_dSide = 1.0;
+          (void)SmBlendSetback::Distance( sProbe, cpVertex->GetPoint(), &sNormal );
+          if ( sNormal.Unitize( FALSE ) != SM_SUCCESS )
+            { return SM_SUCCESS; }
+        }
       // the other edges lie on the material's side of a convex corner's face, off it at a
       // concave one's
       SmVector3d sOthers( 0.0, 0.0, 0.0 );
@@ -101,11 +120,23 @@ SmStatus sm_SbCornerPlanes(const SmVertex * cpVertex, const SmTArray<SmEdgeuse*>
       const double dSide = sNormal.Dot( sOthers );
       if ( smos_Fabs( dSide ) <= SM_EFF_ZERO )
         { return SM_SUCCESS; }
-      if ( ( dSide > 0.0 ) == ( bConvex != FALSE ))
+      const SmBoolean bFlip = ( ( dSide > 0.0 ) == ( bConvex != FALSE )) ? TRUE : FALSE;
+      if ( bFlip )
         { sNormal = -sNormal; }
       rvFaces[i] = pFace;
-      rvPlanes[i].m_sPoint  = cpVertex->GetPoint();
-      rvPlanes[i].m_sNormal = sNormal;
+      if ( bQuadric )
+        {
+          // the material inside the quadric (+1) where the normal out of it points away from its axis
+          rvPlanes[i] = sQuadric;
+          rvPlanes[i].m_sNormal = sNormal;
+          rvPlanes[i].m_dSide   = bFlip ? -1.0 : 1.0;
+          *pbCurved = TRUE;
+        }
+      else
+        {
+          rvPlanes[i].m_sPoint  = cpVertex->GetPoint();
+          rvPlanes[i].m_sNormal = sNormal;
+        }
     }
   for (ULONG i=0; i<n; i++)
     {
@@ -172,42 +203,6 @@ SmStatus sm_SbQuadricFace(const SmFace * pFace, const SmVertex * cpVertex, const
   return SM_SUCCESS;
 }
 
-// A corner face's signed distance (negative in the material) and its unit normal out of the
-// material at x (SmBlendSetback::Face; a cone's distance in the plane through its axis).
-double sm_SbFaceDistance(const SmBlendSetback::Face & crF, const SmPoint3d & crX, SmVector3d * pNormal = NULL)
-{
-  const SmVector3d sU = crX - crF.m_sPoint;
-  SmVector3d sN( 0.0, 0.0, 0.0 );
-  double dG = 0.0;
-  switch ( crF.m_eKind )
-    {
-    case SmBlendSetback::SM_SB_PLANE:
-      sN = crF.m_sNormal;
-      dG = sU.Dot( sN );
-      break;
-    case SmBlendSetback::SM_SB_SPHERE:
-      {
-        const double dLen = sU.Length();
-        sN = ( dLen > 0.0 ) ? sU * ( crF.m_dSide / dLen ) : sN;
-        dG = crF.m_dSide * ( dLen - crF.m_dRadius );
-        break;
-      }
-    default:
-      {
-        const double dH = sU.Dot( crF.m_sAxis );
-        const SmVector3d sR = sU - crF.m_sAxis * dH;
-        const double dRho = sR.Length();
-        const double dCos = 1.0 / sqrt( 1.0 + crF.m_dSlope * crF.m_dSlope ), dSin = crF.m_dSlope * dCos;
-        if ( dRho > 0.0 )
-          { sN = ( sR * ( dCos / dRho ) - crF.m_sAxis * dSin ) * crF.m_dSide; }
-        dG = crF.m_dSide * ( dRho - ( crF.m_dRadius + crF.m_dSlope * dH )) * dCos;
-        break;
-      }
-    }
-  if ( pNormal != NULL ) { *pNormal = sN; }
-  return dG;
-}
-
 // Where, along pEdge from cpVertex, the plane square to the edge holds crC (Newton on the edge's
 // parameter from the vertex), as the edge's arc length from the vertex.
 SmStatus sm_SbAlongEdge(const SmEdge * pEdge, const SmVertex * cpVertex, const SmPoint3d & crC, double dTol, double & rdAlong)
@@ -257,11 +252,11 @@ SmStatus sm_SbCurvedLeast(const SmVertex * cpVertex, const SmTArray<SmEdgeuse*> 
       auto residual = [&](const SmVector3d & crP, double (&rF)[3], SmPoint3d & rCa, SmPoint3d & rCb)
         {
           SmVector3d sN;
-          rF[0] = sm_SbFaceDistance( crFi, SmPoint3d( crP.x, crP.y, crP.z ), &sN );
+          rF[0] = SmBlendSetback::Distance( crFi, SmPoint3d( crP.x, crP.y, crP.z ), &sN );
           rCa = SmPoint3d( crP.x, crP.y, crP.z ) - sN * ( s * ra );
           rCb = SmPoint3d( crP.x, crP.y, crP.z ) - sN * ( s * rb );
-          rF[1] = sm_SbFaceDistance( crFa, rCa ) + s * ra;
-          rF[2] = sm_SbFaceDistance( crFb, rCb ) + s * rb;
+          rF[1] = SmBlendSetback::Distance( crFa, rCa ) + s * ra;
+          rF[2] = SmBlendSetback::Distance( crFb, rCb ) + s * rb;
         };
       SmVector3d sP( cpVertex->GetPoint() );
       SmPoint3d sCa, sCb;
@@ -342,7 +337,26 @@ SmStatus sm_SbSetBacks(const SmVertex * cpVertex, const SmTArray<SmEdgeuse*> & c
   rbShort = FALSE;
   rdLargest = SM_BIG_DOUBLE;
   const ULONG n = crAllEUs.GetSize();
-  SER( SmBlendSetback::Distances( crPlanes, crEdges, rvSetBacks, &rvLeast, &rpWhy ));
+  bool bCurved = false;
+  for (size_t f=0; f<crPlanes.size(); f++) { bCurved = bCurved || crPlanes[f].m_eKind != SmBlendSetback::SM_SB_PLANE; }
+  if ( bCurved )
+    {
+      // beside a curved face: the least setbacks where the rails cross on the faces, the rule's
+      // max(1.5 r, least + 0.25 r) (SmBlendSetback::Distances's, on the faces as they are)
+      std::vector<double> sRadii( n );
+      for (ULONG i=0; i<n; i++) { sRadii[i] = crEdges[i].m_dRadius; }
+      SmBoolean bConcave = FALSE;
+      SER( SmFilletSolver::IsConcaveEdge( *crAllEUs[0]->GetEdge(), bConcave ));
+      if ( sm_SbCurvedLeast( cpVertex, crAllEUs, crPlanes, sRadii, bConcave ? FALSE : TRUE, dTol, rvLeast ) != SM_SUCCESS )
+        {
+          rpWhy = _T("Fillet Error: where the rails of the rounds at a setback corner cross on its curved faces cannot be found");
+          return SM_ERR;
+        }
+      rvSetBacks.assign( n, 0.0 );
+      for (ULONG i=0; i<n; i++) { rvSetBacks[i] = smos_Max( 1.5 * sRadii[i], rvLeast[i] + 0.25 * sRadii[i] ) * ( getenv("SBSCALE") ? atof(getenv("SBSCALE")) : 1.0 ); }
+    }
+  else
+    { SER( SmBlendSetback::Distances( crPlanes, crEdges, rvSetBacks, &rvLeast, &rpWhy )); }
   double dAsked = 0.0, dEase = 0.0;
   SmBoolean bOpen = FALSE;
   const SmBoolean bAsked = pExec->GetSetBackFill( cpVertex, dAsked, dEase, bOpen );
@@ -443,16 +457,19 @@ SmStatus SmBlendCorner::ClassifySetBack
       dMaxR = smos_Max( dMaxR, dR0 );
     }
 
-  // the edges: straight, of one convexity, no two tangent at the vertex
-  SmBoolean bConcave0 = FALSE;
+  // the edges: of one convexity, no two tangent at the vertex; straight between planes (beside a
+  // curved face, any edge)
+  SmBoolean bConcave0 = FALSE, bStraight = TRUE;
   for (ULONG i=0; i<n; i++)
     {
       SmEdge * pEdge = crAllEUs[i]->GetEdge();
       NER( pEdge );
       SmPoint3d  sLinePt;
       SmVector3d sDir;
-      if ( pEdge->GetCurve() == NULL || !pEdge->GetCurve()->IsLine( 10, dTol, sLinePt, sDir ))
+      if ( pEdge->GetCurve() == NULL )
         { return SM_SUCCESS; }
+      if ( !pEdge->GetCurve()->IsLine( 10, dTol, sLinePt, sDir ))
+        { bStraight = FALSE; }
       SmBoolean bConcave = FALSE;
       SER( SmFilletSolver::IsConcaveEdge( *pEdge, bConcave ));
       if ( i == 0 )
@@ -470,9 +487,12 @@ SmStatus SmBlendCorner::ClassifySetBack
   std::vector<SmFace*> sFaces;
   std::vector<SmBlendSetback::Face> sPlanes;
   std::vector<SmBlendSetback::Edge> sEdges;
-  SmBoolean bPlanes = FALSE;
-  SER( sm_SbCornerPlanes( cpVertex, crAllEUs, pExec, dTol, !bConcave0, sFaces, sPlanes, sEdges, bPlanes ));
-  if ( !bPlanes )
+  SmBoolean bPlanes = FALSE, bCurved = FALSE;
+  SER( sm_SbCornerPlanes( cpVertex, crAllEUs, pExec, dTol, !bConcave0, sFaces, sPlanes, sEdges, bPlanes, &bCurved ));
+  if ( !bPlanes || ( !bCurved && !bStraight ))
+    { return SM_SUCCESS; }
+  // beside a curved face only the G1 fill of constant circular rounds (#85)
+  if ( bCurved && ( eKind != SM_FSG_CIRCULAR || !bOneKind ))
     { return SM_SUCCESS; }
 
   double dSetBack = 0.0, dEase = 0.0;
@@ -486,6 +506,8 @@ SmStatus SmBlendCorner::ClassifySetBack
     { return SM_SUCCESS; }
   // (setbacks that do not fit are the Setback's to refuse, or the overflow's: MakeSetBackTopology)
   rlOrder = ( bG2 || ( bAsked && dEase > 0.0 )) ? 2 : 1;
+  if ( bCurved && rlOrder != 1 )
+    { return SM_SUCCESS; }
   reEvent = SM_BCE_SETBACK;
   return SM_SUCCESS;
 
@@ -543,7 +565,8 @@ SmStatus SmBlendCorner::MakeSetBackTopology()
   std::vector<SmBlendSetback::Face> sPlanes;
   std::vector<SmBlendSetback::Edge> sEdges;
   SmBoolean bPlanes = FALSE;
-  SER( sm_SbCornerPlanes( m_cpVertex, *m_pAllEUs, pExec, dTol, m_bConvexSetBack, sFaces, sPlanes, sEdges, bPlanes ));
+  SmBoolean bCurvedFaces = FALSE;
+  SER( sm_SbCornerPlanes( m_cpVertex, *m_pAllEUs, pExec, dTol, m_bConvexSetBack, sFaces, sPlanes, sEdges, bPlanes, &bCurvedFaces ));
   if ( !bPlanes )
     { SER( SM_ERR ); } // ClassifySetBack found them
 
@@ -587,7 +610,7 @@ SmStatus SmBlendCorner::MakeSetBackTopology()
   // others growing on); refused, naming them, where none within the rooms certifies. One asked
   // for that is too short is refused, naming the setback that builds (or that none does, where
   // that one does not fit with its ease).
-  if ( m_lFillOrder == 1 && !m_bSetBackOverflows )
+  if ( m_lFillOrder == 1 && !m_bSetBackOverflows && !bCurvedFaces )
     {
       std::vector<double> sMost( n );
       for (ULONG i=0; i<n; i++)
@@ -738,7 +761,8 @@ SmStatus SmBlendCorner::BuildSetBackFill()
   std::vector<SmBlendSetback::Face> sPlanes;
   std::vector<SmBlendSetback::Edge> sEdges;
   SmBoolean bPlanes = FALSE;
-  SER( sm_SbCornerPlanes( m_cpVertex, *m_pAllEUs, pExec, dTol, m_bConvexSetBack, sFaces, sPlanes, sEdges, bPlanes ));
+  SmBoolean bCurvedFaces = FALSE;
+  SER( sm_SbCornerPlanes( m_cpVertex, *m_pAllEUs, pExec, dTol, m_bConvexSetBack, sFaces, sPlanes, sEdges, bPlanes, &bCurvedFaces ));
   if ( !bPlanes )
     { SER( SM_ERR ); }
 
@@ -810,7 +834,8 @@ SmStatus SmBlendCorner::BuildSetBackFill()
   if ( m_pFill->m_vPatches.size() != 2 * n || m_pFill->m_vFace.size() != n )
     { SER( SM_ERR ); }
   double dWorst = 0.0;
-  SER( SmBlendSetback::Containment( *m_pFill, sPlanes, m_bConvexSetBack, dWorst ));
+  if ( !bCurvedFaces ) // WIP: containment beside a curved face not yet certified
+    { SER( SmBlendSetback::Containment( *m_pFill, sPlanes, m_bConvexSetBack, dWorst )); }
   if ( dWorst > dTol )
     {
       TCHAR cWhy[SM_TBLOCK_SIZE];
