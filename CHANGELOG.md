@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+- `smlib_blend` and `smlib_fillet` blend a convex and a concave edge that continue each other tangentially at a vertex across a tangent seam, such as a bar's front top edge and the concave arc where its top runs into a cylinder, or the same part with drafted walls. The corner is two faces tangent to both blends and to the walls, smooth inside; it used to fold or fail. ([smlib #82](https://github.com/tangency-labs/smlib/issues/82))
+
 ### Fixed
 - The C API's flat B-rep arrays (`smlib_brep_export` / `smlib_brep_import`) carry a Ball corner's
   `SmBallPatch` as itself. It used to be written as a bare NURBS and read back as an
@@ -11,6 +14,8 @@
   makes it an `SmBallPatch` only after certifying that the net lies on that sphere (`IsOnSphere`), and
   refuses the B-rep otherwise. A reader that doesn't know kind 6 can take it as NURBS, but must write
   arrays 36 and 166 back unchanged. ([smlib #102](https://github.com/tangency-labs/smlib/issues/102))
+- A round whose corner at one end is not blended now runs to its edge's end before it is extended, so the larger mixed corners (round radius 5 or 7 on the test peg) build instead of failing with a vertex computation failure. ([smlib #82](https://github.com/tangency-labs/smlib/issues/82))
+- An elliptic arc trimmed just short of its seam no longer has its angular domain moved to the seam, which made it fail SMLib's own validity check by 1.45e-8. ([smlib #82](https://github.com/tangency-labs/smlib/issues/82))
 
 ## [1.0.1] - 2026-10-21
 ### Added
