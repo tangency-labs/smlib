@@ -38,6 +38,7 @@
 #include <SmBSplineSurface.h>
 #include <SmLine.h>
 #include <SmOffsetSurface.h>
+#include <SmFilletExact.h>
 
 namespace
 {
@@ -117,6 +118,196 @@ SmStatus sm_SbCornerPlanes(const SmVertex * cpVertex, const SmTArray<SmEdgeuse*>
       rvEdges[i].m_alFaces[1]  = (i + 1) % n;
     }
   rbPlanes = TRUE;
+  return SM_SUCCESS;
+}
+
+// A curved corner face as the fill sees it (SmBlendSetback::Face): its natural quadric, its side
+// the material's, from the face's normal out of the material at the vertex (crOut). FALSE where the
+// face is no plane or natural quadric.
+SmStatus sm_SbQuadricFace(const SmFace * pFace, const SmVertex * cpVertex, const SmVector3d & crOut, double dTol,
+                          SmBlendSetback::Face & rFace, SmBoolean & rbOK)
+{
+  rbOK = FALSE;
+  NER( pFace );
+  SmBlendQuadric sQ;
+  SER( SmBlendQuadric::FromSurface( pFace->GetSurface(), pFace->GetUVDomain().GetMid(), dTol, sQ ));
+  rFace = SmBlendSetback::Face();
+  rFace.m_sNormal = crOut;
+  const SmPoint3d sV = cpVertex->GetPoint();
+  switch ( sQ.m_eKind )
+    {
+    case SmBlendQuadric::SM_BQ_PLANE:
+      rFace.m_eKind  = SmBlendSetback::SM_SB_PLANE;
+      rFace.m_sPoint = sV;
+      break;
+    case SmBlendQuadric::SM_BQ_CYLINDER:
+      rFace.m_eKind   = SmBlendSetback::SM_SB_CYLINDER;
+      rFace.m_sPoint  = sQ.m_sPoint;
+      rFace.m_sAxis   = sQ.m_sDir;
+      rFace.m_dRadius = sQ.m_dRadius;
+      break;
+    case SmBlendQuadric::SM_BQ_CONE:
+      rFace.m_eKind   = SmBlendSetback::SM_SB_CONE;
+      rFace.m_sPoint  = sQ.m_sPoint; // the apex
+      rFace.m_sAxis   = sQ.m_sDir;   // into the nappe
+      rFace.m_dRadius = 0.0;
+      rFace.m_dSlope  = smos_Tangent( sQ.m_dAngle );
+      break;
+    case SmBlendQuadric::SM_BQ_SPHERE:
+      rFace.m_eKind   = SmBlendSetback::SM_SB_SPHERE;
+      rFace.m_sPoint  = sQ.m_sPoint;
+      rFace.m_dRadius = sQ.m_dRadius;
+      break;
+    default:
+      return SM_SUCCESS;
+    }
+  // the material inside the quadric (+1) where the normal out of it at the vertex points away from
+  // the axis or centre
+  if ( rFace.m_eKind != SmBlendSetback::SM_SB_PLANE )
+    {
+      SmVector3d sAway = sQ.Normal( sV ) * sQ.m_dSide; // the quadric's own outward (away from its axis)
+      rFace.m_dSide = ( sAway.Dot( crOut ) >= 0.0 ) ? 1.0 : -1.0;
+    }
+  rbOK = TRUE;
+  return SM_SUCCESS;
+}
+
+// A corner face's signed distance (negative in the material) and its unit normal out of the
+// material at x (SmBlendSetback::Face; a cone's distance in the plane through its axis).
+double sm_SbFaceDistance(const SmBlendSetback::Face & crF, const SmPoint3d & crX, SmVector3d * pNormal = NULL)
+{
+  const SmVector3d sU = crX - crF.m_sPoint;
+  SmVector3d sN( 0.0, 0.0, 0.0 );
+  double dG = 0.0;
+  switch ( crF.m_eKind )
+    {
+    case SmBlendSetback::SM_SB_PLANE:
+      sN = crF.m_sNormal;
+      dG = sU.Dot( sN );
+      break;
+    case SmBlendSetback::SM_SB_SPHERE:
+      {
+        const double dLen = sU.Length();
+        sN = ( dLen > 0.0 ) ? sU * ( crF.m_dSide / dLen ) : sN;
+        dG = crF.m_dSide * ( dLen - crF.m_dRadius );
+        break;
+      }
+    default:
+      {
+        const double dH = sU.Dot( crF.m_sAxis );
+        const SmVector3d sR = sU - crF.m_sAxis * dH;
+        const double dRho = sR.Length();
+        const double dCos = 1.0 / sqrt( 1.0 + crF.m_dSlope * crF.m_dSlope ), dSin = crF.m_dSlope * dCos;
+        if ( dRho > 0.0 )
+          { sN = ( sR * ( dCos / dRho ) - crF.m_sAxis * dSin ) * crF.m_dSide; }
+        dG = crF.m_dSide * ( dRho - ( crF.m_dRadius + crF.m_dSlope * dH )) * dCos;
+        break;
+      }
+    }
+  if ( pNormal != NULL ) { *pNormal = sN; }
+  return dG;
+}
+
+// Where, along pEdge from cpVertex, the plane square to the edge holds crC (Newton on the edge's
+// parameter from the vertex), as the edge's arc length from the vertex.
+SmStatus sm_SbAlongEdge(const SmEdge * pEdge, const SmVertex * cpVertex, const SmPoint3d & crC, double dTol, double & rdAlong)
+{
+  NER( pEdge );
+  const SmCurve * pCurve = pEdge->GetCurve();
+  NER( pCurve );
+  const SmExtent1d sIvl = pEdge->GetInterval();
+  const SmBoolean bFromStart = ( pEdge->GetStartVertex() == cpVertex ) ? TRUE : FALSE;
+  const double t0 = bFromStart ? sIvl.GetMin() : sIvl.GetMax();
+  double t = t0;
+  for (int it=0; it<60; it++)
+    {
+      SmVector3d sD[3];
+      SER( pCurve->Evaluate( t, 2, TRUE, sD ));
+      const SmVector3d sW = crC - SmPoint3d( sD[0].x, sD[0].y, sD[0].z );
+      const double f = sW.Dot( sD[1] ), df = -sD[1].Dot( sD[1] ) + sW.Dot( sD[2] );
+      if ( !( smos_Fabs( df ) > 0.0 ))
+        { SER( SM_ERR ); }
+      const double dStep = f / df;
+      t -= dStep;
+      t = smos_Max( sIvl.GetMin(), smos_Min( sIvl.GetMax(), t ));
+      if ( smos_Fabs( dStep ) * sD[1].Length() <= 1.0e-3 * dTol )
+        { break; }
+    }
+  if ( smos_Fabs( t - t0 ) == 0.0 )
+    { rdAlong = 0.0; return SM_SUCCESS; }
+  SER( pCurve->Length( SmExtent1d( smos_Min( t, t0 ), smos_Max( t, t0 )), 1.0e-3 * dTol, rdAlong ));
+  return SM_SUCCESS;
+}
+
+// The least setbacks at a corner beside curved faces: on each face, where the rails of the two
+// rounds beside it cross (the point P of the face whose ball centres P - s r n(P), s +1 at a convex
+// corner, -1 at a concave one, lie at r from each round's other face), as far along each round's
+// edge as the plane square to it through that ball's centre; each edge the farther of its two faces'.
+SmStatus sm_SbCurvedLeast(const SmVertex * cpVertex, const SmTArray<SmEdgeuse*> & crAllEUs, const std::vector<SmBlendSetback::Face> & crFaces,
+                          const std::vector<double> & crRadii, SmBoolean bConvex, double dTol, std::vector<double> & rvLeast)
+{
+  const ULONG n = crAllEUs.GetSize();
+  rvLeast.assign( n, 0.0 );
+  const double s = bConvex ? 1.0 : -1.0;
+  for (ULONG i=0; i<n; i++)
+    {
+      const ULONG a = (i + n - 1) % n, b = i; // the rounds beside face i: edge a (faces a, i), edge b (faces i, i + 1)
+      const SmBlendSetback::Face & crFi = crFaces[i], & crFa = crFaces[a], & crFb = crFaces[(i + 1) % n];
+      const double ra = crRadii[a], rb = crRadii[b];
+      auto residual = [&](const SmVector3d & crP, double (&rF)[3], SmPoint3d & rCa, SmPoint3d & rCb)
+        {
+          SmVector3d sN;
+          rF[0] = sm_SbFaceDistance( crFi, SmPoint3d( crP.x, crP.y, crP.z ), &sN );
+          rCa = SmPoint3d( crP.x, crP.y, crP.z ) - sN * ( s * ra );
+          rCb = SmPoint3d( crP.x, crP.y, crP.z ) - sN * ( s * rb );
+          rF[1] = sm_SbFaceDistance( crFa, rCa ) + s * ra;
+          rF[2] = sm_SbFaceDistance( crFb, rCb ) + s * rb;
+        };
+      SmVector3d sP( cpVertex->GetPoint() );
+      SmPoint3d sCa, sCb;
+      const double dScale = smos_Max( 1.0, smos_Max( ra, rb ));
+      SmBoolean bDone = FALSE;
+      for (int it=0; it<60 && !bDone; it++)
+        {
+          double F[3];
+          residual( sP, F, sCa, sCb );
+          if ( smos_Fabs( F[0] ) + smos_Fabs( F[1] ) + smos_Fabs( F[2] ) <= 1.0e-13 * dScale )
+            { bDone = TRUE; break; }
+          // the Jacobian by central differences of the closed-form distances
+          double J[3][3];
+          const double h = 1.0e-6 * dScale;
+          for (int k=0; k<3; k++)
+            {
+              SmVector3d sD( 0.0, 0.0, 0.0 );
+              if ( k == 0 ) sD.x = h; else if ( k == 1 ) sD.y = h; else sD.z = h;
+              double Fp[3], Fm[3];
+              SmPoint3d sX1, sX2;
+              residual( sP + sD, Fp, sX1, sX2 );
+              residual( sP - sD, Fm, sX1, sX2 );
+              for (int r=0; r<3; r++) { J[r][k] = ( Fp[r] - Fm[r] ) / ( 2.0 * h ); }
+            }
+          const double det = J[0][0] * ( J[1][1] * J[2][2] - J[1][2] * J[2][1] ) - J[0][1] * ( J[1][0] * J[2][2] - J[1][2] * J[2][0] )
+                           + J[0][2] * ( J[1][0] * J[2][1] - J[1][1] * J[2][0] );
+          if ( !( smos_Fabs( det ) > SM_EFF_ZERO ))
+            { SER( SM_ERR ); }
+          double x[3];
+          for (int k=0; k<3; k++)
+            {
+              double M[3][3];
+              for (int r=0; r<3; r++) for (int c=0; c<3; c++) { M[r][c] = ( c == k ) ? F[r] : J[r][c]; }
+              x[k] = ( M[0][0] * ( M[1][1] * M[2][2] - M[1][2] * M[2][1] ) - M[0][1] * ( M[1][0] * M[2][2] - M[1][2] * M[2][0] )
+                     + M[0][2] * ( M[1][0] * M[2][1] - M[1][1] * M[2][0] )) / det;
+            }
+          sP = sP - SmVector3d( x[0], x[1], x[2] );
+        }
+      if ( !bDone )
+        { SER( SM_ERR ); }
+      double dA = 0.0, dB = 0.0;
+      SER( sm_SbAlongEdge( crAllEUs[a]->GetEdge(), cpVertex, sCa, dTol, dA ));
+      SER( sm_SbAlongEdge( crAllEUs[b]->GetEdge(), cpVertex, sCb, dTol, dB ));
+      rvLeast[a] = smos_Max( rvLeast[a], dA );
+      rvLeast[b] = smos_Max( rvLeast[b], dB );
+    }
   return SM_SUCCESS;
 }
 

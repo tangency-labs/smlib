@@ -82,12 +82,37 @@ struct SmEaseRamp
 class SM_EXPORT SmBlendSetback
 {
 public:
-  // A face at the corner: a plane through m_sPoint, m_sNormal its unit normal out of the material.
+  // A face at the corner: a plane through m_sPoint, m_sNormal its unit normal out of the material;
+  // or a natural quadric (m_eKind): a cylinder or cone about the axis through m_sPoint along the unit
+  // m_sAxis, of radius m_dRadius there and m_dRadius + m_dSlope h at h along the axis (a cylinder's
+  // slope 0), or a sphere about m_sPoint of radius m_dRadius; m_dSide +1 where the material is inside
+  // it, -1 outside. (m_sNormal is a curved face's normal out of the material at the corner's vertex.)
+  enum Kind { SM_SB_PLANE, SM_SB_CYLINDER, SM_SB_CONE, SM_SB_SPHERE };
   struct Face
   {
     SmPoint3d  m_sPoint;
     SmVector3d m_sNormal;
+    Kind       m_eKind   = SM_SB_PLANE;
+    SmVector3d m_sAxis   = SmVector3d(0.0, 0.0, 1.0);
+    double     m_dRadius = 0.0;
+    double     m_dSlope  = 0.0;
+    double     m_dSide   = 1.0;
   };
+
+  // The spring curve on a face from P to Q, tangent there to the unit directions crTP (leaving P) and
+  // crTQ (arriving at Q): in the face's rational parameter plane (a plane's own coordinates; a
+  // cylinder's or cone's tan(theta / 2) and its axial coordinate; a sphere's stereographic plane from
+  // the point opposite the corner) the parabola through the images of P and Q tangent to the images
+  // of their directions, mapped onto the face: rational, exactly on it, its degree 2 on a plane, 4 on
+  // a cylinder (the axial coordinate a quartic with the parabola's end jets, its middle coefficient
+  // the mean of its neighbours) or a sphere, 6 on a cone. Returned as its two halves meeting at its
+  // middle (the base point), each in homogeneous Bernstein coefficients (x w, y w, z w, w), from its
+  // rail end to the base point, each multiplied by the linear factor that makes its last two weights
+  // 1 (so a polynomial interior map meets it there). Refused (SM_ERR_INVALID_INPUT, ppReason) where
+  // the tangent lines' images cross behind P or Q (no corner region between the rails) or a weight
+  // would not stay positive.
+  static SmStatus SpringCurve(const Face & crFace, const SmPoint3d & crP, const SmVector3d & crTP, const SmPoint3d & crQ, const SmVector3d & crTQ,
+                              std::vector<double> & rFromP, std::vector<double> & rFromQ, const TCHAR ** ppReason = NULL);
 
   // A rounded edge at the corner, for the setbacks: m_sAway its unit direction away from the
   // vertex, m_dRadius the round's radius there, m_alFaces its two faces (indices into the faces).

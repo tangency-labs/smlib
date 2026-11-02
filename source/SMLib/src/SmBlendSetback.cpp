@@ -3087,3 +3087,217 @@ SmStatus SmBlendSetback::Containment(const Fill & crFill, const std::vector<Face
     }
   return SM_SUCCESS;
 }
+
+/*******************************************************************//**
+PURPOSE: The spring curve on a face (SmBlendSetback.h).
+
+NOTES: The face's rational parameter plane: a plane's own coordinates
+    along two unit directions in it; a cylinder's or cone's (t, h), t =
+    tan(theta / 2) about the axis from the radial direction e1 halfway
+    between P's and Q's, h along the axis; a sphere's stereographic plane
+    (a, b) from the point opposite the middle of P's and Q's directions. A
+    tangent T at a point maps by the parametrization's differential:
+    dtheta = T . e_theta / rho, dt = (1 + t^2) dtheta / 2, dh = T . axis;
+    on the sphere (a, b) = (u1, u2) / (R + u3), u the point's coordinates
+    from the centre along (e1, e2, m), so da = (du1 (R + u3) - u1 du3) /
+    (R + u3)^2. The parabola (P^, X^, Q^), X^ where P^ + a dP^ meets
+    Q^ - b dQ^ (a, b > 0), mapped up:
+      cylinder: W = 1 + t^2, (X, Y) = R (1 - t^2, 2 t), the axial h W of
+        degree 6 replaced by the quartic with its end values and
+        derivatives (its middle coefficient their neighbours' mean): the
+        curve stays on the cylinder (X^2 + Y^2 = R^2 W^2 whatever the
+        axial coordinate) and keeps its end tangents;
+      cone: W = 1 + t^2, (X, Y) = rho(h) (1 - t^2, 2 t), the axial h W, all
+        of degree 6;
+      sphere: W = 1 + a^2 + b^2, R (2 a, 2 b, 1 - a^2 - b^2) about the
+        centre, degree 4.
+***********************************************************************/
+SmStatus SmBlendSetback::SpringCurve(const Face & crFace, const SmPoint3d & crP, const SmVector3d & crTP, const SmPoint3d & crQ, const SmVector3d & crTQ,
+                                     std::vector<double> & rFromP, std::vector<double> & rFromQ, const TCHAR ** ppReason)
+{
+  rFromP.clear();
+  rFromQ.clear();
+  const TCHAR * pLocalWhy = NULL;
+  const TCHAR *& rWhy = (ppReason != NULL) ? *ppReason : pLocalWhy;
+  rWhy = NULL;
+  const SmVector3d sO(crFace.m_sPoint);
+  // the frame: e3 the axis (a plane's normal), e1 radial halfway between P and Q (a plane's: P to Q)
+  SmVector3d sE3 = (crFace.m_eKind == SM_SB_PLANE) ? crFace.m_sNormal : crFace.m_sAxis;
+  SER( sE3.Unitize() );
+  SmVector3d sE1;
+  if ( crFace.m_eKind == SM_SB_PLANE )
+    { sE1 = crQ - crP; }
+  else if ( crFace.m_eKind == SM_SB_SPHERE )
+    {
+      SmVector3d sUP = SmVector3d(crP) - sO, sUQ = SmVector3d(crQ) - sO;
+      SER( sUP.Unitize() );
+      SER( sUQ.Unitize() );
+      sE3 = sUP + sUQ; // m: the middle of P's and Q's directions
+      SER( sE3.Unitize() );
+      sE1 = sUQ - sUP;
+    }
+  else
+    {
+      SmVector3d sRP = SmVector3d(crP) - sO, sRQ = SmVector3d(crQ) - sO;
+      sRP = sRP - sE3 * sRP.Dot( sE3 );
+      sRQ = sRQ - sE3 * sRQ.Dot( sE3 );
+      SER( sRP.Unitize() );
+      SER( sRQ.Unitize() );
+      sE1 = sRP + sRQ;
+    }
+  sE1 = sE1 - sE3 * sE1.Dot( sE3 );
+  SER( sE1.Unitize() );
+  const SmVector3d sE2 = sE3 * sE1;
+  const double R = crFace.m_dRadius;
+
+  // a point and a tangent to the parameter plane
+  auto toPlane = [&](const SmPoint3d & crX, const SmVector3d & crT, double (&rU)[2], double (&rD)[2]) -> SmStatus
+    {
+      const SmVector3d sU = SmVector3d(crX) - sO;
+      const double u1 = sU.Dot( sE1 ), u2 = sU.Dot( sE2 ), u3 = sU.Dot( sE3 );
+      const double d1 = crT.Dot( sE1 ), d2 = crT.Dot( sE2 ), d3 = crT.Dot( sE3 );
+      switch ( crFace.m_eKind )
+        {
+        case SM_SB_PLANE:
+          rU[0] = u1; rU[1] = u2; rD[0] = d1; rD[1] = d2;
+          return SM_SUCCESS;
+        case SM_SB_SPHERE:
+          {
+            const double dDen = R + u3;
+            if ( !( dDen > SM_EFF_ZERO * R ))
+              { SER( SM_ERR ); }
+            rU[0] = u1 / dDen; rU[1] = u2 / dDen;
+            rD[0] = ( d1 * dDen - u1 * d3 ) / ( dDen * dDen );
+            rD[1] = ( d2 * dDen - u2 * d3 ) / ( dDen * dDen );
+            return SM_SUCCESS;
+          }
+        default:
+          {
+            const double dRho = sqrt( u1 * u1 + u2 * u2 );
+            if ( !( dRho > SM_EFF_ZERO ))
+              { SER( SM_ERR ); }
+            const double dTheta = atan2( u2, u1 );
+            if ( smos_Fabs( dTheta ) >= 0.5 * SM_PI )
+              { SER( SM_ERR ); } // more than a half turn between P and Q
+            const double t = tan( 0.5 * dTheta );
+            const double dDTheta = ( -sin( dTheta ) * d1 + cos( dTheta ) * d2 ) / dRho;
+            rU[0] = t; rU[1] = u3;
+            rD[0] = 0.5 * ( 1.0 + t * t ) * dDTheta; rD[1] = d3;
+            return SM_SUCCESS;
+          }
+        }
+    };
+  double adP[2], adDP[2], adQ[2], adDQ[2];
+  SER( toPlane( crP, crTP, adP, adDP ));
+  SER( toPlane( crQ, crTQ, adQ, adDQ ));
+  // X^: P^ + a dP^ = Q^ - b dQ^, i.e. a dP^ + b dQ^ = Q^ - P^
+  const double dDet = adDP[0] * adDQ[1] - adDP[1] * adDQ[0];
+  if ( !( smos_Fabs( dDet ) > SM_EFF_ZERO ))
+    { rWhy = _T("SmBlendSetback: two rails on a face run parallel (no corner region between them)"); return SM_ERR_INVALID_INPUT; }
+  const double r0 = adQ[0] - adP[0], r1 = adQ[1] - adP[1];
+  const double a = ( r0 * adDQ[1] - r1 * adDQ[0] ) / dDet;
+  const double b = ( adDP[0] * r1 - adDP[1] * r0 ) / dDet;
+  if ( !( a > 0.0 ) || !( b > 0.0 ))
+    { rWhy = _T("SmBlendSetback: two rounds' rails on a face cross behind their ends (no corner region between them)"); return SM_ERR_INVALID_INPUT; }
+  const sm_SbB sU = { adP[0], adP[0] + a * adDP[0], adQ[0] };
+  const sm_SbB sV = { adP[1], adP[1] + a * adDP[1], adQ[1] };
+
+  // the homogeneous curve's components about the frame (c1, c2, c3 along e1, e2, e3, then w)
+  sm_SbB c1, c2, c3, w;
+  switch ( crFace.m_eKind )
+    {
+    case SM_SB_PLANE:
+      c1 = sU; c2 = sV; c3 = sm_SbB( 3, 0.0 ); w = sm_SbB( 3, 1.0 );
+      break;
+    case SM_SB_SPHERE:
+      {
+        const sm_SbB sUU = sm_SbMul( sU, sU ), sVV = sm_SbMul( sV, sV );
+        w.resize( 5 ); c1.resize( 5 ); c2.resize( 5 ); c3.resize( 5 );
+        const sm_SbB sU4 = sm_SbElevate( sU, 4 ), sV4 = sm_SbElevate( sV, 4 );
+        const sm_SbB sUU4 = sm_SbElevate( sUU, 4 ), sVV4 = sm_SbElevate( sVV, 4 );
+        for (size_t i=0; i<5; i++)
+          {
+            w[i]  = 1.0 + sUU4[i] + sVV4[i];
+            c1[i] = R * 2.0 * sU4[i];
+            c2[i] = R * 2.0 * sV4[i];
+            c3[i] = R * ( 1.0 - sUU4[i] - sVV4[i] );
+          }
+        break;
+      }
+    default:
+      {
+        // t quadratic: t^2, W = 1 + t^2 and 1 - t^2 quartic, 2 t raised to 4
+        const sm_SbB sTT = sm_SbMul( sU, sU );
+        sm_SbB sW( 5 ), sOneMinus( 5 );
+        for (size_t i=0; i<5; i++) { sW[i] = 1.0 + sTT[i]; sOneMinus[i] = 1.0 - sTT[i]; }
+        const sm_SbB sTwoT = sm_SbElevate( sm_SbB( { 2.0 * sU[0], 2.0 * sU[1], 2.0 * sU[2] } ), 4 );
+        if ( crFace.m_eKind == SM_SB_CYLINDER )
+          {
+            w = sW;
+            c1 = sOneMinus;
+            c2 = sTwoT;
+            for (size_t i=0; i<5; i++) { c1[i] *= R; c2[i] *= R; }
+            // the axial coordinate: the quartic with h W's end values and derivatives (h W is of
+            // degree 6), its middle coefficient its neighbours' mean
+            const sm_SbB sHW = sm_SbMul( sV, sW );
+            c3.assign( 5, 0.0 );
+            c3[0] = sHW[0];
+            c3[4] = sHW[6];
+            c3[1] = sHW[0] + ( sHW[1] - sHW[0] ) * 6.0 / 4.0;
+            c3[3] = sHW[6] - ( sHW[6] - sHW[5] ) * 6.0 / 4.0;
+            c3[2] = 0.5 * ( c3[1] + c3[3] );
+          }
+        else
+          {
+            const sm_SbB sRho = { R + crFace.m_dSlope * sV[0], R + crFace.m_dSlope * sV[1], R + crFace.m_dSlope * sV[2] };
+            w  = sm_SbElevate( sW, 6 );
+            c1 = sm_SbMul( sRho, sOneMinus );
+            c2 = sm_SbMul( sRho, sTwoT );
+            c3 = sm_SbMul( sV, sW );
+          }
+        break;
+      }
+    }
+  const size_t d = w.size() - 1;
+  // homogeneous world coordinates
+  std::vector<sm_SbH> sCurve( d + 1 );
+  for (size_t i=0; i<=d; i++)
+    {
+      const SmVector3d sX = sO * w[i] + sE1 * c1[i] + sE2 * c2[i] + sE3 * c3[i];
+      if ( !( w[i] > 0.0 ))
+        { rWhy = _T("SmBlendSetback: a spring curve's weight would not stay positive"); return SM_ERR_INVALID_INPUT; }
+      sCurve[i].a[0] = sX.x; sCurve[i].a[1] = sX.y; sCurve[i].a[2] = sX.z; sCurve[i].a[3] = w[i];
+    }
+  // the halves at s = 1/2 (de Casteljau), the second reversed (from Q), each times L so that its
+  // weights at the base point are 1, 1: L(1) = 1 / W(1), L(0) = L(1) (1 + W'(1) / W(1))
+  std::vector<sm_SbH> sLeft( d + 1 ), sRight( d + 1 ), sWork( sCurve );
+  for (size_t k=0; k<=d; k++)
+    {
+      sLeft[k]  = sWork[0];
+      sRight[k] = sWork[d - k]; // from Q (k = 0) to the middle (k = d)
+      for (size_t i=0; i+k<d; i++)
+        { sWork[i] = sm_SbAxpy( sm_SbAxpy( sm_SbZero(), 0.5, sWork[i] ), 0.5, sWork[i + 1] ); }
+    }
+  auto normalized = [&](const std::vector<sm_SbH> & crHalf, std::vector<double> & rOut) -> SmStatus
+    {
+      const double dW1 = crHalf[d].a[3], dDW1 = static_cast<double>(d) * ( crHalf[d].a[3] - crHalf[d - 1].a[3] );
+      const double l1 = 1.0 / dW1, l0 = l1 * ( 1.0 + dDW1 / dW1 );
+      if ( !( l0 > 0.0 ))
+        { rWhy = _T("SmBlendSetback: a spring curve's weight would not stay positive"); return SM_ERR_INVALID_INPUT; }
+      const sm_SbB sL = { l0, l1 };
+      rOut.assign( 4 * ( d + 2 ), 0.0 );
+      for (int c=0; c<4; c++)
+        {
+          sm_SbB sComp( d + 1 );
+          for (size_t i=0; i<=d; i++) { sComp[i] = crHalf[i].a[c]; }
+          const sm_SbB sProd = sm_SbMul( sComp, sL );
+          for (size_t i=0; i<=d+1; i++) { rOut[4 * i + c] = sProd[i]; }
+        }
+      rOut[4 * ( d + 1 ) + 3] = 1.0; // exactly
+      rOut[4 * d + 3] = 1.0;
+      return SM_SUCCESS;
+    };
+  SmStatus eStatus = normalized( sLeft, rFromP );
+  if ( eStatus != SM_SUCCESS ) { return eStatus; }
+  return normalized( sRight, rFromQ );
+}
