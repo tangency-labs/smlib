@@ -6374,6 +6374,65 @@ else:
         self.assertIsNone(sm.usd.ensure_plugin_registered())
         self.assertIsNone(sm.usd.ensure_plugin_registered())
 
+    # Known failing (smlib#102): the BrepArray has no face definitions yet.
+    @unittest.expectedFailure
+    def test_ball_corners_keep_their_spheres_through_usd(self):
+        # smlib#102: a 40 x 30 x 60 box with all 12 edges rounded r 1.5 has eight Ball corners, each
+        # a rational patch on its ball's sphere (SmBallPatch). Through a BrepArray each corner face
+        # keeps that sphere: face:definition:kind 6 on its face, its reals the sphere's centre and
+        # radius, and the face read back is that patch again (written out again, the same eight
+        # definitions). A definition its net is not on (the radius 1e-9 out) is refused.
+        r, dx, dy, dz = 1.5, 40.0, 30.0, 60.0
+
+        def definitions(text):
+            kinds = re.search(r"face:definition:kind = \[([^\]]*)\]", text)
+            reals = re.search(r"face:definition:reals = \[([^\]]*)\]", text)
+            if kinds is None or reals is None:
+                return None, None, None
+            return [int(k) for k in kinds.group(1).split(",")], [float(x) for x in reals.group(1).split(",")], reals
+
+        def at_corners(values):
+            # each centre r in from three of the box's faces
+            ok = 0
+            for i in range(len(values) // 4):
+                cx, cy, cz, rad = values[4 * i : 4 * i + 4]
+                inside = all(
+                    abs(min(c, size - c) - r) < 1e-12 for c, size in ((cx, dx), (cy, dy), (cz, dz))
+                )
+                ok += 1 if inside and rad == r else 0
+            return ok
+
+        box = sm.create_box((0, 0, 0), dx, dy, dz)
+        sm.fillet_edges(box, box.edges(), radius=r, xsect_type=1)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "rounded-box.usda")
+            sm.usd.export_brep(box, path)
+            with open(path) as f:
+                text = f.read()
+            kinds, values, reals = definitions(text)
+            self.assertIsNotNone(kinds, "no face definitions authored")
+            self.assertEqual(kinds.count(6), 8)
+            self.assertEqual(kinds.count(0), len(kinds) - 8)
+            self.assertEqual(len(values), 32)
+            self.assertEqual(at_corners(values), 8)
+
+            back = sm.usd.import_breps(path, heal=False)[0]
+            again = os.path.join(tmpdir, "rounded-box-again.usda")
+            sm.usd.export_brep(back, again)
+            with open(again) as f:
+                kinds2, values2, _ = definitions(f.read())
+            self.assertIsNotNone(kinds2, "the faces read back lost their definitions")
+            self.assertEqual(kinds2.count(6), 8)
+            self.assertEqual(at_corners(values2), 8)
+
+            off = list(values)
+            off[3] *= 1.0 + 1e-9
+            bad_path = os.path.join(tmpdir, "rounded-box-off.usda")
+            with open(bad_path, "w") as f:
+                f.write(text.replace(reals.group(1), ", ".join(repr(v) for v in off)))
+            with self.assertRaises(RuntimeError):
+                sm.usd.import_breps(bad_path, heal=False)
+
     def test_export_import_single_brep(self):
         box = sm.create_box((0, 0, 0), 10, 10, 10)
         with tempfile.NamedTemporaryFile(suffix=".usda", delete=False) as f:

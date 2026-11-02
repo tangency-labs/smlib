@@ -21,6 +21,18 @@ from pxr import Gf, Sdf, Usd, Vt  # noqa: E402
 _UNAUTHORED = object()
 
 
+# Expected-invalid fixtures whose requirement the validator does not check yet, each with its
+# reason; an entry leaves the list when the validator reports it.
+KNOWN_FAILING_FIXTURES = {
+    "Test_BA_766_Wrong_face_definition_kind_size.usda": "smlib#102: face definitions not validated yet",
+    "Test_BA_767_Face_definition_on_a_non_NURBS_face.usda": "smlib#102: face definitions not validated yet",
+    "Test_BA_768_Face_definition_real_count_not_that_of_its_kind.usda": "smlib#102: face definitions not validated yet",
+    "Test_BA_769_Wrong_face_definition_reals_size.usda": "smlib#102: face definitions not validated yet",
+    "Test_BA_770_Non_positive_ball_patch_radius.usda": "smlib#102: face definitions not validated yet",
+    "Test_BA_771_Face_definitions_without_BrepSurfaceDefinitionAPI.usda": "smlib#102: face definitions not validated yet",
+}
+
+
 def _expected_requirement(test_file: Path) -> str | None:
     match = re.search(r"Test_(BA_\d{3})_", test_file.name)
     return match.group(1).replace("_", ".") if match else None
@@ -128,6 +140,10 @@ class BrepValidatorFixtureTestCase(BrepValidatorBaseTestCase):
                     for issue in issues
                     if getattr(issue, "requirement", None) is not None and getattr(issue.requirement, "code", None)
                 }
+                if usd_file.name in KNOWN_FAILING_FIXTURES:
+                    # fails as known; it must keep failing, else drop its entry
+                    self.assertNotIn(expected_requirement, issue_codes, f"{usd_file.name} passes: drop it from KNOWN_FAILING_FIXTURES")
+                    continue
 
                 self.assertIn(
                     expected_requirement,
@@ -158,6 +174,23 @@ class BrepValidatorFixtureTestCase(BrepValidatorBaseTestCase):
             f"({len(expected_valid_files) - len(checked_expected_valid_files)} skipped without BrepArray prims)",
             flush=True,
         )
+
+    def test_face_definitions_well_formed_are_accepted(self):
+        # A ball patch's definition on face 0 (kind 6, 4 reals), every other face none: no face
+        # definition requirement (BA.766-BA.771) is reported. The validator checks the record's
+        # structure only; whether the net lies on the sphere is SMLib's certificate on import.
+        import generate_test_files as gen
+
+        content = gen.with_face_definitions(gen.read_base_file())
+        stage = Usd.Stage.CreateInMemory()
+        self.assertTrue(stage.GetRootLayer().ImportFromString("".join(content)))
+        prim = next(p for p in stage.TraverseAll() if p.GetTypeName() == "BrepArray")
+        codes = {
+            issue.requirement.code
+            for issue in self._check_prim(prim)
+            if getattr(issue, "requirement", None) is not None
+        }
+        self.assertFalse(codes & {"BA.766", "BA.767", "BA.768", "BA.769", "BA.770", "BA.771"}, sorted(codes))
 
     def _stage_asymmetric_triangle_loop(self):
         """Build a three-edge loop whose 3D edges, orientation tokens and stored UV trims

@@ -1052,6 +1052,54 @@ def generate_ba_582_test(base_content):
     return content
 
 # Test generators mapping
+def with_face_definitions(base_content, kinds=None, real_counts=None, reals=None, apply_api=True):
+    """The base cube with face definitions (BrepSurfaceDefinitionAPI): face 0 a ball patch (kind 6), its
+    definition the sphere's centre and radius (4 reals), every other face none (kind 0)."""
+    kinds = kinds if kinds is not None else [6] + [0] * 11
+    real_counts = real_counts if real_counts is not None else [4]
+    reals = reals if reals is not None else [0.0, 0.0, 0.0, 1.0]
+    content = base_content.copy()
+    for i, line in enumerate(content):
+        if apply_api and 'prepend apiSchemas = ["BrepPointAPI:vertexPoint"' in line:
+            content[i] = line.replace('"BrepSurfaceNurbAPI"]', '"BrepSurfaceNurbAPI", "BrepSurfaceDefinitionAPI"]')
+        if 'uniform token[] face:surfaceType = [' in line:
+            indent = line[: len(line) - len(line.lstrip())]
+            fmt = lambda values: ", ".join(str(v) for v in values)
+            content.insert(i + 1, f"{indent}uniform uint[] face:definition:kind = [{fmt(kinds)}]\n")
+            content.insert(i + 2, f"{indent}uniform uint[] face:definition:realCount = [{fmt(real_counts)}]\n")
+            content.insert(i + 3, f"{indent}uniform double[] face:definition:reals = [{fmt(reals)}]\n")
+            break
+    return content
+
+def generate_ba_766_test(base_content):
+    """BA_766: face:definition:kind has one entry per face."""
+    return with_face_definitions(base_content, kinds=[6] + [0] * 10)
+
+def generate_ba_767_test(base_content):
+    """BA_767: a face with a definition is a NURBS face (its net)."""
+    content = with_face_definitions(base_content)
+    for i, line in enumerate(content):
+        if 'uniform token[] face:surfaceType = [' in line:
+            content[i] = line.replace('"BrepSurfaceNurbAPI"', '"BrepSurfacePlaneAPI"', 1)
+            break
+    return content
+
+def generate_ba_768_test(base_content):
+    """BA_768: face:definition:realCount is the count its kind fixes (a ball patch: 4)."""
+    return with_face_definitions(base_content, real_counts=[3], reals=[0.0, 0.0, 0.0])
+
+def generate_ba_769_test(base_content):
+    """BA_769: face:definition:reals holds SUM(realCount) reals."""
+    return with_face_definitions(base_content, reals=[0.0, 0.0, 1.0])
+
+def generate_ba_770_test(base_content):
+    """BA_770: a ball patch's radius is positive."""
+    return with_face_definitions(base_content, reals=[0.0, 0.0, 0.0, 0.0])
+
+def generate_ba_771_test(base_content):
+    """BA_771: face definitions are authored only with BrepSurfaceDefinitionAPI applied."""
+    return with_face_definitions(base_content, apply_api=False)
+
 TEST_GENERATORS = {
     'BA_000': (generate_ba_000_test, "Inconsistent brep attribute sizes"),
     'BA_005': (generate_ba_005_test, "Missing brep schema attributes"),  
@@ -1158,6 +1206,12 @@ TEST_GENERATORS = {
     'BA_580': (generate_ba_580_test, "Faceuse pairing violation"),
     'BA_581': (generate_ba_581_test, "Broken radial edgeuse chain"),
     'BA_582': (generate_ba_582_test, "Orphan edge not referenced by any edgeuse"),
+    'BA_766': (generate_ba_766_test, "Wrong face definition kind size"),
+    'BA_767': (generate_ba_767_test, "Face definition on a non NURBS face"),
+    'BA_768': (generate_ba_768_test, "Face definition real count not that of its kind"),
+    'BA_769': (generate_ba_769_test, "Wrong face definition reals size"),
+    'BA_770': (generate_ba_770_test, "Non positive ball patch radius"),
+    'BA_771': (generate_ba_771_test, "Face definitions without BrepSurfaceDefinitionAPI"),
 }
 
 def main():
