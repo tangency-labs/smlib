@@ -10697,8 +10697,16 @@ bool principal_curvatures(const SmSurface *s, const SmPoint2d &uv, const SmPoint
 // one); and each round set back at least `least` and at most twice the rule's 1.5 r (CertifiedScale
 // grows it at most 2x), its end section's two ends at one place along its edge (to 1e-9).
 void curved_setback_graded(smlib_brep *r, const SmPoint3d &v, double reach, bool convex, const SmPoint3d &inside, const std::vector<CurvedFace> &faces,
-                           const std::vector<CurvedEdge> &edges, const std::vector<double> &radii, double k, int64_t faces_want)
+                           const std::vector<CurvedEdge> &edges, const std::vector<double> &radii, double k, int64_t faces_want,
+                           const std::array<unsigned long long, 3> &most)
 {
+    // the curved fill's work for this corner (counts, not timings): fills made, degrees tried (one
+    // quadratic programme each), sector rows built; each at most this case's count today
+    unsigned long long work[3] = {0, 0, 0};
+    SmBlendSetback::CurvedCounts(work, true);
+    std::printf("  curved fill work: %llu fills, %llu degrees, %llu sector rows (at most %llu, %llu, %llu)\n", work[0], work[1], work[2], most[0], most[1],
+                most[2]);
+    CHECK(work[0] <= most[0] && work[1] <= most[1] && work[2] <= most[2]);
     CHECK(r != nullptr);
     if (r == nullptr)
     {
@@ -11276,7 +11284,7 @@ void setback_curved_d_prism_corner()
         {[&](const SmPoint3d &p) { return H - p.z; }, round_middle(SmPoint3d(1.5, std::sqrt(54.0), 5), SmPoint3d(a, h, 5), 2.5), 3.0},
         {[&](const SmPoint3d &p) { return R * (std::atan2(p.y, p.x) - av); }, arc_point(7, PI, 7) + SmVector3d(-3, 0, 3) * (3.0 / std::sqrt(18.0)),
          R * (std::atan2(std::sqrt(96.0), 2.0) - av)}};
-    curved_setback_graded(r, v, 9.8, true, SmPoint3d(0, 0, 5), faces, edges, {2.0, 2.5, 3.0}, 0.0, 13);
+    curved_setback_graded(r, v, 9.8, true, SmPoint3d(0, 0, 5), faces, edges, {2.0, 2.5, 3.0}, 0.0, 13, {1, 3, 1773554});
 }
 
 // The 851 part's corner (41 1/6, -21, 10): the top, the front and the CONCAVE arc wall (rho >= 21
@@ -11310,7 +11318,7 @@ void setback_curved_knife_edge_corner()
          round_middle(SmPoint3d(tip + 23.5 * std::cos(q), -21 + 23.5 * std::sin(q), 7.5), SmPoint3d(tip + 21 * std::cos(q), -21 + 21 * std::sin(q), 10), 2.5),
          21.0 * std::atan(3.0 / cu)},
         {[&](const SmPoint3d &p) { return 10.0 - p.z; }, round_middle(SmPoint3d(tip - cu, -18, 5), SmPoint3d(x0, -21, 5), 3.0), 2.5}};
-    curved_setback_graded(r, v, 9.8, true, SmPoint3d(x0 - 10.0, -11.0, 5.0), faces, edges, {2.0, 2.5, 3.0}, -1.0 / 21.0, 15);
+    curved_setback_graded(r, v, 9.8, true, SmPoint3d(x0 - 10.0, -11.0, 5.0), faces, edges, {2.0, 2.5, 3.0}, -1.0 / 21.0, 15, {2, 7, 12134090});
 }
 
 // A 40 x 40 x 20 block with a D-shaped pocket 10 deep (R 8 about (20, 20), flat x = 24, floor
@@ -11341,7 +11349,7 @@ void setback_curved_d_pocket_corner()
         {[&](const SmPoint3d &p) { return p.z - 10.0; }, round_middle(SmPoint3d(21.5, 20 + std::sqrt(28.0), 15), SmPoint3d(24, 20 + h, 15), 2.5), 3.0},
         {[&](const SmPoint3d &p) { return R * (std::atan2(p.y - 20, p.x - 20) - av); }, round_middle(SmPoint3d(15, 20, 13), SmPoint3d(12, 20, 10), 3.0),
          R * (std::atan2(std::sqrt(28.0), 1.5) - av)}};
-    curved_setback_graded(r, v, 9.8, false, SmPoint3d(20, 20, 15), faces, edges, {2.0, 2.5, 3.0}, 0.0, 18);
+    curved_setback_graded(r, v, 9.8, false, SmPoint3d(20, 20, 15), faces, edges, {2.0, 2.5, 3.0}, 0.0, 18, {1, 3, 1773554});
 }
 
 // The ball of radius 10 about the origin less x > 4, y > 4 and z < 0, its corner V = (4, 4,
@@ -11394,7 +11402,7 @@ void setback_curved_sphere_corner()
          s84 * (std::atan2(std::sqrt(89.75), 2.0) - av)},
         {[&](const SmPoint3d &p) { return s84 * (std::atan2(p.z, p.x) - av); }, round_middle(SmPoint3d(0, 1.5, std::sqrt(54.0)), SmPoint3d(0, 4, s84), 2.5),
          s84 * (std::atan2(std::sqrt(89.75), 2.5) - av)}};
-    curved_setback_graded(r, v, 7.9, true, SmPoint3d(0, 0, 3), faces, edges, {1.5, 2.0, 2.5}, 0.0, 14);
+    curved_setback_graded(r, v, 7.9, true, SmPoint3d(0, 0, 3), faces, edges, {1.5, 2.0, 2.5}, 0.0, 14, {1, 3, 1773554});
 }
 
 // A countersink: the block x in [-20, 4], y in [-20, 20], z in [0, 20] less the cone's frustum about
@@ -11447,7 +11455,7 @@ void setback_curved_countersink_corner()
          middle(SmPoint3d(4 + rr * rad3.x, rr * rad3.y, zr), SmVector3d(0, 0, 1), SmVector3d(-c45 * rad3.x, -c45 * rad3.y, c45) * 1.0, 1.5), -1.0},
         {[&](const SmPoint3d &p) { return (SmPoint3d(4, 8, 20) - p).Dot(SmVector3d(0, c45, c45)); },
          middle(SmPoint3d(3, yg, 17), SmVector3d(1, 0, 0), SmVector3d(c45 / rg, -c45 * yg / rg, c45), 1.0), -1.0, false}};
-    curved_setback_graded(r, v, 6.0, true, SmPoint3d(-5, 10, 10), faces, edges, {1.25, 1.5, 1.0}, -c45 / 5.5, 17);
+    curved_setback_graded(r, v, 6.0, true, SmPoint3d(-5, 10, 10), faces, edges, {1.25, 1.5, 1.0}, -c45 / 5.5, 17, {9, 34, 52670535});
 }
 
 // A cone's frustum (radius 10 at z = 0 narrowing at 30 degrees to z = 6) less x < 0 (the half
@@ -11505,7 +11513,7 @@ void setback_curved_cone_corner()
         {[&](const SmPoint3d &p) { return rt * (PI / 2 - std::atan2(p.y, p.x)); },
          middle(SmPoint3d(ra * 0.5, ra * std::sqrt(0.75), 4), SmVector3d(0, 0, 1), SmVector3d(cb * 0.5, cb * std::sqrt(0.75), sb), 2.0),
          -1.0}};
-    curved_setback_graded(r, v, 6.5, true, SmPoint3d(3, 0, 3), faces, edges, {1.25, 1.5, 2.0}, 0.0, 15);
+    curved_setback_graded(r, v, 6.5, true, SmPoint3d(3, 0, 3), faces, edges, {1.25, 1.5, 2.0}, 0.0, 15, {2, 12, 8539718});
 }
 
 // The setback corner's cases, and why each that fails today fails (null: it passes). As
@@ -11535,13 +11543,15 @@ const TangentEndCase SETBACK_CASES[] = {
     {"spring_curves_on_quadrics", setback_spring_curves_on_quadrics, nullptr},
     {"no_more_concave_on_quadrics", setback_no_more_concave_on_quadrics, nullptr},
     {"containment_beside_quadrics", setback_containment_beside_quadrics, nullptr},
-    {"curved_d_prism_corner", setback_curved_d_prism_corner, "a curved face: no Setback (ClassifySetBack asks for planes), the old convex corner's patch"},
+    {"curved_d_prism_corner", setback_curved_d_prism_corner, nullptr},
     {"curved_knife_edge_corner", setback_curved_knife_edge_corner,
-     "ruling (a) is an equality on the concave wall along the spring curve (II + |k| I = 0 circumferentially): the certificate's bound fails there (to be factored out); and the degree-9 attempt runs out of memory until the sector rows are streamed (#106)"},
-    {"curved_d_pocket_corner", setback_curved_d_pocket_corner, "a curved face: no Setback (ClassifySetBack asks for planes), the old convex corner's patch"},
-    {"curved_sphere_corner", setback_curved_sphere_corner, "a curved face: no Setback (ClassifySetBack asks for planes), the old convex corner's patch"},
-    {"curved_cone_corner", setback_curved_cone_corner, "a curved face: no Setback (ClassifySetBack asks for planes), the old convex corner's patch"},
-    {"curved_countersink_corner", setback_curved_countersink_corner, "a curved face: no Setback (ClassifySetBack asks for planes), the old convex corner's patch"},
+     "the curved fill tries degree 9 first, whose sector rows run out of memory until they are streamed (#106); at degree 5 it certifies (the normal-field bound) and passes"},
+    {"curved_d_pocket_corner", setback_curved_d_pocket_corner, nullptr},
+    {"curved_sphere_corner", setback_curved_sphere_corner, nullptr},
+    {"curved_cone_corner", setback_curved_cone_corner,
+     "the fill depends on its rounds' parametrization (rows 1 take the round's along-derivative across its section): built at twice the rule's setbacks from the start it certifies, grown to them it does not (#85 C open item (a))"},
+    {"curved_countersink_corner", setback_curved_countersink_corner,
+     "grown to 1.414 x the rule's setbacks the fill certifies, but a patch's control net doubles back (SmBSplineSurface test #5 in sound()) (#85 C open item (b))"},
 };
 
 int setback_cases(bool known_failing, const char *only)

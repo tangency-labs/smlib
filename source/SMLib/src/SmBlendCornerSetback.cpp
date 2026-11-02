@@ -670,7 +670,6 @@ SmStatus SmBlendCorner::MakeSetBackTopology()
       NER( pFS );
       sGeoms[i] = pFS->GetFirstFilletGeom();
       NER( sGeoms[i] );
-      if ( getenv("SBDBG4") ) fprintf( stderr, "SBDBG4 topology: geom %u surface %p rail0 %p\n", (unsigned)i, (void*)sGeoms[i]->GetFilletSurface(), (void*)sGeoms[i]->GetRail(0) );
     }
   for (ULONG i=0; i<n; i++)
     {
