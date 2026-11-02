@@ -4656,8 +4656,7 @@ void mixed_drafted_rounds_together_r2()
 // known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase MIXED_CORNER_CASES[] = {
     {"chamfers_together_d2", mixed_chamfers_together_d2, nullptr},
-    {"drafted_rounds_together_r2", mixed_drafted_rounds_together_r2,
-     "status 1001, the Mixed corner's first-order condition at V (a side's tangent leaves its neighbour's tangent plane): the shared ribbon's out-of-T field is T's normal, but the drafted wall leans 5 deg, so V-P's tangent, along the seam's generator, leaves its span"},
+    {"drafted_rounds_together_r2", mixed_drafted_rounds_together_r2, nullptr},
     {"residue_rounds_together_r2", mixed_residue_rounds_together_r2, nullptr},
     {"residue_rounds_together_r5", mixed_residue_rounds_together_r5, nullptr},
     {"residue_rounds_together_r7", mixed_residue_rounds_together_r7, nullptr},
