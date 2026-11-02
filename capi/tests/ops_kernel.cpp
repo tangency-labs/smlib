@@ -4663,8 +4663,7 @@ const TangentEndCase MIXED_CORNER_CASES[] = {
     {"residue_rounds_together_r7", mixed_residue_rounds_together_r7, nullptr},
     {"rounds_together_r2", mixed_rounds_together_r2, nullptr},
     {"rounds_together_r5", mixed_rounds_together_r5, nullptr},
-    {"shrunk_rounds_together_r2", mixed_shrunk_rounds_together_r2,
-     "status 1001, Fillet Surface Computation Failure: the concave round's through point on the section at V (the trace runs to the edge's end at a corner that does not blend) is solved within the top's plane as shrunk to its face, but the ball there touches that plane at y = -2, in front of the front edge"},
+    {"shrunk_rounds_together_r2", mixed_shrunk_rounds_together_r2, nullptr},
 };
 
 int mixed_corner_cases(bool known_failing, const char *only)

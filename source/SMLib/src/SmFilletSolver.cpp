@@ -486,10 +486,13 @@ static SmStatus sm_FindFilletTsectPnt
    const SmSurface * cpSurf2,         // in : Base Surface 2 connected to to-bo-filleted edge
    SmPoint3d       & rPntToDrop,      // in : guess point as close to desired point on fillet center curve as possible
    SmVector3d      & rTraceDir,       // in : fillet center curve tangent at guess point
-   SmTsectPnt      & rNewTsectPnt)    // out: contains fillet intersect UVpnt values
+   SmTsectPnt      & rNewTsectPnt,    // out: contains fillet intersect UVpnt values
                                       //        baseSurface(uvPnt)   = points on rail
                                       //        OffsetSurface(uvPnt) = point on fillet center curve and
                                       //                               plane = [rPntToDrop, rTraceDir]
+   const SmExtent2d * cpOptDomain1 = NULL, // in : SolidCraft change: the domains to search on the two
+   const SmExtent2d * cpOptDomain2 = NULL) //      base surfaces (the trace's extended ones for a point
+                                      //      past the faces), NULL = their natural domains
 {
   // check state
   SM_ASSERT(pFilSolver->GetEdgeuse(0)->GetFace()->GetSurface() == cpSurf1) ;
@@ -514,8 +517,8 @@ SmBoolean bDebug = FALSE;
 #endif
   // locals
   double          dThisApproxTol3d = pFilSolver->GetThisApproxTol3d();
-  SmExtent2d      sDomain1          = cpSurf1->GetNaturalUVDomain();
-  SmExtent2d      sDomain2          = cpSurf2->GetNaturalUVDomain();
+  SmExtent2d      sDomain1          = ( cpOptDomain1 != NULL ) ? *cpOptDomain1 : cpSurf1->GetNaturalUVDomain();
+  SmExtent2d      sDomain2          = ( cpOptDomain2 != NULL ) ? *cpOptDomain2 : cpSurf2->GetNaturalUVDomain();
   SmSurfaceCache *pSC1              = smsurf_GetSurfaceCache(cpSurf1); NER(pSC1);
   SmSurfaceCache *pSC2              = smsurf_GetSurfaceCache(cpSurf2); NER(pSC2);
 
@@ -1136,7 +1139,13 @@ static int sbDumpFVUs=0;
           SER( pOffsetSrf1->EvaluatePoint( sUVParameter, sPnt ));
           SmTsectPnt * pEndPnt = new SmTsectPnt;
           sDeletePnts.Add( pEndPnt );
-          SER( sm_FindFilletTsectPnt( this, pBaseSrf1, pBaseSrf2, sPnt, sTangent, *pEndPnt ));
+          // solved where the trace itself runs: its base surfaces' extended domains (the round
+          // runs on past its faces there, and the ball's contacts can lie past a face's surface,
+          // whose domain may end at the face)
+          SmExtent2d sTraceDomain1 = pBaseSrf1->GetNaturalUVDomain(), sTraceDomain2 = pBaseSrf2->GetNaturalUVDomain();
+          SetupOffsetExtension( pBaseSrf1, sTraceDomain1 );
+          SetupOffsetExtension( pBaseSrf2, sTraceDomain2 );
+          SER( sm_FindFilletTsectPnt( this, pBaseSrf1, pBaseSrf2, sPnt, sTangent, *pEndPnt, &sTraceDomain1, &sTraceDomain2 ));
           pEndPnt->m_dCurveParameter = -SM_BIG_DOUBLE;
           if ( lEnd == 0 )
             { sTsectPnts.InsertAt( 0, pEndPnt ); }
