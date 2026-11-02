@@ -1044,7 +1044,11 @@ SmStatus SmBlendCorner::CalcEndEdgeGeom
               || pFV->GetStatus() != SM_FV_NO_INT_RAIL_EU
               || pFV->GetPointClass() != SM_PC_EDGEUSE )
             { continue; }
-          SmEdgeuse * pSideEU = (SmEdgeuse*)pFV->GetPointClassObject();
+          // the side edge from the vertex, continued across seams' vertices up to where the
+          // rail's end was last looked for (SmFilletVertex::CalcRailIntEdgeuse)
+          SmTArray<SmEdgeuse*> sChain;
+          SER( SideEdgeChainTo( (SmEdgeuse*)pFV->GetPointClassObject(), sChain ));
+          SmEdgeuse * pSideEU = sChain[0];
           NER( pSideEU );
           if ( same_convexity_edges( pFilEdgeuse, pSideEU, m_cpVertex, 0 ))
             { continue; }
@@ -1053,7 +1057,7 @@ SmStatus SmBlendCorner::CalcEndEdgeGeom
           if ( pOtherFace == pSideFaces[0] || pOtherFace == pSideFaces[1] )
             { pOtherFace = pFilEdgeuse->GetRadial()->GetFace(); }
           NER( pOtherFace );
-          SER( RefuseEndOverflowingSideEdge( pFilEdgeuse, pSideEU, pOtherFace ));
+          SER( RefuseEndOverflowingSideEdge( pFilEdgeuse, sChain, pOtherFace ));
         }
     }
   SmFilletEdge * pEndRib = ( m_vEdges.GetSize() == 1 ) ? m_vEdges[0] : NULL;
@@ -1556,6 +1560,56 @@ SmStatus SmBlendCorner::BallTouchingAt
 } // end SmBlendCorner::BallTouchingAt
 
 /*******************************************************************//**
+PURPOSE: The side edge at the vertex continued across seams' vertices up
+    to pLast (sm_SideEdgeuseAcrossSeamVertex): its edgeuses in order from
+    the vertex. pLast itself when it meets the vertex.
+
+NOTES: The rail's end is looked for along that chain from the vertex
+    (SmFilletVertex::CalcRailIntEdgeuse), pLast the edge it was last
+    looked for on: walked back to the vertex, each step across the end of
+    the edge that continues one not yet taken.
+***********************************************************************/
+SmStatus SmBlendCorner::SideEdgeChainTo
+  (SmEdgeuse            * pLast,   // in : the side edgeuse the rail's end was last looked for on
+   SmTArray<SmEdgeuse*> & rChain)  // out: the chain from the vertex to pLast
+{
+  NER( pLast );
+  const double dTolDeg = SM_RAD2DEG( GetTangencyTolRadians() );
+  SmTArray<SmEdgeuse*> sBack;
+  sBack.Add( pLast );
+  SmEdgeuse * pCurr = pLast;
+  for (ULONG lStep=0; lStep<64; lStep++)
+    {
+      SmEdge * pE = pCurr->GetEdge();
+      NER( pE );
+      if ( pE->GetStartVertex() == m_cpVertex || pE->GetEndVertex() == m_cpVertex )
+        {
+          rChain.ReSet();
+          for (ULONG ii=sBack.GetSize(); ii>0; ii--)
+            { rChain.Add( sBack[ii-1] ); }
+          return SM_SUCCESS;
+        }
+      SmEdgeuse * pPrev = NULL;
+      const SmVertex * apEnds[2] = { pE->GetStartVertex(), pE->GetEndVertex() };
+      for (ULONG kk=0; kk<2 && pPrev == NULL; kk++)
+        {
+          SmEdgeuse * pX = sm_SideEdgeuseAcrossSeamVertex( pCurr, apEnds[kk], dTolDeg );
+          SmBoolean bTaken = FALSE;
+          for (ULONG ii=0; pX != NULL && ii<sBack.GetSize(); ii++)
+            { bTaken = ( bTaken || sBack[ii]->GetEdge() == pX->GetEdge() ) ? TRUE : FALSE; }
+          if ( pX != NULL && !bTaken )
+            { pPrev = pX; }
+        }
+      if ( pPrev == NULL )
+        { SER( SM_ERR ); }
+      sBack.Add( pPrev );
+      pCurr = pPrev;
+    }
+  return SM_ERR;
+
+} // end SmBlendCorner::SideEdgeChainTo
+
+/*******************************************************************//**
 PURPOSE: A concave round's End of mixed convexity whose rail misses the
     side edge of the other convexity (the rail passes over it): refused,
     SM_FILERR_NO_ROOM, naming the largest radius whose rail still ends on
@@ -1569,49 +1623,59 @@ NOTES: The rail on F ends on the side edge E where the ball touching F at
     concave overflow, refused; owner, 2026-11-02). The most, by golden
     section of rho over E's interval on the cause's own geometry, is where
     the two Ends' rails meet on E: open, so less the part's own tolerance
-    (coordinator, 2026-11-02: not the in-round fit margin).
+    (coordinator, 2026-11-02: not the in-round fit margin). E is the side
+    edge from the vertex continued across seams' vertices, as the rail's
+    end was looked for (SideEdgeChainTo): the most over all its edges.
 ***********************************************************************/
 SmStatus SmBlendCorner::RefuseEndOverflowingSideEdge
-  (SmEdgeuse * pFilEdgeuse,  // in : the filleted edgeuse
-   SmEdgeuse * pSideEU,      // in : the side edge the rail missed
-   SmFace    * pOtherFace)   // in : the fillet's other side face (G)
+  (SmEdgeuse                  * pFilEdgeuse,  // in : the filleted edgeuse
+   const SmTArray<SmEdgeuse*> & crSideEUs,    // in : the side edge the rail missed, from the vertex
+                                              //      on across seams' vertices (SideEdgeChainTo)
+   SmFace                     * pOtherFace)   // in : the fillet's other side face (G)
 {
-  SmEdge * pSideEdge = pSideEU->GetEdge();
-  NER( pSideEdge );
-  SmCurve * pCurve = pSideEdge->GetCurve();
-  NER( pCurve );
-  const SmExtent1d sIvl = pSideEdge->GetInterval();
-  const auto rho = [&]( double dT, double & rdRho ) -> SmStatus
-    {
-      SmPoint3d sP;
-      SER( pCurve->EvaluatePoint( dT, sP ));
-      SmBoolean bOn = FALSE, bWithin = FALSE;
-      SER( BallTouchingAt( pFilEdgeuse, pSideEU, pOtherFace, sP, bOn, bWithin, rdRho ));
-      return SM_SUCCESS;
-    };
-  const double dGold = 0.5 * ( smos_Sqrt( 5.0 ) - 1.0 );
-  double dA = sIvl.GetMin(), dB = sIvl.GetMax();
-  double dC = dB - dGold * ( dB - dA ), dD = dA + dGold * ( dB - dA );
-  double dAtC = 0.0, dAtD = 0.0;
-  SER( rho( dC, dAtC ));
-  SER( rho( dD, dAtD ));
-  for (ULONG it=0; it<200 && dB - dA > SM_EFF_ZERO * ( 1.0 + sIvl.GetLength() ); it++)
-    {
-      if ( dAtC >= dAtD )
-        {
-          dB = dD; dD = dC; dAtD = dAtC;
-          dC = dB - dGold * ( dB - dA );
-          SER( rho( dC, dAtC ));
-        }
-      else
-        {
-          dA = dC; dC = dD; dAtC = dAtD;
-          dD = dA + dGold * ( dB - dA );
-          SER( rho( dD, dAtD ));
-        }
-    }
   double dMost = 0.0;
-  SER( rho( 0.5 * ( dA + dB ), dMost ));
+  for (ULONG lPiece=0; lPiece<crSideEUs.GetSize(); lPiece++)
+    {
+      SmEdgeuse * pSideEU = crSideEUs[lPiece];
+      NER( pSideEU );
+      SmEdge * pSideEdge = pSideEU->GetEdge();
+      NER( pSideEdge );
+      SmCurve * pCurve = pSideEdge->GetCurve();
+      NER( pCurve );
+      const SmExtent1d sIvl = pSideEdge->GetInterval();
+      const auto rho = [&]( double dT, double & rdRho ) -> SmStatus
+        {
+          SmPoint3d sP;
+          SER( pCurve->EvaluatePoint( dT, sP ));
+          SmBoolean bOn = FALSE, bWithin = FALSE;
+          SER( BallTouchingAt( pFilEdgeuse, pSideEU, pOtherFace, sP, bOn, bWithin, rdRho ));
+          return SM_SUCCESS;
+        };
+      const double dGold = 0.5 * ( smos_Sqrt( 5.0 ) - 1.0 );
+      double dA = sIvl.GetMin(), dB = sIvl.GetMax();
+      double dC = dB - dGold * ( dB - dA ), dD = dA + dGold * ( dB - dA );
+      double dAtC = 0.0, dAtD = 0.0;
+      SER( rho( dC, dAtC ));
+      SER( rho( dD, dAtD ));
+      for (ULONG it=0; it<200 && dB - dA > SM_EFF_ZERO * ( 1.0 + sIvl.GetLength() ); it++)
+        {
+          if ( dAtC >= dAtD )
+            {
+              dB = dD; dD = dC; dAtD = dAtC;
+              dC = dB - dGold * ( dB - dA );
+              SER( rho( dC, dAtC ));
+            }
+          else
+            {
+              dA = dC; dC = dD; dAtC = dAtD;
+              dD = dA + dGold * ( dB - dA );
+              SER( rho( dD, dAtD ));
+            }
+        }
+      double dPieceMost = 0.0;
+      SER( rho( 0.5 * ( dA + dB ), dPieceMost ));
+      dMost = smos_Max( dMost, dPieceMost );
+    } // end for each piece of the side edge
   // the margin under the open bound: the part's own tolerance (the input's)
   NER( m_pExecutive->GetTargetBrep() );
   const double dFit = smos_Max( 0.0, dMost - m_pExecutive->GetTargetBrep()->GetTolerance().val );
