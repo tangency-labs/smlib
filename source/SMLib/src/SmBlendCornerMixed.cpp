@@ -122,18 +122,25 @@ SmStatus sm_MixedRing(const SmVertex * /*cpVertex*/, const SmTArray<SmEdgeuse*> 
   return SM_SUCCESS;
 }
 
-// The unit tangent of an edge leaving a vertex.
+// The unit tangent of an edge leaving a vertex. An edge's start vertex is its curve's start (its
+// interval's least parameter; SmEdge::GetStartVertex, checked by SmEdge::ValidateGeometry), so the
+// curve's derivative taken inside the edge points into it at its start and out of it at its end,
+// where it is turned. Inside the edge means one-sided: from the interval above the start
+// (bFromLeft TRUE) and from the interval below the end (bFromLeft FALSE). SmEdge::GetEndTangent
+// takes both from above, which at the end reads past the edge. A closed edge leaves its vertex at
+// its start.
 SmStatus sm_MixedLeaving(const SmEdge * pEdge, const SmVertex * cpVertex, SmVector3d & rDir)
 {
   const SmBoolean bStart = ( pEdge->GetStartVertex() == cpVertex ) ? TRUE : FALSE;
-  SER( SM_CONST_CAST(SmEdge*, pEdge)->GetEndTangent( bStart, rDir ));
-  SER( rDir.Unitize() );
-  // into the edge: towards its point a little way in from the vertex
+  if ( !bStart && pEdge->GetEndVertex() != cpVertex )
+    { SER( SM_ERR ); } // the edge does not meet the vertex
   NER( pEdge->GetCurve() );
   const SmExtent1d sIvl = pEdge->GetInterval();
-  SmPoint3d sIn;
-  SER( pEdge->GetCurve()->EvaluatePoint( sIvl.Evaluate( bStart ? 1e-3 : 1.0 - 1e-3 ), sIn ));
-  if ( rDir.Dot( sIn - cpVertex->GetPoint() ) < 0.0 )
+  SmVector3d asPV[2];
+  SER( pEdge->GetCurve()->Evaluate( bStart ? sIvl.GetMin() : sIvl.GetMax(), 1, bStart, asPV ));
+  rDir = asPV[1];
+  SER( rDir.Unitize() );
+  if ( !bStart )
     { rDir = -rDir; }
   return SM_SUCCESS;
 }
