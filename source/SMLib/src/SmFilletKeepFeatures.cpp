@@ -277,20 +277,6 @@ struct kf_Feature
     }
 };
 
-// Whether crPnt lies in the material of crBrep (a solid region, not the infinite one or a void).
-SmStatus kf_InMaterial(const SmBrep & crBrep, const SmPoint3d & crPnt, SmBoolean & rbIn)
-{
-  rbIn = FALSE;
-  SmPointClassification sClass;
-  SER( crBrep.Point3DClassify( crPnt, SmTol::GetZoneTol3d( &crBrep ), TRUE, sClass ));
-  if ( sClass.GetPointClass() == SM_PC_REGION )
-    {
-      const SmRegion * pRegion = SM_CAST_PTR( SmRegion, sClass.GetObject() );
-      rbIn = ( pRegion != NULL && !pRegion->IsInfiniteRegion() && !pRegion->IsVoid() ) ? TRUE : FALSE;
-    }
-  return SM_SUCCESS;
-}
-
 } // namespace
 
 /*******************************************************************//**

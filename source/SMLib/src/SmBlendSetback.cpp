@@ -2093,13 +2093,13 @@ SmStatus sm_SbGraphG1(const SmContext & crContext, const std::vector<SmBlendSetb
       std::vector<double> sS(2 * n, 0.0);
       for (size_t p=0; p<2*n; p++)
         {
-          sm_SbT sQ0p[3], sO;
+          sm_SbT sQ0p[3], sOp;
           std::vector<sm_SbT> sQjp[3];
-          sm_SbAffineFundamentals(sPatches[p], sE, sQ0p, sQjp, sO);
-          sm_SbT sNegO = sO;
+          sm_SbAffineFundamentals(sPatches[p], sE, sQ0p, sQjp, sOp);
+          sm_SbT sNegO = sOp;
           for (size_t i=0; i<sNegO.c.size(); i++) { sNegO.c[i] = -sNegO.c[i]; }
-          const double dO = 1.0e-12 * sm_SbTScale(sO);
-          sS[p] = (sm_SbTNonneg(sO, dO, SM_SB_GRAPH_DEPTH) == 1) ? 1.0 : (sm_SbTNonneg(sNegO, dO, SM_SB_GRAPH_DEPTH) == 1) ? -1.0 : 0.0;
+          const double dO = 1.0e-12 * sm_SbTScale(sOp);
+          sS[p] = (sm_SbTNonneg(sOp, dO, SM_SB_GRAPH_DEPTH) == 1) ? 1.0 : (sm_SbTNonneg(sNegO, dO, SM_SB_GRAPH_DEPTH) == 1) ? -1.0 : 0.0;
           if (sS[p] == 0.0)
             { SM_SB_FAIL(rFill.m_pReason, SM_ERR, _T("SmBlendSetback: the fill folds (a patch's normal turns across the corner's axis)")); }
           for (int k=0; k<3; k++) { sQ0[p][k] = sQ0p[k]; sQj[p][k] = sQjp[k]; }

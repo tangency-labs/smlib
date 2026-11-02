@@ -538,8 +538,8 @@ SmStatus SmBlendCorner::BallCentre(SmPoint3d & rCentre, double & rdRadius, SmPoi
       SER( sm_BallFaceQuadric( apFace[ii], dTol, sFace ));
       if ( sFace.m_eKind == SmBlendQuadric::SM_BQ_NONE )
         { SER( SM_ERR ); } // ClassifyBall took the faces to be planes or quadrics
-      const SmPoint3d sOn = m_vVertices[ii]->GetPoint();
-      adSide[ii] = ( sFace.Normal( sOn ).Dot( sBall - sOn ) >= 0.0 ) ? 1.0 : -1.0;
+      const SmPoint3d sVertex = m_vVertices[ii]->GetPoint();
+      adSide[ii] = ( sFace.Normal( sVertex ).Dot( sBall - sVertex ) >= 0.0 ) ? 1.0 : -1.0;
       asOffset[ii] = sFace.Offset( adSide[ii] * rdRadius, dTol );
       if ( asOffset[ii].m_eKind != sFace.m_eKind || asOffset[ii].m_dSide != sFace.m_dSide )
         { SER( SM_ERR ); } // ClassifyBall took the quadrics wider than the ball
