@@ -230,6 +230,14 @@ units and length rule. The conversion is `src/smlib_flat.cpp`, a USD-free port o
   their circles as plain B-splines, so those export as NURBS. So do booleans' intersection curves.
 - A cone with a negative semi-angle is rebuilt in the equivalent positive-angle form on import.
   Its second export therefore differs from its first, and from then on the arrays are stable.
+- Definitions (an addition to SmuConvert): a face whose surface is defined beyond its net carries
+  that definition. Today that means the Ball corner's `SmBallPatch`: surface kind
+  `SMLIB_FLAT_SURFACE_BALL_PATCH`, its NURBS block, range and UV trims as for a NURBS face, and its
+  sphere's centre and radius in `FACE_DEFINITION_REAL_COUNT` / `FACE_DEFINITION_REALS`, so its
+  offsets stay exact through a round trip. Import builds the `SmBallPatch` only once
+  `SmBallPatch::IsOnSphere` certifies the net on that sphere (the exact Bernstein identity per
+  Bezier piece, to rounding); otherwise it refuses the B-rep. USD's BrepArray does not carry
+  definitions yet.
 - Attributes, materials and colours are not carried.
 - Shell order (an addition to SmuConvert): SMLib takes a region's first shell as the one that
   encloses it, and a body whose first shell is an inner one fails its check (test 12, "inner
@@ -413,6 +421,11 @@ a static build no longer instantiates every `SmTArray<T>` in every file (see bel
 ## Changes from upstream
 
 This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
+- **Ball patches through the flat arrays** (`smlib_flat.cpp`, `SmBallPatch::IsOnSphere`;
+  smlib#102): export wrote a Ball corner's `SmBallPatch` as a bare NURBS and import read it back as
+  an `SmBSplineSurface`, losing the sphere. A box rounded all round then failed to shell after a
+  round trip. It is now its own surface kind with its sphere as its definition, and import certifies
+  the net on the sphere before taking it.
 - **`SM_RAND_SEED`** (`SmConfig.h`, `SmFace.cpp`, `SmShell.cpp`): upstream seeds `rand()` from
   the clock before its random sampling, so results could differ from run to run. This build
   fixes the seed (`-DSMLIB_RAND_SEED=`; leave it empty for upstream's behaviour).
