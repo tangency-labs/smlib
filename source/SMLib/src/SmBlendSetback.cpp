@@ -2941,128 +2941,46 @@ SmStatus SmBlendSetback::CertifiedScale(const SmContext & crContext, const std::
       rbCertified = (pProbe == NULL);
       return SM_SUCCESS;
     };
-  auto margin = [&](double k, double & rdMargin) -> SmStatus
-    {
-      Probe sProbe;
-      sProbe.m_bMargin = true;
-      bool bUnused = false;
-      SER(model(k, &sProbe, bUnused));
-      rdMargin = sProbe.m_dMargin;
-      return SM_SUCCESS;
-    };
   auto fail = [&](SmStatus eStatus) -> SmStatus
     {
       if (ppReason != NULL) { *ppReason = pWhy; }
       return eStatus;
     };
-  // The search, from the margin m(k) by which the fill's sector conditions fail at degree 9 (m <= 0:
-  // met, and the conditions only grow easier with k): m at 1 and 1.02, then at their secant's root,
-  // then the root of the parabola through the three; the certifying end checked a half percent
-  // above it, the failing end the bracket's 1e-2 below.
-  double m1 = 0.0;
-  SmStatus eStatus = margin(1.0, m1);
-  if (eStatus != SM_SUCCESS) { return fail(eStatus); }
+  // whether the fill at scale i / 1000 is certified: one attempt
+  auto certified = [&](int i, bool & rbCertified) -> SmStatus
+    {
+      return model(static_cast<double>(i) / 1000.0, NULL, rbCertified);
+    };
+  // The search on the grid of 1e-3, by bisection between a scale whose fill is not certified
+  // (lo) and one whose fill is (hi), from 1 and 2: the result is certified at its scale and the
+  // grid point just below it is not, the smallest certifying scale on the grid whose neighbour
+  // below fails. It is the least certifying scale where certification grows with the scale:
+  // monotonicity checked (on a grid, for every corner the tests grow), not proved. At most
+  // 2 + 10 attempts (the 1000 thousandths between 1 and 2 halved 10 times).
   bool bCertified = false;
-  if (m1 <= 0.0)
+  SmStatus eStatus = certified(1000, bCertified);
+  if (eStatus != SM_SUCCESS) { return fail(eStatus); }
+  if (bCertified)
     {
-      eStatus = model(1.0, NULL, bCertified);
-      if (eStatus != SM_SUCCESS) { return fail(eStatus); }
-      if (bCertified)
-        {
-          rdScale = 1.0;
-          return SM_SUCCESS;
-        }
+      rdScale = 1.0;
+      return SM_SUCCESS;
     }
-  std::vector<double> sK(1, 1.0), sM(1, m1);
-  double dLo = 1.0; // the largest scale known to fail
-  double dPredict = 0.0;
-  for (int iStep=0; iStep<3; iStep++)
+  eStatus = certified(2000, bCertified);
+  if (eStatus != SM_SUCCESS) { return fail(eStatus); }
+  if (!bCertified)
     {
-      double k = 0.0;
-      if (iStep == 0)
-        { k = 1.02; }
-      else if (iStep == 1)
-        {
-          const double dSlope = (sM[1] - sM[0]) / (sK[1] - sK[0]);
-          k = (dSlope < 0.0) ? sK[1] - sM[1] / dSlope : 2.0;
-        }
-      else
-        {
-          // the parabola through the three points, its root past the last
-          const double k0 = sK[0], k1 = sK[1], k2 = sK[2], m0 = sM[0], mm1 = sM[1], m2 = sM[2];
-          const double d01 = (mm1 - m0) / (k1 - k0), d12 = (m2 - mm1) / (k2 - k1), a = (d12 - d01) / (k2 - k0);
-          const double b = d12 - a * (k1 + k2), c = m2 - k2 * (a * k2 + b);
-          double dRoot = 0.0;
-          if (smos_Fabs(a) > 1.0e-12)
-            {
-              const double dDisc = b * b - 4.0 * a * c;
-              if (dDisc >= 0.0)
-                {
-                  const double r1 = (-b - smos_Sqrt(dDisc)) / (2.0 * a), r2 = (-b + smos_Sqrt(dDisc)) / (2.0 * a);
-                  // the root nearest past the last scale that fails
-                  const double dA = smos_Min(r1, r2), dB = smos_Max(r1, r2);
-                  dRoot = (dA > dLo) ? dA : dB;
-                }
-            }
-          if (!(dRoot > dLo))
-            { dRoot = (d12 < 0.0) ? k2 - m2 / d12 : 2.0; }
-          dPredict = dRoot;
-          break;
-        }
-      k = smos_Min(smos_Max(k, dLo * 1.001), 2.0);
-      double m = 0.0;
-      eStatus = margin(k, m);
-      if (eStatus != SM_SUCCESS) { return fail(eStatus); }
-      sK.push_back(k);
-      sM.push_back(m);
-      if (m > 0.0) { dLo = smos_Max(dLo, k); }
-      if (iStep == 1) { dPredict = k; }
+      if (ppReason != NULL) { *ppReason = _T("SmBlendSetback: no G1 fill is certified convex at the corner's setbacks up to twice them"); }
+      return SM_SUCCESS;
     }
-  // the certifying end: a half percent past the prediction (and past the last failing scale),
-  // stepping up by 1e-2 while it does not certify, up to 2
-  double dHi = smos_Max(dPredict * 1.005, dLo * 1.01);
-  for (;;)
+  int lLo = 1000, lHi = 2000;
+  while (lHi - lLo > 1)
     {
-      if (dHi > 2.0)
-        {
-          dHi = 2.0;
-        }
-      eStatus = model(dHi, NULL, bCertified);
+      const int lMid = (lLo + lHi) / 2;
+      eStatus = certified(lMid, bCertified);
       if (eStatus != SM_SUCCESS) { return fail(eStatus); }
-      if (bCertified)
-        { break; }
-      dLo = dHi;
-      if (dHi >= 2.0)
-        {
-          if (ppReason != NULL) { *ppReason = _T("SmBlendSetback: no G1 fill is certified convex at the corner's setbacks up to twice them"); }
-          return SM_SUCCESS;
-        }
-      dHi *= 1.01;
+      if (bCertified) { lHi = lMid; } else { lLo = lMid; }
     }
-  // the failing end within 1e-2 below it
-  while (dHi > dLo * 1.01)
-    {
-      const double k = dHi / 1.01;
-      double m = 0.0;
-      eStatus = margin(k, m);
-      if (eStatus != SM_SUCCESS) { return fail(eStatus); }
-      if (m > 0.0)
-        {
-          dLo = k;
-          break;
-        }
-      eStatus = model(k, NULL, bCertified);
-      if (eStatus != SM_SUCCESS) { return fail(eStatus); }
-      if (!bCertified)
-        {
-          dLo = k;
-          break;
-        }
-      dHi = k;
-    }
-  // on a grid of 1e-3, up (certifying still: the conditions only grow easier with k), so that
-  // one corner described two ways (its faces and edges in another order) gets one scale
-  rdScale = std::ceil(dHi * 1000.0) / 1000.0;
+  rdScale = static_cast<double>(lHi) / 1000.0;
   return SM_SUCCESS;
 }
 

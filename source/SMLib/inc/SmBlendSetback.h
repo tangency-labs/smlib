@@ -193,17 +193,17 @@ public:
   static SmStatus FillHoleProbe(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Round> & crRounds, double dTol,
                                 Fill & rFill, Probe & rProbe);
 
-  // The least scale k of the setbacks crSetBacks (one per edge, the edges and faces as for
-  // Distances, every face a plane through the corner's vertex, every edge a straight line there),
-  // each held at its most (pvMost, optional), at which the G1 fill of the corner's constant
-  // circular rounds (radius m_dRadius between the edge's two faces, each round's end section
-  // square to its edge at its setback) is certified convex (FillHole), to 1e-2: 1 where the
-  // setbacks themselves are; else the certifying end of a bracket 1e-2 wide, found from the
-  // margin by which the fill's conditions fail (FillHoleProbe: at 1, 1.02, their secant's root,
-  // then the parabola's), up to 2; 0, with its reason (ppReason), where none up to 2 is. plSolves
-  // (optional): the quadratic programmes solved. Refused (SM_ERR_INVALID_INPUT, its reason) where
-  // the corner is not one of planes and straight edges. plAttempts (optional): the fills and
-  // probes built (attempts at a scale).
+  // The smallest scale k on the grid of 1e-3 in [1, 2] of the setbacks crSetBacks (one per
+  // edge, the edges and faces as for Distances, every face a plane through the corner's vertex,
+  // every edge a straight line there), each held at its most (pvMost, optional), at which the G1
+  // fill of the corner's constant circular rounds (radius m_dRadius between the edge's two
+  // faces, each round's end section square to its edge at its setback) is certified convex
+  // (FillHole) and whose neighbour below on the grid is not: 1 where the setbacks themselves
+  // are; else by bisection between 1 and 2; 0, with its reason (ppReason), where the fill at 2
+  // is not certified. That is the least certifying scale where certification grows with k:
+  // monotonicity checked, not proved. plAttempts (optional): the fills built, at most 12;
+  // plSolves (optional): their quadratic programmes. Refused (SM_ERR_INVALID_INPUT, its reason)
+  // where the corner is not one of planes and straight edges.
   static SmStatus CertifiedScale(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Edge> & crEdges,
                                  const std::vector<double> & crSetBacks, double & rdScale, ULONG * plSolves = NULL, const TCHAR ** ppReason = NULL,
                                  const std::vector<double> * pvMost = NULL, ULONG * plAttempts = NULL);
