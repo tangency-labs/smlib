@@ -104,9 +104,9 @@ protected:
 
   SmBoolean IsBall() const { return ( m_eEvent == SM_BCE_BALL ) ? TRUE : FALSE; }
   SmStatus  MakeBallTopology();
-  SmStatus  BuildBallSurface();  // m_pBallSurface and its loop, from the planes and the processed contacts
+  SmStatus  BuildBallSurface();  // m_pBallSurface and its loop, from the faces and the processed contacts
   void      DeleteBallSurface();
-  SmStatus  BallCentre(SmPoint3d & rCentre, double & rdRadius, SmPoint3d asContact[3]) const; // the planes' triple offset point, the contacts
+  SmStatus  BallCentre(SmPoint3d & rCentre, double & rdRadius, SmPoint3d asContact[3]) const; // the faces' triple offset point, the contacts
   SmStatus  PlaceBallContacts(); // the contacts and the rounds' sections there in closed form
   SmStatus  CreateBallPatch();
 
@@ -188,8 +188,10 @@ public:
                            SmBlendTurn                & reTurn);
 
   // The Ball at a filleted vertex where all three edges are blended (pAllEUs, the corner's ring):
-  // constant circular rounds of one radius, all convex or all concave, between three planes, the
-  // vertex not set back (SmFilletExecutive::IsSetBackVertex).
+  // constant circular rounds of one radius, all convex or all concave, between three faces each a
+  // plane or a natural quadric (a sphere, a cylinder or a cone; a cylinder or sphere wider than the
+  // ball) whose normals at the vertex are independent, the vertex not set back
+  // (SmFilletExecutive::IsSetBackVertex).
   // reEvent SM_BCE_BALL, else SM_BCE_NONE (the corner hierarchy builds it).
   static SmStatus ClassifyBall(const SmVertex             * cpVertex,
                                const SmTArray<SmEdgeuse*> & crSolverEUs,
