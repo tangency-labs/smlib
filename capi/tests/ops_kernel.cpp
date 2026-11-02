@@ -1561,7 +1561,40 @@ static void shelled_ball_box_open_at_the_front(bool round_trip)
         smlib_flat *f = nullptr;
         smlib_brep *back = nullptr;
         CHECK(smlib_brep_export(round, &f) == SMLIB_OK);
+        // the corners' faces are ball patches, each with its sphere: 4 reals, center and radius
+        const int64_t *kinds = nullptr, *counts = nullptr;
+        const double *reals = nullptr;
+        int64_t n_faces = 0, n_counts = 0, n_reals = 0;
+        CHECK(f != nullptr && smlib_flat_get_i64(f, SMLIB_FLAT_FACE_SURFACE_TYPE, &kinds, &n_faces) == SMLIB_OK);
+        CHECK(f != nullptr && smlib_flat_get_i64(f, SMLIB_FLAT_FACE_DEFINITION_REAL_COUNT, &counts, &n_counts) == SMLIB_OK);
+        CHECK(f != nullptr && smlib_flat_get_f64(f, SMLIB_FLAT_FACE_DEFINITION_REALS, &reals, &n_reals) == SMLIB_OK);
+        int patches = 0, defined = 0;
+        for (int64_t i = 0; i < n_faces; i++)
+        {
+            patches += kinds[i] == SMLIB_FLAT_SURFACE_BALL_PATCH ? 1 : 0;
+        }
+        for (int64_t i = 0; i < n_counts && 4 * i + 3 < n_reals; i++)
+        {
+            const double *d = reals + 4 * i;
+            const bool at_corner = counts[i] == 4 && std::fabs(std::fabs(d[0] - dx / 2) - (dx / 2 - r)) < 1e-12 &&
+                                   std::fabs(std::fabs(d[1] - dy / 2) - (dy / 2 - r)) < 1e-12 &&
+                                   std::fabs(std::fabs(d[2] - dz / 2) - (dz / 2 - r)) < 1e-12 && d[3] == r;
+            defined += at_corner ? 1 : 0;
+        }
+        std::printf("box rounded all round r %g, its flat arrays: %d ball patches, %d of %d definitions at the corners\n", r, patches,
+                    defined, static_cast<int>(n_counts));
+        CHECK(patches == 8 && n_counts == 8 && n_reals == 32 && defined == 8);
         CHECK(f != nullptr && smlib_brep_import(f, &back) == SMLIB_OK);
+        // a definition its net is not on (the radius 1e-9 out) is refused
+        if (n_reals == 32)
+        {
+            std::vector<double> off(reals, reals + n_reals);
+            off[3] *= 1.0 + 1e-9;
+            smlib_brep *refused = nullptr;
+            CHECK(smlib_flat_set_f64(f, SMLIB_FLAT_FACE_DEFINITION_REALS, off.data(), n_reals) == SMLIB_OK);
+            CHECK(smlib_brep_import(f, &refused) == SM_ERR_INVALID_INPUT && refused == nullptr);
+            smlib_brep_free(refused);
+        }
         smlib_flat_free(f);
         smlib_brep_free(round);
         round = back;
@@ -7774,7 +7807,7 @@ const TangentEndCase BALL_CASES[] = {
      "smlib#103: the flat's trim curves along the flat-cone rounds' hyperbolas are fitted, not exact (SmPlane::DropCurve clamps the rational rail's control points to the plane's domain and falls to the general drop), and the cone's along its rails too: 2.5e-6 off Steiner's (the sharp part alone 5e-9)"},
     {"knife_edge_arc_corner", ball_knife_edge_arc_corner, nullptr},
     {"box_shelled_after_a_round_trip", ball_box_shelled_after_a_round_trip,
-     "status 1034 (smlib#102): the flat arrays write the Ball's SmBallPatch as a bare NURBS and read it back as an SmBSplineSurface, its sphere lost; its offset 2 in no longer collapses (OffsetCollapses), the rounds' beside it do, and the shell cannot mate across them (SmOffsetExecutive, unbridged)"},
+     "status 1034 (smlib#102): the flat arrays write the Ball's SmBallPatch as a bare NURBS (no SMLIB_FLAT_SURFACE_BALL_PATCH face, no definition) and read it back as an SmBSplineSurface, its sphere lost; its offset 2 in no longer collapses (OffsetCollapses), the rounds' beside it do, and the shell cannot mate across them (SmOffsetExecutive, unbridged)"},
 };
 
 int ball_cases(bool known_failing, const char *only)
