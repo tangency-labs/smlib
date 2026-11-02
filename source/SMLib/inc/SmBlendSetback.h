@@ -247,6 +247,14 @@ public:
   // of the material for a convex corner (bConvex), into it for a concave one. A certified bound:
   // every patch lies in the convex hull of its control points (weights positive).
   static SmStatus Containment(const Fill & crFill, const std::vector<Face> & crFaces, SmBoolean bConvex, double & rdWorst);
+
+  // Owner's ruling (a) on one setback patch (a single Bezier span, as FillHole makes them) G1 to
+  // crA along its v = 0 and to crB along v = 1: whether II >= dK I (dK < 0) over the whole patch,
+  // II taken with the unit normal on crInto's side (into the fill's convex side), certified by
+  // the faces' normal field (exact along the columns): riResult 1 certified, 0 refused (a value
+  // below), -1 undecided. Refused (SM_ERR_INVALID_INPUT): not one span, dK not negative.
+  static SmStatus NoMoreConcave(const SmBSplineSurface & crPatch, const Face & crA, const Face & crB, const SmVector3d & crInto, double dK,
+                                int & riResult);
 };
 
 #endif // __SMBLENDSETBACK_H__

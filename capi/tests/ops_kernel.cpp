@@ -10952,6 +10952,84 @@ void curved_setback_graded(smlib_brep *r, const SmPoint3d &v, double reach, bool
     done(r);
 }
 
+// SmBlendSetback::NoMoreConcave (ruling (a)'s certificate, the faces' normal field in place of the
+// corner's axis) on patches lying ON a concave face, G1 to it along both columns: a quarter of a
+// bore (cylinder R 5), a piece of a spherical cavity (R 5, latitudes 0 to 45 deg) and a quarter of
+// a countersink (cone, radius 4 + z, z 0 to 3). On each, II + |k| I is singular wherever the
+// face's least normal curvature k is reached (the cylinder's circumferential direction everywhere,
+// the sphere's every direction, the cone's circumferential direction at z = 0): the certificate
+// must accept k = the face's least (-1/5, -1/5, -1/(4 sqrt 2): an equality, which a bound short of
+// |Pu x Pv| on the columns refuses) and refuse a k of smaller size (the face more concave than k
+// allows: -1/10, -1/10, 0.9 x -1/(4 sqrt 2)). The countersink's equality holds only with the cone's
+// sqrt(1 + slope^2) in the bound (without it the bound is short of |Pu x Pv| on the face by
+// 2 sqrt 2 / 3 and refuses k itself).
+void setback_no_more_concave_on_quadrics()
+{
+    using F = SmBlendSetback::Face;
+    const SmContext &ctx = *SmApiGetOrCreateContext();
+    const double c45 = std::sqrt(0.5), t22 = std::tan(PI / 8.0), c22 = std::cos(PI / 8.0);
+    // the quarter circle's control points (x, y) and weights
+    const double qx[3] = {1, 1, 0}, qy[3] = {0, 1, 1}, qw[3] = {1, c45, 1};
+    struct Case
+    {
+        const char *name;
+        F face;
+        // the v-direction: rows of (rho, z, weight) for each control row
+        std::vector<std::array<double, 3>> rows;
+        double k;
+    };
+    F cyl;
+    cyl.m_eKind = SmBlendSetback::SM_SB_CYLINDER;
+    cyl.m_sPoint = SmPoint3d(0, 0, 0);
+    cyl.m_dRadius = 5.0;
+    cyl.m_dSide = -1.0;
+    F sph = cyl;
+    sph.m_eKind = SmBlendSetback::SM_SB_SPHERE;
+    F cone = cyl;
+    cone.m_eKind = SmBlendSetback::SM_SB_CONE;
+    cone.m_dRadius = 4.0;
+    cone.m_dSlope = 1.0;
+    const std::vector<Case> cases = {
+        {"bore", cyl, {{{5, 0, 1}}, {{5, 4, 1}}}, -1.0 / 5.0},
+        {"spherical cavity", sph, {{{5, 0, 1}}, {{5, 5 * t22, c22}}, {{5 * c45, 5 * c45, 1}}}, -1.0 / 5.0},
+        {"countersink", cone, {{{4, 0, 1}}, {{7, 3, 1}}}, -1.0 / (4.0 * std::sqrt(2.0))}};
+    for (const Case &c : cases)
+    {
+        const size_t q = c.rows.size() - 1;
+        SmTArray<SmPoint3d> cps;
+        SmTArray<double> w;
+        for (int i = 0; i < 3; ++i)
+            for (size_t j = 0; j <= q; ++j)
+            {
+                cps.Add(SmPoint3d(c.rows[j][0] * qx[i], c.rows[j][0] * qy[i], c.rows[j][1]));
+                w.Add(qw[i] * c.rows[j][2]);
+            }
+        SmTArray<ULONG> mu, mv;
+        SmTArray<double> uk, vk;
+        mu.Add(3); mu.Add(3);
+        mv.Add(static_cast<ULONG>(q + 1)); mv.Add(static_cast<ULONG>(q + 1));
+        uk.Add(0.0); uk.Add(1.0);
+        vk.Add(0.0); vk.Add(1.0);
+        SmBSplineSurface *patch = nullptr;
+        CHECK(SmBSplineSurface::CreateCanonical(ctx, 2, static_cast<ULONG>(q), cps, SM_SF_UNSPECIFIED, mu, mv, uk, vk, SM_KT_UNSPECIFIED, &w, nullptr,
+                                                patch) == SM_SUCCESS && patch != nullptr);
+        if (patch == nullptr)
+        {
+            continue;
+        }
+        // into the material (outside the cavity), the fill's convex side were it a fill
+        const SmVector3d into(c45, c45, 0.0);
+        int at = -2, smaller = -2;
+        CHECK(SmBlendSetback::NoMoreConcave(*patch, c.face, c.face, into, c.k, at) == SM_SUCCESS);
+        const double k_smaller = (c.face.m_eKind == SmBlendSetback::SM_SB_CONE) ? 0.9 * c.k : 0.5 * c.k;
+        CHECK(SmBlendSetback::NoMoreConcave(*patch, c.face, c.face, into, k_smaller, smaller) == SM_SUCCESS);
+        std::printf("  %s: at k %.6g certified %d; at k %.6g %d (0: refused)\n", c.name, c.k, at, k_smaller, smaller);
+        CHECK(at == 1);
+        CHECK(smaller == 0);
+        delete patch;
+    }
+}
+
 // SmBlendSetback::SpringCurve on each kind of face: the two halves (homogeneous Bernstein, from P
 // and from Q) of degree 2 on a plane, 4 on a cylinder or sphere, 6 on a cone (the parameter plane's
 // parabola mapped up), on the face to 1e-12 x its size at 65 points each, leaving P along TP and
@@ -11403,6 +11481,7 @@ const TangentEndCase SETBACK_CASES[] = {
     {"corner_eased_g2", setback_corner_eased_g2, nullptr},
     {"concave_corner_rounds", setback_concave_corner_rounds, nullptr},
     {"spring_curves_on_quadrics", setback_spring_curves_on_quadrics, nullptr},
+    {"no_more_concave_on_quadrics", setback_no_more_concave_on_quadrics, nullptr},
     {"curved_d_prism_corner", setback_curved_d_prism_corner, "a curved face: no Setback (ClassifySetBack asks for planes), the old convex corner's patch"},
     {"curved_knife_edge_corner", setback_curved_knife_edge_corner,
      "ruling (a) is an equality on the concave wall along the spring curve (II + |k| I = 0 circumferentially): the certificate's bound fails there (to be factored out); and the degree-9 attempt runs out of memory until the sector rows are streamed (#106)"},
