@@ -51,6 +51,12 @@ public:
                          double                   dRadius,
                          SmBallPatch           *& rpPatch);
 
+  // Whether every point of crNet is on the sphere of centre crCentre and radius dRadius, decided
+  // on the net, not at sample points: over each of its Bezier pieces the homogeneous identity
+  // |X - C W|^2 - R^2 W^2 = 0, in the Bernstein basis of twice its degrees, each coefficient zero
+  // to the rounding of the piece's size (dRelTol of (R + |C|)^2 max W^2).
+  static SmStatus IsOnSphere(const SmBSplineSurface & crNet, const SmPoint3d & crCentre, double dRadius, double dRelTol,
+                             SmBoolean & rbOn);
   const SmPoint3d & GetCentre() const { return m_sCentre; }
   double            GetRadius() const { return m_dRadius; }
 
