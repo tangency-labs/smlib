@@ -49,6 +49,7 @@
 
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -9531,7 +9532,7 @@ void scenario_ellipse_trimmed_just_short_of_its_seam()
 // solid.cylinder makes it: its frame's x the world x for an axis within 0.9 of z, else the
 // horizontal z x axis (made square to the axis), and its seam 0.6131 rad from that x towards
 // axis x x (SmApiCreateCylinder's seam is its frame's x).
-smlib_brep *cylinder_on(std::array<double, 3> base, std::array<double, 3> axis, double r, double h)
+smlib_brep *cylinder_on(std::array<double, 3> base, std::array<double, 3> axis, double r, double h, double seam = 0.6131)
 {
     const double o[3] = {0, 0, 0};
     smlib_brep *c = nullptr;
@@ -9545,20 +9546,27 @@ smlib_brep *cylinder_on(std::array<double, 3> base, std::array<double, 3> axis, 
     const double lx = std::sqrt(fx[0] * fx[0] + fx[1] * fx[1] + fx[2] * fx[2]);
     fx = {fx[0] / lx, fx[1] / lx, fx[2] / lx};
     const std::array<double, 3> fy = cross(axis, fx);
-    const double seam = 0.6131, cs = std::cos(seam), sn = std::sin(seam);
+    const double cs = std::cos(seam), sn = std::sin(seam);
     const std::array<double, 3> x = {cs * fx[0] + sn * fy[0], cs * fx[1] + sn * fy[1], cs * fx[2] + sn * fy[2]};
     return placed(c, x, cross(axis, x), axis, base);
 }
 
 // The blend faces of `b` (those on no plane or cylinder: the bodies here are planes and
 // cylinders before the blend) graded G1 along every edge and inside. Along an edge with another
-// face: the angle between the two faces' tangent planes at nine stations. Inside: the angle
+// face: the angle between the two faces' tangent planes at nine stations, the blend face's at its
+// own pcurve's point, the other's at that point's foot on its surface (how far each pcurve's point
+// lies off the edge, its worst in `*pcurves_off`, is the edge's own tolerance, not the faces'
+// tangency). Inside: the angle
 // between the normals on either side of each interior knot line of the face's surface, each side's
 // limit at the knot extrapolated from 1e-7 and 3e-7 of the domain away on that side (a crease
 // reads as their angle; the surface's own turning cancels to the square of the step). The worst
 // of each goes to `seam` and `inside` (radians).
-void blend_faces_g1(const smlib_brep *b, double &seam, double &inside, int &faces)
+// An edge with a face `end_face` takes (a mixed End's end face, which the round meets at an angle
+// along the end rib) is not graded: its worst angle goes to `*end_angle`.
+void blend_faces_g1(const smlib_brep *b, double &seam, double &inside, int &faces,
+                    const std::function<bool(const SmFace *)> &end_face = nullptr, double *end_angle = nullptr, double *pcurves_off = nullptr)
 {
+    double pcurves = 0.0;
     seam = inside = 0.0;
     faces = 0;
     SmTArray<SmFace *> all;
@@ -9600,12 +9608,36 @@ void blend_faces_g1(const smlib_brep *b, double &seam, double &inside, int &face
             for (int k = 1; k <= 9; k++)
             {
                 const double t = ivl.GetMin() + ivl.GetLength() * k / 10.0;
-                SmPoint3d w1, w2;
+                // the blend face's normal at its own pcurve's point (on its contact line: the blend's
+                // pcurves lie on it to rounding), and the other face's at that point's foot on its
+                // surface (the other pcurve's point the guess): the round's tangency there, apart from
+                // how close the other face's pcurve and the edge's curve follow the contact line
+                SmPoint3d w1, w2, at, on1, on2;
                 SmVector3d n1, n2;
-                CHECK(mine->GetUVTrimCurve()->EvaluatePoint(t, w1) == SM_SUCCESS && other->GetUVTrimCurve()->EvaluatePoint(t, w2) == SM_SUCCESS);
-                CHECK(srf->EvaluateNormal(SmPoint2d(w1.x, w1.y), TRUE, TRUE, n1) == SM_SUCCESS &&
-                      other->GetFace()->GetSurface()->EvaluateNormal(SmPoint2d(w2.x, w2.y), TRUE, TRUE, n2) == SM_SUCCESS);
-                seam = std::max(seam, std::acos(std::min(1.0, std::fabs(n1.Dot(n2)))));
+                const SmSurface *s2 = other->GetFace()->GetSurface();
+                CHECK(mine->GetUVTrimCurve()->EvaluatePoint(t, w1) == SM_SUCCESS && other->GetUVTrimCurve()->EvaluatePoint(t, w2) == SM_SUCCESS &&
+                      es[j]->GetCurve()->EvaluatePoint(t, at) == SM_SUCCESS);
+                const SmPoint2d g1(w1.x, w1.y), g2(w2.x, w2.y);
+                SmPoint2d f2 = g2;
+                SmBoolean ok2 = FALSE, multi = FALSE;
+                double d2 = 0.0;
+                CHECK(srf->EvaluatePoint(g1, on1) == SM_SUCCESS && srf->EvaluateNormal(g1, TRUE, TRUE, n1) == SM_SUCCESS);
+                CHECK(s2->DropPoint(on1, s2->GetNaturalUVDomain(), &g2, ok2, f2, d2, multi) == SM_SUCCESS && ok2 &&
+                      s2->EvaluateNormal(f2, TRUE, TRUE, n2) == SM_SUCCESS);
+                if (s2->EvaluatePoint(g2, on2) == SM_SUCCESS)
+                {
+                    pcurves = std::max(pcurves, std::max(on1.DistanceBetween(at), on2.DistanceBetween(at)));
+                }
+                const double angle = std::acos(std::min(1.0, std::fabs(n1.Dot(n2))));
+                if (end_face && end_face(other->GetFace()))
+                {
+                    if (end_angle != nullptr)
+                    {
+                        *end_angle = std::max(*end_angle, angle);
+                    }
+                    continue;
+                }
+                seam = std::max(seam, angle);
             }
         }
         const SmBSplineSurface *bs = dynamic_cast<const SmBSplineSurface *>(srf);
@@ -9650,6 +9682,10 @@ void blend_faces_g1(const smlib_brep *b, double &seam, double &inside, int &face
             }
         }
     }
+    if (pcurves_off != nullptr)
+    {
+        *pcurves_off = pcurves;
+    }
 }
 
 // SolidCraft's junction rig (sc-recipes-curved/cov-junction-*): two cylinders, or a cylinder and a
@@ -9657,7 +9693,9 @@ void blend_faces_g1(const smlib_brep *b, double &seam, double &inside, int &face
 // recipes' expected.json: one valid closed body whose round meets its faces G1 (no closed form);
 // here G1 along every edge of the blend faces and inside them, to 1e-6 rad (a fitted round meets
 // its faces within its certified bound: 1e-6 rad is 1e-6 mm over a millimetre).
-void junction_round(const char *name, smlib_brep *body, std::array<double, 3> pick, double r)
+void junction_round(const char *name, smlib_brep *body, std::array<double, 3> pick, double r,
+                    const std::function<void(const smlib_brep *)> &also = nullptr,
+                    const std::function<bool(const SmFace *)> &end_face = nullptr)
 {
     const std::vector<double> chain = body != nullptr ? tangent_chain_points(body, {pick[0], pick[1], pick[2]}) : std::vector<double>();
     smlib_brep *out = nullptr;
@@ -9675,11 +9713,21 @@ void junction_round(const char *name, smlib_brep *body, std::array<double, 3> pi
     CHECK(smlib_brep_solid_count(out, &solids) == SMLIB_OK && solids == 1);
     double seam = 0.0, inside = 0.0;
     int faces = 0;
-    blend_faces_g1(out, seam, inside, faces);
+    double rib = 0.0, pcurves = 0.0;
+    blend_faces_g1(out, seam, inside, faces, end_face, &rib, &pcurves);
     std::printf("  %s: %lld solid(s), %d blend face(s): tangent planes across their edges up to %.3g rad apart, normals across their knots %.3g\n",
                 name, static_cast<long long>(solids), faces, seam, inside);
+    std::printf("  %s: the blend faces' edges' pcurves up to %.3g off their edges (not graded)\n", name, pcurves);
+    if (end_face)
+    {
+        std::printf("  %s: the end ribs on the end faces at up to %.4g rad\n", name, rib);
+    }
     CHECK(faces > 0 && seam <= 1e-6 && inside <= 1e-6);
     CHECK(sound(out));
+    if (also)
+    {
+        also(out);
+    }
     smlib_brep_free(out);
 }
 
@@ -9745,10 +9793,12 @@ void scenario_junction_boss_tilt_00_root_round()
 // smlib_blend_fit_size r* - 1e-5 = 0.262514174 exactly (to rounding at the part's scale), the
 // reason naming it, the round at that size built sound, and one 0.001 past r* refused.
 // (SolidCraft's recipe, which expected a body, is re-pinned with the ruling.)
-void scenario_junction_boss_tilt_20_root_round()
+// With the seam at `seam` (rad from the cylinder's frame x: at 20 degrees the axis is within 0.9 of
+// z, so that is the world x made square to the axis, the cap's frame x).
+void boss_tilt_20_refused(double seam)
 {
     const double a = 20.0 * PI / 180.0;
-    smlib_brep *body = combined(box(-30, -30, -10, 60, 60, 10), cylinder_on({-2.0 * std::sin(a), 0, -2.0 * std::cos(a)}, {std::sin(a), 0, std::cos(a)}, 6.0, 25.0),
+    smlib_brep *body = combined(box(-30, -30, -10, 60, 60, 10), cylinder_on({-2.0 * std::sin(a), 0, -2.0 * std::cos(a)}, {std::sin(a), 0, std::cos(a)}, 6.0, 25.0, seam),
                                 SMLIB_BOOLEAN_UNION);
     const std::vector<double> chain = body != nullptr ? tangent_chain_points(body, {0, 6, 0}) : std::vector<double>();
     smlib_brep *out = nullptr;
@@ -9773,9 +9823,137 @@ void scenario_junction_boss_tilt_20_root_round()
     smlib_brep_free(out);
     smlib_brep_free(body);
 }
+void scenario_junction_boss_tilt_20_root_round()
+{
+    boss_tilt_20_refused(0.6131);
+}
+// The seam turned to 170 degrees from the cap's frame x, in the cap's overhang (156.3 to 203.7
+// degrees, the rim's arc above the plate between the two Ends): it splits that arc at a seam's
+// vertex, and each End's rail passes over both edges. The largest radius whose rail still ends on
+// the rim is the most over the arc, at its top (180 degrees, on the edge from the -y End; at 170
+// degrees, the most on the +y End's edge, 0.214): the same r* less the part's tolerance,
+// 0.262514174, whichever End refuses.
+void scenario_junction_boss_tilt_20_seam_over_the_rim_refused()
+{
+    boss_tilt_20_refused(170.0 * PI / 180.0);
+}
+// Tilted 40 degrees the cap rises out of the plate by 6 sin 40 - 2 cos 40 = 2.325 at its top, and
+// the round's Ends are again mixed, at (-3.111, +-5.506, 0) where the root ellipse meets the cap's
+// chord. As at 20 degrees (above), the rail on the wall ends where the ball's centre lies in the
+// cap's plane, at angle phi from the cap's frame x u = (cos a, 0, -sin a) towards y:
+// cos phi = -(r + 2 cos a) / ((6 + r) sin a), at the point base + 6 / (6 + r) (s u + t y), s = (6 + r)
+// cos phi, t = +-(6 + r) sin phi: for r 1.5, phi = 128.97 degrees, (-4.17638, +-4.66470, 0.89358).
+// The rail passes over the rim only past r* = (6 sin 40 - 2 cos 40) / (1 - sin 40) = 6.508.
+// The rim is the circle of the cap, split where the wall's seam ends on it (the cylinder made as
+// solid.cylinder makes it: its seam at 125.13 degrees, between the +y End at 113.39 and its rail's
+// end): the rim's edge at that End stops at the seam's vertex short of the rail, whose end is on the
+// rim's next edge, between the same cap and wall, the two continuing each other G1 there. The round
+// builds, its rails' ends on the rim at the closed form above (to the solver's tolerance on the
+// rail, 1e-6 of the part), with the seam there and with the seam turned to 140 degrees, past the
+// rail's end. Where the wall is split by a real edge, a generator at 120 degrees (the wall cut
+// into two faces by the plane through the generators at 120 and 240 degrees), the rim's next edge
+// lies between the cap and another face: the rail's end is not followed across that vertex, and
+// the round is refused as it is without the rule, naming the radius whose rail ends at 120 degrees,
+// (3 sin 40 - 2 cos 40) / (1 - sin 40 / 2), less the part's tolerance. (The cut wall is three faces:
+// cutting a periodic face makes its seam an edge between two of them.)
+smlib_brep *boss_tilted(double deg, double seam)
+{
+    const double a = deg * PI / 180.0;
+    return combined(box(-30, -30, -10, 60, 60, 10), cylinder_on({-2.0 * std::sin(a), 0, -2.0 * std::cos(a)}, {std::sin(a), 0, std::cos(a)}, 6.0, 25.0, seam),
+                    SMLIB_BOOLEAN_UNION);
+}
+// The rail's end on the cap's rim of the boss tilted `deg` rounded r, on the side of y `side`, at
+// angle phi (degrees) about the cylinder's axis from the cap's frame x.
+std::array<double, 3> boss_rail_end(double deg, double r, double side, double *phi_deg = nullptr)
+{
+    const double a = deg * PI / 180.0, cphi = -(r + 2.0 * std::cos(a)) / ((6.0 + r) * std::sin(a));
+    const double phi = std::acos(cphi), sc = 6.0 / (6.0 + r), s = (6.0 + r) * cphi, t = side * (6.0 + r) * std::sin(phi);
+    if (phi_deg != nullptr)
+    {
+        *phi_deg = phi * 180.0 / PI;
+    }
+    return {-2.0 * std::sin(a) + sc * s * std::cos(a), sc * t, -2.0 * std::cos(a) - sc * s * std::sin(a)};
+}
+// Both rail ends of the boss tilted 40 rounded 1.5 are vertices of `out`, each within 1e-6.
+void boss_40_rail_ends(const smlib_brep *out)
+{
+    SmTArray<SmVertex *> vs;
+    out->p->GetVertices(vs);
+    for (const double side : {1.0, -1.0})
+    {
+        double phi = 0.0;
+        const std::array<double, 3> e = boss_rail_end(40.0, 1.5, side, &phi);
+        double best = SM_BIG_DOUBLE;
+        for (ULONG i = 0; i < vs.GetSize(); i++)
+        {
+            const SmPoint3d p = vs[i]->GetPoint();
+            best = std::min(best, std::sqrt((p.x - e[0]) * (p.x - e[0]) + (p.y - e[1]) * (p.y - e[1]) + (p.z - e[2]) * (p.z - e[2])));
+        }
+        std::printf("  rail end on the rim at phi %.4f deg, (%.6f, %.6f, %.6f): nearest vertex %.3g off\n", phi, e[0], e[1], e[2], best);
+        CHECK(best <= 1e-6);
+    }
+}
+// The boss's bottom cap: the plane face square to the tilted axis (the End's end face).
+bool boss_40_cap(const SmFace *f)
+{
+    const SmPlane *pl = f != nullptr ? SM_CAST_PTR(SmPlane, f->GetSurface()) : nullptr;
+    SmVector3d n;
+    const double a = 40.0 * PI / 180.0;
+    return pl != nullptr && pl->EvaluateNormal(SmPoint2d(pl->GetNaturalUVDomain().GetMin().x, pl->GetNaturalUVDomain().GetMin().y), TRUE, TRUE, n) == SM_SUCCESS &&
+           std::fabs(std::fabs(n.x * std::sin(a) + n.z * std::cos(a)) - 1.0) < 1e-9;
+}
 void scenario_junction_boss_tilt_40_root_round()
 {
-    junction_boss("boss tilted 40 degrees", 40.0);
+    junction_round("boss tilted 40 degrees", boss_tilted(40.0, 0.6131), {0, 6, 0}, 1.5, boss_40_rail_ends, boss_40_cap);
+}
+void scenario_junction_boss_tilt_40_seam_past_the_rail_end()
+{
+    // the seam at 140 degrees from the cap's frame x: 50 degrees from the cylinder's frame x (y)
+    junction_round("boss tilted 40 degrees, seam at 140 degrees", boss_tilted(40.0, 50.0 * PI / 180.0), {0, 6, 0}, 1.5, boss_40_rail_ends, boss_40_cap);
+}
+void scenario_junction_boss_tilt_40_wall_split_short_of_the_rail_end_refused()
+{
+    smlib_brep *body = boss_tilted(40.0, 0.6131), *split = nullptr;
+    const double a = 40.0 * PI / 180.0, ux[3] = {std::cos(a), 0, -std::sin(a)}, axis[3] = {std::sin(a), 0, std::cos(a)};
+    // the wall: the face whose inner point is 6 from the axis, between the cap and the top
+    int64_t counts[3] = {0, 0, 0}, wall = -1;
+    CHECK(body != nullptr && smlib_brep_counts(body, counts) == SMLIB_OK);
+    std::vector<double> at(static_cast<size_t>(3 * counts[0]));
+    CHECK(body != nullptr && smlib_face_points(body, at.data(), counts[0]) == SMLIB_OK);
+    for (int64_t f = 0; f < counts[0]; f++)
+    {
+        const double q[3] = {at[3 * f] + 2.0 * std::sin(a), at[3 * f + 1], at[3 * f + 2] + 2.0 * std::cos(a)};
+        const double h = q[0] * axis[0] + q[1] * axis[1] + q[2] * axis[2];
+        const double rr = std::sqrt(std::max(0.0, q[0] * q[0] + q[1] * q[1] + q[2] * q[2] - h * h));
+        wall = (std::fabs(rr - 6.0) < 1e-6 && h > 1e-6 && h < 25.0 - 1e-6) ? f : wall;
+    }
+    CHECK(wall >= 0);
+    // the plane through the generators at 120 and 240 degrees: 6 cos 120 = -3 along the frame x
+    const double origin[3] = {-2.0 * std::sin(a) - 3.0 * ux[0], 0, -2.0 * std::cos(a) - 3.0 * ux[2]}, y[3] = {0, 1, 0};
+    const double uu[2] = {-10, 10}, vv[2] = {-5, 30};
+    smlib_surface *plane = nullptr;
+    CHECK(smlib_surface_plane(origin, y, axis, uu, vv, &plane) == SMLIB_OK);
+    const smlib_surface *tools[1] = {plane};
+    int64_t made = 0;
+    const int32_t sp = wall >= 0 ? smlib_split_faces(body, &wall, 1, tools, 1, &split, &made) : SMLIB_ERR_ARG;
+    std::printf("  wall face %lld of %lld split: status %d, %lld more face(s)\n", static_cast<long long>(wall), static_cast<long long>(counts[0]), static_cast<int>(sp),
+                static_cast<long long>(made));
+    CHECK(sp == SMLIB_OK && made == 2);
+    smlib_surface_free(plane);
+    smlib_brep_free(body);
+    const std::vector<double> chain = split != nullptr ? tangent_chain_points(split, {0, 6, 0}) : std::vector<double>();
+    smlib_brep *out = nullptr;
+    const int32_t s = split == nullptr ? SMLIB_ERR_ARG : smlib_fillet(split, chain.data(), static_cast<int64_t>(chain.size() / 3), 0.1, 1.5, &out, nullptr);
+    std::printf("  boss tilted 40 degrees, wall split at 120 and 240 degrees, rounded 1.5: status %d%s%s\n", static_cast<int>(s), s == SMLIB_OK ? "" : ": ",
+                s == SMLIB_OK ? "" : last_blend_reason().c_str());
+    CHECK(s == SMLIB_ERR_NO_ROOM && out == nullptr);
+    // the radius whose rail ends at 120 degrees: cos 120 = -(r + 2 cos a) / ((6 + r) sin a)
+    const double r120 = (3.0 * std::sin(a) - 2.0 * std::cos(a)) / (1.0 - 0.5 * std::sin(a));
+    const double fit = blend_fit(), tol = split != nullptr ? split->p->GetTolerance().val : 0.0;
+    std::printf("  named %.12f, the radius %.12f whose rail ends at 120 degrees less the part's tolerance %.3g\n", fit, r120, tol);
+    CHECK(std::fabs(fit - (r120 - tol)) <= 6e-11);
+    smlib_brep_free(out);
+    smlib_brep_free(split);
 }
 
 const TangentEndCase SCENARIO_CASES[] = {
@@ -9813,8 +9991,12 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"junction_tee_oblique_unequal_round", scenario_junction_tee_oblique_unequal_round, nullptr},
     {"junction_boss_tilt_00_root_round", scenario_junction_boss_tilt_00_root_round, nullptr},
     {"junction_boss_tilt_20_root_round", scenario_junction_boss_tilt_20_root_round, nullptr},
-    {"junction_boss_tilt_40_root_round", scenario_junction_boss_tilt_40_root_round,
-     "status 1001, Corner Edge Computation Failure: at the End at (-3.111, 5.506, 0) (mixed convexity, as tilt 20) the cap's rim is split by the cylinder's seam vertex at (-3.93, 4.91, 0.69), and the rail on the wall crosses the rim past it, on the next edge of the same two faces: the side edge's rail end is not found (built with the seam elsewhere)"},
+    {"junction_boss_tilt_20_seam_over_the_rim_refused", scenario_junction_boss_tilt_20_seam_over_the_rim_refused,
+     "the size named, 0.262514174, is refused too (-1103, naming 0.214): at it the +y End's rail ends on the rim just short of its top, past the seam's vertex at 170 degrees, on the rim's next edge between the same cap and wall, and its end is looked for on the first edge only"},
+{"junction_boss_tilt_40_root_round", scenario_junction_boss_tilt_40_root_round,
+     "SMLIB_ERR_NO_ROOM, naming 1.09038: the rim's edge at the +y End stops at the wall's seam vertex (125.13 degrees) short of the rail's end (128.97 degrees), which lies on the rim's next edge between the same cap and wall; the rail's end is looked for on the first edge only, and the miss read as the rail passing over the rim (1.0903852 is the radius whose rail ends at the seam's vertex, no bound)"},
+    {"junction_boss_tilt_40_seam_past_the_rail_end", scenario_junction_boss_tilt_40_seam_past_the_rail_end, nullptr},
+    {"junction_boss_tilt_40_wall_split_short_of_the_rail_end_refused", scenario_junction_boss_tilt_40_wall_split_short_of_the_rail_end_refused, nullptr},
     {"round_just_under_a_boss_footprint", scenario_round_just_under_a_boss_footprint,
      "status 1001 with no reason: SMLib does not build the round that leaves a 0.001 wide annulus of the can's top round the boss (4.29 builds)"},
     {"round_just_under_a_bridge_cut", scenario_round_just_under_a_bridge_cut,
