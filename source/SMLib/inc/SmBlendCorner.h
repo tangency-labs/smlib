@@ -165,7 +165,8 @@ protected:
                                       SmBoolean & rbPast, double & rdFit);
   SmStatus  BallTouchingAt(SmEdgeuse * pFilEdgeuse, SmEdgeuse * pSideEU, SmFace * pOtherFace, const SmPoint3d & crP,
                            SmBoolean & rbOnG, SmBoolean & rbWithin, double & rdRho);
-  SmStatus  RefuseEndOverflowingSideEdge(SmEdgeuse * pFilEdgeuse, SmEdgeuse * pSideEU, SmFace * pOtherFace);
+  SmStatus  RefuseEndOverflowingSideEdge(SmEdgeuse * pFilEdgeuse, const SmTArray<SmEdgeuse*> & crSideEUs, SmFace * pOtherFace);
+  SmStatus  SideEdgeChainTo(SmEdgeuse * pLast, SmTArray<SmEdgeuse*> & rChain);
   SmStatus  CalcEndEdgeGeom();
   SmStatus  CreateEndPatchOfEnd();
 
@@ -299,6 +300,12 @@ public:
 // Of a side edgeuse at a corner, itself or its radial: the one whose face also holds
 // pFilEdgeuse's edge (the one the solver's rail/side-edge solve takes). NULL when neither.
 SmEdgeuse * sm_FindSideEdgeuse(SmEdgeuse * pFilEdgeuse, SmEdgeuse * pSideEU, int iDebugLevel);
+
+// A side edge continued across its end pAt: the edge N that continues pEU's edge E G1 at pAt between
+// the same two faces, where pAt's only other edge is a seam of one of them (a cylinder's seam ending
+// on its rim splits the rim there and nothing else): N's edgeuse on pEU's faceuse. NULL otherwise,
+// and for a closed E, or a pAt not E's end.
+SmEdgeuse * sm_SideEdgeuseAcrossSeamVertex(SmEdgeuse * pEU, const SmVertex * pAt, double dAngTolDeg);
 
 // Whether two edges at a vertex are tangent there (end tangents within dAngTolDeg); the angle
 // between them (degrees, folded to [0, 90]) in *pdAngDeg when not NULL.
