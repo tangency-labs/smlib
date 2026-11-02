@@ -12971,14 +12971,18 @@ SmStatus SmFilletGeom::TrimOriginalSurfaces
         } // end iter jj, every RailEdge on this fillet side (usually only m_vRails[ii] but sometimes also m_vOtherRails_ii)
     } // end iter ii, both fillet sides (both rails)
 
-  // when no connected OrigFaces 'leaked' outside the fillet boundaries
-  if ( !bBadTrim )
+  // SolidCraft change: faces that 'leaked' outside the fillet's boundaries (collected across to
+  // a rail's other side) are an error. The trim used to be dropped then, and the fillet's faces
+  // merged into the body left whole: a blend that took nothing off, returned as built.
+  if ( bBadTrim )
     {
-      // accumulate output, rOriginalFacesDelete += unique sDelFaces
-      for ( ii=0; ii < sDelFaces.GetSize(); ii++ )
-        {
-          rOriginalFacesDelete.AddUnique( sDelFaces[ii] );
-        }
+      pFE->GetFilletErrorInfo()->NoteError( SM_FILERR_BAD_MERGE, _T("Fillet Error: the faces a fillet's rails enclose on the body reach past its rails (the trim leaks)") );
+      SER( SM_ERR );
+    }
+  // accumulate output, rOriginalFacesDelete += unique sDelFaces
+  for ( ii=0; ii < sDelFaces.GetSize(); ii++ )
+    {
+      rOriginalFacesDelete.AddUnique( sDelFaces[ii] );
     }
 
   // all done
