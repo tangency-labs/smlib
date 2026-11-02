@@ -641,9 +641,8 @@ void setback_sections_are_exact_arcs()
 }
 
 // The inner corner of a 20 x 20 x 10 notch cut from the top corner (60, 40, 20) of the 60 x 40 x
-// 20 box: its three concave edges, meeting at (40, 20, 10), rounded r5 and set back 7.5, left
-// open (one hole of twelve edges, a sheet SMLib's check passes) and closed (SMLib's patch, a
-// valid solid). At (60, 20, 10) two convex edges meet the concave one: a mixed corner, which
+// 20 box: its three concave edges, meeting at (40, 20, 10), rounded r5 and set back 7.5, closed
+// (a valid solid; left open in SETBACK_CASES open_concave_notch_hole). At (60, 20, 10) two convex edges meet the concave one: a mixed corner, which
 // SMLib sets back with the same-convexity topology and gets wrong, refused.
 void concave_corner_setback()
 {
@@ -664,15 +663,7 @@ void concave_corner_setback()
     smlib_brep *r = nullptr;
     int64_t holes[64];
     int64_t len = -1;
-    CHECK(smlib_blend_setback_open(notched, SMLIB_BLEND_ROUND, inner, radii, 3, corner, &setback, 1, 0.1, &r, holes, 64, &len, nullptr,
-                                   nullptr) == SMLIB_OK &&
-          r != nullptr && len == 1 + 3 * 12 && holes[0] == 12);
-    if (r != nullptr)
-    {
-        int32_t closed = -1;
-        CHECK(smlib_brep_is_manifold_solid(r, &closed) == SMLIB_OK && closed == 0);
-        done(r);
-    }
+    // (left open: SETBACK_CASES open_concave_notch_hole)
     CHECK(smlib_blend_setback(notched, SMLIB_BLEND_ROUND, inner, radii, 3, corner, &setback, 1, 0.1, &r, nullptr, nullptr) == SMLIB_OK &&
           r != nullptr);
     if (r != nullptr)
@@ -10280,6 +10271,40 @@ void setback_four_face_apex() { setback_apex({1.0, 1.4, 0.8, 1.2}, false, 1.0); 
 // pocket (certified convex about the void). (Today SmFilletConvexNxNCorner's patch.)
 void setback_four_face_pocket_floor() { setback_apex({0.6, 0.8, 0.5, 0.7}, true, 1.0); }
 
+// The inner corner of a 20 x 20 x 10 notch cut from the top corner (60, 40, 20) of the 60 x 40 x
+// 20 box: its three concave edges, meeting at (40, 20, 10), rounded r5, set back 7.5 and left open
+// (smlib_blend_setback_open, G1): the Setback's hole, no fill (#86), nine edges (the three
+// sections whole, each face's spring curve in two at its base point), a sheet SMLib's check
+// passes, not closed. (It was SmFilletConvexNxNCorner's patch removed: twelve edges.)
+void setback_open_concave_notch_hole()
+{
+    smlib_brep *part = box(0, 0, 0, 60, 40, 20), *block = box(40, 20, 10, 30, 30, 20), *notched = nullptr, *r = nullptr;
+    CHECK(smlib_boolean(part, block, SMLIB_BOOLEAN_SUBTRACT, &notched) == SMLIB_OK && notched != nullptr);
+    smlib_brep_free(part);
+    smlib_brep_free(block);
+    if (notched == nullptr)
+    {
+        return;
+    }
+    const double inner[9] = {50, 20, 10, 40, 30, 10, 40, 20, 15};
+    const double radii[3] = {5, 5, 5};
+    const double corner[3] = {40, 20, 10};
+    const double setback = 7.5;
+    int64_t holes[64], len = -1;
+    const int32_t st =
+        smlib_blend_setback_open(notched, SMLIB_BLEND_ROUND, inner, radii, 3, corner, &setback, 1, 0.1, &r, holes, 64, &len, nullptr, nullptr);
+    std::printf("  status %d, hole of %lld edge(s)%s%s\n", static_cast<int>(st), static_cast<long long>(len > 0 ? holes[0] : -1), st == SMLIB_OK ? "" : ": ",
+                st == SMLIB_OK ? "" : last_blend_reason().c_str());
+    CHECK(st == SMLIB_OK && r != nullptr && len == 1 + 3 * 9 && holes[0] == 9);
+    if (r != nullptr)
+    {
+        int32_t closed = -1;
+        CHECK(smlib_brep_is_manifold_solid(r, &closed) == SMLIB_OK && closed == 0);
+        done(r);
+    }
+    smlib_brep_free(notched);
+}
+
 // The box corner (60, 40, 20) of the 60 x 40 x 20 box, its three edges there rounded 5, set back 8
 // and left open (smlib_blend_setback_open, G1): the Setback's hole, with no fill. The sheet keeps
 // the box's six faces and the three rounds; the hole is 3 N = 9 edges: the three end sections,
@@ -11223,6 +11248,8 @@ const TangentEndCase SETBACK_CASES[] = {
     {"concave_corner_rounds", setback_concave_corner_rounds, nullptr},
     {"four_face_apex", setback_four_face_apex, nullptr},
     {"four_face_pocket_floor", setback_four_face_pocket_floor, nullptr},
+    {"open_concave_notch_hole", setback_open_concave_notch_hole,
+     "an open setback is SmFilletConvexNxNCorner's patch removed: a hole of twelve edges (#86)"},
     {"open_g1_box_corner_hole", setback_open_g1_box_corner_hole,
      "an open setback is SmFilletConvexNxNCorner's patch removed: a hole of twelve edges, its face curves no parabolas (#86)"},
 };
