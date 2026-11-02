@@ -10573,6 +10573,523 @@ void setback_g1_base_points_on_the_spring_conics()
     }
 }
 
+// ---- The Setback beside curved faces (#85; owner's ruling 2026-11-02: beside a concave or
+// saddle face the fill is certified no more concave than what it is G1 to, II >= k G) ----------
+
+// A face at a curved Setback corner as the tests see it, by its kind and placement, signed so that
+// g(x) < 0 in the material: a plane (unit normal out of the material), a cylinder or sphere (side
+// +1: the material inside, -1: outside), a cone about `axis` through `at` with radius rho0 + slope
+// h there (h along axis; the material inside for side +1).
+struct CurvedFace
+{
+    enum Kind { PLANE, CYLINDER, SPHERE, CONE } kind;
+    SmPoint3d at;
+    SmVector3d axis; // unit
+    double radius;
+    double slope;
+    double side;
+    double g(const SmPoint3d &x) const
+    {
+        const SmVector3d d = x - at;
+        switch (kind)
+        {
+        case PLANE:
+            return d.Dot(axis);
+        case CYLINDER:
+            return side * ((d - axis * d.Dot(axis)).Length() - radius);
+        case SPHERE:
+            return side * (d.Length() - radius);
+        case CONE:
+        {
+            const double h = d.Dot(axis), rho = (d - axis * h).Length();
+            return side * (rho - (radius + slope * h)) / std::sqrt(1.0 + slope * slope);
+        }
+        }
+        return HUGE_VAL;
+    }
+};
+
+// One rounded edge at the corner, for its setback: `along` its coordinate along the edge from the
+// vertex (a straight edge's projection, an arc's length about its axis), `on` a point of its round
+// away from the corner (to find the round's face), `least` its least setback (where its rails
+// cross the neighbours' on its faces; negative where not worked out here: then only the floor
+// 1.5 r is checked), `square` whether its end section is square to the edge (its two ends at one
+// place along it: a straight edge between planes, or a circle with its faces coaxial; not a round
+// whose spine is another conic, which ends on its own section).
+struct CurvedEdge
+{
+    std::function<double(const SmPoint3d &)> along;
+    SmPoint3d on;
+    double least;
+    bool square = true;
+};
+
+// The point of a round of radius r whose ball's centre is c, on its section's middle towards the
+// rounded edge's point e.
+SmPoint3d round_middle(const SmPoint3d &c, const SmPoint3d &e, double r)
+{
+    SmVector3d d = e - c;
+    d.Unitize(FALSE);
+    return c + d * r;
+}
+
+// The principal curvatures of `s` at `uv` along the unit normal n oriented away from `inside`
+// (positive where the surface bends away from n, as a convex body's boundary does).
+bool principal_curvatures(const SmSurface *s, const SmPoint2d &uv, const SmPoint3d &inside, double &k1, double &k2)
+{
+    SmVector3d d[9];
+    if (s->Evaluate(uv, 2, 2, FALSE, FALSE, FALSE, d) != SM_SUCCESS)
+    {
+        return false;
+    }
+    // [D Dv Dvv; Du Duv Duvv; Duu Duuv Duuvv], 1d: D, Dv, Dvv, Du, Duv, Duvv, Duu, ...
+    const SmVector3d &P = d[0], &Pv = d[1], &Pvv = d[2], &Pu = d[3], &Puv = d[4], &Puu = d[6];
+    SmVector3d n = Pu * Pv;
+    if (n.Unitize(FALSE) != SM_SUCCESS)
+    {
+        return false;
+    }
+    if (n.Dot(SmPoint3d(P.x, P.y, P.z) - inside) < 0.0)
+    {
+        n = -n;
+    }
+    const double E = Pu.Dot(Pu), F = Pu.Dot(Pv), G = Pv.Dot(Pv), L = -Puu.Dot(n), M = -Puv.Dot(n), N = -Pvv.Dot(n);
+    // det(II - k I) = 0: (EG - F^2) k^2 - (EN - 2FM + GL) k + (LN - M^2) = 0
+    const double a = E * G - F * F, b = -(E * N - 2.0 * F * M + G * L), c = L * N - M * M;
+    const double disc = std::max(0.0, b * b - 4.0 * a * c);
+    k1 = (-b - std::sqrt(disc)) / (2.0 * a);
+    k2 = (-b + std::sqrt(disc)) / (2.0 * a);
+    return true;
+}
+
+// Grades a G1 Setback built at a corner beside curved faces: `r` sound with `faces_want` faces;
+// the fill's 2n patches (the faces whose every vertex lies within `reach` of the vertex `v`, not on
+// the corner's faces) each one Bezier span (G1 inside: a single span is smooth wherever it is
+// regular, and each is regular on a 17 x 17 grid), G1 to every neighbour (seams within 1e-9 rad);
+// each patch edge that lies on a face on it to rounding at the part's scale (1e-12 x its size),
+// 2n such edges (the spring curves' halves); every patch no more concave than k (ruling (a)): its
+// principal curvatures, the normal away from `inside` (a point of the side the fill bounds, the
+// material at a convex corner, the void at a concave one), at least k - 1e-9 per mm; every patch on
+// that side of every face (g <= 1e-12 x size at a convex corner, >= -1e-12 x size at a concave
+// one); and each round set back at least `least` and at most twice the rule's 1.5 r (CertifiedScale
+// grows it at most 2x), its end section's two ends at one place along its edge (to 1e-9).
+void curved_setback_graded(smlib_brep *r, const SmPoint3d &v, double reach, bool convex, const SmPoint3d &inside, const std::vector<CurvedFace> &faces,
+                           const std::vector<CurvedEdge> &edges, const std::vector<double> &radii, double k, int64_t faces_want)
+{
+    CHECK(r != nullptr);
+    if (r == nullptr)
+    {
+        return;
+    }
+    CHECK(sound(r));
+    int64_t counts[3] = {0, 0, 0};
+    CHECK(smlib_brep_counts(r, counts) == SMLIB_OK);
+    std::printf("  faces %lld, edges %lld, vertices %lld\n", static_cast<long long>(counts[0]), static_cast<long long>(counts[1]),
+                static_cast<long long>(counts[2]));
+    CHECK(counts[0] == faces_want);
+    const double size = part_size(r), on_tol = 1e-12 * size;
+    const size_t n = edges.size();
+    SmTArray<SmFace *> all;
+    r->p->GetFaces(all);
+    std::vector<SmFace *> patches;
+    for (ULONG f = 0; f < all.GetSize(); ++f)
+    {
+        SmTArray<SmVertex *> fv;
+        all[f]->GetVertices(fv);
+        bool near = fv.GetSize() > 0;
+        for (ULONG q = 0; q < fv.GetSize() && near; ++q)
+        {
+            near = fv[q]->GetPoint().DistanceBetween(v) <= reach;
+        }
+        // not one of the corner's faces: a point of its surface off each of them
+        SmPoint3d mid;
+        all[f]->GetSurface()->EvaluatePoint(all[f]->GetUVDomain().GetMid(), mid);
+        bool on_face = false;
+        for (const CurvedFace &cf : faces)
+        {
+            on_face = on_face || std::fabs(cf.g(mid)) <= 1e-9;
+        }
+        if (near && !on_face)
+        {
+            patches.push_back(all[f]);
+        }
+    }
+    std::printf("  %zu patches\n", patches.size());
+    CHECK(patches.size() == 2 * n);
+    double worst_seam = 0.0, worst_on = 0.0, worst_k = HUGE_VAL, worst_out = -HUGE_VAL;
+    int on_edges = 0;
+    bool single = true, regular = true;
+    for (SmFace *p : patches)
+    {
+        const SmSurface *s = p->GetSurface();
+        const SmBSplineSurface *b = SM_CAST_PTR(SmBSplineSurface, s);
+        single = single && b != nullptr && b->GetNumberControlPoints(SM_SP_U) == b->GetDegree(SM_SP_U) + 1 &&
+                 b->GetNumberControlPoints(SM_SP_V) == b->GetDegree(SM_SP_V) + 1;
+        int seams = 0;
+        worst_seam = std::max(worst_seam, worst_seam_angle(p, seams));
+        const SmExtent2d dom = p->GetUVDomain();
+        for (int i = 0; i <= 16; ++i)
+        {
+            for (int j = 0; j <= 16; ++j)
+            {
+                const SmPoint2d uv = dom.Evaluate(i / 16.0, j / 16.0);
+                SmPoint3d x;
+                s->EvaluatePoint(uv, x);
+                for (const CurvedFace &cf : faces)
+                {
+                    worst_out = std::max(worst_out, convex ? cf.g(x) : -cf.g(x));
+                }
+                if (i == 0 || i == 16 || j == 0 || j == 16)
+                {
+                    continue;
+                }
+                double k1 = 0.0, k2 = 0.0;
+                if (!principal_curvatures(s, uv, inside, k1, k2))
+                {
+                    regular = false;
+                    continue;
+                }
+                worst_k = std::min(worst_k, k1);
+            }
+        }
+        SmTArray<SmEdge *> es;
+        p->GetEdges(es);
+        for (ULONG e = 0; e < es.GetSize(); ++e)
+        {
+            for (const CurvedFace &cf : faces)
+            {
+                double off = 0.0;
+                const SmExtent1d ivl = es[e]->GetInterval();
+                for (int q = 0; q <= 32; ++q)
+                {
+                    SmPoint3d x;
+                    es[e]->GetCurve()->EvaluatePoint(ivl.Evaluate(q / 32.0), x);
+                    off = std::max(off, std::fabs(cf.g(x)));
+                }
+                if (off <= 1e-6)
+                {
+                    on_edges++;
+                    worst_on = std::max(worst_on, off);
+                }
+            }
+        }
+    }
+    std::printf("  patches one span each %d, regular %d; seams within %.3g rad; %d patch edges on the faces, off them by %.3g\n", single,
+                regular, worst_seam, on_edges, worst_on);
+    std::printf("  least principal curvature %.6g (k %.6g); past the faces by %.3g\n", worst_k, k, worst_out);
+    CHECK(single && regular);
+    CHECK(worst_seam <= 1e-9);
+    CHECK(on_edges == static_cast<int>(2 * n) && worst_on <= on_tol);
+    CHECK(worst_k >= k - 1e-9);
+    CHECK(worst_out <= on_tol);
+    // the setbacks: each round's face (through `on`), its end at the corner
+    for (size_t e = 0; e < n; ++e)
+    {
+        SmFace *round = nullptr;
+        for (ULONG f = 0; f < all.GetSize() && round == nullptr; ++f)
+        {
+            SmSolutionArray sols;
+            SmSurface *s = all[f]->GetSurface();
+            if (s->GlobalPointSolve(s->GetNaturalUVDomain(), SM_SO_MINIMIZE, edges[e].on, 1e-12, nullptr, SM_SR_SINGLE, sols) == SM_SUCCESS &&
+                sols.GetSize() > 0)
+            {
+                SmPoint3d at;
+                s->EvaluatePoint(SmPoint2d(sols[0].m_vStart[0], sols[0].m_vStart[1]), at);
+                if (at.DistanceBetween(edges[e].on) <= 1e-9)
+                {
+                    round = all[f];
+                }
+            }
+        }
+        CHECK(round != nullptr);
+        if (round == nullptr)
+        {
+            continue;
+        }
+        SmTArray<SmVertex *> rv;
+        round->GetVertices(rv);
+        double lo = HUGE_VAL, hi = -HUGE_VAL;
+        for (ULONG q = 0; q < rv.GetSize(); ++q)
+        {
+            if (rv[q]->GetPoint().DistanceBetween(v) <= reach)
+            {
+                const double a = edges[e].along(rv[q]->GetPoint());
+                lo = std::min(lo, a);
+                hi = std::max(hi, a);
+            }
+        }
+        std::printf("  round %zu (r %g) set back %.12g (its ends %.3g apart), least %.6g, the rule's floor %.6g\n", e, radii[e], lo, hi - lo,
+                    edges[e].least, 1.5 * radii[e]);
+        if (!edges[e].square)
+        {
+            continue;
+        }
+        CHECK(hi - lo <= 1e-9);
+        const double rule = std::max(1.5 * radii[e], edges[e].least + 0.25 * radii[e]);
+        CHECK(lo >= rule - 1e-9 && (edges[e].least < 0.0 || lo <= 2.0 * rule + 1e-9));
+    }
+    done(r);
+}
+
+// The D-shaped prism (R 10, flat a 4, H 10), its top corner V = (4, h, 10), h = sqrt 84, where
+// the top, the flat and the CONVEX cylinder meet: the chord (top-flat), the upright (flat-
+// cylinder) and the arc (top-cylinder) rounded 2, 2.5 and 3 together, unequal, so no one ball:
+// a Setback beside a curved face. Least setbacks, where each round's rails cross the next's on a
+// face: the chord's on the top at x = 2, rho = 7 (y = sqrt 45), 2.457 along it, on the flat at
+// (4, sqrt 54, 8), 1.817; the upright's on the flat at z = 8 (2) and on the cylinder at z = 7 (3);
+// the arc's on the top at angle atan2(sqrt 45, 2) and on the cylinder at the upright's contact
+// angle atan2(sqrt 96, 2): 10 x (78.46 - 66.42) deg = 2.101 of arc. The rule: 3, 3.75, 4.5 (1.5 r
+// each). Every face and round there is convex: k = 0, the fill certified convex. Faces: the
+// prism's 4, 3 rounds, 6 patches (13).
+void setback_curved_d_prism_corner()
+{
+    const double R = 10.0, a = 4.0, H = 10.0, h = std::sqrt(R * R - a * a);
+    const SmPoint3d v(a, h, H);
+    const double av = std::atan2(h, a);
+    smlib_brep *prism = d_prism(R, a, 0.0, H), *r = nullptr;
+    const double points[9] = {a, 0, H, a, h, 5, -R, 0, H}, radii[3] = {2.0, 2.5, 3.0};
+    CHECK(prism != nullptr && smlib_blend(prism, SMLIB_BLEND_ROUND, points, radii, 3, 0.1, &r, nullptr) == SMLIB_OK && r != nullptr);
+    smlib_brep_free(prism);
+    const std::vector<CurvedFace> faces = {{CurvedFace::PLANE, SmPoint3d(0, 0, H), SmVector3d(0, 0, 1), 0, 0, 1},
+                                           {CurvedFace::PLANE, SmPoint3d(a, 0, 0), SmVector3d(1, 0, 0), 0, 0, 1},
+                                           {CurvedFace::CYLINDER, SmPoint3d(0, 0, 0), SmVector3d(0, 0, 1), R, 0, 1}};
+    auto arc_point = [](double rho, double ang, double z) { return SmPoint3d(rho * std::cos(ang), rho * std::sin(ang), z); };
+    const std::vector<CurvedEdge> edges = {
+        {[&](const SmPoint3d &p) { return h - p.y; }, SmPoint3d(2 + std::sqrt(2.0), 0, 8 + std::sqrt(2.0)), h - std::sqrt(45.0)},
+        {[&](const SmPoint3d &p) { return H - p.z; }, round_middle(SmPoint3d(1.5, std::sqrt(54.0), 5), SmPoint3d(a, h, 5), 2.5), 3.0},
+        {[&](const SmPoint3d &p) { return R * (std::atan2(p.y, p.x) - av); }, arc_point(7, PI, 7) + SmVector3d(-3, 0, 3) * (3.0 / std::sqrt(18.0)),
+         R * (std::atan2(std::sqrt(96.0), 2.0) - av)}};
+    curved_setback_graded(r, v, 9.8, true, SmPoint3d(0, 0, 5), faces, edges, {2.0, 2.5, 3.0}, 0.0, 13);
+}
+
+// The 851 part's corner (41 1/6, -21, 10): the top, the front and the CONCAVE arc wall (rho >= 21
+// about (62 1/6, -21)), the top front edge, the arc's top edge and the upright at the arc rounded
+// 2, 2.5 and 3 together: a Setback beside a concave face. A convex fill is impossible there
+// (Meusnier: along the spring curve on the wall the fill's normal curvature is the wall's,
+// -cos^2 / 21); the owner's ruling (a) certifies it no more concave than what it is G1 to: the
+// wall and the arc's round (a torus's inner side, its least normal curvature -1/21 at the wall),
+// k = -1/21. Least setbacks (rails: the top-front round's at y = -19 on the top, z = 8 on the
+// front; the arc's at rho = 23.5 on the top, z = 7.5 on the wall; the upright's ball centres at
+// (62 1/6 - sqrt 567, -18), touching the front at x = 62 1/6 - sqrt 567 and the wall at angle
+// pi - atan(3 / sqrt 567)): the top-front edge's 2.812 (on the front), the arc's 21 atan(3 / sqrt
+// 567) = 2.632 (on the wall), the upright's 2.5 (on the wall); the rule: 3.312, 3.75, 4.5.
+// Faces: the part's 6 (top, bottom, front, back, left, the wall), 3 rounds, 6 patches (15).
+void setback_curved_knife_edge_corner()
+{
+    const double tip = 62.0 + 1.0 / 6.0, x0 = tip - 21.0;
+    const SmPoint3d v(x0, -21, 10);
+    smlib_brep *part = knife_edge_arc_part(), *r = nullptr;
+    const double points[9] = {20, -21, 10, 47.3174, -6.1508, 10, x0, -21, 5}, radii[3] = {2.0, 2.5, 3.0};
+    CHECK(part != nullptr && smlib_blend(part, SMLIB_BLEND_ROUND, points, radii, 3, 0.1, &r, nullptr) == SMLIB_OK && r != nullptr);
+    smlib_brep_free(part);
+    const std::vector<CurvedFace> faces = {{CurvedFace::PLANE, SmPoint3d(0, 0, 10), SmVector3d(0, 0, 1), 0, 0, 1},
+                                           {CurvedFace::PLANE, SmPoint3d(0, -21, 0), SmVector3d(0, -1, 0), 0, 0, 1},
+                                           {CurvedFace::CYLINDER, SmPoint3d(tip, -21, 0), SmVector3d(0, 0, 1), 21.0, 0, -1}};
+    const double av = PI; // V's angle about the wall's axis
+    const double q = 0.75 * PI, cu = std::sqrt(24.0 * 24.0 - 9.0);
+    const std::vector<CurvedEdge> edges = {
+        {[&](const SmPoint3d &p) { return x0 - p.x; }, round_middle(SmPoint3d(20, -19, 8), SmPoint3d(20, -21, 10), 2.0), cu - 21.0},
+        {[&](const SmPoint3d &p) { return 21.0 * std::fabs(std::atan2(p.y + 21.0, p.x - tip) - av); },
+         round_middle(SmPoint3d(tip + 23.5 * std::cos(q), -21 + 23.5 * std::sin(q), 7.5), SmPoint3d(tip + 21 * std::cos(q), -21 + 21 * std::sin(q), 10), 2.5),
+         21.0 * std::atan(3.0 / cu)},
+        {[&](const SmPoint3d &p) { return 10.0 - p.z; }, round_middle(SmPoint3d(tip - cu, -18, 5), SmPoint3d(x0, -21, 5), 3.0), 2.5}};
+    curved_setback_graded(r, v, 9.8, true, SmPoint3d(x0 - 10.0, -11.0, 5.0), faces, edges, {2.0, 2.5, 3.0}, -1.0 / 21.0, 15);
+}
+
+// A 40 x 40 x 20 block with a D-shaped pocket 10 deep (R 8 about (20, 20), flat x = 24, floor
+// z = 10), its floor corner V = (24, 20 + h, 10), h = sqrt 48, where the floor, the flat and the
+// CONCAVE cylinder (the material outside it) meet: the floor's chord, the upright and the floor's
+// arc rounded 2, 2.5 and 3 together, unequal: a concave Setback beside a curved face, the fill
+// convex about the void (mirrored), every surface it is G1 to convex seen from the void: k = 0.
+// Least setbacks (as the prism's, mirrored): the chord's on the floor at x = 22, rho = 5 (y = 20 +
+// sqrt 21), 2.345; the upright's on the cylinder at z = 13 (3); the arc's on the cylinder at the
+// upright's contact angle atan2(sqrt 28, 1.5): 8 (74.18 - 60) deg = 1.980. The rule: 3, 3.75, 4.5.
+// Faces: the block's 6, the pocket's 3, 3 rounds, 6 patches (18).
+void setback_curved_d_pocket_corner()
+{
+    const double R = 8.0, h = std::sqrt(48.0);
+    const SmPoint3d v(24, 20 + h, 10);
+    const double av = std::atan2(h, 4.0);
+    smlib_brep *pocket = d_prism(R, 4.0, 10.0, 11.0);
+    smlib_brep *cut = pocket != nullptr ? placed(pocket, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {20, 20, 0}) : nullptr;
+    smlib_brep *part = combined(box(0, 0, 0, 40, 40, 20), cut, SMLIB_BOOLEAN_SUBTRACT), *r = nullptr;
+    const double points[9] = {24, 20, 10, 24, 20 + h, 15, 12, 20, 10}, radii[3] = {2.0, 2.5, 3.0};
+    CHECK(part != nullptr && smlib_blend(part, SMLIB_BLEND_ROUND, points, radii, 3, 0.1, &r, nullptr) == SMLIB_OK && r != nullptr);
+    smlib_brep_free(part);
+    const std::vector<CurvedFace> faces = {{CurvedFace::PLANE, SmPoint3d(0, 0, 10), SmVector3d(0, 0, 1), 0, 0, 1},
+                                           {CurvedFace::PLANE, SmPoint3d(24, 0, 0), SmVector3d(-1, 0, 0), 0, 0, 1},
+                                           {CurvedFace::CYLINDER, SmPoint3d(20, 20, 0), SmVector3d(0, 0, 1), R, 0, -1}};
+    const std::vector<CurvedEdge> edges = {
+        {[&](const SmPoint3d &p) { return 20 + h - p.y; }, round_middle(SmPoint3d(22, 20, 12), SmPoint3d(24, 20, 10), 2.0), 20 + h - (20 + std::sqrt(21.0))},
+        {[&](const SmPoint3d &p) { return p.z - 10.0; }, round_middle(SmPoint3d(21.5, 20 + std::sqrt(28.0), 15), SmPoint3d(24, 20 + h, 15), 2.5), 3.0},
+        {[&](const SmPoint3d &p) { return R * (std::atan2(p.y - 20, p.x - 20) - av); }, round_middle(SmPoint3d(15, 20, 13), SmPoint3d(12, 20, 10), 3.0),
+         R * (std::atan2(std::sqrt(28.0), 1.5) - av)}};
+    curved_setback_graded(r, v, 9.8, false, SmPoint3d(20, 20, 15), faces, edges, {2.0, 2.5, 3.0}, 0.0, 18);
+}
+
+// The ball of radius 10 about the origin less x > 4, y > 4 and z < 0, its corner V = (4, 4,
+// sqrt 68) where the planes x = 4, y = 4 and the CONVEX sphere meet: the upright (x = y = 4),
+// the circle x = 4 and the circle y = 4 on the sphere rounded 1.5, 2 and 2.5 together. The
+// circles' rounds are coaxial with the sphere (their spines circles about the x and y axes): their
+// sections lie in planes through those axes. Least setbacks: the upright's 1.336 (on y = 4, where
+// its rail x = 2.5 crosses the y-circle round's, the circle of radius sqrt 54 about (0, 4, 0));
+// the x-circle's on the sphere, where the rails x = 2.5 and y = 2 cross, sqrt 84 (atan2(sqrt 89.75,
+// 2) - atan2(sqrt 68, 4)) = 2.233; the y-circle's there too, 1.775. The rule: 2.25, 3, 3.75. All
+// convex: k = 0. Faces: the part's 4, 4 rounds (one circle split at the sphere's seam, its round
+// two faces), 6 patches (14).
+void setback_curved_sphere_corner()
+{
+    const double s68 = std::sqrt(68.0), s84 = std::sqrt(84.0), av = std::atan2(s68, 4.0);
+    const SmPoint3d v(4, 4, s68);
+    const double o[3] = {0, 0, 0};
+    smlib_brep *ball = nullptr;
+    CHECK(smlib_make_sphere(o, 10.0, &ball) == SMLIB_OK);
+    smlib_brep *part = combined(combined(combined(ball, box(4, -20, -20, 30, 40, 40), SMLIB_BOOLEAN_SUBTRACT), box(-20, 4, -20, 40, 30, 40),
+                                         SMLIB_BOOLEAN_SUBTRACT),
+                                box(-20, -20, -30, 40, 40, 30), SMLIB_BOOLEAN_SUBTRACT),
+               *r = nullptr;
+    // each edge with its tangent chain (the sphere's seam splits the circles)
+    std::vector<double> points, radii;
+    for (const auto &pick : std::vector<std::pair<std::vector<double>, double>>{{{4, 4, 4}, 1.5}, {{4, -3, std::sqrt(75.0)}, 2.0}, {{-3, 4, std::sqrt(75.0)}, 2.5}})
+    {
+        const std::vector<double> chain = part != nullptr ? tangent_chain_points(part, pick.first) : std::vector<double>();
+        points.insert(points.end(), chain.begin(), chain.end());
+        radii.insert(radii.end(), chain.size() / 3, pick.second);
+    }
+    const int32_t st = part != nullptr ? smlib_blend(part, SMLIB_BLEND_ROUND, points.data(), radii.data(), static_cast<int64_t>(radii.size()), 0.1, &r, nullptr)
+                                       : SMLIB_ERR_ARG;
+    int64_t sharp[3] = {0, 0, 0};
+    if (part != nullptr)
+    {
+        smlib_brep_counts(part, sharp);
+    }
+    std::printf("  the part: %lld faces, %lld edges; %zu edges picked; blend status %d %s\n", static_cast<long long>(sharp[0]),
+                static_cast<long long>(sharp[1]), radii.size(), static_cast<int>(st), st == SMLIB_OK ? "" : last_blend_reason().c_str());
+    CHECK(st == SMLIB_OK && r != nullptr);
+    smlib_brep_free(part);
+    const std::vector<CurvedFace> faces = {{CurvedFace::PLANE, SmPoint3d(4, 0, 0), SmVector3d(1, 0, 0), 0, 0, 1},
+                                           {CurvedFace::PLANE, SmPoint3d(0, 4, 0), SmVector3d(0, 1, 0), 0, 0, 1},
+                                           {CurvedFace::SPHERE, SmPoint3d(0, 0, 0), SmVector3d(0, 0, 1), 10.0, 0, 1}};
+    const std::vector<CurvedEdge> edges = {
+        {[&](const SmPoint3d &p) { return s68 - p.z; }, round_middle(SmPoint3d(2.5, 2.5, 4), SmPoint3d(4, 4, 4), 1.5), s68 - std::sqrt(54.0 - 6.25)},
+        {[&](const SmPoint3d &p) { return s84 * (std::atan2(p.z, p.y) - av); }, round_middle(SmPoint3d(2, 0, std::sqrt(60.0)), SmPoint3d(4, 0, s84), 2.0),
+         s84 * (std::atan2(std::sqrt(89.75), 2.0) - av)},
+        {[&](const SmPoint3d &p) { return s84 * (std::atan2(p.z, p.x) - av); }, round_middle(SmPoint3d(0, 1.5, std::sqrt(54.0)), SmPoint3d(0, 4, s84), 2.5),
+         s84 * (std::atan2(std::sqrt(89.75), 2.5) - av)}};
+    curved_setback_graded(r, v, 7.9, true, SmPoint3d(0, 0, 3), faces, edges, {1.5, 2.0, 2.5}, 0.0, 14);
+}
+
+// A countersink: the block x in [-20, 4], y in [-20, 20], z in [0, 20] less the cone's frustum about
+// (4, 0) widening at 45 degrees from radius 2 at z = 14 (its axis in the side x = 4), its corner
+// V = (4, 8, 20) where the top, the side and the CONCAVE cone (the material outside it) meet: the
+// top-side edge (along y), the rim (the top's circle of radius 8) and the generator (side-cone, its
+// round's spine a hyperbola: its sections its own) rounded 1.25, 1.5 and 1 together: a convex corner
+// beside a concave cone. The fill is no more concave than the cone: k = -cos 45 / rho, rho the cone's
+// least radius the fill reaches, at least 8 - 2 x 1.5 / sqrt 2 > 5.5 (each setback at most twice the
+// rule's, 1.5 r along the generator): k = -cos 45 / 5.5. Faces: the block's 6 less none (the side
+// and the top keep one face each), the countersink's cone and floor (8), 3 rounds, 6 patches (17).
+void setback_curved_countersink_corner()
+{
+    const SmPoint3d v(4, 8, 20);
+    const double o[3] = {4, 0, 14};
+    smlib_brep *sink = nullptr;
+    CHECK(smlib_make_cone(o, 2.0, 9.0, 7.0, &sink) == SMLIB_OK);
+    smlib_brep *part = combined(box(-20, -20, 0, 24, 40, 20), sink, SMLIB_BOOLEAN_SUBTRACT), *r = nullptr;
+    std::vector<double> points, radii;
+    for (const auto &pick : std::vector<std::pair<std::vector<double>, double>>{{{4, 14, 20}, 1.25}, {{4 - 8 * std::sqrt(0.5), 8 * std::sqrt(0.5), 20}, 1.5}, {{4, 5, 17}, 1.0}})
+    {
+        const std::vector<double> chain = part != nullptr ? tangent_chain_points(part, pick.first) : std::vector<double>();
+        points.insert(points.end(), chain.begin(), chain.end());
+        radii.insert(radii.end(), chain.size() / 3, pick.second);
+    }
+    const int32_t st = part != nullptr ? smlib_blend(part, SMLIB_BLEND_ROUND, points.data(), radii.data(), static_cast<int64_t>(radii.size()), 0.1, &r, nullptr)
+                                       : SMLIB_ERR_ARG;
+    std::printf("  %zu edges picked; blend status %d %s\n", radii.size(), static_cast<int>(st), st == SMLIB_OK ? "" : last_blend_reason().c_str());
+    CHECK(st == SMLIB_OK && r != nullptr);
+    smlib_brep_free(part);
+    const double c45 = std::sqrt(0.5);
+    const std::vector<CurvedFace> faces = {{CurvedFace::PLANE, SmPoint3d(0, 0, 20), SmVector3d(0, 0, 1), 0, 0, 1},
+                                           {CurvedFace::PLANE, SmPoint3d(4, 0, 0), SmVector3d(1, 0, 0), 0, 0, 1},
+                                           {CurvedFace::CONE, SmPoint3d(4, 0, 14), SmVector3d(0, 0, 1), 2.0, 1.0, -1}};
+    auto middle = [](const SmPoint3d &c, SmVector3d n1, SmVector3d n2, double rr) {
+        SmVector3d d = n1 + n2;
+        d.Unitize(FALSE);
+        return c + d * rr;
+    };
+    // each round's middle: its ball centre C plus r times the bisector of its contact normals out of
+    // the material (the top's (0, 0, 1), the side's (1, 0, 0), the cone's (-cos 45 radial, sin 45));
+    // the rim's ball at angle 3 pi / 4, r below the top, rho(z) + r / cos 45 from the axis
+    const double zr = 20 - 1.5, rr = (zr - 14) + 2.0 + 1.5 / c45, a3 = 0.75 * PI;
+    // the generator's round at z = 17: its ball centre on x = 3, rho = rho(17) + 1 / cos 45 about (4, 0)
+    const double rg = 5.0 + 1.0 / c45, yg = std::sqrt(rg * rg - 1.0);
+    const SmVector3d rad3(std::cos(a3), std::sin(a3), 0);
+    const std::vector<CurvedEdge> edges = {
+        {[&](const SmPoint3d &p) { return p.y - 8.0; }, middle(SmPoint3d(4 - 1.25, 16, 20 - 1.25), SmVector3d(1, 0, 0), SmVector3d(0, 0, 1), 1.25), -1.0},
+        {[&](const SmPoint3d &p) { return 8.0 * (std::atan2(p.y, p.x - 4) - PI / 2); },
+         middle(SmPoint3d(4 + rr * rad3.x, rr * rad3.y, zr), SmVector3d(0, 0, 1), SmVector3d(-c45 * rad3.x, -c45 * rad3.y, c45) * 1.0, 1.5), -1.0},
+        {[&](const SmPoint3d &p) { return (SmPoint3d(4, 8, 20) - p).Dot(SmVector3d(0, c45, c45)); },
+         middle(SmPoint3d(3, yg, 17), SmVector3d(1, 0, 0), SmVector3d(c45 / rg, -c45 * yg / rg, c45), 1.0), -1.0, false}};
+    curved_setback_graded(r, v, 6.0, true, SmPoint3d(-5, 10, 10), faces, edges, {1.25, 1.5, 1.0}, -c45 / 5.5, 17);
+}
+
+// A cone's frustum (radius 10 at z = 0 narrowing at 30 degrees to z = 6) less x < 0 (the half
+// beyond the plane through its axis), its top corner V = (0, rho_t, 6), rho_t = 10 - 6 tan 30,
+// where the top, the plane x = 0 and the CONVEX cone meet: the top's diameter (top-plane), the
+// generator (plane-cone, a straight edge whose round's spine is a hyperbola: its sections are
+// its own, not square to the edge) and the top's arc rounded 1.25, 1.5 and 2 together: a Setback
+// beside a cone (its spring curve of degree 6, its patches of degree >= 7). All convex: k = 0.
+// Least setbacks not worked out here (the floor 1.5 r is checked for the square ends). Faces: the
+// part's 5 (its cone split at its seam), 4 rounds (the arc's round split there too), 6 patches (15).
+void setback_curved_cone_corner()
+{
+    const double tb = std::tan(PI / 6.0), rt = 10.0 - 6.0 * tb;
+    const SmPoint3d v(0, rt, 6);
+    const double o[3] = {0, 0, 0};
+    smlib_brep *cone = nullptr;
+    CHECK(smlib_make_cone(o, 10.0, rt, 6.0, &cone) == SMLIB_OK);
+    smlib_brep *part = combined(cone, box(-20, -20, -1, 20, 40, 10), SMLIB_BOOLEAN_SUBTRACT), *r = nullptr;
+    const double rm = 10.0 - 3.0 * tb;
+    // each edge with its tangent chain (the cone's seam may split the arc)
+    std::vector<double> points, radii;
+    for (const auto &pick : std::vector<std::pair<std::vector<double>, double>>{{{0, 0, 6}, 1.25}, {{0, rm, 3}, 1.5}, {{rt * std::sqrt(0.5), -rt * std::sqrt(0.5), 6}, 2.0}})
+    {
+        const std::vector<double> chain = part != nullptr ? tangent_chain_points(part, pick.first) : std::vector<double>();
+        points.insert(points.end(), chain.begin(), chain.end());
+        radii.insert(radii.end(), chain.size() / 3, pick.second);
+    }
+    const int32_t st = part != nullptr ? smlib_blend(part, SMLIB_BLEND_ROUND, points.data(), radii.data(), static_cast<int64_t>(radii.size()), 0.1, &r, nullptr)
+                                       : SMLIB_ERR_ARG;
+    int64_t sharp[3] = {0, 0, 0};
+    if (part != nullptr)
+    {
+        smlib_brep_counts(part, sharp);
+    }
+    std::printf("  the part: %lld faces, %lld edges; %zu edges picked; blend status %d %s\n", static_cast<long long>(sharp[0]),
+                static_cast<long long>(sharp[1]), radii.size(), static_cast<int>(st), st == SMLIB_OK ? "" : last_blend_reason().c_str());
+    CHECK(st == SMLIB_OK && r != nullptr);
+    smlib_brep_free(part);
+    const double cb = std::cos(PI / 6.0);
+    const std::vector<CurvedFace> faces = {{CurvedFace::PLANE, SmPoint3d(0, 0, 6), SmVector3d(0, 0, 1), 0, 0, 1},
+                                           {CurvedFace::PLANE, SmPoint3d(0, 0, 0), SmVector3d(-1, 0, 0), 0, 0, 1},
+                                           {CurvedFace::CONE, SmPoint3d(0, 0, 0), SmVector3d(0, 0, 1), 10.0, -tb, 1}};
+    // each round's middle at a ball centre C away from the corner: C + r times the bisector of its
+    // contact normals (the plane's, the cone's (cos 30 radial, sin 30))
+    auto middle = [](const SmPoint3d &c, SmVector3d n1, SmVector3d n2, double r) {
+        SmVector3d d = n1 + n2;
+        d.Unitize(FALSE);
+        return c + d * r;
+    };
+    const double sb = std::sin(PI / 6.0), rg = rm - 1.5 / cb, yg = std::sqrt(rg * rg - 2.25), ra = 10.0 - 4.0 * tb - 2.0 / cb;
+    const std::vector<CurvedEdge> edges = {
+        {[&](const SmPoint3d &p) { return rt - p.y; }, middle(SmPoint3d(1.25, 3, 4.75), SmVector3d(-1, 0, 0), SmVector3d(0, 0, 1), 1.25), -1.0},
+        {[&](const SmPoint3d &p) { return (SmPoint3d(0, rt, 6) - p).Dot(SmVector3d(0, tb, 1) * (1.0 / std::sqrt(1.0 + tb * tb))); },
+         middle(SmPoint3d(1.5, yg, 3), SmVector3d(-1, 0, 0), SmVector3d(cb * 1.5 / rg, cb * yg / rg, sb), 1.5), -1.0, false},
+        {[&](const SmPoint3d &p) { return rt * (PI / 2 - std::atan2(p.y, p.x)); },
+         middle(SmPoint3d(ra * 0.5, ra * std::sqrt(0.75), 4), SmVector3d(0, 0, 1), SmVector3d(cb * 0.5, cb * std::sqrt(0.75), sb), 2.0),
+         -1.0}};
+    curved_setback_graded(r, v, 6.5, true, SmPoint3d(3, 0, 3), faces, edges, {1.25, 1.5, 2.0}, 0.0, 15);
+}
+
 // The setback corner's cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--setbacks-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SETBACK_CASES[] = {
@@ -10597,6 +11114,12 @@ const TangentEndCase SETBACK_CASES[] = {
     {"corner_curvature_g2", setback_corner_curvature_g2, nullptr},
     {"corner_eased_g2", setback_corner_eased_g2, nullptr},
     {"concave_corner_rounds", setback_concave_corner_rounds, nullptr},
+    {"curved_d_prism_corner", setback_curved_d_prism_corner, "a curved face: no Setback (ClassifySetBack asks for planes), the old convex corner's patch"},
+    {"curved_knife_edge_corner", setback_curved_knife_edge_corner, "a curved face: no Setback (ClassifySetBack asks for planes), the old convex corner's patch"},
+    {"curved_d_pocket_corner", setback_curved_d_pocket_corner, "a curved face: no Setback (ClassifySetBack asks for planes), the old convex corner's patch"},
+    {"curved_sphere_corner", setback_curved_sphere_corner, "a curved face: no Setback (ClassifySetBack asks for planes), the old convex corner's patch"},
+    {"curved_cone_corner", setback_curved_cone_corner, "a curved face: no Setback (ClassifySetBack asks for planes), the old convex corner's patch"},
+    {"curved_countersink_corner", setback_curved_countersink_corner, "a curved face: no Setback (ClassifySetBack asks for planes), the old convex corner's patch"},
 };
 
 int setback_cases(bool known_failing, const char *only)
