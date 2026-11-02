@@ -4007,6 +4007,66 @@ void tangent_end_drafted_front_round_r2()
     smlib_brep *b = peg_blend(tangent_peg(5.0 * PI / 180.0), SMLIB_BLEND_ROUND, {20, d, 10}, {2});
     peg_result(b, 0, false);
 }
+// The drafted peg (smlib#108): the bar's arc wall and the disc's wall lie on one cone (semi-angle
+// 5 deg about x = 40, y = 8, its radius 8 at z = 0 shrinking 10 tan 5 deg every 10 up), and the
+// union keeps them one SmCone face, so the vertex V = (40, d, 10) where the front top edge meets
+// the concave arc has three edges (that edge, the arc, the front face's tangent seam), as on the
+// undrafted peg. Each wall leans in by t tan 5 deg at height t: the bar's section at height t is
+// the rectangle x in [d(t), 40], y in [d(t), 16 - d(t)] and the half disc R 8 - d(t), the disc's
+// the disc R 8 - d(t) for t in [10, 20]: V = int_0^10 ((40 - d)(16 - 2d) + pi (8 - d)^2 / 2) dt
+// + int_10^20 pi (8 - d)^2 dt, d = t tan 5 deg.
+double exact_volume_of(const smlib_brep *b);
+void tangent_end_drafted_peg_one_cone()
+{
+    const double k = std::tan(5.0 * PI / 180.0), d = 10.0 * k;
+    // the integrands: (40 - kt)(16 - 2kt) = 640 - 96 kt + 2 k^2 t^2 and (8 - kt)^2 = 64 - 16 kt + k^2 t^2
+    auto I = [k](double a, double b, double c0, double c1, double c2)
+    { return c0 * (b - a) + c1 * k * (b * b - a * a) / 2 + c2 * k * k * (b * b * b - a * a * a) / 3; };
+    const double want = I(0, 10, 640, -96, 2) + PI / 2 * I(0, 10, 64, -16, 1) + PI * I(10, 20, 64, -16, 1);
+    smlib_brep *peg = tangent_peg(5.0 * PI / 180.0);
+    CHECK(peg != nullptr);
+    if (peg == nullptr)
+    {
+        return;
+    }
+    const double v = exact_volume_of(peg);
+    std::printf("  volume %.12f, want %.12f\n", v, want);
+    CHECK(sound(peg));
+    CHECK(near(v, want, 1e-11));
+    // the faces on the cone: one, an SmCone
+    SmTArray<SmFace *> faces;
+    peg->p->GetFaces(faces);
+    int on_cone = 0, cones = 0;
+    for (ULONG i = 0; i < faces.GetSize(); i++)
+    {
+        SmExtent2d dom = faces[i]->GetSurface()->GetNaturalUVDomain();
+        SmPoint3d p;
+        CHECK(faces[i]->GetSurface()->EvaluatePoint(dom.Evaluate(0.5, 0.5), p) == SM_SUCCESS);
+        const double rho = std::hypot(p.x - 40.0, p.y - 8.0);
+        if (p.z > 1e-6 && p.z < 20 - 1e-6 && std::fabs(rho - (8.0 - p.z * k)) < 1e-9)
+        {
+            on_cone++;
+            cones += faces[i]->GetSurface()->IsKindOf(SmCone_TYPE) ? 1 : 0;
+        }
+    }
+    // the edges at V
+    SmTArray<SmVertex *> verts;
+    peg->p->GetVertices(verts);
+    int at_v = -1;
+    for (ULONG i = 0; i < verts.GetSize(); i++)
+    {
+        if (verts[i]->GetPoint().DistanceBetween(SmPoint3d(40.0, d, 10.0)) < 1e-9)
+        {
+            SmTArray<SmEdge *> e;
+            verts[i]->GetEdges(e);
+            at_v = static_cast<int>(e.GetSize());
+        }
+    }
+    std::printf("  faces on the cone %d (SmCone %d), edges at V %d\n", on_cone, cones, at_v);
+    CHECK(on_cone == 1 && cones == 1);
+    CHECK(at_v == 3);
+    smlib_brep_free(peg);
+}
 void tangent_end_drafted_rounds_together_r2()
 {
     const double d = 10.0 * std::tan(5.0 * PI / 180.0);
@@ -4030,6 +4090,8 @@ const TangentEndCase TANGENT_END_CASES[] = {
     {"concave_round_r3_then_front_round_r1_5", tangent_end_concave_round_r3_then_front_round_r1_5, nullptr},
     {"concave_round_then_front_round_r2", tangent_end_concave_round_then_front_round_r2, nullptr},
     {"drafted_front_round_r2", tangent_end_drafted_front_round_r2, nullptr},
+    {"drafted_peg_one_cone", tangent_end_drafted_peg_one_cone,
+     "smlib#108: the bar's drafted arc wall is a ruled B-spline (CreateRuledSurface, SM_OC_CURVE_EXTENSION), not its SmCone, so the union keeps it and the disc's SmCone two faces on one cone, and V gets four edges"},
     {"drafted_rounds_together_r2", tangent_end_drafted_rounds_together_r2,
      "status 1001 before any geometry: the corner where the front top edge runs tangent into the concave arc, on the cone, is of no kind SMLib's blend corners take"},
     {"front_chamfer_d2", tangent_end_front_chamfer_d2, nullptr},
