@@ -1024,6 +1024,38 @@ SmStatus SmBlendCorner::CalcEndEdgeGeom
       SER( CalcEndCapEdges() );
       return SmFilletCorner::CalcCornerEdgeGeom();
     }
+  // A concave round's End of mixed convexity (its end rib, then the cap's two edges): a rail that
+  // misses the side edge of the other convexity passes over it, and the round would run on past
+  // the end face, adding material over it: refused, naming the largest radius whose rail still
+  // ends on that edge (RefuseEndOverflowingSideEdge).
+  if (   m_eEnd == SM_BEND_ON_END_FACE
+      && m_vEdges.GetSize() == 3
+      && m_vEdges[0] != NULL
+      && m_vEdges[0]->GetFilletEdgeType() == SM_FE_FILLET_X_SIDE_FACE
+      && m_vVertices.GetSize() >= 2 )
+    {
+      SmEdgeuse * pFilEdgeuse = (*m_pSolverEUs)[0];
+      SmBoolean   bConcave    = FALSE;
+      SER( SmFilletSolver::IsConcaveEdge( *pFilEdgeuse->GetEdge(), bConcave ));
+      for (ULONG kk=0; kk<2 && bConcave; kk++)
+        {
+          SmFilletVertex * pFV = m_vVertices[kk];
+          if (   pFV == NULL
+              || pFV->GetStatus() != SM_FV_NO_INT_RAIL_EU
+              || pFV->GetPointClass() != SM_PC_EDGEUSE )
+            { continue; }
+          SmEdgeuse * pSideEU = (SmEdgeuse*)pFV->GetPointClassObject();
+          NER( pSideEU );
+          if ( same_convexity_edges( pFilEdgeuse, pSideEU, m_cpVertex, 0 ))
+            { continue; }
+          SmFace * pSideFaces[2] = { pSideEU->GetFace(), pSideEU->GetRadial()->GetFace() };
+          SmFace * pOtherFace    = pFilEdgeuse->GetFace();
+          if ( pOtherFace == pSideFaces[0] || pOtherFace == pSideFaces[1] )
+            { pOtherFace = pFilEdgeuse->GetRadial()->GetFace(); }
+          NER( pOtherFace );
+          SER( RefuseEndOverflowingSideEdge( pFilEdgeuse, pSideEU, pOtherFace ));
+        }
+    }
   SmFilletEdge * pEndRib = ( m_vEdges.GetSize() == 1 ) ? m_vEdges[0] : NULL;
   // An end on more than one end face (MakeEndOnEndFace: a corner of more than three edges of one
   // convexity) has its two rail ends and no end rib: the global merge cuts the fillet off where
@@ -1432,13 +1464,40 @@ SmStatus SmBlendCorner::RadiusReachingSideEdgeEnd
    SmBoolean & rbPast,       // out: the rail at the fillet's radius runs past P
    double    & rdFit)        // out: with rbPast, the radius at which the rail reaches P
 {
-  SmFilletSolver * pFS = GetFilletExecutive()->GetFilletSolverOfEdgeuse( pFilEdgeuse );
-  NER( pFS );
   SmEdge * pSideEdge = pSideEU->GetEdge();
   NER( pSideEdge );
   const SmVertex * pFar = ( pSideEdge->GetStartVertex() == m_cpVertex ) ? pSideEdge->GetEndVertex() : pSideEdge->GetStartVertex();
   NER( pFar );
-  const SmPoint3d sP = pFar->GetPoint();
+  SmBoolean bOn = FALSE, bWithin = FALSE;
+  SER( BallTouchingAt( pFilEdgeuse, pSideEU, pOtherFace, pFar->GetPoint(), bOn, bWithin, rdFit ));
+  rbPast = ( !bOn && bWithin ) ? TRUE : FALSE;
+  if ( !rbPast )
+    { rdFit = 0.0; }
+  return SM_SUCCESS;
+
+} // end SmBlendCorner::RadiusReachingSideEdgeEnd
+
+/*******************************************************************//**
+PURPOSE: The ball touching the fillet's side face F at a point P of F (F
+    the solver's face that the side edge bounds) and the fillet's other
+    face G: its radius rho, the root of d(rho) = dist(P + rho n_F, G) - rho
+    (its centre P offset along F's normal the way the solver offsets F), by
+    bisection on (0, r], r the fillet's radius.
+
+NOTES: rbOnG: P lies on G (d(0) <= 0, rho 0). rbWithin: the root lies in
+    (0, r) (d(r) < 0), else rho is at least r (rdRho r).
+***********************************************************************/
+SmStatus SmBlendCorner::BallTouchingAt
+  (SmEdgeuse       * pFilEdgeuse,  // in : the filleted edgeuse
+   SmEdgeuse       * pSideEU,      // in : a side edge, on F
+   SmFace          * pOtherFace,   // in : the fillet's other side face (G)
+   const SmPoint3d & crP,          // in : the point on F
+   SmBoolean       & rbOnG,        // out: P lies on G
+   SmBoolean       & rbWithin,     // out: the root lies below the fillet's radius
+   double          & rdRho)        // out: the ball's radius
+{
+  SmFilletSolver * pFS = GetFilletExecutive()->GetFilletSolverOfEdgeuse( pFilEdgeuse );
+  NER( pFS );
   ULONG lF = 2;
   for (ULONG ii=0; ii<2; ii++)
     {
@@ -1459,14 +1518,14 @@ SmStatus SmBlendCorner::RadiusReachingSideEdgeEnd
   SmBoolean bDropped = FALSE, bMulti = FALSE;
   SmPoint2d sUV;
   double    dGap = 0.0;
-  SER( pF->DropPoint( sP, pF->GetNaturalUVDomain(), NULL, bDropped, sUV, dGap, bMulti ));
+  SER( pF->DropPoint( crP, pF->GetNaturalUVDomain(), NULL, bDropped, sUV, dGap, bMulti ));
   if ( !bDropped )
     { SER( SM_ERR ); }
   SmVector3d sNormal;
   SER( pF->EvaluateNormal( sUV, TRUE, TRUE, sNormal ));
   const auto distance = [&]( double dRho, double & rdD ) -> SmStatus
     {
-      SmPoint3d sCentre = sP + sNormal * ( dSign * dRho );
+      SmPoint3d sCentre = crP + sNormal * ( dSign * dRho );
       SmBoolean bOn = FALSE, bM = FALSE;
       SmPoint2d sAt;
       double    dDist = 0.0;
@@ -1479,11 +1538,11 @@ SmStatus SmBlendCorner::RadiusReachingSideEdgeEnd
   double dLo = 0.0, dHi = dRadius, dAtLo = 0.0, dAtHi = 0.0;
   SER( distance( dLo, dAtLo ));
   SER( distance( dHi, dAtHi ));
-  rbPast = FALSE;
-  rdFit  = 0.0;
-  if ( !( dAtLo > 0.0 && dAtHi < 0.0 ))
+  rbOnG    = ( dAtLo > 0.0 ) ? FALSE : TRUE;
+  rbWithin = ( dAtHi < 0.0 ) ? TRUE : FALSE;
+  rdRho    = rbOnG ? 0.0 : dRadius;
+  if ( rbOnG || !rbWithin )
     { return SM_SUCCESS; }
-  rbPast = TRUE;
   for (ULONG it=0; it<100 && dHi - dLo > SM_EFF_ZERO * ( 1.0 + dRadius ); it++)
     {
       const double dMid = 0.5 * ( dLo + dHi );
@@ -1491,10 +1550,78 @@ SmStatus SmBlendCorner::RadiusReachingSideEdgeEnd
       SER( distance( dMid, dAtMid ));
       if ( dAtMid > 0.0 ) { dLo = dMid; } else { dHi = dMid; }
     }
-  rdFit = 0.5 * ( dLo + dHi );
+  rdRho = 0.5 * ( dLo + dHi );
   return SM_SUCCESS;
 
-} // end SmBlendCorner::RadiusReachingSideEdgeEnd
+} // end SmBlendCorner::BallTouchingAt
+
+/*******************************************************************//**
+PURPOSE: A concave round's End of mixed convexity whose rail misses the
+    side edge of the other convexity (the rail passes over it): refused,
+    SM_FILERR_NO_ROOM, naming the largest radius whose rail still ends on
+    that edge.
+
+NOTES: The rail on F ends on the side edge E where the ball touching F at
+    a point of E also touches the fillet's other face G (BallTouchingAt):
+    its radius rho over E runs from 0 where E meets G up to its most, past
+    which no ball touching F on E fits, and the rail passes over E: the
+    round would run on past the end face, adding material over it (a
+    concave overflow, refused; owner, 2026-11-02). The most, by golden
+    section of rho over E's interval on the cause's own geometry, is where
+    the two Ends' rails meet on E: open, so less the part's own tolerance
+    (coordinator, 2026-11-02: not the in-round fit margin).
+***********************************************************************/
+SmStatus SmBlendCorner::RefuseEndOverflowingSideEdge
+  (SmEdgeuse * pFilEdgeuse,  // in : the filleted edgeuse
+   SmEdgeuse * pSideEU,      // in : the side edge the rail missed
+   SmFace    * pOtherFace)   // in : the fillet's other side face (G)
+{
+  SmEdge * pSideEdge = pSideEU->GetEdge();
+  NER( pSideEdge );
+  SmCurve * pCurve = pSideEdge->GetCurve();
+  NER( pCurve );
+  const SmExtent1d sIvl = pSideEdge->GetInterval();
+  const auto rho = [&]( double dT, double & rdRho ) -> SmStatus
+    {
+      SmPoint3d sP;
+      SER( pCurve->EvaluatePoint( dT, sP ));
+      SmBoolean bOn = FALSE, bWithin = FALSE;
+      SER( BallTouchingAt( pFilEdgeuse, pSideEU, pOtherFace, sP, bOn, bWithin, rdRho ));
+      return SM_SUCCESS;
+    };
+  const double dGold = 0.5 * ( smos_Sqrt( 5.0 ) - 1.0 );
+  double dA = sIvl.GetMin(), dB = sIvl.GetMax();
+  double dC = dB - dGold * ( dB - dA ), dD = dA + dGold * ( dB - dA );
+  double dAtC = 0.0, dAtD = 0.0;
+  SER( rho( dC, dAtC ));
+  SER( rho( dD, dAtD ));
+  for (ULONG it=0; it<200 && dB - dA > SM_EFF_ZERO * ( 1.0 + sIvl.GetLength() ); it++)
+    {
+      if ( dAtC >= dAtD )
+        {
+          dB = dD; dD = dC; dAtD = dAtC;
+          dC = dB - dGold * ( dB - dA );
+          SER( rho( dC, dAtC ));
+        }
+      else
+        {
+          dA = dC; dC = dD; dAtC = dAtD;
+          dD = dA + dGold * ( dB - dA );
+          SER( rho( dD, dAtD ));
+        }
+    }
+  double dMost = 0.0;
+  SER( rho( 0.5 * ( dA + dB ), dMost ));
+  // the margin under the open bound: the part's own tolerance (the input's)
+  NER( m_pExecutive->GetTargetBrep() );
+  const double dFit = smos_Max( 0.0, dMost - m_pExecutive->GetTargetBrep()->GetTolerance().val );
+  TCHAR sWhy[SM_TBLOCK_SIZE];
+  smos_sprintf( sWhy, _T("Fillet Error: the round's contact line passes over its side edge where the round ends on a face (the round would run on past that face, adding material over it): a radius below %.6g fits"), dFit );
+  m_pExecutive->GetFilletErrorInfo()->NoteError( SM_FILERR_NO_ROOM, sWhy );
+  m_pExecutive->NoteFitRadius( dFit, pFilEdgeuse->GetEdge() );
+  SER( SM_ERR );
+
+} // end SmBlendCorner::RefuseEndOverflowingSideEdge
 
 /*******************************************************************//**
 PURPOSE: Refuse an End whose rail runs past its side edge's far end P,

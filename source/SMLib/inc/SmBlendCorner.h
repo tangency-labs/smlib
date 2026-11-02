@@ -148,6 +148,9 @@ protected:
   SmStatus  RefuseEndPastSideEdge(SmEdgeuse * pFilEdgeuse, SmEdgeuse * pSideEU, SmFace * pOtherFace);
   SmStatus  RadiusReachingSideEdgeEnd(SmEdgeuse * pFilEdgeuse, SmEdgeuse * pSideEU, SmFace * pOtherFace,
                                       SmBoolean & rbPast, double & rdFit);
+  SmStatus  BallTouchingAt(SmEdgeuse * pFilEdgeuse, SmEdgeuse * pSideEU, SmFace * pOtherFace, const SmPoint3d & crP,
+                           SmBoolean & rbOnG, SmBoolean & rbWithin, double & rdRho);
+  SmStatus  RefuseEndOverflowingSideEdge(SmEdgeuse * pFilEdgeuse, SmEdgeuse * pSideEU, SmFace * pOtherFace);
   SmStatus  CalcEndEdgeGeom();
   SmStatus  CreateEndPatchOfEnd();
 

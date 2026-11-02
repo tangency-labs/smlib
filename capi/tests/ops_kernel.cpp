@@ -9155,11 +9155,10 @@ void scenario_junction_boss_tilt_00_root_round()
 // (the bound is open: the two Ends meet in a point). Past it the round's rail on the wall passes
 // over the whole rim, and the round would bridge the wedge's mouth: a concave overflow. Owner's
 // ruling (2026-11-02): refused, naming the largest radius whose rail still ends on the rim, r*
-// less the fit margin (a thousand of the root edge's tolerance as SMLib works it, 1.657e-5 here,
-// though the body's edge reads 1e-5): SMLIB_ERR_NO_ROOM at r 1.5, smlib_blend_fit_size under r*
-// by at most 0.02 (two thousand tolerances), the reason naming it, the round at that size built
-// sound, and one 0.001 past r* refused. (SolidCraft's recipe, which expected a body, is re-pinned
-// with the ruling.)
+// less the part's own tolerance (coordinator, 2026-11-02), 1e-5: SMLIB_ERR_NO_ROOM at r 1.5,
+// smlib_blend_fit_size r* - 1e-5 = 0.262514174 exactly (to rounding at the part's scale), the
+// reason naming it, the round at that size built sound, and one 0.001 past r* refused.
+// (SolidCraft's recipe, which expected a body, is re-pinned with the ruling.)
 void scenario_junction_boss_tilt_20_root_round()
 {
     const double a = 20.0 * PI / 180.0;
@@ -9171,9 +9170,10 @@ void scenario_junction_boss_tilt_20_root_round()
     std::printf("  boss tilted 20 degrees, rounded 1.5: status %d%s%s\n", static_cast<int>(s), s == SMLIB_OK ? "" : ": ", s == SMLIB_OK ? "" : last_blend_reason().c_str());
     const double bound = (6.0 * std::sin(a) - 2.0 * std::cos(a)) / (1.0 - std::sin(a));
     CHECK(s == SMLIB_ERR_NO_ROOM && out == nullptr);
-    const double fit = blend_fit();
-    std::printf("  named %.9f, the bound r* %.9f less %.6g\n", fit, bound, bound - fit);
-    CHECK(fit < bound && fit >= bound - 0.02);
+    const double fit = blend_fit(), tol = body != nullptr ? body->p->GetTolerance().val : 0.0;
+    std::printf("  named %.12f, the bound r* %.12f less the part's tolerance %.3g: %.12f\n", fit, bound, tol, bound - tol);
+    // exact to rounding at the part's scale (1e-12 x its 60)
+    CHECK(tol > 0.0 && std::fabs(fit - (bound - tol)) <= 6e-11);
     CHECK(std::fabs(blend_reason_number("a radius below ") - fit) <= 1e-6);
     // the size named builds, and one just past the bound does not
     for (const double r : {fit, bound + 1e-3})
@@ -9225,8 +9225,7 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"junction_tee_oblique_round", scenario_junction_tee_oblique_round, nullptr},
     {"junction_tee_oblique_unequal_round", scenario_junction_tee_oblique_unequal_round, nullptr},
     {"junction_boss_tilt_00_root_round", scenario_junction_boss_tilt_00_root_round, nullptr},
-    {"junction_boss_tilt_20_root_round", scenario_junction_boss_tilt_20_root_round,
-     "status 1001, Corner Edge Computation Failure, no size: the mixed End's rail on the wall misses the cap's rim, a concave overflow not refused as SMLIB_ERR_NO_ROOM naming r* less the fit margin"},
+    {"junction_boss_tilt_20_root_round", scenario_junction_boss_tilt_20_root_round, nullptr},
     {"junction_boss_tilt_40_root_round", scenario_junction_boss_tilt_40_root_round,
      "status 1001, Corner Edge Computation Failure: at the End at (-3.111, 5.506, 0) (mixed convexity, as tilt 20) the cap's rim is split by the cylinder's seam vertex at (-3.93, 4.91, 0.69), and the rail on the wall crosses the rim past it, on the next edge of the same two faces: the side edge's rail end is not found (built with the seam elsewhere)"},
     {"round_just_under_a_boss_footprint", scenario_round_just_under_a_boss_footprint,
