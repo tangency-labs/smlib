@@ -10138,13 +10138,14 @@ SmStatus box_corner_g1_fill(const std::array<double, 3> &radii, const std::vecto
 }
 
 // The box corner's G1 fill at its setbacks (the rule's, or `setback` on every edge), grown to the
-// least scale of them whose fill is certified convex (SmBlendSetback::CertifiedScale), within
-// [scale_lo, scale_hi], the search in at most 6 quadratic programmes (counted, not timed); at a
-// scale above 1 the fill at the setbacks themselves is refused as not certified, proven so by the
-// one quadratic programme at degree 9. The fill at the scale keeps the
-// body convex (fill_keeps_the_body_convex), its certified margins printed (fill_margins).
-void setback_g1_fill_keeps_the_body_convex(const std::array<double, 3> &radii, double setback, const char *what, double scale_lo = 1.0,
-                                           double scale_hi = 1.0)
+// smallest scale of them on the grid of 1e-3 whose fill is certified convex and whose neighbour
+// below is not (SmBlendSetback::CertifiedScale; the least where certification grows with the
+// scale: g1_scale_is_monotone), exactly `scale_want`, the search in at most 12 attempts (1, 2,
+// then 10 halvings of the thousandths between: counted, not timed); at a scale above 1 the fill
+// at the setbacks themselves is refused as not certified, proven so by the one quadratic
+// programme at degree 9. The fill at the scale keeps the body convex
+// (fill_keeps_the_body_convex), its certified margins printed (fill_margins).
+void setback_g1_fill_keeps_the_body_convex(const std::array<double, 3> &radii, double setback, const char *what, double scale_want = 1.0)
 {
     SmContext &ctx = *SmApiGetOrCreateContext();
     std::vector<double> setbacks;
@@ -10154,12 +10155,14 @@ void setback_g1_fill_keeps_the_body_convex(const std::array<double, 3> &radii, d
         setbacks.assign(3, setback);
     }
     double scale = 0.0;
-    ULONG solves = 0;
+    ULONG solves = 0, attempts = 0;
     const TCHAR *why = nullptr;
-    const SmStatus st = SmBlendSetback::CertifiedScale(ctx, box_corner_faces(), box_corner_edges(radii), setbacks, scale, &solves, &why);
-    std::printf("  %s, set back %g, %g, %g: certified from %.6g times them (%lu quadratic programmes)%s%s\n", what, setbacks[0], setbacks[1], setbacks[2], scale,
-                static_cast<unsigned long>(solves), why != nullptr ? ": " : "", why != nullptr ? why : "");
-    CHECK(st == SM_SUCCESS && scale >= scale_lo && scale <= scale_hi && solves <= 6);
+    const SmStatus st =
+        SmBlendSetback::CertifiedScale(ctx, box_corner_faces(), box_corner_edges(radii), setbacks, scale, &solves, &why, nullptr, &attempts);
+    std::printf("  %s, set back %g, %g, %g: certified from %.6g times them (%lu attempts, %lu quadratic programmes)%s%s\n", what, setbacks[0],
+                setbacks[1], setbacks[2], scale, static_cast<unsigned long>(attempts), static_cast<unsigned long>(solves), why != nullptr ? ": " : "",
+                why != nullptr ? why : "");
+    CHECK(st == SM_SUCCESS && scale == scale_want && attempts <= 12);
     if (scale > 1.0)
     {
         SmBlendSetback::Fill at;
@@ -10188,6 +10191,198 @@ void setback_g1_fill_keeps_the_body_convex(const std::array<double, 3> &radii, d
     CHECK(fill.m_vPatches.size() == 6 && fill_keeps_the_body_convex(fill, radii, what));
 }
 
+// Whether the G1 fill of the corner at `scale` times `setbacks` (each held at its most) is
+// certified convex: CertifiedScale from those setbacks answers 1 exactly when it is (its first
+// attempt is at 1, at the same products of setback and scale as its search's).
+bool g1_certified_at(const std::vector<SmBlendSetback::Face> &faces, const std::vector<SmBlendSetback::Edge> &edges, const std::vector<double> &setbacks,
+                     const std::vector<double> *most, int thousandths)
+{
+    std::vector<double> at(setbacks);
+    for (double &x : at)
+    {
+        x *= static_cast<double>(thousandths) / 1000.0;
+    }
+    double k = 0.0;
+    CHECK(SmBlendSetback::CertifiedScale(*SmApiGetOrCreateContext(), faces, edges, at, k, nullptr, nullptr, most) == SM_SUCCESS);
+    return k == 1.0;
+}
+
+// CertifiedScale's scale for a corner is `want`, in at most 12 attempts, and is the least on the
+// grid there: certification grows with the scale on a grid about it. That it does everywhere is
+// checked, not proved (SmBlendSetback.h): the fill at a scale is the one its quadratic programme's
+// least-energy solution makes, certified by subdivision to a fixed depth, so a feasible set that
+// grew with the scale would still not order the certificates; and the conditions themselves change
+// with the setbacks against fixed radii (a scale k is the corner of radii r / k at the setbacks),
+// with no proof their feasible sets nest. The grid: 1, the three thousandths just below the
+// scale, the scale and the three above it, 20 and 100 thousandths above it, 1.5 and 2: the fill
+// fails below the scale and is certified from it on.
+void g1_scale_is_monotone(const char *what, const std::vector<SmBlendSetback::Face> &faces, const std::vector<SmBlendSetback::Edge> &edges,
+                          const std::vector<double> &setbacks, const std::vector<double> *most, double want)
+{
+    double scale = 0.0;
+    ULONG attempts = 0;
+    CHECK(SmBlendSetback::CertifiedScale(*SmApiGetOrCreateContext(), faces, edges, setbacks, scale, nullptr, nullptr, most, &attempts) == SM_SUCCESS);
+    const int s = static_cast<int>(std::lround(scale * 1000.0));
+    std::vector<int> grid;
+    if (s - 3 > 1000)
+    {
+        grid.push_back(1000);
+    }
+    for (int g = std::max(1000, s - 3); g <= s + 3; g++)
+    {
+        grid.push_back(g);
+    }
+    for (int g : {s + 20, s + 100, 1500, 2000})
+    {
+        if (g > grid.back() && g <= 2000)
+        {
+            grid.push_back(g);
+        }
+    }
+    int wrong = 0, first_wrong = 0;
+    for (int g : grid)
+    {
+        if (g1_certified_at(faces, edges, setbacks, most, g) != (g >= s))
+        {
+            if (wrong++ == 0)
+            {
+                first_wrong = g;
+            }
+        }
+    }
+    std::printf("  %s: grown %.6g times (%lu attempts); on %zu scales from %.3f to %.3f, %d out of order%s", what, scale,
+                static_cast<unsigned long>(attempts), grid.size(), grid.front() / 1000.0, grid.back() / 1000.0, wrong, wrong > 0 ? " (first at " : "");
+    if (wrong > 0)
+    {
+        std::printf("%.3f)", first_wrong / 1000.0);
+    }
+    std::printf("\n");
+    CHECK(scale == want && attempts <= 12 && wrong == 0);
+}
+
+// Every corner whose setbacks the run's cases grow (SmBlendSetback::CertifiedScale, from the cases'
+// own calls and SMLib's corners): its scale (old -> new in the commit that made it the grid's
+// least) and that certification grows with the scale on a grid about it (g1_scale_is_monotone).
+void setback_g1_scale_is_monotone_on_every_corner()
+{
+    struct Corner
+    {
+        const char *what;
+        std::vector<SmBlendSetback::Face> faces;
+        std::vector<SmBlendSetback::Edge> edges;
+        std::vector<double> setbacks, most;
+        double want;
+    };
+    const Corner corners[] = {
+        {"box corner, rounds 2, 3, 4 at the rule's setbacks",
+         {{SmPoint3d(0, 0, 0), SmVector3d(-1, 0, 0)}, {SmPoint3d(0, 0, 0), SmVector3d(0, -1, 0)}, {SmPoint3d(0, 0, 0), SmVector3d(0, 0, -1)}},
+         {{SmVector3d(1, 0, 0), 2, {1, 2}}, {SmVector3d(0, 1, 0), 3, {2, 0}}, {SmVector3d(0, 0, 1), 4, {0, 1}}},
+         {4.5, 4.75, 6},
+         {},
+         1.056},
+        {"box corner, rounds 1, 1.5, 2 at the rule's setbacks (the notch)",
+         {{SmPoint3d(0, 0, 0), SmVector3d(-1, 0, 0)}, {SmPoint3d(0, 0, 0), SmVector3d(0, -1, 0)}, {SmPoint3d(0, 0, 0), SmVector3d(0, 0, -1)}},
+         {{SmVector3d(1, 0, 0), 1, {1, 2}}, {SmVector3d(0, 1, 0), 1.5, {2, 0}}, {SmVector3d(0, 0, 1), 2, {0, 1}}},
+         {2.25, 2.375, 3},
+         {},
+         1.056},
+        {"corner (40, 40, 40), rounds 8 set back 12",
+         {{SmPoint3d(40, 40, 40), SmVector3d(0, 0, 1)}, {SmPoint3d(40, 40, 40), SmVector3d(0, 1, 0)}, {SmPoint3d(40, 40, 40), SmVector3d(1, 0, 0)}},
+         {{SmVector3d(-1, -0.0, -0.0), 8, {0, 1}}, {SmVector3d(-0.0, -0.0, -1), 8, {1, 2}}, {SmVector3d(-0.0, -1, -0.0), 8, {2, 0}}},
+         {12, 12, 12},
+         {1e20, 1e20, 1e20},
+         1},
+        {"box corner, rounds 5 set back 8",
+         {{SmPoint3d(0, 0, 0), SmVector3d(-1, 0, 0)}, {SmPoint3d(0, 0, 0), SmVector3d(0, -1, 0)}, {SmPoint3d(0, 0, 0), SmVector3d(0, 0, -1)}},
+         {{SmVector3d(1, 0, 0), 5, {1, 2}}, {SmVector3d(0, 1, 0), 5, {2, 0}}, {SmVector3d(0, 0, 1), 5, {0, 1}}},
+         {8, 8, 8},
+         {},
+         1},
+        {"corner (40, 30, 20), rounds 2, 4, 3 held at their rooms",
+         {{SmPoint3d(40, 30, 20), SmVector3d(0, 0, 1)}, {SmPoint3d(40, 30, 20), SmVector3d(0, 1, 0)}, {SmPoint3d(40, 30, 20), SmVector3d(1, 0, 0)}},
+         {{SmVector3d(-1, -0.0, -0.0), 2, {0, 1}}, {SmVector3d(-0.0, -0.0, -1), 4, {1, 2}}, {SmVector3d(-0.0, -1, -0.0), 3, {2, 0}}},
+         {4.5, 6, 4.75},
+         {39.5, 19, 29.25},
+         1.056},
+        {"the pocket's rim corner (25, 0, 0), rounds 2, 0.5, 2 held at their rooms",
+         {{SmPoint3d(25, 0, 0), SmVector3d(0, 0, -1)}, {SmPoint3d(25, 0, 0), SmVector3d(0, -1, 0)}, {SmPoint3d(25, 0, 0), SmVector3d(1, 0, 0)}},
+         {{SmVector3d(-1, -0.0, -0.0), 2, {0, 1}}, {SmVector3d(0, 0, 1), 0.5, {1, 2}}, {SmVector3d(0, 1, 0), 2, {2, 0}}},
+         {3, 2.125, 3},
+         {24.5, 9.875, 24.5},
+         1.113},
+        {"corner (10, 10, 10), rounds 1, 1.5, 2",
+         {{SmPoint3d(10, 10, 10), SmVector3d(1, 0, 0)}, {SmPoint3d(10, 10, 10), SmVector3d(0, 1, 0)}, {SmPoint3d(10, 10, 10), SmVector3d(0, 0, 1)}},
+         {{SmVector3d(1, 0, 0), 1, {1, 2}}, {SmVector3d(0, 1, 0), 1.5, {2, 0}}, {SmVector3d(0, 0, 1), 2, {0, 1}}},
+         {2.25, 2.375, 3},
+         {},
+         1.056},
+        {"corner (10, 10, 10), rounds 1, 2, 1.5 held at their rooms",
+         {{SmPoint3d(10, 10, 10), SmVector3d(-0.0, -0.0, 1)}, {SmPoint3d(10, 10, 10), SmVector3d(-0.0, 1, -0.0)}, {SmPoint3d(10, 10, 10), SmVector3d(1, -0.0, -0.0)}},
+         {{SmVector3d(1, 0, 0), 1, {0, 1}}, {SmVector3d(0, 0, 1), 2, {1, 2}}, {SmVector3d(0, 1, 0), 1.5, {2, 0}}},
+         {2.25, 3, 2.375},
+         {9.75, 9.5, 9.625},
+         1.056},
+        {"box corner, rounds 2, 3, 4 set back 4.5, 4.75, 4.5, held at their rooms (the default shrunk)",
+         {{SmPoint3d(0, 0, 0), SmVector3d(-1, 0, 0)}, {SmPoint3d(0, 0, 0), SmVector3d(0, -1, 0)}, {SmPoint3d(0, 0, 0), SmVector3d(0, 0, -1)}},
+         {{SmVector3d(1, 0, 0), 2, {1, 2}}, {SmVector3d(0, 1, 0), 3, {2, 0}}, {SmVector3d(0, 0, 1), 4, {0, 1}}},
+         {4.5, 4.75, 4.5},
+         {19.5, 19.25, 4.5},
+         1.046},
+        {"box corner in another order, rounds 2, 3, 4 at the rule's setbacks held at their rooms",
+         {{SmPoint3d(0, 0, 0), SmVector3d(0, -1, 0)}, {SmPoint3d(0, 0, 0), SmVector3d(0, 0, -1)}, {SmPoint3d(0, 0, 0), SmVector3d(-1, 0, 0)}},
+         {{SmVector3d(1, 0, 0), 2, {0, 1}}, {SmVector3d(0, 1, 0), 3, {1, 2}}, {SmVector3d(0, 0, 1), 4, {2, 0}}},
+         {4.5, 4.75, 6},
+         {19.5, 19.25, 19},
+         1.056},
+        {"box corner in another order, set back 4.5, 4.75, 4.5 held at their rooms",
+         {{SmPoint3d(0, 0, 0), SmVector3d(0, -1, 0)}, {SmPoint3d(0, 0, 0), SmVector3d(0, 0, -1)}, {SmPoint3d(0, 0, 0), SmVector3d(-1, 0, 0)}},
+         {{SmVector3d(1, 0, 0), 2, {0, 1}}, {SmVector3d(0, 1, 0), 3, {1, 2}}, {SmVector3d(0, 0, 1), 4, {2, 0}}},
+         {4.5, 4.75, 4.5},
+         {19.5, 19.25, 4.5},
+         1.046},
+        {"box corner in another order, rounds 2, 3, 4 asked 4.25",
+         {{SmPoint3d(0, 0, 0), SmVector3d(0, -1, 0)}, {SmPoint3d(0, 0, 0), SmVector3d(0, 0, -1)}, {SmPoint3d(0, 0, 0), SmVector3d(-1, 0, 0)}},
+         {{SmVector3d(1, 0, 0), 2, {0, 1}}, {SmVector3d(0, 1, 0), 3, {1, 2}}, {SmVector3d(0, 0, 1), 4, {2, 0}}},
+         {4.25, 4.25, 4.25},
+         {1e20, 1e20, 1e20},
+         1.11},
+        {"corner (60, 40, 20), rounds 5 set back 8",
+         {{SmPoint3d(60, 40, 20), SmVector3d(0, 0, 1)}, {SmPoint3d(60, 40, 20), SmVector3d(0, 1, 0)}, {SmPoint3d(60, 40, 20), SmVector3d(1, 0, 0)}},
+         {{SmVector3d(-1, -0.0, -0.0), 5, {0, 1}}, {SmVector3d(-0.0, -0.0, -1), 5, {1, 2}}, {SmVector3d(-0.0, -1, -0.0), 5, {2, 0}}},
+         {8, 8, 8},
+         {1e20, 1e20, 1e20},
+         1},
+        {"corner (60, 40, 20), rounds 5 set back 19.99",
+         {{SmPoint3d(60, 40, 20), SmVector3d(0, 0, 1)}, {SmPoint3d(60, 40, 20), SmVector3d(0, 1, 0)}, {SmPoint3d(60, 40, 20), SmVector3d(1, 0, 0)}},
+         {{SmVector3d(-1, -0.0, -0.0), 5, {0, 1}}, {SmVector3d(-0.0, -0.0, -1), 5, {1, 2}}, {SmVector3d(-0.0, -1, -0.0), 5, {2, 0}}},
+         {19.989999999999998, 19.989999999999998, 19.989999999999998},
+         {1e20, 1e20, 1e20},
+         1},
+        {"corner (40, 20, 10), rounds 5 set back 7.5",
+         {{SmPoint3d(40, 20, 10), SmVector3d(-0.0, -0.0, 1)}, {SmPoint3d(40, 20, 10), SmVector3d(-0.0, 1, -0.0)}, {SmPoint3d(40, 20, 10), SmVector3d(1, -0.0, -0.0)}},
+         {{SmVector3d(1, 0, 0), 5, {0, 1}}, {SmVector3d(0, 0, 1), 5, {1, 2}}, {SmVector3d(0, 1, 0), 5, {2, 0}}},
+         {7.5, 7.5, 7.5},
+         {1e20, 1e20, 1e20},
+         1},
+        {"box corner, rounds 2 set back 3",
+         {{SmPoint3d(0, 0, 0), SmVector3d(-1, 0, 0)}, {SmPoint3d(0, 0, 0), SmVector3d(0, -1, 0)}, {SmPoint3d(0, 0, 0), SmVector3d(0, 0, -1)}},
+         {{SmVector3d(1, 0, 0), 2, {1, 2}}, {SmVector3d(0, 1, 0), 2, {2, 0}}, {SmVector3d(0, 0, 1), 2, {0, 1}}},
+         {3, 3, 3},
+         {},
+         1},
+        {"box corner in another order, rounds 2, 3, 4 asked 4.7175 (the setback that builds)",
+         {{SmPoint3d(0, 0, 0), SmVector3d(0, -1, 0)}, {SmPoint3d(0, 0, 0), SmVector3d(0, 0, -1)}, {SmPoint3d(0, 0, 0), SmVector3d(-1, 0, 0)}},
+         {{SmVector3d(1, 0, 0), 2, {0, 1}}, {SmVector3d(0, 1, 0), 3, {1, 2}}, {SmVector3d(0, 0, 1), 4, {2, 0}}},
+         {4.7175000000000002, 4.7175000000000002, 4.7175000000000002},
+         {1e20, 1e20, 1e20},
+         1},
+    };
+    for (const Corner &c : corners)
+    {
+        g1_scale_is_monotone(c.what, c.faces, c.edges, c.setbacks, c.most.empty() ? nullptr : &c.most, c.want);
+    }
+}
+
 // Growing the setbacks keeps a corner certified (the scale search's assumption, bisecting between
 // a failing and a certifying scale): rounds 2, 3, 4 certify at the least scale and at 1.5 times it.
 void setback_g1_convex_grows_with_the_setback()
@@ -10212,8 +10407,8 @@ void setback_g1_convex_grows_with_the_setback()
         CHECK(fill.m_vPatches.size() == 6 && fill_keeps_the_body_convex(fill, radii, what));
     }
 }
-void setback_g1_convex_rounds_2_3_4() { setback_g1_fill_keeps_the_body_convex({2, 3, 4}, 0.0, "rounds 2, 3, 4", 1.05, 1.07); }
-void setback_g1_convex_notch() { setback_g1_fill_keeps_the_body_convex({1, 1.5, 2}, 0.0, "rounds 1, 1.5, 2", 1.05, 1.07); }
+void setback_g1_convex_rounds_2_3_4() { setback_g1_fill_keeps_the_body_convex({2, 3, 4}, 0.0, "rounds 2, 3, 4", 1.056); }
+void setback_g1_convex_notch() { setback_g1_fill_keeps_the_body_convex({1, 1.5, 2}, 0.0, "rounds 1, 1.5, 2", 1.056); }
 // corner_setback's corner (60, 40, 20), r 5 set back 8, at the origin (p -> (60, 40, 20) - p).
 void setback_corner_setback_8() { setback_g1_fill_keeps_the_body_convex({5, 5, 5}, 8.0, "rounds 5 set back 8"); }
 
@@ -10296,10 +10491,14 @@ const TangentEndCase SETBACK_CASES[] = {
     {"corner_setback_8", setback_corner_setback_8, nullptr},
     {"corner_setback_8_volume", corner_setback, nullptr},
     {"fill_is_the_geometry_s", setback_fill_is_the_geometry_s, nullptr},
-    {"g1_convex_rounds_2_3_4", setback_g1_convex_rounds_2_3_4, nullptr},
+    {"g1_convex_rounds_2_3_4", setback_g1_convex_rounds_2_3_4,
+     "the search rounds up the certifying end of a 1e-2 bracket (1.065), not the least certifying scale on the grid of 1e-3 (1.056)"},
     {"g1_base_points_on_the_spring_conics", setback_g1_base_points_on_the_spring_conics, nullptr},
     {"g1_convex_grows_with_the_setback", setback_g1_convex_grows_with_the_setback, nullptr},
-    {"g1_convex_notch", setback_g1_convex_notch, nullptr},
+    {"g1_scale_is_monotone_on_every_corner", setback_g1_scale_is_monotone_on_every_corner,
+     "the scale is the certifying end of a 1e-2 bracket rounded up to 1e-3, not the least certifying scale on the grid: rounds 2, 3, 4 get 1.065 where the fill at 1.056 is certified"},
+    {"g1_convex_notch", setback_g1_convex_notch,
+     "the search rounds up the certifying end of a 1e-2 bracket (1.065), not the least certifying scale on the grid of 1e-3 (1.056)"},
     {"default_shrinks_to_fit", setback_default_shrinks_to_fit, nullptr},
     {"asked_too_long_names_what_fits", setback_asked_too_long_names_what_fits, nullptr},
     {"asked_too_short_names_what_builds", setback_asked_too_short_names_what_builds, nullptr},

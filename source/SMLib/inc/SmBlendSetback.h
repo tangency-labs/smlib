@@ -202,10 +202,11 @@ public:
   // margin by which the fill's conditions fail (FillHoleProbe: at 1, 1.02, their secant's root,
   // then the parabola's), up to 2; 0, with its reason (ppReason), where none up to 2 is. plSolves
   // (optional): the quadratic programmes solved. Refused (SM_ERR_INVALID_INPUT, its reason) where
-  // the corner is not one of planes and straight edges.
+  // the corner is not one of planes and straight edges. plAttempts (optional): the fills and
+  // probes built (attempts at a scale).
   static SmStatus CertifiedScale(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Edge> & crEdges,
                                  const std::vector<double> & crSetBacks, double & rdScale, ULONG * plSolves = NULL, const TCHAR ** ppReason = NULL,
-                                 const std::vector<double> * pvMost = NULL);
+                                 const std::vector<double> * pvMost = NULL, ULONG * plAttempts = NULL);
 
   // The most any patch of crFill stands past a face out of the corner (positive: past it): out
   // of the material for a convex corner (bConvex), into it for a concave one. A certified bound:

@@ -2890,10 +2890,13 @@ SmStatus sm_SbModelRounds(const SmContext & crContext, const std::vector<SmBlend
 
 SmStatus SmBlendSetback::CertifiedScale(const SmContext & crContext, const std::vector<Face> & crFaces, const std::vector<Edge> & crEdges,
                                         const std::vector<double> & crSetBacks, double & rdScale, ULONG * plSolves, const TCHAR ** ppReason,
-                                        const std::vector<double> * pvMost)
+                                        const std::vector<double> * pvMost, ULONG * plAttempts)
 {
   rdScale = 0.0;
   if (plSolves != NULL) { *plSolves = 0; }
+  ULONG lAttempts = 0;
+  if (plAttempts == NULL) { plAttempts = &lAttempts; }
+  *plAttempts = 0;
   const TCHAR * pWhy = NULL;
   if (ppReason != NULL) { *ppReason = NULL; }
   double dSize = 0.0;
@@ -2914,6 +2917,7 @@ SmStatus SmBlendSetback::CertifiedScale(const SmContext & crContext, const std::
   // the model's fill at scale k: its probe at degree 9 (pProbe), or the fill itself (taken certified)
   auto model = [&](double k, Probe * pProbe, bool & rbCertified) -> SmStatus
     {
+      (*plAttempts)++;
       rbCertified = false;
       std::vector<SmBSplineSurface *> sSurfaces;
       std::vector<Round> sRounds;
