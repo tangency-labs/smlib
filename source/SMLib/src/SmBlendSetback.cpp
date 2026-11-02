@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <utility>
 #include <vector>
@@ -435,6 +436,22 @@ SmStatus SmBlendSetback::Distances(const std::vector<Face> & crFaces, const std:
 /*******************************************************************//**
     The hole's fill.
 ***********************************************************************/
+
+// the curved fill's work (SmBlendSetback::CurvedCounts)
+static std::atomic<unsigned long long> s_lCurvedFills(0), s_lCurvedDegrees(0), s_lCurvedRows(0);
+
+void SmBlendSetback::CurvedCounts(unsigned long long (&raOut)[3], bool bReset)
+{
+  raOut[0] = s_lCurvedFills.load();
+  raOut[1] = s_lCurvedDegrees.load();
+  raOut[2] = s_lCurvedRows.load();
+  if (bReset)
+    {
+      s_lCurvedFills = 0;
+      s_lCurvedDegrees = 0;
+      s_lCurvedRows = 0;
+    }
+}
 
 SmBlendSetback::Fill::~Fill()
 {
@@ -2480,7 +2497,7 @@ NOTES: As sm_SbGraphG1, with three changes where a face is curved (every
 SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBlendSetback::Face> & crWorldFaces,
                             const std::vector<SmBlendSetback::Round> & crRounds, const std::vector< std::vector< std::vector<sm_SbH> > > & crWorldJets,
                             const std::vector<size_t> & crQ, const std::vector<ULONG> & crRound, const std::vector<ULONG> & crFace,
-                            const std::vector<SmBoolean> & crRev, double dTol, SmBlendSetback::Fill & rFill)
+                            const std::vector<SmBoolean> & crRev, double dTol, SmBlendSetback::Fill & rFill, bool bLeastFirst)
 {
   typedef SmBlendSetback::Face Face;
   const size_t n = crRound.size();
@@ -2695,8 +2712,9 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
   std::vector<sm_SbNet> sTop;
   size_t lTopDegree = 0;
   std::vector<size_t> sDegrees;
-  sDegrees.push_back(9);
+  if (!bLeastFirst) { sDegrees.push_back(9); }
   for (size_t d=3; d<9; d++) { sDegrees.push_back(d); }
+  if (bLeastFirst) { sDegrees.push_back(9); }
   for (size_t lD=0; lD<sDegrees.size(); lD++)
     {
       const size_t d = sDegrees[lD];
@@ -3259,6 +3277,8 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
         }
       std::vector<double> sT;
       rFill.m_lSolves++;
+      s_lCurvedDegrees++;
+      s_lCurvedRows += sb.size();
       bool bProven = false;
       if (getenv("SBDBG2"))
         {
@@ -3538,9 +3558,10 @@ SmStatus sm_SbFillHole(const SmContext & crContext, const std::vector<SmBlendSet
   for (size_t f=0; f<n; f++) { bCurved = bCurved || crFaces[f].m_eKind != SmBlendSetback::SM_SB_PLANE; }
   if (bCurved)
     {
-      if (k != 1 || pProbe != NULL)
-        { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: beside a curved face only a G1 fill is built")); }
-      return sm_SbGraphG1Curved(crContext, crFaces, crRounds, sJets, sQ, sRound, sFace, sRev, dTol, rFill);
+      if (k != 1 || (pProbe != NULL && !pProbe->m_bFill))
+        { SM_SB_FAIL(rFill.m_pReason, SM_ERR_INVALID_INPUT, _T("SmBlendSetback: beside a curved face only a G1 fill is built, and probed only as the fill itself")); }
+      s_lCurvedFills++;
+      return sm_SbGraphG1Curved(crContext, crFaces, crRounds, sJets, sQ, sRound, sFace, sRev, dTol, rFill, pProbe != NULL);
     }
   if (k == 1)
     { return sm_SbGraphG1(crContext, crFaces, crRounds, sJets, sQ, sRound, sFace, sRev, dTol, rFill, pProbe); }

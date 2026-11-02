@@ -253,6 +253,12 @@ public:
   // II taken with the unit normal on crInto's side (into the fill's convex side), certified by
   // the faces' normal field (exact along the columns): riResult 1 certified, 0 refused (a value
   // below), -1 undecided. Refused (SM_ERR_INVALID_INPUT): not one span, dK not negative.
+  // The work of the G1 fills beside curved faces since the last reset, process-wide (counts for
+  // tests, never timings): raOut[0] the fills made (each a FillHole or a probe of one), [1] the
+  // degrees tried (each one quadratic programme), [2] the sector rows built for them. bReset sets
+  // them to 0 after reading.
+  static void CurvedCounts(unsigned long long (&raOut)[3], bool bReset = false);
+
   static SmStatus NoMoreConcave(const SmBSplineSurface & crPatch, const Face & crA, const Face & crB, const SmVector3d & crInto, double dK,
                                 int & riResult);
 };

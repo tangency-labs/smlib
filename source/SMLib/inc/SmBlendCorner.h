@@ -94,6 +94,7 @@ protected:
   ULONG                     m_lFillOrder;
   SmBoolean                 m_bConvexSetBack;
   SmBoolean                 m_bSetBackOverflows; // the rule's setbacks do not fit: the blends overflow (refused if the corner is built)
+  std::vector<double>       m_vSetBackRoom;      // beside a curved face: each edge's room (sm_SbSetBacks), for the fill's growth
   SmBlendSetback::Fill    * m_pFill;
 
   // the Ball (SmBlendCornerBall.cpp)

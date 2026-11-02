@@ -604,6 +604,7 @@ SmStatus SmBlendCorner::MakeSetBackTopology()
       m_dEaseDist = dEase;
     }
   m_bSetBackOverflows = bFits ? FALSE : TRUE;
+  m_vSetBackRoom = sRoom;
   // a G1 fill is taken only certified convex (SmBlendSetback::FillHole): the least scale of the
   // setbacks at which it is (CertifiedScale, from the corner's planes, edges and radii; owner,
   // 2026-11-01). The rule's grow to it, each held at its room less the rule's quarter radius (the
@@ -770,6 +771,9 @@ SmStatus SmBlendCorner::BuildSetBackFill()
   // each blend at its end section: its surface, its rails' direction on it, the rail parameter
   // of its setback vertex, and on which side the corner lies
   std::vector<SmBlendSetback::Round> sRounds( n );
+  const TCHAR * pGatherWhy = NULL;
+  auto gather = [&]() -> SmStatus
+  {
   for (ULONG i=0; i<n; i++)
     {
       SmFilletVertex * pS = m_vVertices[3 * i + 2];
@@ -820,18 +824,131 @@ SmStatus SmBlendCorner::BuildSetBackFill()
             { eAlong = ( iDir == 0 ) ? SM_SP_U : SM_SP_V; }
         }
       if ( eAlong == SM_SP_UNKNOWN )
-        { return SetBackNotBuilt( _T("Fillet Error: a setback corner needs each blend's surface to run along its rails") ); }
+        { pGatherWhy = _T("Fillet Error: a setback corner needs each blend's surface to run along its rails"); return SM_ERR; }
       sRounds[i].m_pSurface     = pSurface;
       sRounds[i].m_eAlong       = eAlong;
       sRounds[i].m_dEnd         = dEnd;
       sRounds[i].m_bCornerAbove = ( sHi.DistanceBetween( m_cpVertex->GetPoint() ) < sLo.DistanceBetween( m_cpVertex->GetPoint() )) ? TRUE : FALSE;
     }
+  return SM_SUCCESS;
+  };
+  if ( gather() != SM_SUCCESS )
+    { return pGatherWhy != NULL ? SetBackNotBuilt( pGatherWhy ) : SM_ERR; }
 
   delete m_pFill;
   m_pFill = new SmBlendSetback::Fill;
   NER( m_pFill );
   if ( SmBlendSetback::FillHole( m_crContext, sPlanes, sRounds, m_lFillOrder, dTol, *m_pFill ) != SM_SUCCESS )
-    { return SetBackNotBuilt( m_pFill->m_pReason != NULL ? m_pFill->m_pReason : _T("Fillet Error: the setback corner's hole cannot be filled") ); }
+    {
+      if ( !bCurvedFaces || !m_pFill->m_bUncertified )
+        { return SetBackNotBuilt( m_pFill->m_pReason != NULL ? m_pFill->m_pReason : _T("Fillet Error: the setback corner's hole cannot be filled") ); }
+      // beside a curved face (owner, section 28): the rule's setbacks, or the one asked for, grow to
+      // the least scale (to 1e-2) at which the fill is certified, with the real rounds: each trial
+      // moves the setback vertices (CalcSetBackVert at the scaled setbacks, each held at its room
+      // less a quarter radius) and fills the hole from the least degree up. None up to twice them:
+      // refused, naming none. One asked for that certifies only grown: refused, naming the
+      // setback that builds (or none, where that one does not fit with its ease).
+      double dAsked = 0.0, dEase = 0.0;
+      SmBoolean bOpen = FALSE;
+      const SmBoolean bAsked = pExec->GetSetBackFill( m_cpVertex, dAsked, dEase, bOpen );
+      if ( m_vSetBackRoom.size() != n || m_vSetBacks.size() != n )
+        { SER( SM_ERR ); }
+      const std::vector<double> sBase( m_vSetBacks );
+      std::vector<double> sMost( n );
+      for (ULONG i=0; i<n; i++)
+        { sMost[i] = bAsked ? SM_BIG_DOUBLE : smos_Max( sBase[i], m_vSetBackRoom[i] - 0.25 * sEdges[i].m_dRadius ); }
+      auto place = [&](double k, SmBoolean & rbPlaced) -> SmStatus
+        {
+          rbPlaced = TRUE;
+          m_dSetBackDist = 0.0;
+          for (ULONG i=0; i<n; i++)
+            {
+              m_vSetBacks[i] = smos_Min( k * sBase[i], sMost[i] );
+              m_dSetBackDist = smos_Max( m_dSetBackDist, m_vSetBacks[i] );
+            }
+          for (ULONG i=0; i<n && rbPlaced; i++)
+            {
+              SmFilletVertex * pS = m_vVertices[3 * i + 2];
+              NER( pS );
+              SER( pS->CalcSetBackVert() );
+              rbPlaced = pS->IsProcessed();
+            }
+          if ( rbPlaced && gather() != SM_SUCCESS )
+            { rbPlaced = FALSE; }
+          return SM_SUCCESS;
+        };
+      auto trial = [&](double k, SmBlendSetback::Fill *& rpFill) -> SmStatus
+        {
+          rpFill = NULL;
+          SmBoolean bPlaced = FALSE;
+          SER( place( k, bPlaced ));
+          if ( !bPlaced )
+            { return SM_SUCCESS; }
+          SmBlendSetback::Fill * pFill = new SmBlendSetback::Fill;
+          NER( pFill );
+          SmBlendSetback::Probe sProbe;
+          sProbe.m_bFill = true;
+          if ( SmBlendSetback::FillHoleProbe( m_crContext, sPlanes, sRounds, dTol, *pFill, sProbe ) == SM_SUCCESS )
+            { rpFill = pFill; }
+          else
+            { delete pFill; }
+          return SM_SUCCESS;
+        };
+      SmBlendSetback::Fill * pBest = NULL;
+      SER( trial( 2.0, pBest ));
+      TCHAR cWhy[SM_TBLOCK_SIZE];
+      if ( pBest == NULL )
+        {
+          if ( bAsked )
+            { smos_sprintf( cWhy, _T("Fillet Error: no setback up to twice %g keeps the setback corner's fill no more concave than its faces"), dAsked ); }
+          else
+            { smos_sprintf( cWhy, _T("Fillet Error: no setbacks up to twice the rule's within the corner's edges keep its fill no more concave than its faces (no setback builds)") ); }
+          pExec->NoteFitSetBack( 0.0 );
+          pExec->GetFilletErrorInfo()->NoteError( m_cpVertex, SM_FIL_FAILURE, SM_FILERR_NO_ROOM, cWhy );
+          return SM_ERR;
+        }
+      double dLo = 1.0, dHi = 2.0;
+      while ( dHi > 1.01 * dLo )
+        {
+          const double k = 0.5 * ( dLo + dHi );
+          SmBlendSetback::Fill * pAt = NULL;
+          SER( trial( k, pAt ));
+          if ( pAt != NULL )
+            {
+              delete pBest;
+              pBest = pAt;
+              dHi = k;
+            }
+          else
+            { dLo = k; }
+        }
+      SmBoolean bPlaced = FALSE;
+      SER( place( dHi, bPlaced ));
+      if ( !bPlaced )
+        {
+          delete pBest;
+          SER( SM_ERR );
+        }
+      if ( bAsked )
+        {
+          delete pBest;
+          SmBoolean bRoom = TRUE;
+          for (ULONG i=0; i<n; i++)
+            if ( dHi * dAsked + dEase >= m_vSetBackRoom[i] )
+              { bRoom = FALSE; }
+          const double dBuilds = bRoom ? dHi * dAsked : 0.0;
+          if ( bRoom )
+            { smos_sprintf( cWhy, _T("Fillet Error: a setback of %g is too short for the setback corner's fill to stay no more concave than its faces: a setback of %g builds it"), dAsked, dBuilds ); }
+          else
+            { smos_sprintf( cWhy, _T("Fillet Error: a setback of %g is too short for the setback corner's fill to stay no more concave than its faces, and the %g that would be does not fit on its edges"),
+                            dAsked, dHi * dAsked ); }
+          pExec->NoteFitSetBack( dBuilds );
+          pExec->GetFilletErrorInfo()->NoteError( m_cpVertex, SM_FIL_FAILURE, SM_FILERR_NO_ROOM, cWhy );
+          return SM_ERR;
+        }
+      delete m_pFill;
+      m_pFill = pBest;
+    }
   if ( m_pFill->m_vPatches.size() != 2 * n || m_pFill->m_vFace.size() != n )
     { SER( SM_ERR ); }
   double dWorst = 0.0;
