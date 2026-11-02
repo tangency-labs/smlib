@@ -10714,6 +10714,25 @@ void curved_setback_graded(smlib_brep *r, const SmPoint3d &v, double reach, bool
     const size_t n = edges.size();
     SmTArray<SmFace *> all;
     r->p->GetFaces(all);
+    // the rounds' faces first: the one through each round's `on`
+    auto on_surface = [](const SmSurface *srf, const SmPoint3d &x) {
+        SmSolutionArray sols;
+        SmPoint3d at;
+        return srf->GlobalPointSolve(srf->GetNaturalUVDomain(), SM_SO_MINIMIZE, x, 1e-12, nullptr, SM_SR_SINGLE, sols) == SM_SUCCESS && sols.GetSize() > 0 &&
+               srf->EvaluatePoint(SmPoint2d(sols[0].m_vStart[0], sols[0].m_vStart[1]), at) == SM_SUCCESS && at.DistanceBetween(x) <= 1e-9;
+    };
+    std::vector<SmFace *> round_faces;
+    for (size_t e = 0; e < edges.size(); ++e)
+    {
+        for (ULONG f = 0; f < all.GetSize(); ++f)
+        {
+            if (on_surface(all[f]->GetSurface(), edges[e].on))
+            {
+                round_faces.push_back(all[f]);
+                break;
+            }
+        }
+    }
     std::vector<SmFace *> patches;
     for (ULONG f = 0; f < all.GetSize(); ++f)
     {
@@ -10732,7 +10751,13 @@ void curved_setback_graded(smlib_brep *r, const SmPoint3d &v, double reach, bool
         {
             on_face = on_face || std::fabs(cf.g(mid)) <= 1e-9;
         }
-        if (near && !on_face)
+        // nor a piece of a round (a round split where its edge was: its surface the round's)
+        bool on_round = false;
+        for (SmFace *rf : round_faces)
+        {
+            on_round = on_round || rf == all[f] || on_surface(rf->GetSurface(), mid);
+        }
+        if (near && !on_face && !on_round)
         {
             patches.push_back(all[f]);
         }
@@ -10897,9 +10922,17 @@ void curved_setback_graded(smlib_brep *r, const SmPoint3d &v, double reach, bool
         SmTArray<SmVertex *> rv;
         round->GetVertices(rv);
         double lo = HUGE_VAL, hi = -HUGE_VAL;
+        std::vector<SmVertex *> fill_vertices;
+        for (SmFace *pf : patches)
+        {
+            SmTArray<SmVertex *> pv;
+            pf->GetVertices(pv);
+            for (ULONG q = 0; q < pv.GetSize(); ++q) fill_vertices.push_back(pv[q]);
+        }
         for (ULONG q = 0; q < rv.GetSize(); ++q)
         {
-            if (rv[q]->GetPoint().DistanceBetween(v) <= reach)
+            // the round's end section: its vertices the fill's too
+            if (std::find(fill_vertices.begin(), fill_vertices.end(), rv[q]) != fill_vertices.end())
             {
                 const double a = edges[e].along(rv[q]->GetPoint());
                 lo = std::min(lo, a);
@@ -11226,7 +11259,8 @@ void setback_curved_sphere_corner()
                                            {CurvedFace::SPHERE, SmPoint3d(0, 0, 0), SmVector3d(0, 0, 1), 10.0, 0, 1}};
     const std::vector<CurvedEdge> edges = {
         {[&](const SmPoint3d &p) { return s68 - p.z; }, round_middle(SmPoint3d(2.5, 2.5, 4), SmPoint3d(4, 4, 4), 1.5), s68 - std::sqrt(54.0 - 6.25)},
-        {[&](const SmPoint3d &p) { return s84 * (std::atan2(p.z, p.y) - av); }, round_middle(SmPoint3d(2, 0, std::sqrt(60.0)), SmPoint3d(4, 0, s84), 2.0),
+        {[&](const SmPoint3d &p) { return s84 * (std::atan2(p.z, p.y) - av); },
+         round_middle(SmPoint3d(2, 0.5 * std::sqrt(60.0 / 84.0), std::sqrt(83.75 * 60.0 / 84.0)), SmPoint3d(4, 0.5, std::sqrt(83.75)), 2.0),
          s84 * (std::atan2(std::sqrt(89.75), 2.0) - av)},
         {[&](const SmPoint3d &p) { return s84 * (std::atan2(p.z, p.x) - av); }, round_middle(SmPoint3d(0, 1.5, std::sqrt(54.0)), SmPoint3d(0, 4, s84), 2.5),
          s84 * (std::atan2(std::sqrt(89.75), 2.5) - av)}};

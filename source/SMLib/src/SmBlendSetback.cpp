@@ -2918,6 +2918,7 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
           for (size_t p=0; p<2*n; p++) { rNets[p] = sm_SbAffineNet(sPatches[p], sYv, sE); }
         };
 
+      if (getenv("SBDBG")) fprintf(stderr, "SBDBG stage %s\n", "A energy done");
       // each patch's ruling-(a) matrix: w^3 (l, m, n) + |k| o J (J the projection's w^4 I), affine
       // in the heights; o's sign certified
       std::vector< std::array<sm_SbT, 3> > sQ0(2 * n);
@@ -2938,7 +2939,10 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
           const double dO = 1.0e-12 * sm_SbTScale(sOp);
           sS[p] = (sm_SbTNonneg(sOp, dO, SM_SB_GRAPH_DEPTH) == 1) ? 1.0 : (sm_SbTNonneg(sNegO, dO, SM_SB_GRAPH_DEPTH) == 1) ? -1.0 : 0.0;
           if (sS[p] == 0.0)
-            { SM_SB_FAIL(rFill.m_pReason, SM_ERR, _T("SmBlendSetback: the fill folds (a patch's normal turns across the corner's axis)")); }
+            {
+              if (getenv("SBDBG")) fprintf(stderr, "SBDBG d %zu: patch %zu folds (o not one-signed)\n", d, p);
+              SM_SB_FAIL(rFill.m_pReason, SM_ERR, _T("SmBlendSetback: the fill folds (a patch's normal turns across the corner's axis)"));
+            }
           // w^3 and the projection's J
           const sm_SbNet & crN = sPatches[p].m_sBase;
           sm_SbT h[4], hu[4], hv[4];
@@ -2985,6 +2989,7 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
               for (size_t t=0; t<sQjp[k].size(); t++) { sQj[p][k].push_back((sK[p] < 0.0) ? sm_SbTMulFast(sW3, sQjp[k][t]) : sQjp[k][t]); }
             }
         }
+      if (getenv("SBDBG")) fprintf(stderr, "SBDBG stage %s\n", "B fundamentals done");
       // the QP (as sm_SbGraphG1's, without the base points' kernel directions: the faces' columns
       // are fixed here)
       std::vector<double> sG(lFree * lFree, 0.0), sg(lFree, 0.0);
@@ -3019,6 +3024,7 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
           if (th >= SM_PI) { th -= SM_PI; }
           sKernel[n + q] = th;
         }
+      if (getenv("SBDBG")) fprintf(stderr, "SBDBG stage %s\n", "C kernel done");
       std::vector<double> sC, sb;
       for (size_t p=0; p<2*n; p++)
         {
@@ -3171,8 +3177,14 @@ SmStatus sm_SbGraphG1Curved(const SmContext & crContext, const std::vector<SmBle
           const sm_SbT sDisc = sm_SbTAxpy(sm_SbTMulFast(sCm[0], sCm[2]), -1.0, sm_SbTMulFast(sCm[1], sCm[1]));
           const sm_SbT * pChecks[3] = { &sL, &sNn, &sDisc };
           for (int k=0; k<3 && bCertified; k++)
-            if (sm_SbTNonneg(*pChecks[k], 1.0e-12 * sm_SbTScale(*pChecks[k]), SM_SB_GRAPH_DEPTH) != 1)
-              { bCertified = false; }
+            {
+              const int iNon = sm_SbTNonneg(*pChecks[k], 1.0e-12 * sm_SbTScale(*pChecks[k]), SM_SB_GRAPH_DEPTH);
+              if (iNon != 1)
+                {
+                  if (getenv("SBDBG")) fprintf(stderr, "SBDBG d %zu: certificate fails on patch %zu check %d (%s), k %.4g\n", d, p, k, iNon == 0 ? "negative" : "undecided", sK[p]);
+                  bCertified = false;
+                }
+            }
         }
       if (getenv("SBDBG")) fprintf(stderr, "SBDBG d %zu: certified %d\n", d, (int)bCertified);
       if (!bCertified)
