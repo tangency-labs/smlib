@@ -4488,6 +4488,18 @@ void mixed_rounds_together(double r, int faces)
     peg_corner_graded(b, PEG_EXACT, r, false, faces, 5e-11);
 }
 void mixed_rounds_together_r2() { mixed_rounds_together(2, 11); }
+// The same peg with every face's surface shrunk to its face (SmBrep::ShrinkGeometry, as a body
+// whose surfaces were trimmed to their faces carries them): the same geometry, but the top's plane
+// now ends at the top. At V the concave round runs on past the front edge, its ball touching the
+// top's plane in front of it (at y = -2 here), off the plane's shrunk domain: the corner must not
+// depend on how far a face's surface happens to reach.
+void mixed_shrunk_rounds_together_r2()
+{
+    smlib_brep *peg = tangent_peg(0);
+    CHECK(peg != nullptr && peg->p->ShrinkGeometry() == SM_SUCCESS);
+    smlib_brep *b = peg_blend(peg, SMLIB_BLEND_ROUND, {20, 0, 10, 32, 8, 10}, {2, 2});
+    peg_corner_graded(b, PEG_EXACT, 2, false, 11, 5e-11);
+}
 void mixed_rounds_together_r5() { mixed_rounds_together(5, 11); }
 void mixed_chamfers_together_d2()
 {
@@ -4519,6 +4531,8 @@ const TangentEndCase MIXED_CORNER_CASES[] = {
     {"residue_rounds_together_r7", mixed_residue_rounds_together_r7, nullptr},
     {"rounds_together_r2", mixed_rounds_together_r2, nullptr},
     {"rounds_together_r5", mixed_rounds_together_r5, nullptr},
+    {"shrunk_rounds_together_r2", mixed_shrunk_rounds_together_r2,
+     "status 1001, Fillet Surface Computation Failure: the concave round's through point on the section at V (the trace runs to the edge's end at a corner that does not blend) is solved within the top's plane as shrunk to its face, but the ball there touches that plane at y = -2, in front of the front edge"},
 };
 
 int mixed_corner_cases(bool known_failing, const char *only)
