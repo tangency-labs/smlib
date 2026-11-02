@@ -469,6 +469,61 @@ SmMxCrv sm_MxUnitWeights(const SmMxCrv & c)
   return sm_MxTimes( l, c );
 }
 
+// c (and pc, on the same breaks: the curve in the parameters c is the image of) made C1 in R^4
+// at every joint, the same curves: a round's rational arcs meet G1 in R^3 with a jump in their
+// weights' derivative, which a patch blending c's homogeneous derivatives would carry into its
+// interior as a fold. At a joint Q (weight 1), left derivative D_L = l D0 + m Q with D0 = n (R_1
+// - R_0) the right segment's own: its control points scaled by k^i (a Moebius reparametrization,
+// the same for any degree) on a span h give (k D0 + n (k - 1) Q) / h, which is D_L for
+// h = n / (n l - m), k = l h; the segments after it scaled by k^n to meet it. The breaks are
+// then rescaled to c's interval. A joint already C1 has m = 0, l = 1 / h: unchanged.
+SmStatus sm_MxC1(SmMxCrv & c, SmMxCrv & pc)
+{
+  if ( c.seg.size() != pc.seg.size() )
+    { return SM_ERR; }
+  const int n = c.Deg(), np = pc.Deg();
+  const double a0 = c.brk.front(), a1 = c.brk.back();
+  std::vector<double> h( c.seg.size() );
+  for (size_t s=0; s<h.size(); s++) h[s] = c.brk[s+1] - c.brk[s];
+  for (size_t s=1; s<c.seg.size(); s++)
+    {
+      const SmMxBez & L = c.seg[s-1];
+      SmMxBez & R = c.seg[s];
+      const SmMxV4 Q = R[0];
+      const SmMxV4 DL = sm_MxMul( sm_MxSub( L[n], L[n-1] ), double( n ) / h[s-1] );
+      const SmMxV4 D0 = sm_MxMul( sm_MxSub( R[1], R[0] ), double( n ));
+      // D_L = l D0 + m Q, least squares in R^4
+      double aa = 0, ab = 0, bb = 0, ar = 0, br = 0;
+      for (int k=0; k<4; k++)
+        { aa += D0[k] * D0[k]; ab += D0[k] * Q[k]; bb += Q[k] * Q[k]; ar += D0[k] * DL[k]; br += Q[k] * DL[k]; }
+      const double det = aa * bb - ab * ab;
+      if ( !( det > 0.0 ) )
+        { return SM_ERR; }
+      const double l = ( ar * bb - ab * br ) / det, m = ( aa * br - ab * ar ) / det;
+      if ( !( n * l - m > 0.0 ) )
+        { return SM_ERR; }
+      const double hs = double( n ) / ( n * l - m ), k = l * hs;
+      double f = 1.0;
+      for (int i=0; i<=n; i++) { R[i] = sm_MxMul( R[i], f ); f *= k; }
+      f = 1.0;
+      for (int i=0; i<=np; i++) { pc.seg[s][i] = sm_MxMul( pc.seg[s][i], f ); f *= k; }
+      const double kn = std::pow( k, n ), knp = std::pow( k, np );
+      for (size_t t=s+1; t<c.seg.size(); t++)
+        {
+          for (auto & q : c.seg[t]) q = sm_MxMul( q, kn );
+          for (auto & q : pc.seg[t]) q = sm_MxMul( q, knp );
+        }
+      h[s] = hs;
+    }
+  double dSum = 0.0;
+  for (double x : h) dSum += x;
+  double t = a0;
+  for (size_t s=0; s<h.size(); s++) { c.brk[s] = t; t += h[s] * ( a1 - a0 ) / dSum; }
+  c.brk.back() = a1;
+  pc.brk = c.brk;
+  return SM_SUCCESS;
+}
+
 // the B-spline curve's segments by knot insertion (homogeneous; a 2D curve's z is 0)
 SmStatus sm_MxFromBSpline(const SmBSplineCurve & crCurve, SmMxCrv & rOut)
 {
@@ -1119,9 +1174,15 @@ SmStatus sm_MxToUV(const SmContext & crContext, const SmMxCrv & c, SmBSplineCurv
   rpOut = NULL;
   const int p = c.Deg();
   SmTArray<SmPoint3d> sPts;
+  SmTArray<double> sW;
+  SmBoolean bRational = FALSE;
   for (size_t s=0; s<c.seg.size(); s++)
     for (int i=( s == 0 ? 0 : 1 ); i<=p; i++)
-      sPts.Add( SmPoint3d( c.seg[s][i][0] / c.seg[s][i][3], c.seg[s][i][1] / c.seg[s][i][3], 0.0 ));
+      {
+        sPts.Add( SmPoint3d( c.seg[s][i][0] / c.seg[s][i][3], c.seg[s][i][1] / c.seg[s][i][3], 0.0 ));
+        sW.Add( c.seg[s][i][3] );
+        if ( c.seg[s][i][3] != sW[0] ) bRational = TRUE;
+      }
   SmTArray<ULONG> sMults;
   SmTArray<double> sKnots;
   for (size_t i=0; i<c.brk.size(); i++)
@@ -1129,7 +1190,7 @@ SmStatus sm_MxToUV(const SmContext & crContext, const SmMxCrv & c, SmBSplineCurv
       sKnots.Add( c.brk[i] );
       sMults.Add( ( i == 0 || i + 1 == c.brk.size() ) ? p + 1 : p );
     }
-  SER( SmBSplineCurve::CreateCanonical( crContext, 2, p, sPts, SM_CF_UNSPECIFIED, sMults, sKnots, SM_KT_UNSPECIFIED, NULL, NULL, rpOut ));
+  SER( SmBSplineCurve::CreateCanonical( crContext, 2, p, sPts, SM_CF_UNSPECIFIED, sMults, sKnots, SM_KT_UNSPECIFIED, bRational ? &sW : NULL, NULL, rpOut ));
   NER( rpOut );
   return SM_SUCCESS;
 }
@@ -1474,6 +1535,8 @@ SmStatus SmBlendCorner::CalcMixedEdgeGeom()
       SER( sm_MxSrfFromBSpline( *pRound, S ));
       SmMxCrv c;
       SER( sm_MxCompose( S, pc, c ));
+      pc = sm_MxRefine( pc, c.brk );
+      SER( sm_MxC1( c, pc ));
       asTrim[ii] = sm_MxUnitWeights( c );
       asPc[ii] = pc;
       if ( ii == 0 )
@@ -1498,8 +1561,13 @@ SmStatus SmBlendCorner::CalcMixedEdgeGeom()
     SER( sm_MixedParam( *apRailWall[0], pP->GetPoint(), dTol, dP ));
     SER( sm_MixedParam( *apRailWall[1], pB->GetPoint(), dTol, dB ));
     SER( sm_MixedParam( *apRailWall[1], pQ->GetPoint(), dTol, dQ ));
-    sAP = sm_MxUnitWeights( sm_MxPiece( r0, dA, dP ));
-    sBQ = sm_MxUnitWeights( sm_MxPiece( r1, dB, dQ ));
+    // the rail pieces made C1 in R^4 where they cross their round's knots (a rational arc's)
+    SmMxCrv sPieceAP = sm_MxPiece( r0, dA, dP ), sPieceBQ = sm_MxPiece( r1, dB, dQ );
+    SmMxCrv sSameAP = sPieceAP, sSameBQ = sPieceBQ;
+    SER( sm_MxC1( sPieceAP, sSameAP ));
+    SER( sm_MxC1( sPieceBQ, sSameBQ ));
+    sAP = sm_MxUnitWeights( sPieceAP );
+    sBQ = sm_MxUnitWeights( sPieceBQ );
     // their ends exactly the vertices (A and B the trimlines' ends)
     sAP.seg.front().front() = sm_MxPoint( pA->GetPoint() );
     sBQ.seg.front().front() = sm_MxPoint( pB->GetPoint() );

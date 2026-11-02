@@ -1094,6 +1094,57 @@ static int sbDumpFVUs=0;
         }
     } // end iter twice building the sTsectPnts array
 
+  // SolidCraft change: a rail ends where its corner's event needs it, so at an end whose corner
+  // does not blend (the trace is extended there) the trace runs to the edge's own end first: where
+  // its first or last point stops short of that end (a corner whose rails cross before the
+  // edge's vertex, the Mixed one), the edge's section there is a through point, and the extension
+  // runs on past it. Every spine kind then measures its extension from the edge's end.
+  if ( bDoSorting && sTsectPnts.GetSize() > 0 && pEdge->GetStartVertex() != pEdge->GetEndVertex() )
+    {
+      SmFilletExecutive * pFilExec = GetFilletExecutive();
+      NER( pFilExec );
+      for ( ULONG lEnd=0; lEnd<2; lEnd++ )
+        {
+          const SmVertex  * cpEndVertex = ( lEnd == 0 ) ? pEdge->GetStartVertex() : pEdge->GetEndVertex();
+          SmFilletCorner  * pEndCorner  = pFilExec->GetFilletCornerOfVertex( SM_CONST_CAST(SmVertex*, cpEndVertex) );
+          if ( pEndCorner == NULL || pEndCorner->IsBlendingCorner() || pEndCorner->IsDegenerateCorner() )
+            { continue; }
+          // the trace's point nearest that end: its ball's centre dropped to the edge
+          SmTsectPnt * pNear = sTsectPnts[ lEnd == 0 ? 0 : sTsectPnts.GetSize() - 1 ];
+          SmPoint3d sCentre;
+          SER( SetupOffsetValues( *pNear, NULL ) );
+          SER( pOffsetSrf1->EvaluatePoint( pNear->UVPos(0), sCentre ) );
+          SmSolutionArray sSol;
+          SER( pEdgeCurve->GlobalPointSolve( sIvl, SM_SO_MINIMIZE, sCentre, m_dThisApproxTol3d, NULL, NULL, SM_SR_SINGLE, sSol ) );
+          if ( sSol.GetSize() < 1 )
+            { SER( SM_ERR ); }
+          const double dEndParam = ( lEnd == 0 ) ? sIvl.GetMin() : sIvl.GetMax();
+          SmPoint3d sAt, sEndPnt;
+          SER( pEdgeCurve->EvaluatePoint( sSol[0].m_vStart[0], sAt ) );
+          SER( pEdgeCurve->EvaluatePoint( dEndParam, sEndPnt ) );
+          if ( sAt.DistanceBetween( sEndPnt ) <= m_dThisApproxTol3d )
+            { continue; }
+          // the edge's section at its end, as the G1 knots' through points are made
+          SmPoint3d  sPnt;
+          SmVector3d sBinVec, sTangent;
+          SmVector2d sUVParameter;
+          SER( GetEdgeuse(0)->EvaluateBinormal( dEndParam, FALSE, sPnt, sBinVec, &sTangent, NULL, &sUVParameter ));
+          sBinVec = sBinVec * ( smos_Fabs( GetSurface(1)->GetOffsetDistance() ) * 0.5 );
+          SmVector2d sUVDir;
+          SER( pBaseSrf1->DropVectors( sUVParameter, TRUE, TRUE, 1, &sBinVec, &sUVDir ));
+          sUVParameter = sUVParameter + sUVDir;
+          SER( pOffsetSrf1->EvaluatePoint( sUVParameter, sPnt ));
+          SmTsectPnt * pEndPnt = new SmTsectPnt;
+          sDeletePnts.Add( pEndPnt );
+          SER( sm_FindFilletTsectPnt( this, pBaseSrf1, pBaseSrf2, sPnt, sTangent, *pEndPnt ));
+          pEndPnt->m_dCurveParameter = -SM_BIG_DOUBLE;
+          if ( lEnd == 0 )
+            { sTsectPnts.InsertAt( 0, pEndPnt ); }
+          else
+            { sTsectPnts.Add( pEndPnt ); }
+        }
+    }
+
 #ifdef SM_DEBUG_CODE
   if ( sbDumpFVUs>0 )
     { pFilletGeom0->DumpFilletVUs(); }
