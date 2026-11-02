@@ -783,8 +783,9 @@ double worst_corner_seam_angle(const smlib_brep *b, const SmPoint3d &corner, dou
                     worst = HUGE_VAL;
                     continue;
                 }
-                // tangent faces' binormals (into each face, square to the edge) are opposed
-                worst = std::max(worst, std::acos(std::min(1.0, -ba.Dot(bb))) * 180.0 / PI);
+                // tangent faces' binormals (into each face, square to the edge) are opposed; the
+                // angle from the cross product, which resolves it below acos's 2.1e-8 rad floor
+                worst = std::max(worst, std::atan2((ba * bb).Length(), -ba.Dot(bb)) * 180.0 / PI);
             }
         }
     }
