@@ -4849,7 +4849,8 @@ SectionGrade pieced(SectionGrade g, unsigned long long pieces)
 }
 
 // g with the equal area sums I(w) its certificate may sum outside its cells (the root's point
-// sums and the intervals off the cells' grid; a count, not a time)
+// sums and the intervals off the cells' grid, each distinct one once; a count, not a time, about
+// 5% over the count measured on Linux)
 SectionGrade summed(SectionGrade g, unsigned long long sums)
 {
     g.most_area_sums = sums;
@@ -4969,7 +4970,7 @@ void section_box_edge_g2_equal_area()
     // whose truncation grows with ((1 - w) / r)^k: 1.3e-5 at this w (1e-5 is G3's bar), 7.5e-7 at
     // half the step (a cubic term would not halve), where round-off takes over at other stations.
     // So the grade asks G2 at least and G3 at most, the measure's limit here, not the section's.
-    SectionGrade g = summed(pieced(counted(box_edge_grade(2, w, 1.0 - PI / 4), 14200, 3180), 3), 6);
+    SectionGrade g = summed(pieced(counted(box_edge_grade(2, w, 1.0 - PI / 4), 14200, 3180), 3), 2);
     g.order = 2;
     g.order_max = 3;
     section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, SMLIB_BLEND_THUMBWEIGHT, 3.0), g);
@@ -5075,7 +5076,7 @@ void section_twisted_wedge_g2_equal_area()
     g.spans = 274;
     // its definition carries the equal area rule and resolves w at every point from its own
     // station's wedge, as the net's stations did: the net within its certified bound of it
-    g = summed(pieced(counted(g, 34700, 12850), 6530), 12158);
+    g = summed(pieced(counted(g, 34700, 12850), 6530), 6760);
     g.definition = true;
     int stations = 0;
     g.also = [&stations](const SmSurface *srf)
@@ -5309,7 +5310,7 @@ void section_boss_root_g2_equal_area()
 {
     // (w to about 1e-11: the definition is graded to 1e-9 against the exact section at w)
     const double w = square_corner_equal_area_w(200000);
-    SectionGrade g = summed(pieced(counted(boss_root_grade(2, 26056.152954783724, w), 9280, 4480), 4410), 10389);
+    SectionGrade g = summed(pieced(counted(boss_root_grade(2, 26056.152954783724, w), 9280, 4480), 4410), 680);
     g.definition_tol = 1e-9;
     section_blend(by_order(boss_on_plate(), {30 + 4 * std::sqrt(2.0), 20 + 4 * std::sqrt(2.0), 10}, 2, SMLIB_BLEND_THUMBWEIGHT, 2.0), g);
 }

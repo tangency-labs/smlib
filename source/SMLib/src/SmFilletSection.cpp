@@ -63,7 +63,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <limits>
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -1890,14 +1893,38 @@ SmStatus sm_GnEnclose(const sm_Nurbs * apFace[2], const sm_NurbsCurve & crLeader
    of w, on a grid of cells over an edge's thumbweights, each computed once:
    cell k's series holds I^(m)(w) / m! for every w in it, and the hull of
    the cells an interval meets holds them over that interval. An interval
-   off the grid is taken on its own.
+   off the grid is taken on its own, and I at a point of w (the root's
+   guess) too: each once, kept by its ends' bits (the same w, the same sum).
 ***********************************************************************/
 struct sm_GnAreaCells
 {
+  typedef std::pair<uint64_t, uint64_t> Key;
   ULONG                         lOrder;
   std::vector<double>           sE;    // the cells' ends
   std::vector<int>              sHave;
   std::vector< sm_Tay<sm_Ivl> > sI;
+  std::map<Key, sm_Tay<sm_Ivl> > sOff; // the intervals off the grid, by their ends
+  std::map<uint64_t, sm_Ivl>    sAt;   // I at points of w
+
+  static uint64_t Bits(double d)
+  {
+    uint64_t l = 0;
+    std::memcpy(&l, &d, sizeof l);
+    return l;
+  }
+
+  // I at w, an enclosure
+  sm_Ivl At(double w)
+  {
+    const uint64_t lKey = Bits(w);
+    const std::map<uint64_t, sm_Ivl>::const_iterator it = sAt.find(lKey);
+    if (it != sAt.end())
+      { return it->second; }
+    SmProceduralBlend::CountAreaSum();
+    const sm_Ivl sSum = sm_GnAreaSum<sm_Ivl>(lOrder, sm_Ivl(w));
+    sAt.insert(std::make_pair(lKey, sSum));
+    return sSum;
+  }
 
   void Init(ULONG n, double dLo, double dHi, int lCells)
   {
@@ -1906,6 +1933,8 @@ struct sm_GnAreaCells
     for (int k=0; k<=lCells; k++) { sE.push_back(dLo + (dHi - dLo) * k / lCells); }
     sHave.assign(static_cast<size_t>(lCells), 0);
     sI.assign(static_cast<size_t>(lCells), sm_Tay<sm_Ivl>());
+    sOff.clear();
+    sAt.clear();
   }
 
   sm_Tay<sm_Ivl> Over(const sm_Ivl & W)
@@ -1913,8 +1942,14 @@ struct sm_GnAreaCells
     const int lCells = static_cast<int>(sE.size()) - 1;
     if (lCells < 1 || !(W.lo >= sE.front() && W.hi <= sE.back()))
       {
+        const Key sKey(Bits(W.lo), Bits(W.hi));
+        const std::map<Key, sm_Tay<sm_Ivl> >::const_iterator it = sOff.find(sKey);
+        if (it != sOff.end())
+          { return it->second; }
         SmProceduralBlend::CountAreaSum();
-        return sm_GnAreaSum(lOrder, sm_TayOf(W, sm_Ivl(1.0)));
+        const sm_Tay<sm_Ivl> sSum = sm_GnAreaSum(lOrder, sm_TayOf(W, sm_Ivl(1.0)));
+        sOff.insert(std::make_pair(sKey, sSum));
+        return sSum;
       }
     int k0 = static_cast<int>(std::upper_bound(sE.begin(), sE.end(), W.lo) - sE.begin()) - 1;
     int k1 = static_cast<int>(std::lower_bound(sE.begin(), sE.end(), W.hi) - sE.begin()) - 1;
@@ -2038,8 +2073,7 @@ SmStatus sm_GnRowTermsOver(const sm_GnVarying & crVary, const sm_VSer<sm_Ivl> (&
   sxTop = sxTop * sInvRR;
   const sm_Tay<sm_Ivl> u = sm_GnHalfAngle(sm_Centred(axMid, sxTop, K, crD));
   const sm_Tay<sm_Ivl> sTg = sm_GnTarget(u);
-  SmProceduralBlend::CountAreaSum();
-  const sm_Ivl sPhi = sm_GnAreaSum<sm_Ivl>(n, sm_Ivl(dGuess)) - sTg.c[0];
+  const sm_Ivl sPhi = crVary.pCells->At(dGuess) - sTg.c[0];
   sm_Ivl W0;
   SmBoolean bRoot = FALSE;
   double dRho = 1.0e-12 * (1.0 + std::fabs(dGuess));
