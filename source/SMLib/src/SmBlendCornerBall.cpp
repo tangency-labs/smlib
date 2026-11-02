@@ -4,33 +4,39 @@
 /**********************************************************************//**
 * FILE NAME --- SmBlendCornerBall.cpp
 * PURPOSE: SolidCraft change. The blend corner's Ball event
-*   (SmBlendCorner.h): three constant rounds of one radius r and one
-*   convexity at a vertex of three faces, each a plane or a natural quadric
-*   (a sphere, a cylinder or a cone).
+*   (SmBlendCorner.h): n >= 3 constant rounds of one radius r and one
+*   convexity at a vertex of n faces that one ball touches: three faces each
+*   a plane or a natural quadric (a sphere, a cylinder or a cone), or four
+*   or more planes whose offsets meet in one point.
 *
-* The ball of radius r touching the three faces F_i is centred at C, the
-* point at distance r from each on the side the rounds' balls roll: where
-* the three faces' offsets by r meet (the triple offset point). It touches
-* F_i at P_i = C - s_i r n_i, n_i the offset's normal at C (the face's at
-* P_i). The round between F_i and F_j ends on its section through C, the
-* circle of its ball there: its ball's centre runs square to both contact
-* normals, so the section lies in the plane of n_i and n_j through C,
-* centred at C, radius r, from P_i to P_j, whatever the faces. So all three
-* end sections are great circles of the one sphere about C, and each round
-* is tangent to that sphere along its end section (both are tangent to the
-* ball there). The corner's face is the sphere's triangle P_0 P_1 P_2
-* between the three sections: exact, G1 to every round.
+* The ball of radius r touching the faces F_i is centred at C, the point at
+* distance r from each on the side the rounds' balls roll: where the faces'
+* offsets by r meet (the common offset point: for three faces the triple
+* offset point, for four or more planes where their offsets meet in one
+* point). It touches F_i at P_i = C - s_i r n_i, n_i the offset's normal at
+* C (the face's at P_i). The round between F_i and F_j ends on its section
+* through C, the circle of its ball there: its ball's centre runs square to
+* both contact normals, so the section lies in the plane of n_i and n_j
+* through C, centred at C, radius r, from P_i to P_j, whatever the faces. So
+* all the end sections are great circles of the one sphere about C, and each
+* round is tangent to that sphere along its end section (both are tangent to
+* the ball there). The corner's face is the sphere's n-gon P_0 .. P_n-1
+* between the sections: exact, G1 to every round.
 *
-* C itself, where two faces or more are planes: the line their offsets share
-* meets the third's offset, a plane or a quadric (a quadratic along the
-* line), in closed form; else Newton's method on the offsets' implicit equations,
-* the root taken only where an interval (Krawczyk) test proves it the one
-* root within rounding of the part's size of the rounds' own ball.
+* C itself, from three of the faces (the first three; for four or more
+* planes, held to the others): where two faces or more are planes, the line
+* their offsets share meets the third's offset, a plane or a quadric (a
+* quadratic along the line), in closed form; else Newton's method on the
+* offsets' implicit equations, the root taken only where an interval
+* (Krawczyk) test proves it the one root within rounding of the part's size
+* of the rounds' own ball.
 *
-* The face is one rational patch of degree (4, 2) exactly on the sphere
-* whose natural boundary is the triangle (sm_BallTrianglePatch), at every
-* corner, square or oblique: its loop is that natural boundary, the pole at
-* one contact left out, the three sections.
+* The n-gon is fanned from P_0 into the n - 2 triangles P_0 P_k P_k+1, each
+* one rational patch of degree (4, 2) exactly on the sphere whose natural
+* boundary is the triangle (sm_BallTrianglePatch), square or oblique: its
+* loop is that natural boundary, the pole at P_0 left out. For three rounds
+* the one triangle is the corner's face (owner via coordinator, 2026-11-02:
+* four or more rounds with a common ball are a Ball, exact beats certified).
 **********************************************************************/
 
 #include "StdAfx.h"
@@ -52,12 +58,37 @@
 namespace
 {
 
-// The faces of a corner ring of three edgeuses: face i between edgeuses i - 1 and i (as the
+// The faces of a corner ring of n edgeuses: face i between edgeuses i - 1 and i (as the
 // corner's vertex i). NULL entries where two edgeuses share no face.
-void sm_BallRingFaces(const SmTArray<SmEdgeuse*> & crAllEUs, SmFace * apFace[3])
+void sm_BallRingFaces(const SmTArray<SmEdgeuse*> & crAllEUs, std::vector<SmFace*> & rvFace)
 {
+  const ULONG n = crAllEUs.GetSize();
+  rvFace.assign( n, NULL );
+  for (ULONG ii=0; ii<n; ii++)
+    { rvFace[ii] = sm_GetFaceByTwoEdgeuses( crAllEUs[(ii+n-1)%n], crAllEUs[ii], NULL ); }
+}
+
+// The solver of a ring's edgeuse (or of its mate).
+SmFilletSolver * sm_BallSolverOf(SmFilletExecutive * pExec, SmEdgeuse * pEU)
+{
+  SmFilletSolver * pFS = pExec->GetFilletSolverOfEdgeuse( pEU );
+  return ( pFS != NULL ) ? pFS : pExec->GetFilletSolverOfEdgeuse( pEU->GetMate() );
+}
+
+// The point C at distance dRadius from three planes on the ball's sides, from their offset
+// planes (point crOn[i], unit normal crNormal[i]): crNormal[i] . (C - crOn[i]) = 0, by Cramer's rule.
+SmStatus sm_BallPlanesMeet(const SmPoint3d crOn[3], const SmVector3d crNormal[3], SmPoint3d & rC)
+{
+  const double dDet = crNormal[0].Dot( crNormal[1] * crNormal[2] );
+  if ( smos_Fabs( dDet ) <= SM_EFF_ZERO )
+    { SER( SM_ERR ); }
+  double adRhs[3];
   for (ULONG ii=0; ii<3; ii++)
-    { apFace[ii] = sm_GetFaceByTwoEdgeuses( crAllEUs[(ii+2)%3], crAllEUs[ii], NULL ); }
+    { adRhs[ii] = crNormal[ii].x * crOn[ii].x + crNormal[ii].y * crOn[ii].y + crNormal[ii].z * crOn[ii].z; }
+  const SmVector3d sC = ( crNormal[1] * crNormal[2] ) * ( adRhs[0] / dDet ) + ( crNormal[2] * crNormal[0] ) * ( adRhs[1] / dDet )
+                       + ( crNormal[0] * crNormal[1] ) * ( adRhs[2] / dDet );
+  rC = SmPoint3d( sC.x, sC.y, sC.z );
+  return SM_SUCCESS;
 }
 
 // The quadric (a plane or a natural quadric) a ring face lies on; SM_BQ_NONE where it lies on none.
@@ -351,10 +382,13 @@ SmStatus sm_BallTrianglePatch
 } // namespace
 
 /*******************************************************************//**
-PURPOSE: Whether a filleted vertex is a Ball: every edge there blended (three
+PURPOSE: Whether a filleted vertex is a Ball: every edge there blended (n >= 3
     of them), each a constant circular round of the same radius, all convex
-    or all concave, the three faces planes meeting at a point, and the
-    caller not setting the vertex back (a setback corner).
+    or all concave, the n faces planes meeting at a point, one ball touching
+    every one (the rounds' offset planes meet in a point: always for three;
+    owner via coordinator, 2026-11-02, for four or more: exact beats
+    certified), and the caller not setting the vertex back (a setback
+    corner).
 ***********************************************************************/
 SmStatus SmBlendCorner::ClassifyBall
   (const SmVertex             * cpVertex,
@@ -366,22 +400,23 @@ SmStatus SmBlendCorner::ClassifyBall
   reEvent = SM_BCE_NONE;
   NER( cpVertex );
   NER( pExec );
-  if ( crSolverEUs.GetSize() != 3 || crAllEUs.GetSize() != 3 || pExec->IsSetBackVertex( cpVertex ))
+  const ULONG n = crAllEUs.GetSize();
+  if ( n < 3 || crSolverEUs.GetSize() != n || pExec->IsSetBackVertex( cpVertex ))
     { return SM_SUCCESS; }
 
   // constant circular rounds of one radius, of one convexity
   double    dRadius = -1.0;
   double    dTol    = SM_BIG_DOUBLE;
   SmBoolean bConcave0 = FALSE;
-  for (ULONG ii=0; ii<3; ii++)
+  std::vector<SmFilletSolver*> sFS( n, NULL );
+  for (ULONG ii=0; ii<n; ii++)
     {
       SmEdgeuse * pEU = crAllEUs[ii];
       NER( pEU );
-      SmFilletSolver * pFS = pExec->GetFilletSolverOfEdgeuse( pEU );
-      if ( pFS == NULL )
-        { pFS = pExec->GetFilletSolverOfEdgeuse( pEU->GetMate() ); }
+      SmFilletSolver * pFS = sm_BallSolverOf( pExec, pEU );
       if ( pFS == NULL )
         { return SM_SUCCESS; }
+      sFS[ii] = pFS;
       SmFilletSurfaceGenerator * pFSG = pFS->GetFilletSurfaceGenerator();
       const SmOffsetSurface * pOff0 = pFS->GetSurface(0);
       const SmOffsetSurface * pOff1 = pFS->GetSurface(1);
@@ -403,28 +438,62 @@ SmStatus SmBlendCorner::ClassifyBall
   if ( !( dRadius > dTol ))
     { return SM_SUCCESS; }
 
-  // three faces, each a plane or a natural quadric (a cylinder or sphere wider than the ball),
-  // their normals at the vertex independent
-  SmFace * apFace[3];
-  sm_BallRingFaces( crAllEUs, apFace );
-  SmVector3d asNormal[3];
-  for (ULONG ii=0; ii<3; ii++)
+  // n distinct faces: for three, each a plane or a natural quadric (a cylinder or sphere wider than
+  // the ball); for four or more, planes; the first three's normals at the vertex independent
+  std::vector<SmFace*> sFace;
+  sm_BallRingFaces( crAllEUs, sFace );
+  std::vector<SmVector3d> sNormal( n );
+  for (ULONG ii=0; ii<n; ii++)
     {
-      if ( apFace[ii] == NULL )
+      if ( sFace[ii] == NULL )
         { return SM_SUCCESS; }
+      for (ULONG jj=0; jj<ii; jj++)
+        {
+          if ( sFace[jj] == sFace[ii] )
+            { return SM_SUCCESS; }
+        }
       SmBlendQuadric sQuadric;
-      SER( sm_BallFaceQuadric( apFace[ii], dTol, sQuadric ));
-      if ( sQuadric.m_eKind == SmBlendQuadric::SM_BQ_NONE )
+      SER( sm_BallFaceQuadric( sFace[ii], dTol, sQuadric ));
+      if ( sQuadric.m_eKind == SmBlendQuadric::SM_BQ_NONE || ( n > 3 && sQuadric.m_eKind != SmBlendQuadric::SM_BQ_PLANE ))
         { return SM_SUCCESS; }
-      asNormal[ii] = sQuadric.Normal( cpVertex->GetPoint() );
-      if ( asNormal[ii].Unitize( FALSE ) != SM_SUCCESS )
+      sNormal[ii] = sQuadric.Normal( cpVertex->GetPoint() );
+      if ( sNormal[ii].Unitize( FALSE ) != SM_SUCCESS )
         { return SM_SUCCESS; } // a cone's apex
       if (   ( sQuadric.m_eKind == SmBlendQuadric::SM_BQ_SPHERE || sQuadric.m_eKind == SmBlendQuadric::SM_BQ_CYLINDER )
           && !( sQuadric.m_dRadius > dRadius + dTol ))
         { return SM_SUCCESS; } // a ball as wide as the cylinder or sphere: its offset is its axis or centre
     }
-  if ( apFace[0] == apFace[1] || apFace[1] == apFace[2] || apFace[2] == apFace[0] || smos_Fabs( asNormal[0].Dot( asNormal[1] * asNormal[2] )) <= SM_EFF_ZERO_SQRT )
+  if ( smos_Fabs( sNormal[0].Dot( sNormal[1] * sNormal[2] )) <= SM_EFF_ZERO_SQRT )
     { return SM_SUCCESS; }
+  if ( n > 3 )
+    {
+      // the rounds' offset planes of their faces (round i rolls on faces i and i + 1), all
+      // through one point
+      std::vector<SmPoint3d>  sOn( n );
+      std::vector<SmVector3d> sOffNormal( n );
+      for (ULONG ii=0; ii<n; ii++)
+        {
+          SmFilletSolver * pFS = sFS[ii];
+          const ULONG lRail = pFS->FindIndexOfRailOnFace( sFace[ii] );
+          if ( lRail > 1 )
+            { return SM_SUCCESS; }
+          const SmOffsetSurface * pOff = pFS->GetSurface( lRail );
+          NER( pOff );
+          const SmPoint2d sUV = pOff->GetNaturalUVDomain().Evaluate( 0.5, 0.5 );
+          SER( pOff->EvaluatePoint( sUV, sOn[ii] ));
+          SER( pOff->EvaluateNormal( sUV, TRUE, TRUE, sOffNormal[ii] ));
+          SER( sOffNormal[ii].Unitize() );
+        }
+      const SmPoint3d  asOn[3]     = { sOn[0], sOn[1], sOn[2] };
+      const SmVector3d asNormal[3] = { sOffNormal[0], sOffNormal[1], sOffNormal[2] };
+      SmPoint3d sC;
+      SER( sm_BallPlanesMeet( asOn, asNormal, sC ));
+      for (ULONG ii=3; ii<n; ii++)
+        {
+          if ( smos_Fabs( sOffNormal[ii].Dot( sC - sOn[ii] )) > dTol )
+            { return SM_SUCCESS; } // no common ball: a Setback
+        }
+    }
   reEvent = SM_BCE_BALL;
   return SM_SUCCESS;
 
@@ -434,56 +503,54 @@ SmStatus SmBlendCorner::ClassifyBall
 PURPOSE: The Ball's topology: vertex i where the rails of rounds i - 1 and i
     cross on their common face (SM_FV_RAIL_X_RAIL, the ball's contact with
     that face), and edge i from vertex i to vertex i + 1, round i's end
-    section (SM_FE_CROSS_SECTION).
+    section (SM_FE_CROSS_SECTION), for the corner's n rounds.
 ***********************************************************************/
 SmStatus SmBlendCorner::MakeBallTopology()
 {
   NER( m_pAllEUs );
-  if ( !IsBall() || m_pAllEUs->GetSize() != 3 )
+  const ULONG n = m_pAllEUs->GetSize();
+  if ( !IsBall() || n < 3 )
     { SER( SM_ERR ); }
-  SmFace * apFace[3];
-  sm_BallRingFaces( *m_pAllEUs, apFace );
-  SmFilletGeom * apFG[3];
-  SmFilletSolver * apFS[3];
-  for (ULONG ii=0; ii<3; ii++)
+  std::vector<SmFace*> sFace;
+  sm_BallRingFaces( *m_pAllEUs, sFace );
+  std::vector<SmFilletGeom*>   sFG( n, NULL );
+  std::vector<SmFilletSolver*> sFS( n, NULL );
+  for (ULONG ii=0; ii<n; ii++)
     {
-      SmEdgeuse * pEU = (*m_pAllEUs)[ii];
-      apFS[ii] = GetFilletExecutive()->GetFilletSolverOfEdgeuse( pEU );
-      if ( apFS[ii] == NULL )
-        { apFS[ii] = GetFilletExecutive()->GetFilletSolverOfEdgeuse( pEU->GetMate() ); }
-      NER( apFS[ii] );
-      apFG[ii] = apFS[ii]->GetFirstFilletGeom();
-      NER( apFG[ii] );
-      NER( apFace[ii] );
+      sFS[ii] = sm_BallSolverOf( GetFilletExecutive(), (*m_pAllEUs)[ii] );
+      NER( sFS[ii] );
+      sFG[ii] = sFS[ii]->GetFirstFilletGeom();
+      NER( sFG[ii] );
+      NER( sFace[ii] );
     }
 
   // the contacts: rounds i - 1 and i's rails on face i
   SmFilletEdgeuse * pNewEU = NULL;
-  for (ULONG ii=0; ii<3; ii++)
+  for (ULONG ii=0; ii<n; ii++)
     {
       SmFilletVertex * pFV = new (m_pPseudoBrep) SmFilletVertex( this );
       NER( pFV );
-      pFV->SetPointClass( SM_PC_FACE, apFace[ii] );
+      pFV->SetPointClass( SM_PC_FACE, sFace[ii] );
       pFV->SetFilletVertexType( SM_FV_RAIL_X_RAIL );
-      const ULONG lPrev = (ii+2)%3;
-      SER( apFG[lPrev]->MakeRailEdgeuse( m_pPseudoBrep, apFS[lPrev]->FindIndexOfRailOnFace( apFace[ii] ), pFV, pNewEU ));
-      SER( apFG[ii]->MakeRailEdgeuse( m_pPseudoBrep, apFS[ii]->FindIndexOfRailOnFace( apFace[ii] ), pFV, pNewEU ));
+      const ULONG lPrev = (ii+n-1)%n;
+      SER( sFG[lPrev]->MakeRailEdgeuse( m_pPseudoBrep, sFS[lPrev]->FindIndexOfRailOnFace( sFace[ii] ), pFV, pNewEU ));
+      SER( sFG[ii]->MakeRailEdgeuse( m_pPseudoBrep, sFS[ii]->FindIndexOfRailOnFace( sFace[ii] ), pFV, pNewEU ));
       m_vVertices.Add( pFV );
     }
 
-  // each round ends on its section through the ball's centre; the corner's face is a patch of
+  // each round ends on its section through the ball's centre; the corner's faces are patches of
   // its own
   m_bBlending = TRUE;
   m_bBevel    = FALSE;
-  for (ULONG ii=0; ii<3; ii++)
+  for (ULONG ii=0; ii<n; ii++)
     {
       SmFilletEdge * pEdge = NULL;
-      SER( SmFilletEdge::MakeFilletEdge( m_pPseudoBrep, m_vVertices[ii], m_vVertices[(ii+1)%3], pEdge, this ));
+      SER( SmFilletEdge::MakeFilletEdge( m_pPseudoBrep, m_vVertices[ii], m_vVertices[(ii+1)%n], pEdge, this ));
       NER( pEdge );
       pEdge->SetFilletEdgeType( SM_FE_CROSS_SECTION );
       SmFilletEdgeuse * pPrimEU = (SmFilletEdgeuse*)pEdge->GetPrimaryEdgeuse();
       NER( pPrimEU );
-      pPrimEU->SetFilletGeom( apFG[ii] );
+      pPrimEU->SetFilletGeom( sFG[ii] );
       m_vEdges.Add( pEdge );
     }
   return SM_SUCCESS;
@@ -492,14 +559,16 @@ SmStatus SmBlendCorner::MakeBallTopology()
 
 /*******************************************************************//**
 PURPOSE: The Ball's centre and contacts (see the file's head), from the
-    three faces and the processed contacts. The centre is the faces' triple
-    offset point, solved from them; the rounds' balls at the contacts are
-    checked to be it.
+    n faces and the processed contacts. The centre is the faces' common
+    offset point, solved from the first three (their triple offset point)
+    and, for four or more planes, held to the others' offsets; the rounds'
+    balls at the contacts are checked to be it.
 ***********************************************************************/
-SmStatus SmBlendCorner::BallCentre(SmPoint3d & rCentre, double & rdRadius, SmPoint3d asContact[3]) const
+SmStatus SmBlendCorner::BallCentre(SmPoint3d & rCentre, double & rdRadius, std::vector<SmPoint3d> & rvContact) const
 {
   NER( m_pAllEUs );
-  if ( m_vVertices.GetSize() != 3 || m_vEdges.GetSize() != 3 || m_pAllEUs->GetSize() != 3 )
+  const ULONG n = m_pAllEUs->GetSize();
+  if ( n < 3 || m_vVertices.GetSize() != n || m_vEdges.GetSize() != n )
     { SER( SM_ERR ); }
   const double dTol = GetThisApproxTol3d();
 
@@ -527,12 +596,12 @@ SmStatus SmBlendCorner::BallCentre(SmPoint3d & rCentre, double & rdRadius, SmPoi
 
   // each face's quadric offset by r on the ball's side (the side of it the rounds' ball is on,
   // seen from vertex i, the contact on it)
-  SmFace * apFace[3];
+  std::vector<SmFace*> apFace;
   sm_BallRingFaces( *m_pAllEUs, apFace );
-  SmBlendQuadric asOffset[3];
-  double         adSide[3];
-  ULONG          lPlanes = 0;
-  for (ULONG ii=0; ii<3; ii++)
+  std::vector<SmBlendQuadric> asOffset( n );
+  std::vector<double>         adSide( n );
+  ULONG                       lPlanes = 0; // of the first three
+  for (ULONG ii=0; ii<n; ii++)
     {
       SmBlendQuadric sFace;
       SER( sm_BallFaceQuadric( apFace[ii], dTol, sFace ));
@@ -543,11 +612,13 @@ SmStatus SmBlendCorner::BallCentre(SmPoint3d & rCentre, double & rdRadius, SmPoi
       asOffset[ii] = sFace.Offset( adSide[ii] * rdRadius, dTol );
       if ( asOffset[ii].m_eKind != sFace.m_eKind || asOffset[ii].m_dSide != sFace.m_dSide )
         { SER( SM_ERR ); } // ClassifyBall took the quadrics wider than the ball
-      if ( asOffset[ii].m_eKind == SmBlendQuadric::SM_BQ_PLANE )
+      if ( ii < 3 && asOffset[ii].m_eKind == SmBlendQuadric::SM_BQ_PLANE )
         { lPlanes++; }
+      if ( ii >= 3 && asOffset[ii].m_eKind != SmBlendQuadric::SM_BQ_PLANE )
+        { SER( SM_ERR ); } // ClassifyBall took four or more faces to be planes
     }
 
-  // C: where the offsets meet, about the rounds' ball (each quadric's implicit form there)
+  // C: where the first three offsets meet, about the rounds' ball (each quadric's implicit form there)
   SmBallImplicit asF[3];
   ULONG alOrder[3] = { 0, 1, 2 }; // the planes first
   for (ULONG ii=0, lAt=0; ii<3; ii++)
@@ -627,13 +698,24 @@ SmStatus SmBlendCorner::BallCentre(SmPoint3d & rCentre, double & rdRadius, SmPoi
   rCentre = SmPoint3d( sBall.x + x[0], sBall.y + x[1], sBall.z + x[2] );
   if ( rCentre.DistanceBetween( sBall ) > dTol )
     { SER( SM_ERR ); } // the rounds' ball is the offsets' meeting point
+  // four or more planes: the others' offsets pass through it (n . x + c, n = 2 b)
+  for (ULONG ii=3; ii<n; ii++)
+    {
+      SmBallImplicit sF;
+      sF.Set( asOffset[ii], rCentre );
+      const double x0[3] = { 0.0, 0.0, 0.0 };
+      const double dN = 2.0 * smos_Sqrt( sF.b[0] * sF.b[0] + sF.b[1] * sF.b[1] + sF.b[2] * sF.b[2] );
+      if ( !( dN > 0.0 ) || smos_Fabs( sF.Value( x0 )) > dTol * dN )
+        { SER( SM_ERR ); } // ClassifyBall found the ball common to every plane
+    }
   // the contacts: the centre moved back along the offset's normal there (the face's at the contact)
-  for (ULONG ii=0; ii<3; ii++)
+  rvContact.assign( n, SmPoint3d( 0.0, 0.0, 0.0 ));
+  for (ULONG ii=0; ii<n; ii++)
     {
       SmVector3d sN = asOffset[ii].Normal( rCentre );
       SER( sN.Unitize() );
-      asContact[ii] = rCentre - sN * ( adSide[ii] * rdRadius );
-      if ( asContact[ii].DistanceBetween( m_vVertices[ii]->GetPoint() ) > dTol )
+      rvContact[ii] = rCentre - sN * ( adSide[ii] * rdRadius );
+      if ( rvContact[ii].DistanceBetween( m_vVertices[ii]->GetPoint() ) > dTol )
         { SER( SM_ERR ); } // vertex i is the ball's contact with face i
     }
   return SM_SUCCESS;
@@ -650,14 +732,15 @@ PURPOSE: The Ball's contacts as they are in closed form, not as the rails'
 ***********************************************************************/
 SmStatus SmBlendCorner::PlaceBallContacts()
 {
-  SmPoint3d sCentre, asContact[3];
+  SmPoint3d sCentre;
+  std::vector<SmPoint3d> sContact;
   double    dRadius = 0.0;
-  SER( BallCentre( sCentre, dRadius, asContact ));
+  SER( BallCentre( sCentre, dRadius, sContact ));
   const double dTol = GetThisApproxTol3d();
-  for (ULONG ii=0; ii<3; ii++)
+  for (ULONG ii=0; ii<sContact.size(); ii++)
     {
       SmFilletVertex * pFV = m_vVertices[ii];
-      pFV->SetPoint( asContact[ii] );
+      pFV->SetPoint( sContact[ii] );
       // every round's section there: the tsect point of each vertexuse of a round's rail
       SmTArray<SmVertexuse*> sVUs;
       pFV->GetVertexuses( sVUs );
@@ -689,12 +772,24 @@ SmStatus SmBlendCorner::PlaceBallContacts()
 
 } // end SmBlendCorner::PlaceBallContacts
 
+/*******************************************************************//**
+PURPOSE: The Ball's patches: the sphere's n-gon between the rounds' end
+    sections, fanned from contact 0 into the n - 2 triangles (0, k, k + 1),
+    each one rational patch of degree (4, 2) exactly on the sphere
+    (sm_BallTrianglePatch, its pole at contact 0), its loop its natural
+    boundary less the pole: its third side round k's section, its sides
+    through the pole round 0's and round n - 1's sections for the first and
+    last triangles, else the great circles from contact 0 to the others,
+    which the neighbouring patches share (the stitch joins them).
+***********************************************************************/
 SmStatus SmBlendCorner::BuildBallSurface()
 {
   DeleteBallSurface();
-  SmPoint3d sCentre, asContact[3];
+  SmPoint3d sCentre;
+  std::vector<SmPoint3d> sContact;
   double    dRadius = 0.0;
-  SER( BallCentre( sCentre, dRadius, asContact ));
+  SER( BallCentre( sCentre, dRadius, sContact ));
+  const ULONG  n    = (ULONG)sContact.size();
   const double dTol = GetThisApproxTol3d();
 
   // The face's normal is its surface's (SmBrep::OrientTrimmedSurfaces turns a face the other way
@@ -703,53 +798,66 @@ SmStatus SmBlendCorner::BuildBallSurface()
   SmBoolean bAddsMaterial = FALSE;
   SER( SmFilletSolver::IsConcaveEdge( *(*m_pAllEUs)[0]->GetEdge(), bAddsMaterial ));
 
-  // the face: one rational patch on the sphere, the pole at contact 0, its normal turned as the
-  // face's
-  const ULONG lPole = 0;
-  ULONG lFrom = 0, lTo = 0;
-  SmSurface * pSurface = NULL;
-  SmVector3d asDir[3];
-  for (ULONG ii=0; ii<3; ii++)
+  std::vector<SmVector3d> sDir( n );
+  for (ULONG ii=0; ii<n; ii++)
     {
-      asDir[ii] = asContact[ii] - sCentre;
-      SER( asDir[ii].Unitize() );
+      sDir[ii] = sContact[ii] - sCentre;
+      SER( sDir[ii].Unitize() );
     }
-  for (ULONG lTurn=0; lTurn<2 && pSurface == NULL; lTurn++)
+  for (ULONG k=1; k+1<n; k++)
     {
-      SmBSplineSurface * pPatch = NULL;
-      SER( sm_BallTrianglePatch( m_crContext, sCentre, dRadius, asDir, lPole, lTurn == 1 ? TRUE : FALSE, pPatch, lFrom, lTo ));
-      SmObjDelete sClean( pPatch );
-      const SmPoint2d sMid = pPatch->GetNaturalUVDomain().Evaluate( 0.5, 0.5 );
-      SmPoint3d  sAt;
-      SmVector3d sNormal;
-      SER( pPatch->EvaluatePoint( sMid, sAt ));
-      SER( pPatch->EvaluateNormal( sMid, TRUE, TRUE, sNormal ));
-      if ( ( sNormal.Dot( sAt - sCentre ) < 0.0 ) == ( bAddsMaterial ? TRUE : FALSE ))
+      // the triangle (0, k, k + 1): the pole at contact 0, its normal turned as the face's
+      const SmVector3d asDir[3] = { sDir[0], sDir[k], sDir[k+1] };
+      const ULONG      alIndex[3] = { 0, k, k+1 };
+      const ULONG lPole = 0;
+      ULONG lFrom = 0, lTo = 0;
+      SmSurface * pSurface = NULL;
+      for (ULONG lTurn=0; lTurn<2 && pSurface == NULL; lTurn++)
         {
-          // the face's surface carries its sphere as its definition (its offset is exact)
-          SmBallPatch * pBall = NULL;
-          SER( SmBallPatch::Create( m_crContext, *pPatch, sCentre, dRadius, pBall ));
-          m_pBallSurface = pSurface = pBall;
+          SmBSplineSurface * pPatch = NULL;
+          SER( sm_BallTrianglePatch( m_crContext, sCentre, dRadius, asDir, lPole, lTurn == 1 ? TRUE : FALSE, pPatch, lFrom, lTo ));
+          SmObjDelete sClean( pPatch );
+          const SmPoint2d sMid = pPatch->GetNaturalUVDomain().Evaluate( 0.5, 0.5 );
+          SmPoint3d  sAt;
+          SmVector3d sNormal;
+          SER( pPatch->EvaluatePoint( sMid, sAt ));
+          SER( pPatch->EvaluateNormal( sMid, TRUE, TRUE, sNormal ));
+          if ( ( sNormal.Dot( sAt - sCentre ) < 0.0 ) == ( bAddsMaterial ? TRUE : FALSE ))
+            {
+              // the face's surface carries its sphere as its definition (its offset is exact)
+              SmBallPatch * pBall = NULL;
+              SER( SmBallPatch::Create( m_crContext, *pPatch, sCentre, dRadius, pBall ));
+              pSurface = pBall;
+            }
         }
-    }
-  NER( pSurface );
+      NER( pSurface );
+      m_vBallSurfaces.Add( pSurface );
 
-  // its corners are the contacts: the pole at v = vmin, the others at v = vmax
-  const SmExtent2d sNurbDomain = pSurface->GetNaturalUVDomain();
-  const SmPoint2d asUV[3] = { SmPoint2d( sNurbDomain.GetMin().x, sNurbDomain.GetMax().y ), SmPoint2d( sNurbDomain.GetMax().x, sNurbDomain.GetMax().y ),
-                              SmPoint2d( sNurbDomain.GetMin().x, sNurbDomain.GetMin().y ) };
-  const ULONG alAt[3] = { lFrom, lTo, lPole };
-  for (ULONG ii=0; ii<3; ii++)
-    {
-      SmPoint3d sAt;
-      SER( pSurface->EvaluatePoint( asUV[ii], sAt ));
-      if ( sAt.DistanceBetween( m_vVertices[alAt[ii]]->GetPoint() ) > dTol )
+      // its corners are the contacts: the pole at v = vmin, the others at v = vmax
+      const SmExtent2d sNurbDomain = pSurface->GetNaturalUVDomain();
+      const SmPoint2d asUV[3] = { SmPoint2d( sNurbDomain.GetMin().x, sNurbDomain.GetMax().y ), SmPoint2d( sNurbDomain.GetMax().x, sNurbDomain.GetMax().y ),
+                                  SmPoint2d( sNurbDomain.GetMin().x, sNurbDomain.GetMin().y ) };
+      const ULONG alAt[3] = { alIndex[lFrom], alIndex[lTo], alIndex[lPole] };
+      for (ULONG ii=0; ii<3; ii++)
+        {
+          SmPoint3d sAt;
+          SER( pSurface->EvaluatePoint( asUV[ii], sAt ));
+          if ( sAt.DistanceBetween( m_vVertices[alAt[ii]]->GetPoint() ) > dTol )
+            { SER( SM_ERR ); }
+        }
+      // its loop (CreateNaturalUVTrimCurves fills its arrays afresh): three sides, the side at the
+      // pole a point
+      SmTArray<SmCurve*>        s3d;
+      SmTArray<SmBSplineCurve*> sUV;
+      SmTArray<SmOrientType>    sOrients;
+      SER( pSurface->CreateNaturalUVTrimCurves( m_crContext, sNurbDomain, SM_SP_V, TRUE, s3d, sUV, sOrients ));
+      for (ULONG c=0; c<s3d.GetSize(); c++) { m_vBall3d.Add( s3d[c] ); }
+      for (ULONG c=0; c<sUV.GetSize(); c++) { m_vBallUV.Add( sUV[c] ); }
+      for (ULONG c=0; c<sOrients.GetSize(); c++) { m_vBallOrients.Add( sOrients[c] ); }
+      if ( s3d.GetSize() != 3 || sUV.GetSize() != 3 || sOrients.GetSize() != 3 )
         { SER( SM_ERR ); }
+      m_vBallLoops.Add( 3 );
     }
-
-  SER( pSurface->CreateNaturalUVTrimCurves( m_crContext, sNurbDomain, SM_SP_V, TRUE, m_vBall3d, m_vBallUV, m_vBallOrients ));
-  if ( m_vBall3d.GetSize() != 3 || m_vBallUV.GetSize() != 3 || m_vBallOrients.GetSize() != 3 )
-    { SER( SM_ERR ); } // the three sections; the side at the pole a point
   return SM_SUCCESS;
 
 } // end SmBlendCorner::BuildBallSurface
@@ -758,38 +866,55 @@ void SmBlendCorner::DeleteBallSurface()
 {
   for (ULONG ii=0; ii<m_vBall3d.GetSize(); ii++) { delete m_vBall3d[ii]; }
   for (ULONG ii=0; ii<m_vBallUV.GetSize(); ii++) { delete m_vBallUV[ii]; }
+  for (ULONG ii=0; ii<m_vBallSurfaces.GetSize(); ii++) { delete m_vBallSurfaces[ii]; }
   m_vBall3d.ReSet();
   m_vBallUV.ReSet();
   m_vBallOrients.ReSet();
-  if ( m_pBallSurface != NULL ) { delete m_pBallSurface; m_pBallSurface = NULL; }
+  m_vBallSurfaces.ReSet();
+  m_vBallLoops.ReSet();
 }
 
 /*******************************************************************//**
-PURPOSE: The Ball's face: the sphere bounded by its natural loop. Its edges
-    and the rounds' meet in the stitch and the merge.
+PURPOSE: The Ball's faces: each patch on the sphere bounded by its natural
+    loop. Their edges and the rounds' meet in the stitch and the merge.
 ***********************************************************************/
 SmStatus SmBlendCorner::CreateBallPatch()
 {
-  NER( m_pBallSurface );
+  if ( m_vBallSurfaces.GetSize() == 0 || m_vBallLoops.GetSize() != m_vBallSurfaces.GetSize() )
+    { SER( SM_ERR ); }
   SmBrep * pFilletBrep = m_pExecutive->GetFilletBrep();
   NER( pFilletBrep );
-  SmTArray<ULONG> sCurveLoops;
-  sCurveLoops.Add( m_vBall3d.GetSize() );
-  SmTArray<SmPoint3d> sLoopPoints;
-  SmRegion  * pNewRegion = NULL;
-  SmShell   * pNewShell  = NULL;
-  SmFace    * pNewFace   = NULL;
-  SmSurface * pSurface   = m_pBallSurface;
-  // the face takes the surface and the curves
-  SmTArray<SmCurve*>        s3d( m_vBall3d );
-  SmTArray<SmBSplineCurve*> sUV( m_vBallUV );
-  m_pBallSurface = NULL;
-  m_vBall3d.ReSet();
-  m_vBallUV.ReSet();
-  SER( pFilletBrep->MakeFaceWithCurves( NULL, sCurveLoops, &s3d, &sUV, m_vBallOrients, sLoopPoints, pSurface,
-                                        pSurface->GetNaturalUVDomain(), SM_OT_SAME, pNewRegion, pNewShell, pNewFace ));
-  NER( pNewFace );
-  m_vSurfaces.Add( pSurface ); // the corner's patch face (SmFilletCorner::GetPatchFaces, the stitch)
+  ULONG lAt = 0;
+  for (ULONG p=0; p<m_vBallSurfaces.GetSize(); p++)
+    {
+      const ULONG lCount = m_vBallLoops[p];
+      SmTArray<ULONG> sCurveLoops;
+      sCurveLoops.Add( lCount );
+      SmTArray<SmPoint3d> sLoopPoints;
+      SmRegion  * pNewRegion = NULL;
+      SmShell   * pNewShell  = NULL;
+      SmFace    * pNewFace   = NULL;
+      SmSurface * pSurface   = m_vBallSurfaces[p];
+      // the face takes the surface and its loop's curves
+      SmTArray<SmCurve*>        s3d;
+      SmTArray<SmBSplineCurve*> sUV;
+      SmTArray<SmOrientType>    sOrients;
+      for (ULONG c=0; c<lCount; c++)
+        {
+          s3d.Add( m_vBall3d[lAt + c] );
+          sUV.Add( m_vBallUV[lAt + c] );
+          sOrients.Add( m_vBallOrients[lAt + c] );
+          m_vBall3d[lAt + c] = NULL;
+          m_vBallUV[lAt + c] = NULL;
+        }
+      lAt += lCount;
+      m_vBallSurfaces[p] = NULL;
+      SER( pFilletBrep->MakeFaceWithCurves( NULL, sCurveLoops, &s3d, &sUV, sOrients, sLoopPoints, pSurface,
+                                            pSurface->GetNaturalUVDomain(), SM_OT_SAME, pNewRegion, pNewShell, pNewFace ));
+      NER( pNewFace );
+      m_vSurfaces.Add( pSurface ); // the corner's patch faces (SmFilletCorner::GetPatchFaces, the stitch)
+    }
+  DeleteBallSurface();
   return SM_SUCCESS;
 
 } // end SmBlendCorner::CreateBallPatch
