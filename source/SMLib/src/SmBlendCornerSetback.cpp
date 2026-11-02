@@ -882,6 +882,7 @@ SmStatus SmBlendCorner::BuildSetBackFill()
           rpFill = NULL;
           SmBoolean bPlaced = FALSE;
           SER( place( k, bPlaced ));
+          if ( getenv("SBDBG") ) { fprintf( stderr, "SBDBG grow k %.4f placed %d:", k, (int)bPlaced ); for (ULONG i=0; i<n; i++) fprintf( stderr, " %.4f (most %.4f)", m_vSetBacks[i], sMost[i] ); fprintf( stderr, "\n" ); }
           if ( !bPlaced )
             { return SM_SUCCESS; }
           SmBlendSetback::Fill * pFill = new SmBlendSetback::Fill;
@@ -902,7 +903,7 @@ SmStatus SmBlendCorner::BuildSetBackFill()
           if ( bAsked )
             { smos_sprintf( cWhy, _T("Fillet Error: no setback up to twice %g keeps the setback corner's fill no more concave than its faces"), dAsked ); }
           else
-            { smos_sprintf( cWhy, _T("Fillet Error: no setbacks up to twice the rule's within the corner's edges keep its fill no more concave than its faces (no setback builds)") ); }
+            { smos_sprintf( cWhy, _T("Fillet Error: no setbacks up to twice the rule's within the corner's edges keep its fill no more concave than its faces") ); }
           pExec->NoteFitSetBack( 0.0 );
           pExec->GetFilletErrorInfo()->NoteError( m_cpVertex, SM_FIL_FAILURE, SM_FILERR_NO_ROOM, cWhy );
           return SM_ERR;
