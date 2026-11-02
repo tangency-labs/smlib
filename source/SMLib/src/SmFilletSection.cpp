@@ -1912,7 +1912,10 @@ struct sm_GnAreaCells
   {
     const int lCells = static_cast<int>(sE.size()) - 1;
     if (lCells < 1 || !(W.lo >= sE.front() && W.hi <= sE.back()))
-      { return sm_GnAreaSum(lOrder, sm_TayOf(W, sm_Ivl(1.0))); }
+      {
+        SmProceduralBlend::CountAreaSum();
+        return sm_GnAreaSum(lOrder, sm_TayOf(W, sm_Ivl(1.0)));
+      }
     int k0 = static_cast<int>(std::upper_bound(sE.begin(), sE.end(), W.lo) - sE.begin()) - 1;
     int k1 = static_cast<int>(std::lower_bound(sE.begin(), sE.end(), W.hi) - sE.begin()) - 1;
     k0 = std::max(0, std::min(lCells - 1, k0));
@@ -2035,6 +2038,7 @@ SmStatus sm_GnRowTermsOver(const sm_GnVarying & crVary, const sm_VSer<sm_Ivl> (&
   sxTop = sxTop * sInvRR;
   const sm_Tay<sm_Ivl> u = sm_GnHalfAngle(sm_Centred(axMid, sxTop, K, crD));
   const sm_Tay<sm_Ivl> sTg = sm_GnTarget(u);
+  SmProceduralBlend::CountAreaSum();
   const sm_Ivl sPhi = sm_GnAreaSum<sm_Ivl>(n, sm_Ivl(dGuess)) - sTg.c[0];
   sm_Ivl W0;
   SmBoolean bRoot = FALSE;

@@ -40,6 +40,8 @@ struct SmBlendCounts
   unsigned long long lCertifiedPieces; // the pieces of spans a G^n or circle certificate enclosed (each a span's or a
                                        // sub-span's feet and jets over it, Krawczyk's operator and their series),
                                        // the certificate's work, definition or not
+  unsigned long long lAreaSums;        // the equal area thumbweight's area sums I(w) a G^n certificate summed outside
+                                       // its cells (at a point of w, or over an interval of w off the cells' grid)
 };
 
 /*******************************************************************//**
@@ -162,6 +164,8 @@ public:
   static void          ResetCounts();
   // one more piece a certificate enclosed (SmBlendCounts::lCertifiedPieces)
   static void          CountCertifiedPiece();
+  // one more area sum a certificate summed outside its cells (SmBlendCounts::lAreaSums)
+  static void          CountAreaSum();
 
   // SmSurface
   virtual SmBoolean operator==(const SmSurface & crOther) const;
