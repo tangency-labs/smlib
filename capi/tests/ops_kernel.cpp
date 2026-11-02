@@ -4646,16 +4646,11 @@ const TangentEndCase MIXED_CORNER_CASES[] = {
     {"chamfers_together_d2", mixed_chamfers_together_d2, nullptr},
     {"drafted_rounds_together_r2", mixed_drafted_rounds_together_r2,
      "status -1111 (SMLIB_ERR_CORNER_UNSUPPORTED), refused by the Join event, not the Mixed: the drafted peg's union leaves its two pieces of one cone unmerged at z = 10 (the bar's drafted arc wall is a B-spline, the draft walls' ruled surface, not its cone; smlib#108), so V has four edges and the Join finds more than one edge on a side"},
-    {"residue_rounds_together_r2", mixed_residue_rounds_together_r2,
-     "creased inside: the corner's faces L, U fold by up to 0.0161 rad across the trimline's interior knot lines (its uv curve is a C1 cubic fit, and the ribbons' c' term carries c'' into the patch)"},
-    {"residue_rounds_together_r5", mixed_residue_rounds_together_r5,
-     "creased inside: the corner's faces L, U fold by up to 0.0223 rad across the trimline's interior knot lines (its uv curve is a C1 cubic fit, and the ribbons' c' term carries c'' into the patch); SMLib's test #4 also fails L"},
-    {"residue_rounds_together_r7", mixed_residue_rounds_together_r7,
-     "creased inside: the corner's faces L, U fold by up to 0.0196 rad across the trimline's interior knot lines (its uv curve is a C1 cubic fit, and the ribbons' c' term carries c'' into the patch); SMLib's test #4 also fails L"},
-    {"rounds_together_r2", mixed_rounds_together_r2,
-     "creased inside: the corner's faces L, U fold by up to 0.0161 rad across the trimline's interior knot lines (its uv curve is a C1 cubic fit, and the ribbons' c' term carries c'' into the patch)"},
-    {"rounds_together_r5", mixed_rounds_together_r5,
-     "creased inside: the corner's faces L, U fold by up to 0.0223 rad across the trimline's interior knot lines (its uv curve is a C1 cubic fit, and the ribbons' c' term carries c'' into the patch); SMLib's test #4 also fails L"},
+    {"residue_rounds_together_r2", mixed_residue_rounds_together_r2, nullptr},
+    {"residue_rounds_together_r5", mixed_residue_rounds_together_r5, nullptr},
+    {"residue_rounds_together_r7", mixed_residue_rounds_together_r7, nullptr},
+    {"rounds_together_r2", mixed_rounds_together_r2, nullptr},
+    {"rounds_together_r5", mixed_rounds_together_r5, nullptr},
 };
 
 int mixed_corner_cases(bool known_failing, const char *only)
