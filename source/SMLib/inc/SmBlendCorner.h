@@ -94,6 +94,7 @@ protected:
   ULONG                     m_lFillOrder;
   SmBoolean                 m_bConvexSetBack;
   SmBoolean                 m_bSetBackOverflows; // the rule's setbacks do not fit: the blends overflow (refused if the corner is built)
+  SmBoolean                 m_bSetBackOpen = FALSE; // an open G1 corner: its spring curves, no fill, no patches (OpenSetBackSprings)
   SmBlendSetback::Fill    * m_pFill;
 
   // the Ball (SmBlendCornerBall.cpp)
@@ -152,6 +153,8 @@ protected:
   // curve (SM_FE_PRECOMPUTED) and each round's end section (SM_FE_CROSS_SECTION)
   SmStatus MakeSetBackTopology();
   SmStatus BuildSetBackFill();     // the fill, its base points and the spring curves, from the processed rail ends and the rounds' surfaces
+  // an open G1 corner's spring curves in closed form, no fill (from BuildSetBackFill)
+  SmStatus OpenSetBackSprings(const std::vector<SmBlendSetback::Face> & crPlanes, const std::vector<SmBlendSetback::Edge> & crEdges);
   SmStatus CreateSetBackPatches(); // the fill's patches as faces
   SmStatus SetBackNotBuilt(const TCHAR * cpWhy);
 
@@ -236,6 +239,8 @@ public:
   void             SetFillOrder(ULONG lOrder) { m_lFillOrder = lOrder; }
 
   SmBlendCornerEvent GetEvent() const { return m_eEvent; }
+  // an open G1 setback corner: its hole bounded by its sections and spring curves, no patches
+  SmBoolean IsSetBackOpen() const { return ( m_eEvent == SM_BCE_SETBACK && m_bSetBackOpen ) ? TRUE : FALSE; }
   SmBlendTurn        GetTurn()  const { return m_eTurn; }
 
   // whether the two blends are mitred at the common face's concave corner (MakeTwoBlendTopology),
