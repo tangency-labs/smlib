@@ -4,13 +4,15 @@
 // The sweeps (src/smlib_sweeps.cpp) against closed-form volumes: extrusions straight and drafted,
 // revolutions whole, partial and touching the axis, sweeps along lines and arcs, lofts, screw
 // sweeps (Pappus) and sweeps through stations (twisted, scaled, round a closed path), each checked
-// as a valid closed solid; then hostile curve lists and station maps.
+// as a valid closed solid; a line projected through a sphere's poles; then hostile curve lists and
+// station maps.
 
 #include "smlib.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <utility>
 #include <vector>
 
 static int failures = 0;
@@ -44,6 +46,14 @@ struct List
     {
         kinds.push_back(SMLIB_CURVE_ARC);
         reals.insert(reals.end(), {cx, cy, cz, nx, ny, nz, rx, ry, rz, r, a0, a1});
+        return *this;
+    }
+
+    // A quadratic Bézier in the plane z = `z` (weights 1), as a NURBS of degree 2.
+    List &quadratic(double z, double ax, double ay, double bx, double by, double cx, double cy)
+    {
+        kinds.insert(kinds.end(), {SMLIB_CURVE_NURBS, 2, 3});
+        reals.insert(reals.end(), {ax, ay, z, 1, bx, by, z, 1, cx, cy, z, 1, 0, 0, 0, 1, 1, 1});
         return *this;
     }
 
@@ -277,6 +287,41 @@ static double screw_deviation(const smlib_brep *b, const Meridian &m, double pit
 static const double Z[3] = {0, 0, 1};
 static const double O[3] = {0, 0, 0};
 
+// The point at `t` of a curve list's NURBS curve of degree `p` with `n` points (x, y, z, weight)
+// followed by its knots, as `reals` holds it (de Boor on the homogeneous points).
+static void nurbs_point(int p, int n, const double *reals, double t, double out[3])
+{
+    const double *knots = reals + 4 * n;
+    int k = p;
+    for (int i = p; i < n; ++i)
+    {
+        if (t >= knots[i] && t < knots[i + 1])
+            k = i;
+    }
+    if (t >= knots[n])
+        k = n - 1;
+    std::vector<double> d(4 * (p + 1));
+    for (int j = 0; j <= p; ++j)
+    {
+        const double *q = reals + 4 * (k - p + j);
+        d[4 * j + 0] = q[0] * q[3];
+        d[4 * j + 1] = q[1] * q[3];
+        d[4 * j + 2] = q[2] * q[3];
+        d[4 * j + 3] = q[3];
+    }
+    for (int r = 1; r <= p; ++r)
+    {
+        for (int j = p; j >= r; --j)
+        {
+            double a = (t - knots[k - p + j]) / (knots[j + 1 + k - r] - knots[k - p + j]);
+            for (int c = 0; c < 4; ++c)
+                d[4 * j + c] = (1 - a) * d[4 * (j - 1) + c] + a * d[4 * j + c];
+        }
+    }
+    for (int c = 0; c < 3; ++c)
+        out[c] = d[4 * p + c] / d[4 * p + 3];
+}
+
 int main()
 {
     CHECK(smlib_init() == SMLIB_OK);
@@ -297,6 +342,32 @@ int main()
     b = nullptr;
     expect("extrude annulus", smlib_extrude(ring.kinds.data(), ring.nk(), ring.reals.data(), ring.nr(), Z, 3.0, 0.0, SMLIB_DRAFT_CORNER_TANGENT, 1, &b, nullptr), &b,
            PI * (100.0 - 16.0) * 3.0, 1e-6);
+    // A regular polygon of 5000 sides inscribed in a circle of radius 20, 10 up: more curves than
+    // the old limit of 4096 (SMLIB_CURVE_MAX_CURVES, which SMLib's core does not have). Area
+    // n/2 r^2 sin(2 pi / n).
+    {
+        const int n = 5000;
+        std::vector<double> pts;
+        for (int i = 0; i < n; ++i)
+        {
+            const double a = 2.0 * PI * i / n;
+            pts.insert(pts.end(), {20.0 * std::cos(a), 20.0 * std::sin(a), 0.0});
+        }
+        List many;
+        many.polygon(pts);
+        b = nullptr;
+        expect("extrude a 5000-gon", smlib_extrude(many.kinds.data(), many.nk(), many.reals.data(), many.nr(), Z, 10.0, 0.0, SMLIB_DRAFT_CORNER_TANGENT, 1, &b, nullptr), &b,
+               0.5 * n * 400.0 * std::sin(2.0 * PI / n) * 10.0, 1e-9);
+    }
+    // A 3000 x 1000 plate with a hole of radius 0.002 at (30, 20), 2 thick (SolidCraft
+    // display_mesh a_radius_far_below_the_tolerance_keeps_its_chord_facets): a loop 1.5e6 times
+    // smaller than its face.
+    List plate;
+    plate.polygon({0, 0, 0, 3000, 0, 0, 3000, 1000, 0, 0, 1000, 0});
+    plate.append(circle(30, 20, 0, 0, 0, -1, 1, 0, 0, 0.002));
+    b = nullptr;
+    expect("extrude plate with a tiny hole", smlib_extrude(plate.kinds.data(), plate.nk(), plate.reals.data(), plate.nr(), Z, 2.0, 0.0, SMLIB_DRAFT_CORNER_TANGENT, 1, &b, nullptr),
+           &b, 6.0e6 - PI * 0.002 * 0.002 * 2.0, 1e-12);
     // A 10 x 6 plate with a triangular hole whose corner touches its outline at (0, 3), 2 up: the
     // plate touches itself along that corner's line. Each cap is one face of one loop through the
     // corner twice (a face's loops share no vertex); the hole had come out a face of its own,
@@ -344,6 +415,141 @@ int main()
     expect("extrude square drafted down -10 deg", smlib_extrude(sq.kinds.data(), sq.nk(), sq.reals.data(), sq.nr(), down, 4.0, -10.0 * PI / 180.0, SMLIB_DRAFT_CORNER_TANGENT, 1, &b, nullptr),
            &b, 4.0 / 3.0 * (100.0 + a3 * a3 + 10.0 * a3), 1e-6);
 
+    // A drafted wall that closes before the far end (SMLIB_ERR_WALL_CLOSES before). A wedge whose
+    // tip line (0.02 long) is far shorter than the 5 degree inward taper over 2 moves in: every
+    // wall leans by the taper, so the tip's wall is a triangle that closes where the long sides
+    // meet across it, and above that the long sides meet along a ridge. The section at height z
+    // is the profile's lines moved in by z tan 5: a quadrilateral below the apex, a triangle
+    // above, each area quadratic in z, so Simpson's rule on each piece is exact (72.883284979193).
+    // Every corner rule gives this solid: all its corners are ones where the offsets overlap.
+    {
+        const double w[4][2] = {{0, -2}, {20, -0.01}, {20, 0.01}, {0, 2}};
+        List wedge;
+        wedge.polygon({w[0][0], w[0][1], 0, w[1][0], w[1][1], 0, w[2][0], w[2][1], 0, w[3][0], w[3][1], 0});
+        const double ta = std::tan(5.0 * PI / 180.0);
+        // side i moved in by e (to its left), as a point and a unit direction
+        auto moved = [&](int i, double e, double out[4])
+        {
+            const double *p = w[i], *q = w[(i + 1) % 4];
+            double ux = q[0] - p[0], uy = q[1] - p[1], l = std::hypot(ux, uy);
+            ux /= l;
+            uy /= l;
+            out[0] = p[0] - uy * e;
+            out[1] = p[1] + ux * e;
+            out[2] = ux;
+            out[3] = uy;
+        };
+        auto meet = [&](int i, int j, double e, double out[2])
+        {
+            double a[4], c[4];
+            moved(i, e, a);
+            moved(j, e, c);
+            double s = ((c[0] - a[0]) * c[3] - (c[1] - a[1]) * c[2]) / (a[2] * c[3] - a[3] * c[2]);
+            out[0] = a[0] + s * a[2];
+            out[1] = a[1] + s * a[3];
+        };
+        // where the long sides meet, off the moved tip line (into the solid positive): linear in e
+        auto past_tip = [&](double e)
+        {
+            double x[2], q[4];
+            meet(0, 2, e, x);
+            moved(1, e, q);
+            return (x[0] - q[0]) * q[3] - (x[1] - q[1]) * q[2];
+        };
+        double d = 2.0 * ta, closes = d * past_tip(0.0) / (past_tip(0.0) - past_tip(d)), z_closes = closes / ta;
+        auto area = [&](double z)
+        {
+            double e = z * ta, pts[4][2];
+            int m = 0;
+            if (e <= closes)
+                for (int i = 0; i < 4; i++)
+                    meet((i + 3) % 4, i, e, pts[m++]);
+            else
+            {
+                meet(3, 0, e, pts[m++]);
+                meet(0, 2, e, pts[m++]);
+                meet(2, 3, e, pts[m++]);
+            }
+            double a = 0.0;
+            for (int i = 0; i < m; i++)
+                a += pts[i][0] * pts[(i + 1) % m][1] - pts[(i + 1) % m][0] * pts[i][1];
+            return 0.5 * a;
+        };
+        auto simpson = [&](double z0, double z1) { return (z1 - z0) / 6.0 * (area(z0) + 4.0 * area(0.5 * (z0 + z1)) + area(z1)); };
+        double v = simpson(0.0, z_closes) + simpson(z_closes, 2.0);
+        CHECK(std::fabs(z_closes - 0.126237833) < 1e-9 && std::fabs(v - 72.883284979193) < 1e-9);
+        const char *rules[3] = {"curvature", "tangent", "round"};
+        const int32_t rule_ids[3] = {SMLIB_DRAFT_CORNER_CURVATURE, SMLIB_DRAFT_CORNER_TANGENT, SMLIB_DRAFT_CORNER_ROUND};
+        for (int r = 0; r < 3; r++)
+        {
+            char name[64];
+            std::snprintf(name, sizeof name, "drafted wedge, tip closes (%s)", rules[r]);
+            b = nullptr;
+            int32_t s = smlib_extrude(wedge.kinds.data(), wedge.nk(), wedge.reals.data(), wedge.nr(), Z, 2.0, 5.0 * PI / 180.0, rule_ids[r], 1, &b, nullptr);
+            int64_t counts[3] = {0, 0, 0};
+            CHECK(s == SMLIB_OK && b != nullptr && smlib_brep_counts(b, counts) == SMLIB_OK && counts[0] == 6);
+            expect(name, s, &b, v, 1e-9);
+        }
+    }
+    // A slot 0.2 wide and 8 deep cut into a 10 x 10 square from its top side, drafted 10 degrees
+    // outward over 2: the slot's sides close on each other, and its floor's wall closes between
+    // them, at z* = 0.1 / tan 10 = 0.5671; there the sides meet along a ridge and the two halves
+    // of the top side's wall join above it. The section at height z is the square grown by
+    // e = z tan 10 less the slot, 8 long and 0.2 - 2e wide below z*:
+    // V = ((10 + 4t)^3 - 1000) / (6t) - 8 (0.2 z* - t z*^2) = ((10 + 4t)^3 - 1000) / (6t) - 0.08 / t.
+    {
+        List slot;
+        slot.polygon({0, 0, 0, 10, 0, 0, 10, 10, 0, 5.1, 10, 0, 5.1, 2, 0, 4.9, 2, 0, 4.9, 10, 0, 0, 10, 0});
+        const double tt = std::tan(10.0 * PI / 180.0);
+        double v = (std::pow(10.0 + 4.0 * tt, 3) - 1000.0) / (6.0 * tt) - 0.08 / tt;
+        CHECK(std::fabs(v - 213.984095421783) < 1e-9);
+        for (int32_t rule : {SMLIB_DRAFT_CORNER_CURVATURE, SMLIB_DRAFT_CORNER_TANGENT})
+        {
+            b = nullptr;
+            int32_t s = smlib_extrude(slot.kinds.data(), slot.nk(), slot.reals.data(), slot.nr(), Z, 2.0, -10.0 * PI / 180.0, rule, 1, &b, nullptr);
+            int64_t counts[3] = {0, 0, 0};
+            // bottom, top, the square's four sides (the top side's in its two halves), the slot's three
+            CHECK(s == SMLIB_OK && b != nullptr && smlib_brep_counts(b, counts) == SMLIB_OK && counts[0] == 10);
+            expect(rule == SMLIB_DRAFT_CORNER_CURVATURE ? "drafted slot closes (curvature)" : "drafted slot closes (tangent)", s, &b, v, 1e-9);
+        }
+    }
+    // A plus sign drafted 10 degrees over 2, outward and inward, by each corner rule: arms 1
+    // wide reaching 3.5 from the centre, counter-clockwise about +z. Its sides at the reflex
+    // corners are long: the sum of its consecutive sides' cross products points down (8 convex
+    // corners of 1 x 3, 4 reflex ones of 3 x 3), and its walls leaned against the draft (an
+    // outward draft narrowed it, as it narrowed the letter t of a text). The section at height z
+    // is the plus offset by e = z tan 10 outward (-e inward): two crossing bars 1 + 2e by 7 + 2e.
+    // The corners the offset opens (the 8 convex ones outward, the 4 reflex ones inward) are
+    // mitred (curvature, tangent) or closed by an arc of radius e about the corner (round), which
+    // takes (1 - pi/4) e^2 off the section at a convex corner and adds it at a reflex one. The
+    // area is quadratic in z, so Simpson's rule is exact.
+    {
+        List plus;
+        plus.polygon({-0.5, -3.5, 0, 0.5, -3.5, 0, 0.5, -0.5, 0, 3.5, -0.5, 0, 3.5, 0.5, 0, 0.5, 0.5, 0,
+                      0.5, 3.5, 0, -0.5, 3.5, 0, -0.5, 0.5, 0, -3.5, 0.5, 0, -3.5, -0.5, 0, -0.5, -0.5, 0});
+        const double tt = std::tan(10.0 * PI / 180.0);
+        const char *rules[3] = {"curvature", "tangent", "round"};
+        const int32_t rule_ids[3] = {SMLIB_DRAFT_CORNER_CURVATURE, SMLIB_DRAFT_CORNER_TANGENT, SMLIB_DRAFT_CORNER_ROUND};
+        for (double out : {1.0, -1.0})
+        {
+            for (int r = 0; r < 3; r++)
+            {
+                double rounded = rule_ids[r] == SMLIB_DRAFT_CORNER_ROUND ? (out > 0.0 ? -8.0 : 4.0) * (1.0 - PI / 4.0) : 0.0;
+                auto area = [&](double z)
+                {
+                    double e = out * z * tt, w = 1.0 + 2.0 * e;
+                    return 2.0 * w * (7.0 + 2.0 * e) - w * w + rounded * e * e;
+                };
+                double v = 2.0 / 6.0 * (area(0.0) + 4.0 * area(1.0) + area(2.0));
+                char name[64];
+                std::snprintf(name, sizeof name, "drafted plus %s (%s)", out > 0.0 ? "outward" : "inward", rules[r]);
+                b = nullptr;
+                expect(name, smlib_extrude(plus.kinds.data(), plus.nk(), plus.reals.data(), plus.nr(), Z, 2.0, -out * 10.0 * PI / 180.0, rule_ids[r], 1, &b, nullptr), &b, v,
+                       1e-8);
+            }
+        }
+    }
+
     // Revolutions about z of a profile in the xz plane: a square off the axis (a ring), a
     // quarter turn of it, and a half disc on the axis (a sphere).
     const double Y[3] = {0, 1, 0};
@@ -373,6 +579,18 @@ int main()
         b = nullptr;
         expect(name, smlib_revolve(off.kinds.data(), off.nk(), off.reals.data(), off.nr(), O, Z, 2 * PI * turn, 1, &b), &b,
                2 * PI * turn * 7.0 * 4.0, 1e-5);
+    }
+    // A square with a square hole, turned a quarter, three quarters and a whole turn: a ring
+    // with a ring-shaped void or channel inside it (Pappus: turn 2 pi (50 * 15 - 2 * 13)).
+    List holed;
+    holed.polygon({10, 0, 0, 20, 0, 0, 20, 0, 5, 10, 0, 5}).polygon({12, 0, 1, 12, 0, 2, 14, 0, 2, 14, 0, 1});
+    for (double turn : {0.25, 0.75, 1.0})
+    {
+        char name[64];
+        std::snprintf(name, sizeof name, "revolve holed square %.2f turn", turn);
+        b = nullptr;
+        expect(name, smlib_revolve(holed.kinds.data(), holed.nk(), holed.reals.data(), holed.nr(), O, Z, 2 * PI * turn, 1, &b), &b,
+               turn * 2 * PI * (50.0 * 15.0 - 2.0 * 13.0), 1e-5);
     }
     // A quarter disc of radius 20 turned a whole turn: a dome. Its arc is a sketch's arc through
     // (20, 0), a rounded (14.142136, 14.142136) and (0, 20), so its centre is 1.28e-6 off the axis
@@ -441,6 +659,75 @@ int main()
         b = nullptr;
         expect(name, smlib_revolve(horn.kinds.data(), horn.nk(), horn.reals.data(), horn.nr(), O, Z, 2 * PI * turn, 1, &b), &b,
                2 * PI * turn * (14.0 + 56.0 / (3.0 * PI)) * PI * 98.0, 1e-6);
+    }
+    // The whole disc of radius 5 centred 5 from the axis, touching it at the origin: a horn
+    // torus, turned part way (SolidCraft rig sweeps/cov-revolve-circle-touching-its-axis). Its
+    // circle starts where the caller's reference direction says: on the far side (10, 0, 0), up
+    // at (5, 0, 5), or at the origin itself, where it touches the axis. Wherever it starts, the
+    // result is one face of the turned circle and the two discs at its ends. Pappus:
+    // turn * 2 pi 5 * pi 25.
+    {
+        const double refs[3][3] = {{1, 0, 0}, {0, 0, 1}, {-1, 0, 0}};
+        for (const double *ref : refs)
+        {
+            List disc = circle(5, 0, 0, 0, -1, 0, ref[0], ref[1], ref[2], 5);
+            for (double turn : {0.25, 0.5, 0.75})
+            {
+                char name[64];
+                std::snprintf(name, sizeof name, "revolve horn disc (%g, %g) %.2f turn", ref[0], ref[2], turn);
+                b = nullptr;
+                int32_t s = smlib_revolve(disc.kinds.data(), disc.nk(), disc.reals.data(), disc.nr(), O, Z, 2 * PI * turn, 1, &b);
+                int64_t counts[3] = {0, 0, 0};
+                CHECK(s != SMLIB_OK || (smlib_brep_counts(b, counts) == SMLIB_OK && counts[0] == 3));
+                expect(name, s, &b, turn * 2 * PI * 5.0 * PI * 25.0, 1e-6);
+            }
+        }
+    }
+    // A barrel: a closed profile on the axis whose outer side is an arc of radius 24 centred 10
+    // on the far side of the axis (the whole circle turned would be a spindle torus; the arc is
+    // its inner, lemon zone), from z 0 to 26.8, turned half and a whole turn (SolidCraft shell_barrel,
+    // oracle 04-revolve-vase). Volume: pi * integral over z of (c + sqrt(r^2 - (z - h)^2))^2,
+    // c = -10, r = 24, h = 13.4.
+    {
+        const double r = 24.0, c = -10.0, h = 13.4;
+        const double a = std::asin(h / r);
+        const double rim = c + r * std::cos(a);
+        auto integral = [&](double z)
+        {
+            double u = z - h;
+            return PI * ((c * c + r * r) * u - u * u * u / 3.0 + c * (u * std::sqrt(r * r - u * u) + r * r * std::asin(u / r)));
+        };
+        List barrel;
+        barrel.line(0, 0, 0, rim, 0, 0).arc(c, 0, h, 0, -1, 0, 1, 0, 0, r, -a, a).line(rim, 0, 2 * h, 0, 0, 2 * h).line(0, 0, 2 * h, 0, 0, 0);
+        for (double turn : {0.5, 1.0})
+        {
+            char name[64];
+            std::snprintf(name, sizeof name, "revolve barrel %.2f turn", turn);
+            b = nullptr;
+            expect(name, smlib_revolve(barrel.kinds.data(), barrel.nk(), barrel.reals.data(), barrel.nr(), O, Z, 2 * PI * turn, 1, &b), &b,
+                   turn * (integral(2 * h) - integral(0)), 1e-6);
+        }
+    }
+    // A disc touching the axis at its seam vertex (radius 5, centred 5 from the axis) turned a
+    // quarter, a half and a whole turn: a horn torus, its minor circles all starting at its
+    // centre. Volume (Pappus): the disc's area times the path of its centre, 25 pi * 2 pi 5 * turn.
+    // The sweep once read a base curve the face creator had let go and crashed; then the torus's
+    // minor circle starting on the axis got no direction, the face had no trims and the sweep
+    // reported no solid; then the check took the corner rows of its control net, on the axis
+    // next to the boundary pole, for an internal pole, and failed classifying the seam that
+    // collapses to the centre. The body is valid.
+    {
+        List touching = circle(0, 0, 20, 0, 0, 1, 1, 0, 0, 5);
+        const double hinge[3] = {5, 0, 20};
+        const double Y1[3] = {0, 1, 0};
+        for (double turn : {0.25, 0.5, 1.0})
+        {
+            char name[64];
+            std::snprintf(name, sizeof name, "revolve horn torus %.2f turn", turn);
+            b = nullptr;
+            expect(name, smlib_revolve(touching.kinds.data(), touching.nk(), touching.reals.data(), touching.nr(), hinge, Y1, 2 * PI * turn, 1, &b), &b,
+                   250.0 * PI * PI * turn, 1e-7);
+        }
     }
     // An open chain of two curves (a line out from r 6 to 8, then up 2) turned part way into a
     // sheet (cap 0): the two curves share their meeting vertex, so the sweep gives two faces
@@ -602,7 +889,38 @@ int main()
         expect(h.name,
                smlib_sweep(h.profile->kinds.data(), h.profile->nk(), h.profile->reals.data(), h.profile->nr(), h.path->kinds.data(), h.path->nk(),
                            h.path->reals.data(), h.path->nr(), SMLIB_SWEEP_FOLLOW, 1, &b),
-               &b, h.area * h.length, 1e-4);
+               &b, h.area * h.length, 1e-7);
+    }
+    // A disc r 5 up 20, round a quarter of radius 5 and on 20 (SolidCraft's reference case 50):
+    // the bend's inner side pinches to a point on its axis, a horn torus between two cylinders.
+    // Swept piece by piece the walls are exact (no NURBS: the joined path's fitted walls were
+    // near singular there and failed the check) and the volume is Pappus': pi r^2 times the
+    // path's length. Again with the bend a hair (2.3e-10) tighter, as SolidCraft's sketch solves
+    // the reference case's three-point arc: the disc reaches the axis within the tolerance and
+    // sweeps the horn torus all the same (as it lay, a spindle torus's trims turned its loop over).
+    for (double tighter : {0.0, 2.2965e-10})
+    {
+        const double R = 5.0 - tighter;
+        List tight;
+        tight.line(0, 0, 0, 0, 0, 20).arc(5 - tighter, 0, 20 + tighter, 0, 1, 0, -1, 0, 0, R, 0, PI / 2).line(5, 0, 25, 25, 0, 25);
+        List d5 = circle(0, 0, 0, 0, 0, 1, 1, 0, 0, 5);
+        b = nullptr;
+        int32_t s = smlib_sweep(d5.kinds.data(), d5.nk(), d5.reals.data(), d5.nr(), tight.kinds.data(), tight.nk(), tight.reals.data(), tight.nr(),
+                                SMLIB_SWEEP_FOLLOW, 1, &b);
+        smlib_flat *f = nullptr;
+        const int64_t *types = nullptr;
+        int64_t n = 0, nurbs = 0;
+        CHECK(s == SMLIB_OK && b != nullptr && smlib_brep_export(b, &f) == SMLIB_OK);
+        CHECK(f != nullptr && smlib_flat_get_i64(f, SMLIB_FLAT_FACE_SURFACE_TYPE, &types, &n) == SMLIB_OK);
+        for (int64_t i = 0; i < n; ++i)
+        {
+            nurbs += types[i] == SMLIB_FLAT_SURFACE_NURBS;
+        }
+        smlib_flat_free(f);
+        const char *name = tighter > 0.0 ? "sweep disc round a hair-tight bend" : "sweep disc round a tight bend";
+        std::printf("%-34s faces %lld, nurbs %lld\n", name, static_cast<long long>(n), static_cast<long long>(nurbs));
+        CHECK(n == 5 && nurbs == 0);
+        expect(name, s, &b, PI * 25.0 * (40.0 + PI / 2 * R), 1e-7);
     }
 
     // Lofts: square to square (a box), circle to circle (a frustum, ruled).
@@ -1130,6 +1448,31 @@ int main()
         expect("stations: twisted ring, joined",
                smlib_sweep_stations(ring.kinds.data(), ring.nk(), ring.reals.data(), ring.nr(), round.data(), m, SMLIB_ENDS_JOINED, &b), &b,
                64.0 * 2.0 * PI * 30.0, 1e-5);
+        // The same ring with a 4 x 4 hole (SolidCraft issue_2005 closed_holed_sweep_joins_every_loop),
+        // 73 stations round the full turn, twisted a half turn about the path and not twisted:
+        // the hole's tube is the solid's cavity. The stitch glued the walls into two closed tubes
+        // but left the region inside the hole's tube solid (the volume the outer tube's alone) and,
+        // twisted, the tubes in each other's regions (SMLib's check: an inner shell not inside its
+        // region's outer shell). Pappus: V = (64 - 16) * 2 pi 30.
+        for (double twist_turn : {0.5 * PI, 0.0})
+        {
+            const int k = 73;
+            List holed = ring;
+            holed.polygon({28, 0, -2, 28, 0, 2, 32, 0, 2, 32, 0, -2});
+            std::vector<double> joined;
+            for (int i = 0; i < k; ++i)
+            {
+                double f = static_cast<double>(i) / (k - 1);
+                double phi = 2.0 * PI * f, psi = 2.0 * twist_turn * f;
+                double cp = std::cos(phi), sp = std::sin(phi), cs = std::cos(psi), ss = std::sin(psi);
+                double d[3] = {30.0 - 30.0 * cs, 0.0, 30.0 * ss};
+                joined.insert(joined.end(), {cp * cs, sp * cs, -ss, -sp, cp, 0, cp * ss, sp * ss, cs, cp * d[0] - sp * d[1], sp * d[0] + cp * d[1], d[2]});
+            }
+            b = nullptr;
+            expect(twist_turn > 0.0 ? "stations: holed ring, half turn, joined" : "stations: holed ring, joined",
+                   smlib_sweep_stations(holed.kinds.data(), holed.nk(), holed.reals.data(), holed.nr(), joined.data(), k, SMLIB_ENDS_JOINED, &b), &b,
+                   48.0 * 2.0 * PI * 30.0, 1e-6);
+        }
         // Hostile maps: a singular matrix, a NaN, one station, unknown ends.
         std::vector<double> flat = twist;
         flat[12 * 5 + 0] = 0.0;
@@ -1201,6 +1544,156 @@ int main()
         {
             smlib_brep_free(x);
         }
+    }
+
+    // SolidCraft text cuts: two letters of a TrueType outline (lines and quadratic Béziers) in
+    // the plane z = -1, extruded 1 along +z, as SolidCraft's text cut makes its tool. Each is one
+    // valid solid of its outline's area (Green's theorem over the exact Béziers) times 1.
+    {
+        // letter_b: 17 curves
+        List letter_b;
+        letter_b.line(5.555713271823988, 9.036905606813344, -1.0, 5.555713271823988, 9.650461320085167, -1.0);
+        letter_b.quadratic(-1.0, 5.555713271823988, 9.650461320085167, 5.242015613910574, 9.585876508161817, 5.075940383250533, 9.585876508161817);
+        letter_b.quadratic(-1.0, 5.075940383250533, 9.585876508161817, 4.7853087295954575, 9.585876508161817, 4.6676721078779275, 9.731192334989354);
+        letter_b.quadratic(-1.0, 4.6676721078779275, 9.731192334989354, 4.5500354861603975, 9.876508161816892, 4.5500354861603975, 10.236337828246985);
+        letter_b.line(4.5500354861603975, 10.236337828246985, -1.0, 4.5500354861603975, 13.387154009936125, -1.0);
+        letter_b.line(4.5500354861603975, 13.387154009936125, -1.0, 5.472675656493967, 13.387154009936125, -1.0);
+        letter_b.line(5.472675656493967, 13.387154009936125, -1.0, 5.472675656493967, 13.991483321504614, -1.0);
+        letter_b.line(5.472675656493967, 13.991483321504614, -1.0, 4.5500354861603975, 13.991483321504614, -1.0);
+        letter_b.line(4.5500354861603975, 13.991483321504614, -1.0, 4.5500354861603975, 15.107877927608232, -1.0);
+        letter_b.line(4.5500354861603975, 15.107877927608232, -1.0, 3.9964513839602556, 15.107877927608232, -1.0);
+        letter_b.line(3.9964513839602556, 15.107877927608232, -1.0, 3.7519517388218597, 13.991483321504614, -1.0);
+        letter_b.line(3.7519517388218597, 13.991483321504614, -1.0, 3.1430092264017033, 13.991483321504614, -1.0);
+        letter_b.line(3.1430092264017033, 13.991483321504614, -1.0, 3.1430092264017033, 13.387154009936125, -1.0);
+        letter_b.line(3.1430092264017033, 13.387154009936125, -1.0, 3.719659332860185, 13.387154009936125, -1.0);
+        letter_b.line(3.719659332860185, 13.387154009936125, -1.0, 3.719659332860185, 10.056422995031937, -1.0);
+        letter_b.quadratic(-1.0, 3.719659332860185, 10.056422995031937, 3.719659332860185, 8.926188786373315, 4.71611071682044, 8.926188786373315);
+        letter_b.quadratic(-1.0, 4.71611071682044, 8.926188786373315, 5.1451383960255495, 8.926188786373315, 5.555713271823988, 9.036905606813344);
+        // letter_w: 20 curves
+        List letter_w;
+        letter_w.quadratic(-1.0, 14.805535841022001, 18.0, 13.306600425833926, 12.628814762242726, 13.210078069552875, 12.217175301632363);
+        letter_w.quadratic(-1.0, 13.210078069552875, 12.217175301632363, 13.113555713271824, 11.805535841022001, 12.960255500354862, 11.152590489709013);
+        letter_w.line(12.960255500354862, 11.152590489709013, -1.0, 12.90915542938254, 10.953867991483321, -1.0);
+        letter_w.quadratic(-1.0, 12.90915542938254, 10.953867991483321, 12.727466288147623, 11.79985805535841, 12.409510290986516, 13.020581973030518);
+        letter_w.line(12.409510290986516, 13.020581973030518, -1.0, 11.01845280340667, 18.0, -1.0);
+        letter_w.line(11.01845280340667, 18.0, -1.0, 9.979418026969482, 18.0, -1.0);
+        letter_w.quadratic(-1.0, 9.979418026969482, 18.0, 8.582682753726047, 13.054648687012065, 8.403832505322924, 12.316536550745209);
+        letter_w.quadratic(-1.0, 8.403832505322924, 12.316536550745209, 8.224982256919802, 11.578424414478354, 8.088715400993612, 10.953867991483321);
+        letter_w.quadratic(-1.0, 8.088715400993612, 10.953867991483321, 7.872959545777147, 11.964513839602555, 7.617459190915543, 12.918381831085878);
+        letter_w.line(7.617459190915543, 12.918381831085878, -1.0, 6.180979418026969, 18.0, -1.0);
+        letter_w.line(6.180979418026969, 18.0, -1.0, 5.05110007097232, 18.0, -1.0);
+        letter_w.line(5.05110007097232, 18.0, -1.0, 7.407381121362668, 10.0, -1.0);
+        letter_w.line(7.407381121362668, 10.0, -1.0, 8.701916252661462, 10.0, -1.0);
+        letter_w.quadratic(-1.0, 8.701916252661462, 10.0, 10.149751596877218, 15.24627395315827, 10.251951738821859, 15.689141234918381);
+        letter_w.quadratic(-1.0, 10.251951738821859, 15.689141234918381, 10.354151880766501, 16.132008516678496, 10.501774308019872, 16.790631653655076);
+        letter_w.quadratic(-1.0, 10.501774308019872, 16.790631653655076, 10.762952448545068, 15.558552164655785, 10.899219304471256, 15.081618168914122);
+        letter_w.line(10.899219304471256, 15.081618168914122, -1.0, 12.28459900638751, 10.0, -1.0);
+        letter_w.line(12.28459900638751, 10.0, -1.0, 13.579134137686303, 10.0, -1.0);
+        letter_w.line(13.579134137686303, 10.0, -1.0, 15.93541518807665, 18.0, -1.0);
+        letter_w.line(15.93541518807665, 18.0, -1.0, 14.805535841022001, 18.0, -1.0);
+        expect("text letter b extruded", smlib_extrude(letter_b.kinds.data(), letter_b.nk(), letter_b.reals.data(), letter_b.nr(), Z, 1.0, 0.0,
+                                                  SMLIB_DRAFT_CORNER_TANGENT, 1, &b, nullptr),
+               &b, 6.371946433527546, 1e-9);
+        expect("text letter w extruded", smlib_extrude(letter_w.kinds.data(), letter_w.nk(), letter_w.reals.data(), letter_w.nr(), Z, 1.0, 0.0,
+                                                  SMLIB_DRAFT_CORNER_TANGENT, 1, &b, nullptr),
+               &b, 30.54176411298956, 1e-9);
+    }
+
+    // A line projected through a sphere's poles: the plane of its sweep cuts the sphere in a
+    // meridian, half of it the face's seam (an exact conic) and half traced into each pole. Every
+    // projected curve stays within the asked tolerance of the sphere, the poles included, and the
+    // pieces meeting at a pole meet there smoothly, as the meridian does. The ball is SMLib's own
+    // and the same ball through its flat arrays (as SolidCraft hands it back).
+    {
+        const double centre[3] = {0, 0, 0};
+        smlib_brep *made = nullptr;
+        CHECK(smlib_make_sphere(centre, 20.0, &made) == SMLIB_OK && made != nullptr);
+        smlib_flat *flat = nullptr;
+        smlib_brep *imported = nullptr;
+        CHECK(made != nullptr && smlib_brep_export(made, &flat) == SMLIB_OK && smlib_brep_import(flat, &imported) == SMLIB_OK);
+        smlib_flat_free(flat);
+        List across;
+        across.line(-10, 0, 50, 10, 0, 50);
+        const double top[3] = {0, 0, 20}, down[3] = {0, 0, -1};
+        const double tolerance = 4e-5;
+        for (const auto &[name, ball] : {std::pair<const char *, smlib_brep *>{"made", made}, {"imported", imported}})
+        {
+            if (ball == nullptr)
+            {
+                continue;
+            }
+            smlib_curves *projected = nullptr;
+            CHECK(smlib_project_curves(ball, top, 0.04, across.kinds.data(), across.nk(), across.reals.data(), across.nr(), down,
+                                       tolerance, &projected) == SMLIB_OK);
+            int64_t nk = 0, nr = 0, nc = 0;
+            CHECK(projected != nullptr && smlib_curves_size(projected, &nk, &nr, &nc) == SMLIB_OK && nc > 0);
+            std::vector<int64_t> kinds(static_cast<size_t>(nk));
+            std::vector<double> reals(static_cast<size_t>(nr)), intervals(static_cast<size_t>(2 * nc));
+            CHECK(projected != nullptr
+                  && smlib_curves_read(projected, kinds.data(), nk, reals.data(), nr, intervals.data(), 2 * nc) == SMLIB_OK);
+            double worst = 0.0, north = 1e9, south = 1e9;
+            // Each curve end at a pole, with the unit tangent there (pointing into the curve).
+            struct End
+            {
+                double pole, t[3];
+            };
+            std::vector<End> ends;
+            size_t ki = 0, ri = 0;
+            for (int64_t c = 0; c < nc && ki + 3 <= kinds.size(); ++c)
+            {
+                CHECK(kinds[ki] == SMLIB_CURVE_NURBS);
+                int p = static_cast<int>(kinds[ki + 1]), n = static_cast<int>(kinds[ki + 2]);
+                ki += 3;
+                const double *r = reals.data() + ri;
+                double t0 = intervals[2 * c], t1 = intervals[2 * c + 1];
+                for (int i = 0; i <= 2000; ++i)
+                {
+                    double q[3];
+                    nurbs_point(p, n, r, t0 + (t1 - t0) * i / 2000.0, q);
+                    double off = std::fabs(std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]) - 20.0) + std::fabs(q[1]);
+                    worst = std::max(worst, off);
+                    north = std::min(north, std::hypot(q[0], q[1], q[2] - 20.0));
+                    south = std::min(south, std::hypot(q[0], q[1], q[2] + 20.0));
+                }
+                for (int side = 0; side < 2; ++side)
+                {
+                    double te = side == 0 ? t0 : t1, ti = te + (side == 0 ? 1e-7 : -1e-7) * (t1 - t0), a[3], b2[3];
+                    nurbs_point(p, n, r, te, a);
+                    nurbs_point(p, n, r, ti, b2);
+                    if (std::hypot(a[0], a[1]) <= tolerance)
+                    {
+                        End e{a[2], {b2[0] - a[0], b2[1] - a[1], b2[2] - a[2]}};
+                        double l = std::hypot(e.t[0], e.t[1], e.t[2]);
+                        for (double &x : e.t)
+                            x /= l;
+                        ends.push_back(e);
+                    }
+                }
+                ri += static_cast<size_t>(4 * n + n + p + 1);
+            }
+            // Two ends at the same pole run opposite ways along the meridian: their tangents
+            // pointing into their curves are opposite.
+            double corner = 0.0;
+            for (size_t i = 0; i < ends.size(); ++i)
+            {
+                for (size_t j = i + 1; j < ends.size(); ++j)
+                {
+                    if (std::fabs(ends[i].pole - ends[j].pole) < 1.0)
+                    {
+                        double d = -(ends[i].t[0] * ends[j].t[0] + ends[i].t[1] * ends[j].t[1] + ends[i].t[2] * ends[j].t[2]);
+                        corner = std::max(corner, std::acos(std::clamp(d, -1.0, 1.0)));
+                    }
+                }
+            }
+            std::printf("line through a sphere's poles (%s): %lld curves, worst %.3g mm off the sphere, %zu ends at the poles meeting at %.3g rad\n",
+                        name, static_cast<long long>(nc), worst, ends.size(), corner);
+            CHECK(worst <= tolerance);
+            CHECK(north <= tolerance && south <= tolerance);
+            CHECK(ends.size() == 4 && corner <= 1e-6);
+            smlib_curves_free(projected);
+        }
+        smlib_brep_free(imported);
+        smlib_brep_free(made);
     }
 
     // Hostile lists: nothing is built, nothing crashes.

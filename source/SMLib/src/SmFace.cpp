@@ -18,6 +18,8 @@
 #include <SmEdge.h>
 #include <SmBSplineSurface.h>
 #include <algorithm>
+#include <utility>
+#include <vector>
 #include <SmTArray.h>
 #include <SmTrimSrfCache.h>
 #include <SmGeomUtility.h>
@@ -118,6 +120,23 @@ class SmNLibStackHandler
 /*******************************************************************//**
   Static function.
 ***********************************************************************/
+
+// SolidCraft: whether the surface's seam in `eSurfParam` (its const-parameter boundary curve)
+// collapses to one point within `dTol`, as a horn torus's does: its minor circles all start at
+// its centre, where they touch the axis.
+static SmBoolean sm_SeamCollapses
+(const SmContext & crContext,
+ const SmSurface & rSurface,
+ SmSurfParamType   eSurfParam,
+ double            dTol)
+{
+  SmCrvOnSurf *pSeam = NULL ;
+  if (rSurface.CreateSeamCurve(crContext, eSurfParam, pSeam, TRUE) != SM_SUCCESS || pSeam == NULL)
+    { return FALSE ; }
+  SmBoolean bCollapses = pSeam->IsDegenerate(dTol) ;
+  delete pSeam ;
+  return bCollapses ;
+}
 
 /*******************************************************************//**
 PURPOSE: Static helper for ComputeLoopOrientation(): See whether the current step
@@ -935,15 +954,278 @@ SmStatus SmFace::CalculateBoundingBox
 
 } // end SmFace::CalculateBoundingBox
 
+namespace
+{
+// SolidCraft fork: the trimmed face's own extremes (sm_FaceDirectedMax).
+
+// Most cells sm_FaceDirectedMax divides a face's domain into, and how often a cell is divided:
+// a cell left undecided at either limit counts with its own greatest value, so the box is then
+// at most that much larger than the face, never smaller.
+const ULONG sm_lFaceExtremeMaxCells = 4096;
+const ULONG sm_lFaceExtremeMaxDepth = 16;
+
+// How near a cell's side a knot may lie and still divide it: N_SrfExtractPatch (CopySubPatch)
+// snaps a requested side onto a knot within this distance, so a part nearer than that is no
+// cell of its own.
+const double sm_dFaceExtremeKnotSnap = 1.0e-08;
+
+// Where a cell of [dLo, dHi] is divided along one way: at the knot strictly inside it (by more
+// than sm_dFaceExtremeKnotSnap) nearest its middle, else at its middle. Divided at knots, a cell
+// comes to lie within one knot span that way, as sm_CellMonotone asks of a rational patch;
+// halved at middles alone, a cell over a knot off the dyadic points of the domain (a screw
+// surface's at every eighth of a turn) never does.
+double sm_CellDivision( const SmTArray<double> & crKnots, double dLo, double dHi )
+{
+  const double dMid = 0.5 * ( dLo + dHi );
+  double dAt = dMid, dOff = SM_BIG_DOUBLE;
+  for ( ULONG k = 0; k < crKnots.GetSize(); k++ )
+    {
+      const double dKnot = crKnots[k];
+      if (   dKnot > dLo + sm_dFaceExtremeKnotSnap && dKnot < dHi - sm_dFaceExtremeKnotSnap
+          && smos_Fabs( dKnot - dMid ) < dOff )
+        {
+          dAt  = dKnot;
+          dOff = smos_Fabs( dKnot - dMid );
+        }
+    }
+  return dAt;
+}
+
+// The greatest S.d over crCell of pFace's surface, and whether a point taking it lies inside the
+// face (the solver's solutions within its tolerance of the greatest, each classified).
+// rbFound is FALSE when the solver gives no solution.
+SmStatus sm_CellDirectedMax
+(
+  const SmFace     * pFace,
+  const SmExtent2d & crCell,
+  const SmVector3d & crDir,
+  double           & rdTop,
+  SmBoolean        & rbInFace,
+  SmBoolean        & rbFound
+)
+{
+  rbFound  = FALSE;
+  rbInFace = FALSE;
+  rdTop    = -SM_BIG_DOUBLE;
+  SmSurface * pSurface = pFace->GetSurface();
+  SmSolutionArray sSolutions;
+  SER( pSurface->GlobalPointSolve( crCell, SM_SO_3D_SIGNED_DIRECTED_MAXIMIZE, crDir,
+                                   SM_EFF_ZERO_SQRT, NULL, SM_SR_ALL, sSolutions ) );
+  SmSurfaceEval sEval( pSurface );
+  SmZoneTol3d sFaceZoneTol3d = SmTol::GetZoneTol3d( pFace );
+  SmPointClassification sPtClass( sFaceZoneTol3d, pFace->GetContext() );
+  double dInFace = -SM_BIG_DOUBLE;
+  for ( ULONG j = 0; j < sSolutions.GetSize(); j++ )
+    {
+      SER( sEval.SetUV( sSolutions[j].m_vStart[0], sSolutions[j].m_vStart[1] ) );
+      const SmPoint3d sPos = sEval.Pos();
+      const double dValue = sPos.x * crDir.x + sPos.y * crDir.y + sPos.z * crDir.z;
+      rbFound = TRUE;
+      rdTop = std::max( rdTop, dValue );
+      SER( pFace->PointClassify( sEval.GetUV(), sFaceZoneTol3d, FALSE, TRUE, sPtClass ) );
+      // Inside the face only (SM_PC_FACE). A point classified on an edge or a vertex lies within
+      // the face's zone tolerance of its boundary, inside or out: where the surface runs on past
+      // the boundary it is up to that tolerance outside the face (4e-5 past a sphere octant's arc
+      // on a box's rounded corner, so the octant boxed to 1.0000243 where it ends at 1). The
+      // boundary's own extremes come from the edges' tight boxes rdBest starts from.
+      if ( sPtClass.GetPointClass() == SM_PC_FACE )
+        { dInFace = std::max( dInFace, dValue ); }
+    }
+  // Every solution takes the greatest value to the solver's tolerance.
+  rbInFace = rbFound && dInFace >= rdTop - SM_EFF_ZERO_SQRT;
+  if ( rbInFace )
+    { rdTop = std::max( rdTop, dInFace ); }
+  return SM_SUCCESS;
+}
+
+// Whether S.d is monotone along u, or along v, over all of crCell, so that no point inside
+// the cell is a local extreme of it, from the exact B-spline subpatch over the cell, c(i,j) its
+// control values P(i,j).d (i along u, j along v):
+// - polynomial (no weights, or all alike): each row of control values (one index along the
+//   other way) strictly below the next, entry by entry. An isocurve's control values are then
+//   means of a row's with the same coefficients, so they rise too, and a B-spline whose control
+//   values rise rises.
+// - rational, one Bezier patch: the isocurve along v at u has control values r(j) and weights
+//   W(j) > 0, and r(j+1) - r(j) has the sign of
+//   D(u) = sum_{i,k} N_i N_k w(i,j+1) w(k,j) (c(i,j+1) - c(k,j)), a Bezier of degree 2p in u
+//   whose coefficients, B_i B_k = C(p,i) C(p,k) / C(2p,i+k) B_{i+k}, are computed exactly here;
+//   all of one sign for every j, the isocurve's control values rise (or fall) with j. As a
+//   rational Bezier with positive weights diminishes variation, the isocurve then does too.
+//   Likewise along u. A rational patch of several spans is divided further first (at its knots,
+//   sm_CellDivision).
+// FALSE when it cannot be told.
+SmBoolean sm_CellMonotone( const SmSurface * pSurface, const SmExtent2d & crCell, const SmVector3d & crDir )
+{
+  if ( !pSurface->IsKindOf( SmBSplineSurface_TYPE ) )
+    { return FALSE; }
+  SmBSplineSurface * pPatch = NULL;
+  const SmStatus eStatus = ( (const SmBSplineSurface *)pSurface )->CopySubPatch( *pSurface->GetContext(), crCell, pPatch );
+  SmObjDelete sDeletePatch( pPatch );
+  if ( eStatus != SM_SUCCESS || pPatch == NULL )
+    { return FALSE; }
+  // CopySubPatch snaps to knots: a patch short of the cell says nothing about the rest of it.
+  const SmExtent2d sPatchDomain = pPatch->GetNaturalUVDomain();
+  if (   sPatchDomain.GetUMin() > crCell.GetUMin() || sPatchDomain.GetVMin() > crCell.GetVMin()
+      || sPatchDomain.GetUMax() < crCell.GetUMax() || sPatchDomain.GetVMax() < crCell.GetVMax() )
+    { return FALSE; }
+  ULONG lNumU = 0, lNumV = 0;
+  SmTArray<SmPoint3d> sPoints;
+  SmTArray<double>    sWeights;
+  if ( pPatch->GetControlPointNet( lNumU, lNumV, sPoints, sWeights ) != SM_SUCCESS
+       || lNumU < 2 || lNumV < 2 || sPoints.GetSize() != lNumU * lNumV )
+    { return FALSE; }
+  SmBoolean bRational = FALSE;
+  if ( sWeights.GetSize() != 0 )
+    {
+      if ( sWeights.GetSize() != sPoints.GetSize() )
+        { return FALSE; }
+      for ( ULONG k = 0; k < sWeights.GetSize(); k++ )
+        {
+          if ( !( sWeights[k] > 0.0 ) )
+            { return FALSE; }
+          bRational = bRational || sWeights[k] != sWeights[0];
+        }
+    }
+  const ULONG lDegU = pPatch->GetDegree( SM_SP_U ), lDegV = pPatch->GetDegree( SM_SP_V );
+  if ( bRational && ( lNumU != lDegU + 1 || lNumV != lDegV + 1 ) )
+    { return FALSE; }
+  // Control value and weight (i, j), i along u and j along v.
+  auto value = [&]( ULONG i, ULONG j ) {
+    const SmPoint3d & crP = sPoints[i * lNumV + j];
+    return crP.x * crDir.x + crP.y * crDir.y + crP.z * crDir.z;
+  };
+  auto weight = [&]( ULONG i, ULONG j ) { return bRational ? sWeights[i * lNumV + j] : 1.0; };
+  auto choose = []( ULONG n, ULONG k ) {
+    double c = 1.0;
+    for ( ULONG t = 1; t <= k; t++ )
+      { c = c * double( n - k + t ) / double( t ); }
+    return c;
+  };
+  // Along v (bAlongV) or u: the control values rising (dSign 1) or falling (dSign -1) from each
+  // index that way to the next, at every point of the other way.
+  auto rises = [&]( SmBoolean bAlongV, double dSign ) {
+    const ULONG lAlong  = bAlongV ? lNumV : lNumU;
+    const ULONG lAcross = bAlongV ? lNumU : lNumV;
+    auto c = [&]( ULONG lAcrossIdx, ULONG lAlongIdx ) { return bAlongV ? value( lAcrossIdx, lAlongIdx ) : value( lAlongIdx, lAcrossIdx ); };
+    auto w = [&]( ULONG lAcrossIdx, ULONG lAlongIdx ) { return bAlongV ? weight( lAcrossIdx, lAlongIdx ) : weight( lAlongIdx, lAcrossIdx ); };
+    for ( ULONG j = 0; j + 1 < lAlong; j++ )
+      {
+        if ( !bRational )
+          {
+            for ( ULONG i = 0; i < lAcross; i++ )
+              {
+                if ( !( dSign * ( c( i, j + 1 ) - c( i, j ) ) > 0.0 ) )
+                  { return FALSE; }
+              }
+            continue;
+          }
+        const ULONG p = lAcross - 1;
+        for ( ULONG m = 0; m <= 2 * p; m++ )
+          {
+            double dCoefficient = 0.0;
+            for ( ULONG i = ( m > p ? m - p : 0 ); i <= std::min( m, p ); i++ )
+              {
+                const ULONG k = m - i;
+                dCoefficient += choose( p, i ) * choose( p, k ) * w( i, j + 1 ) * w( k, j ) * ( c( i, j + 1 ) - c( k, j ) );
+              }
+            if ( !( dSign * dCoefficient > 0.0 ) )
+              { return FALSE; }
+          }
+      }
+    return TRUE;
+  };
+  return rises( TRUE, 1.0 ) || rises( TRUE, -1.0 ) || rises( FALSE, 1.0 ) || rises( FALSE, -1.0 );
+}
+
+// The greatest S.d over pFace, the trimmed region of its surface, into rdBest, which comes in
+// as the greatest over the face's vertices and edges. SmSurface::GlobalPointSolve gives only
+// the greatest value over a whole domain (not every local one), and the face's domain is its
+// loops' box: where the surface rises highest outside the trim, a classification of that point
+// alone leaves out the face's own highest point inside. So the domain is divided into cells,
+// each one decided by:
+// 1. its greatest value is no more than rdBest: nothing in it is higher;
+// 2. a point taking its greatest value lies in the face: that value is the face's there;
+// 3. its least value exceeds rdBest: the cell lies in one connected region where S.d > rdBest,
+//    which no point of the face's boundary reaches (S.d <= rdBest there), so the region is
+//    wholly inside the face or wholly outside it, and the point of 2 says outside;
+// 4. S.d is monotone over it (sm_CellMonotone): the face's highest point in it is on the face's
+//    boundary, which rdBest holds, or on the cell's own sides, which the neighbouring cells hold;
+// otherwise it is divided each way (sm_CellDivision: at a knot inside it, else at its middle). A
+// cell left at sm_lFaceExtremeMaxDepth or past sm_lFaceExtremeMaxCells counts with its greatest
+// value (the box is no smaller than the face).
+SmStatus sm_FaceDirectedMax( const SmFace * pFace, const SmVector3d & crDir, double & rdBest )
+{
+  const SmSurface * pSurface = pFace->GetSurface();
+  SmTArray<double> sKnotsU, sKnotsV;
+  if ( pSurface->IsKindOf( SmBSplineSurface_TYPE ) )
+    {
+      SER( ( (const SmBSplineSurface *)pSurface )->GetKnots( SM_SP_U, sKnotsU ) );
+      SER( ( (const SmBSplineSurface *)pSurface )->GetKnots( SM_SP_V, sKnotsV ) );
+    }
+  std::vector< std::pair<SmExtent2d, ULONG> > sCells;
+  sCells.push_back( std::make_pair( pFace->GetUVDomain(), 0UL ) );
+  ULONG lCells = 0;
+  while ( !sCells.empty() )
+    {
+      const SmExtent2d sCell  = sCells.back().first;
+      const ULONG      lDepth = sCells.back().second;
+      sCells.pop_back();
+
+      double dTop = 0.0;
+      SmBoolean bInFace = FALSE, bFound = FALSE;
+      SER( sm_CellDirectedMax( pFace, sCell, crDir, dTop, bInFace, bFound ) );
+      if ( !bFound )
+        {
+          // No solution to decide by: the surface's loose box over the cell holds it.
+          SmExtent3d sLoose;
+          SER( pSurface->CalculateBoundingBox( sCell, &sLoose ) );
+          const SmPoint3d sLo = sLoose.GetMin(), sHi = sLoose.GetMax();
+          const double dLoose = std::max( sLo.x * crDir.x, sHi.x * crDir.x ) + std::max( sLo.y * crDir.y, sHi.y * crDir.y )
+                              + std::max( sLo.z * crDir.z, sHi.z * crDir.z );
+          rdBest = std::max( rdBest, dLoose );
+          continue;
+        }
+      if ( dTop <= rdBest + SM_EFF_ZERO_SQRT )
+        { continue; }
+      if ( bInFace )
+        {
+          rdBest = dTop;
+          continue;
+        }
+      double dNegLow = 0.0;
+      SmBoolean bLowInFace = FALSE, bLowFound = FALSE;
+      SER( sm_CellDirectedMax( pFace, sCell, -crDir, dNegLow, bLowInFace, bLowFound ) );
+      if ( bLowFound && -dNegLow > rdBest )
+        { continue; }
+      if ( sm_CellMonotone( pSurface, sCell, crDir ) )
+        { continue; }
+      if ( lDepth >= sm_lFaceExtremeMaxDepth || ++lCells > sm_lFaceExtremeMaxCells )
+        {
+          rdBest = dTop;
+          continue;
+        }
+      const SmPoint2d sAt( sm_CellDivision( sKnotsU, sCell.GetUMin(), sCell.GetUMax() ),
+                           sm_CellDivision( sKnotsV, sCell.GetVMin(), sCell.GetVMax() ) );
+      sCells.push_back( std::make_pair( SmExtent2d( sCell.GetUMin(), sCell.GetVMin(), sAt.x, sAt.y ), lDepth + 1 ) );
+      sCells.push_back( std::make_pair( SmExtent2d( sAt.x, sCell.GetVMin(), sCell.GetUMax(), sAt.y ), lDepth + 1 ) );
+      sCells.push_back( std::make_pair( SmExtent2d( sCell.GetUMin(), sAt.y, sAt.x, sCell.GetVMax() ), lDepth + 1 ) );
+      sCells.push_back( std::make_pair( SmExtent2d( sAt.x, sAt.y, sCell.GetUMax(), sCell.GetVMax() ), lDepth + 1 ) );
+    }
+  return SM_SUCCESS;
+}
+} // namespace
+
 /*******************************************************************//**
 PURPOSE: Calculate a more precise normal axis aligned bounding box of the Face.
 
 NOTES: The returned BBox is the union of
   1. all Face vertices
   2. All Face->Edge->CalculateTightBoundingBoxes
-  3. All Face->Surface->GlobalPointSolve(SM_SO_3D_SIGNED_DIRECTED_MAXIMIZE, m_vUVDomain, SM_SW_ALL)
-                 solutions for +/- X,Y,and Z directions that classify within the
-                 Face's trim boundaries.
+  3. The Face->Surface's greatest and least X, Y and Z inside the Face's trim boundaries
+     (sm_FaceDirectedMax: GlobalPointSolve(SM_SO_3D_SIGNED_DIRECTED_MAXIMIZE) over cells of
+     m_vUVDomain, divided until each cell's extreme is decided inside the trim). One solve over
+     the whole of m_vUVDomain gives only the surface's extreme there, which may lie outside the
+     trim while the Face's own lies inside it.
 
   CalculateTightBoundingBox() is very expensive, it requires
   6 SM_SR_ALL global surface and at least 6 PointClassify calls per face.
@@ -964,7 +1246,6 @@ SmStatus SmFace::CalculateTightBoundingBox( SmExtent3d & rFaceBBox ) const
   SmExtent3d sFaceBBox;
 
   SmSurface * pSurface       = GetSurface();
-  SmZoneTol3d sFaceZoneTol3d = SmTol::GetZoneTol3d(this) ;
 
   // Method: get the bounding box of the Vertices.
   // Then get the tight box of each Edge and union it in.
@@ -1028,70 +1309,22 @@ SmBoolean bDebugMe=FALSE;
   if ( sSurfBBox.IsContainedBy( sFaceBBox ) )
     { return SM_SUCCESS; }
 
-  // Unfortunately, we can't just call the surface method with our domain,
-  // that box could well be larger than that of the Face.
-  // So we have to reproduce the Surface method here,
-  // and check each solution for being inside the Face.
-  //
-  //  SER( pSurface->CalculateTightBoundingBox( GetUVDomain(), &sSurfBBox ));
-  //  sFaceBBox.Union( sSurfBBox, sFaceBBox );
-
-  // Begin copy of Surface::CalculateTightBoundingBox():
-  // NOTE: if you modify this, also look at SmSurface::CalculateTightBoundingBox().
-
-  SmSolutionArray sSolutions;
-  SmSurfaceEval sEval( pSurface );
-  SmPointClassification sPtClass(sFaceZoneTol3d, GetContext()) ;  // should be sEval UVPointZoneTol3d
-  sSurfBBox.Init();
-
-  SmVector3d sDirVec( 1, 0, 0 );  // +/- x
-
-  ULONG idx;
-  for ( idx = 0; idx < 3; idx++ )
+  // The surface's extremes inside the face, each way along x, y and z, starting from those
+  // of its vertices and edges (sm_FaceDirectedMax).
+  const double adLo[3] = { sFaceBBox.GetUMin(), sFaceBBox.GetVMin(), sFaceBBox.GetWMin() };
+  const double adHi[3] = { sFaceBBox.GetUMax(), sFaceBBox.GetVMax(), sFaceBBox.GetWMax() };
+  double adMin[3], adMax[3];
+  for ( ULONG idx = 0; idx < 3; idx++ )
     {
-      if ( idx == 1 ) sDirVec.Set( 0, 1, 0 );  // +/- y
-      if ( idx == 2 ) sDirVec.Set( 0, 0, 1 );  // +/- z
-
-      // Positive direction:
-      SER( pSurface->GlobalPointSolve(m_vUVDomain,
-                                 SM_SO_3D_SIGNED_DIRECTED_MAXIMIZE,
-                                 sDirVec,
-                                 SM_EFF_ZERO_SQRT,
-                                 NULL,
-                                 SM_SR_ALL,
-                                 sSolutions)  );
-
-      for ( j = 0; j < sSolutions.GetSize(); j++ )
-        {
-          SER( sEval.SetUV( sSolutions[j].m_vStart[0], sSolutions[j].m_vStart[1] ) );
-          SER( PointClassify( sEval.GetUV(), sFaceZoneTol3d, FALSE, TRUE, sPtClass ) );
-          if ( sPtClass.GetPointClass() != SM_PC_UNKNOWN )
-            { sSurfBBox.AddPoint3d( sEval.Pos() ); }
-        }
-
-      // Negative direction:
-      sDirVec = -sDirVec;
-
-      SER( pSurface->GlobalPointSolve(m_vUVDomain, 
-                                 SM_SO_3D_SIGNED_DIRECTED_MAXIMIZE,
-                                 sDirVec,
-                                 SM_EFF_ZERO_SQRT,
-                                 NULL,
-                                 SM_SR_ALL,
-                                 sSolutions) );
-
-      for ( j = 0; j < sSolutions.GetSize(); j++ )
-        {
-          SER( sEval.SetUV( sSolutions[j].m_vStart[0], sSolutions[j].m_vStart[1] ) );
-          SER( PointClassify( sEval.GetUV(), sFaceZoneTol3d, FALSE, TRUE, sPtClass ) );
-          if ( sPtClass.GetPointClass() != SM_PC_UNKNOWN )
-            { sSurfBBox.AddPoint3d( sEval.Pos() ); }
-        }
-    } // end for on x, y, z directions
-
-    sFaceBBox.Union( sSurfBBox, sFaceBBox );
-
-  // End copy of Surface::CalculateTightBoundingBox():
+      SmVector3d sDirVec( idx == 0 ? 1.0 : 0.0, idx == 1 ? 1.0 : 0.0, idx == 2 ? 1.0 : 0.0 );
+      adMax[idx] = adHi[idx];
+      SER( sm_FaceDirectedMax( this, sDirVec, adMax[idx] ) );
+      double dNegMax = -adLo[idx];
+      SER( sm_FaceDirectedMax( this, -sDirVec, dNegMax ) );
+      adMin[idx] = -dNegMax;
+    }
+  sFaceBBox.AddPoint3d( SmPoint3d( adMin[0], adMin[1], adMin[2] ) );
+  sFaceBBox.AddPoint3d( SmPoint3d( adMax[0], adMax[1], adMax[2] ) );
 
   // Set output and return
   rFaceBBox = sFaceBBox;
@@ -2006,6 +2239,11 @@ SmBoolean bDebugMe = FALSE ;
 
   // Use dimensionless UV area, translated near the loop to avoid cancellation.
   // Error estimates below are refinement differences, not certified bounds.
+  // The floor is relative to the loop's own bounding box (dimensionless too):
+  // a loop's area is a fraction of its box whatever its size, so a small
+  // hole in a large face (0.002 mm across a 3 m plate, 1e-12 of the face's
+  // domain) is oriented as a large one is. A box with no width or no height
+  // bounds no area.
   const double dAreaFloor = 1e-8;
   for(double dAngle = 10.0; dAngle >= 0.1; dAngle /= 10.0)
     {
@@ -2091,7 +2329,10 @@ SmBoolean bDebugMe = FALSE ;
          || (sSampler.m_bClosedV && smos_Fabs(sPrevious.m_sUV.y-sFirst.m_sUV.y) > 0.5*sSampler.m_sSurfDomain.YLength()))
         { return SM_SUCCESS; }
       sSampler.m_dArea += sSampler.SignedArea(sPrevious, sFirst);
-      if(smos_Fabs(sSampler.m_dArea) > 8.0*sSampler.m_dError+dAreaFloor)
+      const double dBoxU = sSampler.m_sBounds.XLength()/dWidth, dBoxV = sSampler.m_sBounds.YLength()/dHeight;
+      if(!(dBoxU > SM_EFF_ZERO && dBoxV > SM_EFF_ZERO))
+        { continue; }
+      if(smos_Fabs(sSampler.m_dArea) > 8.0*sSampler.m_dError+dAreaFloor*dBoxU*dBoxV)
         {
           reLoopOrient = sSampler.m_dArea > 0.0 ? SM_OT_SAME : SM_OT_OPPOSITE;
           return SM_SUCCESS;
@@ -15995,6 +16236,13 @@ static ULONG lCount      = 1 ; lCount++ ;
     } // end need to run SetProps_Stage2 check
 
   // arrive here when HasSeamProblems() is called from SetProps_Stage2
+
+  // SolidCraft change: a seam that collapses to a point is no seam an edge could cross or must
+  // lie on, so it is not classified (classifying the point failed the check of a horn torus).
+  if (bPeriodicU && sm_SeamCollapses(*pContext, *pSurface, SM_SP_U, sSurfaceZoneTol3d))
+    { bPeriodicU = FALSE ; }
+  if (bPeriodicV && sm_SeamCollapses(*pContext, *pSurface, SM_SP_V, sSurfaceZoneTol3d))
+    { bPeriodicV = FALSE ; }
   
   // periodic in U
   if(bPeriodicU)
@@ -18740,6 +18988,29 @@ SmStatus SmFace::ShrinkGeometry()
   if (sSurfDomain.GetMax().x - sMax.x < dTol) { sMax.x = sSurfDomain.GetMax().x ; }
   if (sSurfDomain.GetMax().y - sMax.y < dTol) { sMax.y = sSurfDomain.GetMax().y ; }
 
+  // SolidCraft change: a bound within rounding of one of the surface's knots (64 ulp of the
+  // knot's magnitude) is that knot. A computed end parameter (a trim curve's end control point
+  // made by knot insertion, say) lands a rounding step either side of the knot it stands for;
+  // TrimWithDomain would space a bound just past a knot off it by its snapping tolerance and keep
+  // a sliver span past the knot.
+  if (pSurface->IsKindOf(SmBSplineSurface_TYPE))
+    {
+      const SmBSplineSurface *pBSS = (const SmBSplineSurface *)pSurface;
+      for (int iDir = 0; iDir < 2; iDir++)
+        {
+          SmTArray<double> sKnots;
+          SER( pBSS->GetKnots(iDir == 0 ? SM_SP_U : SM_SP_V, sKnots) );
+          double &rLo = (iDir == 0) ? sMin.x : sMin.y;
+          double &rHi = (iDir == 0) ? sMax.x : sMax.y;
+          for (ULONG k = 0; k < sKnots.GetSize(); k++)
+            {
+              const double dRound = 64.0 * DBL_EPSILON * smos_Fabs(sKnots[k]);
+              if (smos_Fabs(rLo - sKnots[k]) <= dRound) { rLo = sKnots[k]; }
+              if (smos_Fabs(rHi - sKnots[k]) <= dRound) { rHi = sKnots[k]; }
+            }
+        }
+    }
+
   // set the (revised) face domain
   // note: there is no test here if the face domain is greater than
   // the surface domain
@@ -18747,11 +19018,19 @@ SmStatus SmFace::ShrinkGeometry()
   pF->SetUVDomain(sNewDomain);
   // end CalculateUVDomainFromUVTrimCurves
 
+  // SolidCraft change: whether the trim keeps the surface's parameterization, by its kind's
+  // construction (SmSurface::TrimKeepsParameterization), asked before it is trimmed
+  const SmBoolean bSameMap = pSurface->TrimKeepsParameterization(sNewDomain);
+
   // Trim the surface and reset the surface domain to the Face's trim boundary
   SER( pSurface->TrimWithDomain(sNewDomain) );
 
   // remove all associated UVTrimCurves
-  SER( this->RemoveUVTrimCurves() );
+  // SolidCraft change: but where the trim kept the surface's parameterization: they lie on it as
+  // they did (the fillet's own exactly), and are kept. Else they no longer lie on it and are made
+  // again by projecting the edges' curves.
+  if ( !bSameMap )
+    { SER( this->RemoveUVTrimCurves() ); }
 
 // Remove Composites
 //  // Now Trim all Curves to the face edges  (NOT composites)

@@ -73,7 +73,7 @@ enum SmCreateUVTrimCurvePathType
       SM_CTC_TWOSINGULARENDPTS_RECOVERY,        // CreateUVTrimCurve: DropCurve Fail recovery - Both endPts are singularities
       SM_CTC_SHORTPIECE_SEAMCROSS_RECOVERY,     // CreateUVTrimCurve: CrossSeam recovery - ShortSegment deleted - LongSegment used 
       SM_CTC_PICKONESEAM_RECOVERY,              // CreateUVTrimCurve: DropToSeam - Pick one DropCurve - Discard the other 
-      SM_CTC_10PERCENT_SEAMCROSS_RECOVERY,      // CreateUVTrimCurve: CrossSeam recovery - 10% Segment deleted - LongSegment used 
+      SM_CTC_10PERCENT_SEAMCROSS_RECOVERY,      // CreateUVTrimCurve: CrossSeam/boundary recovery - the longest run of pieces that meet, joined, on its own edge parameters
       SM_CTC_1PERCENT_UVTRIMCURVETRIM_RECOVERY1,// CreateUVTrimCurve: mismatched UVTrimCurve/Curve param ranges - resolved by Trimming UVTrimCurve
       SM_CTC_1PERCENT_UVTRIMCURVETRIM_RECOVERY2,// CreateUVTrimCurve: mismatched UVTrimCurve/Curve param ranges - resolved by Trimming UVTrimCurve
       SM_CTC_1PERCENT_EDGETRIM_RECOVERY1,       // CreateUVTrimCurve: mismatched UVTrimCurve/Curve param ranges - resolved by Trimming Edge
@@ -525,8 +525,9 @@ public:
                                           SmBoolean  & rbSuccess,                // out: pOther will fit inside this; see notes above  
                                           double     & rdMaxDist,                // out: max distance found; see notes above           
                                           SmExtent2d * pOtherDomain = NULL,      // in : optional: use this subset of pOther
-                                          SmExtent2d * pOptCoveredSTEPDomain = NULL) ; // out: covered subset in this surface's STEP parameters
+                                          SmExtent2d * pOptCoveredSTEPDomain = NULL,   // out: covered subset in this surface's STEP parameters
                                                                                        //      valid when rbSuccess is TRUE
+                                          SmBoolean    bAcrossWrappedSeams = TRUE) ; // in : SolidCraft: cover across a seam this surface wraps
 
   // See whether either surface can contain the other, possibly expanding it.
   virtual SmStatus CoverOtherCoincidentSurface(SmSurface   * pOther,                  // in : other surface                                             
@@ -535,8 +536,9 @@ public:
                                                SmSurface  *& pCoveringSurf,           // out: covering surface, NULL if not possible
                                                const SmExtent2d * cpOptThisDomain = NULL,  // in : subset of this in NURBS parameters; NULL uses natural domain
                                                const SmExtent2d * cpOptOtherDomain = NULL, // in : subset of pOther in NURBS parameters; NULL uses natural domain
-                                               SmExtent2d * pOptMergedDomain = NULL) ;    // out: union in covering surface's final NURBS parameters
+                                               SmExtent2d * pOptMergedDomain = NULL,      // out: union in covering surface's final NURBS parameters
                                                                                           //      valid only when pCoveringSurf is not NULL
+                                               SmBoolean    bAcrossWrappedSeams = TRUE) ; // in : SolidCraft: cover across a seam the covering surface wraps
 
   virtual SmStatus CreateIsoParametricCurve(const SmContext  & crContext,              // in : context for created objects
                                             SmSurfParamType    eSurfParam,             // in : Defines which Nurb parameter direction on surface to extract curve from                   
@@ -1757,6 +1759,13 @@ public:
 
   virtual SmStatus TrimWithDomain(SmExtent2d & crTrimUVDomain)         
                                  { SM_REF1(crTrimUVDomain) ; SE(SM_ERR) ; return SM_ERR; }
+
+  // SolidCraft change: TRUE where TrimWithDomain(crTrimDomain) keeps this surface's
+  // parameterization by its construction: every (u, v) of the trimmed domain evaluates to the
+  // point it did, so curves made on its parameters (a face's trim curves) still lie on it.
+  // FALSE unless the kind's trim is known to.
+  virtual SmBoolean TrimKeepsParameterization(const SmExtent2d & crTrimDomain) const
+                                 { SM_REF1(crTrimDomain) ; return FALSE; }
   
 
   // See if intersecting coincident range is really a tangent intersection point 

@@ -35,13 +35,14 @@
 
 #ifndef __SMLOCALSOLVEND_H__
 #include <SmLocalSolveNd.h>
+#include <cmath>
 #endif
 
 class SmFilletSurfaceGenerator;
-class SmLinearCrossSectionFSG;
-class SmBlendCurveCrossSectionFSG;
+class SmGnSectionFSG;
 class SmFilletExecutive;
 class SmSelfIntersectionHandler;
+struct SmExactBlend; // SolidCraft change: SmFilletExact.h
 
 // Type of different solvers
 enum SmFilletSolverType 
@@ -65,6 +66,35 @@ enum SmFilletSurfaceGeneratorType
 };
 
 /*******************************************************************//**
+PURPOSE: SolidCraft change. A round whose radius law has corners, as the
+    exact pieces between them, kept beside the surface joined from them.
+
+NOTES: SmGnSectionFSG::CircleSurface skins each piece on its own and joins
+    them; the join takes one boundary row at each corner, but the pieces end
+    on the corner ball's touch circles of their own sides. Where the law dips
+    the ball's sphere shows between those circles; where it peaks the pieces
+    run past them and cross. SmFilletExecutive::BuildLawCorners puts the
+    exact pieces back on the faces and builds each corner.
+***********************************************************************/
+class SM_EXPORT SmLawCornerPieces
+{
+public:
+  enum { SM_LC_MATCHING = 0, SM_LC_DIP = 1, SM_LC_PEAK = 2 };
+
+  SmBoolean                     m_bTaken;       // matched to a fillet geom's surface already (SmFilletSolver::FindLawCornerPieces)
+  SmTArray<SmBSplineSurface*>   m_vPieces;      // the pieces in order along the round (owned)
+  SmTArray<double>              m_vJoinedEnds;  // each piece's end in the joined surface's u
+  SmTArray<ULONG>               m_vKinds;       // per corner: SM_LC_MATCHING, SM_LC_DIP or SM_LC_PEAK
+  SmTArray<SmPoint3d>           m_vCentres;     // per corner: the corner ball's centre
+  SmTArray<double>              m_vRadii;       // per corner: its radius
+  double                        m_dTol3d;       // how near the pieces' sections are to the balls' circles
+
+  SmLawCornerPieces() : m_bTaken(FALSE), m_dTol3d(0.0) {}
+  ~SmLawCornerPieces();
+  SmStatus Copy(const SmContext & crContext, SmLawCornerPieces *& rpCopy) const;
+} ; // end class SmLawCornerPieces
+
+/*******************************************************************//**
 PURPOSE: Class contains original solver-specific data before roll over
 
 NOTES: 
@@ -82,6 +112,35 @@ public:
                               }
 
 } ; // end class SmFilletSolverOffsetsData
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. The rolling ball's local regularity at a station
+    of a blend (the blend design's §6, the conditions for a rolling-ball
+    blend to be regular: each face locally encloses the ball, and every
+    point of the section is progressive).
+
+NOTES: m_dEnclosed is the least over the two faces of 1 - r k, k the face's
+    largest principal curvature toward the ball (> 0: the face encloses the
+    ball). m_dProgress is the least of F_tt / |c'|^2 over the section's points
+    (> 0: progressive), F the balls' family. m_dWorks is the radius that works
+    (the largest that is regular there, or for a radius law the radius where
+    the law first stops being regular).
+***********************************************************************/
+// SolidCraft change: what a refusal's largest size that builds sizes (SmFilletExecutive::NoteFitRadius)
+enum { SM_FIT_RADIUS = 0, SM_FIT_SCALE = 1, SM_FIT_CHORD = 2 };
+
+struct SmBallStation
+{
+  enum { SM_BS_UNJUDGED = 0, SM_BS_REGULAR, SM_BS_NOT_ENCLOSED, SM_BS_REGRESSIVE };
+  ULONG     m_lCheck    = SM_BS_UNJUDGED; // the first check that fails, or SM_BS_REGULAR
+  double    m_dRadius   = 0.0;            // the ball's radius there
+  double    m_dEnclosed = SM_BIG_DOUBLE; // SM_BIG_DOUBLE: not judged
+  double    m_dProgress = SM_BIG_DOUBLE;
+  double    m_dWorks    = 0.0;
+  double    m_dFits     = SM_BIG_DOUBLE; // the least over the faces of 1 / k: the radius h(r) first reaches 0 at
+  SmBoolean m_bLaw      = FALSE;          // the radius follows a law along the edge
+  SmBoolean m_bBall     = TRUE;           // one ball rolls on both faces (FALSE: unequal offsets, check 1 only)
+};
 
 /*******************************************************************//**
 PURPOSE: The Fillet Solver object is the abstract object which 
@@ -137,6 +196,7 @@ protected:
                                                  // occur as walking along the fillet edge (more or less).
   SmFilStatus         m_eStatus;                 // Status of solver computation
   SmTArray<double>    m_vG1Knots;                // Internal knots of the edge-curve that are only G1-continuous
+  SmTArray<SmLawCornerPieces*> m_vLawCornerPieces; // SolidCraft change: rounds joined at law corners, as their exact pieces
 
   SmStatus FinishConstruction();                 // Private method for base class, called by
                                                  // derived classes at end of constructors.
@@ -170,6 +230,7 @@ public:
   double                      GetThisAngTolRad           ()                 const { SM_ASSERT_TOL(m_dThisAngTolRad) ; return m_dThisAngTolRad; }   // radians
   double                      GetConversionTol           ()                 const { return m_dConversionTol; }
   double                      GetTangencyTolerance       ()                 const { return m_dTangencyTolerance; }
+  static SmBoolean            IsTangentEdge(SmEdge * pEdge, double dTangencyTolRad); // SolidCraft change: the two faces at a manifold edge meet tangentially there
 
   SmVertex                  * GetVertex                  (ULONG lIndex)     const ;
   SmEdgeuse                 * GetEdgeuse                 (ULONG lIndex)     const { return m_pEdgeuses[lIndex]; }
@@ -218,6 +279,14 @@ public:
   // (its slope jumps), appended to rParams; and whether an intersection point lies at one.
   // None by default.
   virtual SmStatus  GetRadiusCornerParameters(SmTArray<double> & rParams) { SM_REF1(rParams); return SM_SUCCESS; }
+  // SolidCraft change: the exact pieces of a surface joined at law corners (owned from here on),
+  // and those of a fillet surface not matched yet whose turns (its C0 u knots) are at their
+  // corners (NULL: none). Matched by the corners, not by the surface's address: a fillet geom's
+  // surface is replaced on the way (extended at its ends, SmFilletGeom), keeping its corners.
+  void                 AddLawCornerPieces(SmLawCornerPieces * pPieces) { m_vLawCornerPieces.Add(pPieces); }
+  SmStatus             FindLawCornerPieces(const SmSurface & crSurface, SmLawCornerPieces *& rpPieces);
+  // whether the solver has kept pieces with a corner that dips or peaks
+  SmBoolean            HasBuiltLawCorners() const;
   virtual SmBoolean IsAtRadiusCorner(const SmTsectPnt & crTsectPnt)      { SM_REF1(crTsectPnt); return FALSE; }
   // SolidCraft change: the edge parameter of an intersection point, FALSE where the solver
   // has no radius corners.
@@ -225,10 +294,22 @@ public:
 
   // side effects
   virtual SmStatus  CalcFilletGeom           (); // after SmFilletCorner:: Builds topology, Compute filletSurface and railCurve geometry
-  virtual SmStatus  CalcCylinderFilletGeom   (SmTArray<SmTsectPnt*> & rTsectPnts, SmFilletGeom * pFG = NULL);
-  virtual SmStatus  CalcConeFilletGeom       (SmTArray<SmTsectPnt*> & rTsectPnts, SmFilletGeom * pFG = NULL);
-  virtual SmStatus  CalcTorusFilletGeom      (SmTArray<SmTsectPnt*> & rTsectPnts, SmFilletGeom * pFG = NULL);
-  virtual SmStatus  CalcSphereFilletGeom     (SmTArray<SmTsectPnt*> & rTsectPnts, SmFilletGeom * pFG = NULL);
+
+  // SolidCraft change: the exact class of this constant round, from its faces' kinds and placement
+  // at rTsectPnt (SmFilletExact.cpp), and its exact surface by that class. rbBuilt is FALSE for
+  // a round of no exact class (SM_BS_TRACED), which is traced.
+  SmStatus          ClassifyExactBlend       (SmTsectPnt & rTsectPnt, SmExactBlend & rBlend);
+  SmStatus          CalcExactFilletGeom      (const SmExactBlend & crBlend, SmTArray<SmTsectPnt*> & rTsectPnts,
+                                              SmFilletGeom * pFG, SmBoolean bRecalc, SmBoolean & rbBuilt);
+  // SolidCraft change: the exact rounds by class: a cylinder on a straight spine (SM_BS_LINE), the
+  // section turned about the common axis (SM_BS_CIRCLE), a piece of the ball (SM_BS_POINT).
+  SmStatus          CalcLineSpineFilletGeom  (const SmExactBlend & crBlend, SmTArray<SmTsectPnt*> & rTsectPnts, SmFilletGeom * pFG);
+  SmStatus          CalcCircleSpineFilletGeom(const SmExactBlend & crBlend, SmTArray<SmTsectPnt*> & rTsectPnts, SmFilletGeom * pFG);
+  SmStatus          CalcPointSpineFilletGeom (const SmExactBlend & crBlend, SmTArray<SmTsectPnt*> & rTsectPnts, SmFilletGeom * pFG);
+  // SolidCraft change: a round whose spine is a conic or a nodal quartic (SM_BS_CONIC,
+  // SM_BS_CONIC_PAIR, SM_BS_NODAL_QUARTIC), built as the exact rational surface of the ball's arcs.
+  SmStatus          CalcRationalSpineFilletGeom(const SmExactBlend & crBlend, SmTArray<SmTsectPnt*> & rTsectPnts,
+                                                SmFilletGeom * pFG);
 
   SmStatus          ComputeSurfaceValues     (SmPoint2d               aUVValues[2], SmTsectPnt  & rTsectPnt);
   SmStatus          ComputePointValues       (SmPoint2d          aUVValues[2],
@@ -298,7 +379,8 @@ public:
                              ULONG             lOtherRailIndex,
                              SmBoolean       & rbFoundIntersection,
                              SmTsectPnt      & rThisTsectPnt,
-                             SmTsectPnt      & rOtherTsectPnt);
+                             SmTsectPnt      & rOtherTsectPnt,
+                             SmBoolean         bHoldEndRadii);  // SolidCraft: TRUE at a corner calculated as constant radius
 
   virtual void ReloadSurfaceOffsets();
   virtual void SetupOffsetExtension(const SmSurface * pSurf, SmExtent2d & rDomain) ;
@@ -330,10 +412,41 @@ public:
                          SmTsectPnt       & rNextPoint);
                
   SmStatus     TestRollOver(SmTArray<SmFilletCorner*> & rAdjustedCorners);
+  SmStatus     EndSectionsFitTheirFaces(SmBoolean & rbFit); // SolidCraft change: whether the fillet's end section at each Nx1 end lies on its end face
   SmStatus     RailsFitTheirFaces(SmBoolean & rbFit, SmBoolean & rbRollsOver, SmBoolean & rbIntoMaterial); // SolidCraft change: whether every rail stays on the face it rolls on, rolls over a tangent edge, or runs into the body
-  SmStatus     BallFitsItsFaces(SmBoolean & rbFits); // SolidCraft change: whether the rolling ball fits the faces' curvature at each section (no face curves tighter than it)
+  // SolidCraft change: the rolling ball's local regularity along the edge (SmBallStation), and
+  // the radius that works where it is not regular (SmFilletSolver.cpp, the blend design's §6)
+  SmStatus     BallIsRegular(SmBallStation & rFirst);
+  SmStatus     JudgeBallAt(const SmTsectPnt & crPnt, SmBallStation & rStation);
+  // SolidCraft change: whether this convex blend would take all of the part between its rails
+  // somewhere, cutting it into pieces, and the largest radius (and its setback) that does not
+  SmStatus     BandCutsThePart(const SmBrep & crBody, SmBoolean & rbCuts, double & rdRadius, double & rdSetback);
+  // SolidCraft change: the largest size at which this blend's rails stay on their faces (pOnly:
+  // on that one), where a boundary of a face first meets a rail as the size grows; rlKind what
+  // the size is (SM_FIT_RADIUS, SM_FIT_SCALE, SM_FIT_CHORD)
+  SmStatus     LargestSizeOnItsFaces(const SmFace * pOnly, SmBoolean & rbFound, double & rdRadius, ULONG & rlKind);
+  // SolidCraft change: the radius of the ball touching face lK at crQ and the other face, up to dMax
+  SmStatus     BallThrough(ULONG lK, const SmPoint3d & crQ, double dMax, SmBoolean & rbFound, double & rdRho);
+  // SolidCraft change: the common radius at which this blend's rail on a face first reaches into
+  // the band another blend takes off that face (where the two bands meet)
+  SmStatus     BandsMeetAt(SmFilletSolver & rOther, ULONG lMine, ULONG lTheirs, SmBoolean & rbFound, double & rdRadius);
+  // SolidCraft change: whether the solver rolls one ball on both faces at crPnt (rbBall), and its
+  // radius law there: adR = r, dr/dt, d2r/dt2 in the trace's parameter t. rbOnEdge: t is the
+  // filleted edge's parameter, the ball's centre in the plane square to the edge at C(t), asC =
+  // C, C', C'', C''' there; otherwise the radius is constant and the trace free.
+  virtual SmStatus GetBallLaw(const SmTsectPnt & crPnt, SmBoolean & rbBall, SmBoolean & rbOnEdge,
+                              double adR[3], SmVector3d asC[4])
+    { SM_REF5(crPnt, rbBall, rbOnEdge, adR, asC); rbBall = FALSE; rbOnEdge = FALSE; return SM_SUCCESS; }
+  // SolidCraft change: a constant ball's radius set to dRadius (both faces' offsets, as the solve
+  // takes them), for the room checks' bisections, which set it back after; FALSE where the
+  // solver has no constant ball
+  virtual SmBoolean SetBallRadius(double dRadius) { SM_REF1(dRadius); return FALSE; }
+  // SolidCraft change: whether the solver rolls one ball on both faces, and whether its radius
+  // follows a law along the edge (rbOnEdge)
+  virtual SmBoolean RollsABall(SmBoolean & rbOnEdge) const { rbOnEdge = FALSE; return FALSE; }
+  static SmBoolean IsKnifeEdge(SmEdge * pEdge, double dTangencyTolRad); // SolidCraft change: faces tangent along the edge and folded back on each other
   static SmStatus IsConcaveEdge(const SmEdge & crEdge, SmBoolean & rbConcave); // SolidCraft change: whether the body's material wedge at the edge exceeds a half turn
-  SmStatus     LeavesPastAnEnd(const SmFace & crFace, const SmCurve & crRail, double dRailParam, const SmPointClassification & crLeave, SmBoolean & rbPastAnEnd) const; // SolidCraft change: whether a rail leaves its face past an end of the filleted edge
+  SmStatus     LeavesPastAnEnd(const SmFace & crFace, const SmCurve & crRail, double dRailParam, const SmPointClassification & crLeave, SmBoolean & rbPastAnEnd, const SmVertex ** ppEnd = NULL, SmBoolean * pbBySide = NULL) const; // SolidCraft change: whether a rail leaves its face past an end of the filleted edge, and which
   SmStatus     TrimRails();
 
   // utilities
@@ -390,169 +503,175 @@ public:
 
 } ; // end class SmFilletSurfaceGenerator
 
-/*******************************************************************//**
-PURPOSE: Create a fillet surface with a linear cross section.  This
-    is simply a ruled surface or in some special cases a plane or a cone.
+// SolidCraft change: the highest order of SmGnSectionFSG, and its default thumbweight: the equal
+// area one, a value outside the thumbweights' range that SmGnSectionFSG resolves at every station,
+// from that station's wedge, to the w at which its section, on the same rails, takes off the area
+// the ball's circle does (SmGnSectionFSG::EqualAreaThumbweight): w varies along the blend.
+#define SM_GN_MAX_ORDER 4
+#define SM_GN_THUMBWEIGHT_EQUAL_AREA (2.0)
+#define SM_GN_DEFAULT_THUMBWEIGHT SM_GN_THUMBWEIGHT_EQUAL_AREA
 
-NOTES: 
-***********************************************************************/
-class SM_EXPORT SmLinearCrossSectionFSG : public SmFilletSurfaceGenerator
+// SolidCraft change: how SmGnSectionFSG's order-1 section, the ball's circle, is built: exactly,
+// as a rational arc (the default, the round's own section), or approximated by polynomial arcs
+// within dTolPercentRadius percent of the radius (bApproximateArcs); mirrored about the rails'
+// chord; or the larger arc (bComplement).
+struct SmArcSection
 {
-public:
-  SmLinearCrossSectionFSG() {}
+  SmBoolean bApproximateArcs;
+  double    dTolPercentRadius;
+  SmBoolean bMirror;
+  SmBoolean bComplement;
 
-  virtual ~SmLinearCrossSectionFSG() {}
-
-  virtual SmStatus CreateSurface(SmFilletSolver              & rFilletSolver,     // in : 
-                                 SmBSplineCurve              * pCenterLine,       // NotUsed: in :
-                                 SmBSplineCurve              * pRail1Curve,       // in : 
-                                 SmBSplineCurve              * pRail2Curve,       // in : 
-                                 const SmTArray<SmTsectPnt*> & crFilletPoints,    // NotUsed: in :
-                                 SmSurface                   * pSurf1,            // NotUsed: in :
-                                 SmBSplineCurve              * pUV1,              // NotUsed: in :
-                                 SmSurface                   * pSurf2,            // NotUsed: in :
-                                 SmBSplineCurve              * pUV2,              // NotUsed: in :
-                                 SmBSplineSurface           *& rpFilletSurface) ; // in : 
-
-  virtual SmFilletSurfaceGeneratorType GetFilletSurfaceGeneratorType()
-  { return SM_FSG_LINEAR; }
-
-  // SolidCraft change: a line from rail to rail cuts across both faces.
-  virtual SmBoolean MeetsItsFacesTangentially() const
-  { return FALSE; }
-
-} ; // end class SmLinearCrossSectionFSG
+  explicit SmArcSection(SmBoolean bApprox = FALSE, double dTolPercent = 0.05, SmBoolean bMirrored = FALSE,
+                        SmBoolean bLarger = FALSE)
+    : bApproximateArcs(bApprox), dTolPercentRadius(dTolPercent), bMirror(bMirrored), bComplement(bLarger) {}
+};
 
 /*******************************************************************//**
-PURPOSE: Create a fillet surface with a circular cross section.  This
-    is a lofted surface or in some special cases a cylinder or a torus.
-
-NOTES: 
+PURPOSE: SolidCraft change. A round whose ball's radius varies, as the variable
+    radius solver rolls it: the ball's centre in the plane square to pLeader
+    (the edge's curve) at t, at the distance pLaw(t) (its x) from both faces;
+    pPoints the solver's stations (their t in m_adUserDoubles[0], their feet
+    in UVPos), which seed SmGnSectionFSG::Build's.
 ***********************************************************************/
-class SM_EXPORT SmCircularCrossSectionFSG : public SmFilletSurfaceGenerator
+struct SmGnLawRound
 {
-protected:
-  SmBoolean   m_bApproximateArcs;     // TRUE = interpolate rail curves with as circular arcs as possible
-                                      // FALSE= circular cross-sections even when rail curves are
-                                      //        not aligned on a circle centered on the centerCurve
-                                      // default:[TRUE]
-                                               
-  double      m_dTolPercentRadius;    // max allowed percentage deviation of output curve from circular arc
-                                      // used when m_bApproximateArcs == TRUE
-                                      // default:[0.05] 
-                                            
-  SmBoolean   m_bMirror;              // TRUE = CrossSections are mirrored about RailCurve Chord
-                                      // default:[FALSE] 
-                                          
-  SmBoolean   m_bComplement;          // TRUE = Fillet Surface made with larger half of circular arcs
-                                      // FALSE= Fillet Surface made with smaller half of circular arcs     
-                                      // default:[FALSE]
-public:
-  SmCircularCrossSectionFSG(SmBoolean bApproximateArcs=TRUE,
-                            double    dTolPercentRadius=0.05,
-                            SmBoolean bMirror=FALSE,
-                            SmBoolean bComplement=FALSE)      : m_bApproximateArcs(bApproximateArcs), 
-                                                                m_dTolPercentRadius(dTolPercentRadius), 
-                                                                m_bMirror(bMirror),
-                                                                m_bComplement(bComplement)
-                                                              { }
-
-  virtual ~SmCircularCrossSectionFSG() {}
-
-  double    GetTolPercentRadius() { return m_dTolPercentRadius; }
-  SmBoolean GetApproximateArcs()  { return m_bApproximateArcs; }
-
-  virtual SmStatus CreateSurface(SmFilletSolver   & rFilletSolver,
-                                 SmBSplineCurve   * pCenterLine,
-                                 SmBSplineCurve   * pRail1Curve,
-                                 SmBSplineCurve   * pRail2Curve,
-                                 const SmTArray<SmTsectPnt*> & crFilletPoints,
-                                 SmSurface         * pSurf1,  
-                                 SmBSplineCurve    * pUV1,
-                                 SmSurface         * pSurf2,
-                                 SmBSplineCurve    * pUV2,
-                                 SmBSplineSurface *& rpFilletSurface);
-
-  virtual SmStatus CreateSurfaceFromCurves(const SmContext   & crContext,
-                                           SmBSplineCurve    & rCenterLine,
-                                           SmBSplineCurve    & rRail1Curve,
-                                           SmBSplineCurve    & rRail2Curve,
-                                           double              dThisApproxTol3d,
-                                           SmBoolean           bNeedG1Continuity,
-                                           SmSurface         * pSurf1,  
-                                           SmBSplineCurve    * pUV1,
-                                           SmSurface         * pSurf2,
-                                           SmBSplineCurve    * pUV2,
-                                           SmBSplineSurface *& rpFilletSurface);
-
-  virtual SmFilletSurfaceGeneratorType GetFilletSurfaceGeneratorType()
-  { return SM_FSG_CIRCULAR; }
-
-  // SolidCraft change: the arc about the ball's centre is square at each rail to the radius
-  // there, which is the face's normal, so it is tangent to the face; the larger arc
-  // (m_bComplement) too. An arc mirrored about the rails' chord (m_bMirror) is not.
-  virtual SmBoolean MeetsItsFacesTangentially() const
-  { return !m_bMirror; }
-
-} ; // end class SmCircularCrossSectionFSG
+  const SmBSplineCurve          * pLeader;
+  const SmBSplineCurve          * pLaw;
+  const SmTArray<SmTsectPnt*>   * pPoints;
+};
 
 /*******************************************************************//**
-PURPOSE: Create a fillet surface with a circular cross section.  This
-    is a lofted surface or in some special cases a cylinder or a torus.
+PURPOSE: SolidCraft change. A blend's cross-section by its order n of contact
+    with its faces along the rails: 0 the chord between the rails (a
+    chamfer), 1 the ball's circle (a round: the canal surface of the balls,
+    each section the circle the balls' envelope touches the ball along), 2 to
+    SM_GN_MAX_ORDER the G^n section f T1(1 - p1) + (1 - f) T2(p2) between the
+    rails, T_i the order-n jets of the faces along the rails, with
+    thumbweight w (SmFilletSection.cpp).
 
-NOTES: 
+NOTES: The G^n section needs a ball of one radius (constant offsets).
 ***********************************************************************/
-class SM_EXPORT SmBlendCurveCrossSectionFSG : public SmFilletSurfaceGenerator
+class SM_EXPORT SmGnSectionFSG : public SmFilletSurfaceGenerator
 {
 protected:
-  ULONG  m_lContinuity; // 1, 2, or 3 for G1, G2 or G3
-  double m_dBlendScale;
-  SmBoolean m_bAtThirds; // TRUE = inner control points at thirds towards the tangent lines' meeting point
+  SmArcSection m_sArcs;     // order 1: how the circles are built
+  ULONG  m_lOrder;          // n
+  double m_dThumbweight;     // w < 1, or SM_GN_THUMBWEIGHT_EQUAL_AREA (resolved per station)
+  double m_dCertifiedBound; // the last surface built: its certified distance from the blend, mm (-1: none yet)
+  ULONG  m_lCertifiedSpans; // and its number of spans along the rails
 public:
-  SmBlendCurveCrossSectionFSG(double dBlendScale=1.5, ULONG lContinuity=1, SmBoolean bAtThirds=FALSE)
-     : m_lContinuity(lContinuity), 
-       m_dBlendScale(dBlendScale),
-       m_bAtThirds(bAtThirds)
-  {}
+  SmGnSectionFSG(ULONG lOrder, double dThumbweight = SM_GN_DEFAULT_THUMBWEIGHT);
 
-  virtual ~SmBlendCurveCrossSectionFSG() {}
+  // the order-1 section, the ball's circle, built as crArcs says
+  explicit SmGnSectionFSG(const SmArcSection & crArcs);
+
+  double    GetTolPercentRadius() const { return m_sArcs.dTolPercentRadius; }
+  SmBoolean GetApproximateArcs() const  { return m_sArcs.bApproximateArcs; }
+
+  virtual ~SmGnSectionFSG() {}
 
   virtual SmStatus CreateSurface(SmFilletSolver    & rFilletSolver,
                                  SmBSplineCurve    * pCenterLine,
                                  SmBSplineCurve    * pRail1Curve,
                                  SmBSplineCurve    * pRail2Curve,
                                  const SmTArray<SmTsectPnt*> & crFilletPoints,
-                                 SmSurface         * pSurf1,  
+                                 SmSurface         * pSurf1,
                                  SmBSplineCurve    * pUV1,
                                  SmSurface         * pSurf2,
                                  SmBSplineCurve    * pUV2,
                                  SmBSplineSurface *& rpFilletSurface);
 
+  // The surface between rails on the faces' surfaces pSurf1, pSurf2 (their uv curves pUV1,
+  // pUV2) about the centre line; the rails are not changed.
   virtual SmStatus CreateSurfaceFromCurves(const SmContext   & crContext,
                                            SmBSplineCurve    & rCenterLine,
                                            SmBSplineCurve    & rRail1Curve,
                                            SmBSplineCurve    & rRail2Curve,
                                            double              dThisApproxTol3d,
                                            SmBoolean           bNeedG1Continuity,
-                                           SmSurface         * pSurf1,  
+                                           SmSurface         * pSurf1,
                                            SmBSplineCurve    * pUV1,
                                            SmSurface         * pSurf2,
                                            SmBSplineCurve    * pUV2,
                                            SmBSplineSurface *& rpFilletSurface);
 
-  double GetBlendScale() { return m_dBlendScale; }
+  // The scope of a blend operation (an SmFilletExecutive's life): the thread's memo of equal
+  // area thumbweights is emptied as the outermost scope opens, so no operation reads another's
+  // (nested scopes keep it)
+  class SM_EXPORT OperationScope
+  {
+  public:
+    OperationScope();
+    ~OperationScope();
+  private:
+    OperationScope(const OperationScope &);
+    OperationScope & operator=(const OperationScope &);
+  };
 
-  ULONG GetContinuity() { return m_lContinuity; }
+  // whether an order and a thumbweight make a G^n section: 2 <= n <= SM_GN_MAX_ORDER, and
+  // w < 1 (the section's weights 1 - w + w t and 1 - w t stay positive on [0, 1] and its
+  // reparametrizations monotone) or the equal area default
+  static SmBoolean IsValid(ULONG lOrder, double dThumbweight)
+  { return (lOrder >= 2 && lOrder <= SM_GN_MAX_ORDER
+            && (dThumbweight == SM_GN_THUMBWEIGHT_EQUAL_AREA || (std::isfinite(dThumbweight) && dThumbweight < 1.0))) ? TRUE : FALSE; }
 
+  // The thumbweight at which the order-n section between two planes meeting at the angle dAlpha
+  // (radians, the angle of the wedge the ball sits in, 0 < alpha < pi) takes off, on the same
+  // rails, the area the ball's circle does: r^2 (cot(alpha/2) - (pi - alpha)/2).
+  static SmStatus EqualAreaThumbweight(ULONG lOrder, double dAlpha, double & rdW);
+
+  // the thumbweight at a station whose ball's radii to its contacts meet at the angle whose cosine
+  // is dCosRadii: the one given, or the equal area one of that station's wedge
+  SmStatus ThumbweightAt(double dCosRadii, double & rdW) const;
+
+  ULONG  GetOrder() const       { return m_lOrder; }
+
+  // The order k of this section's contact with face lRail at the station of the centre line's
+  // parameter dS (the section stands off the face as c s^k): n + 1, or n + 2 where the jets make
+  // the t^(n+1) term vanish (two planes).
+  SmStatus ContactOrderAt(const SmSurface * apFace[2], const SmBSplineCurve & crCenter, double dS, const double (&crSeed)[4],
+                          const SmPoint3d (&crRail)[2], ULONG lRail, ULONG & rlOrder) const;
+  double GetCertifiedBound() const { return m_dCertifiedBound; }
+  ULONG  GetCertifiedSpans() const { return m_lCertifiedSpans; }
+  // the thumbweight given: w, or SM_GN_THUMBWEIGHT_EQUAL_AREA
+  double GetThumbweight() const { return m_dThumbweight; }
+
+  // the kind of section: the chord (order 0), the circle (1), the G^n section (2 and up)
   virtual SmFilletSurfaceGeneratorType GetFilletSurfaceGeneratorType()
-  { return SM_FSG_BLEND_CURVE; }
+  { return m_lOrder == 0 ? SM_FSG_LINEAR : (m_lOrder == 1 ? SM_FSG_CIRCULAR : SM_FSG_BLEND_CURVE); }
 
-  // SolidCraft change: the blend curve takes its end tangents from the circular arc between
-  // the same rails (and, for G2 and G3, the faces' curvature too), so it is tangent to the faces.
+  // a chord cuts across both faces; the circle about the ball's centre is square at each rail to
+  // the radius there, the face's normal (not when mirrored about the rails' chord); the G^n
+  // section's derivatives across each rail are the face's, to order n
   virtual SmBoolean MeetsItsFacesTangentially() const
-  { return TRUE; }
+  { return m_lOrder == 0 ? FALSE : (m_lOrder == 1 ? !m_sArcs.bMirror : TRUE); }
 
-} ; // end class SmBlendCurveCrossSectionFSG
+protected:
+  // the order-1 section's surface (the ball's circles skinned, swept or revolved)
+  SmStatus CircleSurface(SmFilletSolver & rFilletSolver, const SmTArray<SmTsectPnt*> & crFilletPoints, SmBSplineCurve * pCenterLine, SmBSplineCurve * pRail1Curve,
+                         SmBSplineCurve * pRail2Curve, SmSurface * pSurf1, SmBSplineCurve * pUV1, SmSurface * pSurf2,
+                         SmBSplineCurve * pUV2, SmBSplineSurface *& rpFilletSurface);
+  SmStatus CircleSurfaceFromCurves(const SmContext & crContext, SmBSplineCurve & rCenterLine, SmBSplineCurve & rRail1Curve,
+                                   SmBSplineCurve & rRail2Curve, double dThisApproxTol3d, SmBoolean bNeedG1Continuity,
+                                   SmBoolean bBallRadiusVaries, SmSurface * pSurf1, SmBSplineCurve * pUV1, SmSurface * pSurf2,
+                                   SmBSplineCurve * pUV2, SmBSplineSurface *& rpFilletSurface);
+  SmStatus Build(const SmContext   & crContext,
+                 SmBSplineCurve    & rCenterLine,
+                 SmBSplineCurve    & rRail1Curve,
+                 SmBSplineCurve    & rRail2Curve,
+                 double              dTol,
+                 SmSurface         * pFace1,
+                 SmBSplineCurve    * pUV1,
+                 SmSurface         * pFace2,
+                 SmBSplineCurve    * pUV2,
+                 SmBoolean           bReplaceRails,
+                 SmBSplineSurface *& rpFilletSurface,
+                 double              dRadius = 0.0,          // the ball's radius, given (0: as the rails stand off the centre line)
+                 SmBoolean         * pbNotTheFeet = NULL,    // with a radius given: TRUE (and no surface) where the rails are not its feet
+                 const SmGnLawRound * pLawRound = NULL);     // a ball whose radius varies (order 1): its law and leader
+
+} ; // end class SmGnSectionFSG
 
 /*******************************************************************//**
 PURPOSE: Describes the type of operation to perform when self-

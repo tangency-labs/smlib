@@ -3820,7 +3820,11 @@ SmBoolean bDebugMe = FALSE ;
       // at U = sUniqueKnots[ii]
       // one additional basis function becomes zero for each multiplicity at sMults[ii]
       NL_INDEX lRowCntU  = iDegreeU - (sMultsU[ii] - 1) ;
-      NL_INDEX lCPIndexU = lKntCntU - lRowCntU - 1 ;
+      // SolidCraft change: the first of those rows is the one whose basis function starts at
+      // the knot's last copy (upstream's index was one row on for each repeated copy: at the
+      // double knots of a circle it tested a corner row, not the row through the knot, and
+      // took a horn torus's corner rows on its axis for an internal pole).
+      NL_INDEX lCPIndexU = lKntCntU - 1 - iDegreeU ;
 
       // to get a pole - all the control points with non-zero basis funtions 
       //  for the U = PatchUMin boundary within one patch must be coincident
@@ -3886,7 +3890,8 @@ SmBoolean bDebugMe = FALSE ;
       // at V = sUniqueKnotsV[ii]
       // one additional basis function becomes zero for each multiplicity at sMultsV[ii]
       NL_INDEX lRowCntV  = iDegreeV - (sMultsV[ii] - 1) ;
-      NL_INDEX lCPIndexV = lKntCntV - lRowCntV - 1 ;
+      // SolidCraft change: as for U above.
+      NL_INDEX lCPIndexV = lKntCntV - 1 - iDegreeV ;
 
       // to get a pole - all the control points with non-zero basis funtions 
       //  for the V = PatchVMin boundary within one patch must be coincident
@@ -5290,13 +5295,25 @@ SmBoolean bDebugMe = FALSE ;
   sWeights.Transpose(lNumVCpts);
   
   // Transpose Surface definition; on failure, restore the bit
-  SmStatus eStatus = SetCanonical(lVDegree,lUDegree,sCPts,eBSForm,sVMult,sUMult,
-                                  sVKnots,sUKnots,eKnotType,&sWeights);
-  if (eStatus != SM_SUCCESS)
+  // SolidCraft change: the transposed net, then the definition by the surface's own rule
+  // (SwapUVDefinition), not always re-derived from the net
+  SmBSplineSurface * pTmp = NULL;
+  const SmContext * cpContext = GetContext();
+  NER(cpContext);
+  SmStatus eStatus = SmBSplineSurface::CreateCanonical(*cpContext, lVDegree, lUDegree, sCPts, eBSForm, sVMult, sUMult,
+                                                       sVKnots, sUKnots, eKnotType, &sWeights, NULL, pTmp);
+  if (eStatus != SM_SUCCESS || pTmp == NULL)
     {
       ToggleSwapUVBit() ;
-      SER(eStatus);
+      SER(eStatus != SM_SUCCESS ? eStatus : SM_ERR);
     }
+  SmObjDelete sCleanup(pTmp);
+  Notify(SM_NO_PRE_EDIT, this, SM_NO_GET_OWNER(this), NULL);
+  gw_SURFACE *pTmpNurb = pTmp->m_pNurb;
+  pTmp->m_pNurb        = m_pNurb;
+  m_pNurb              = pTmpNurb;
+  Notify(SM_NO_POST_EDIT, this, SM_NO_GET_OWNER(this), NULL);
+  SER(SwapUVDefinition());
 
 #ifdef SM_DEBUG_CODE
   if(bDebugMe)

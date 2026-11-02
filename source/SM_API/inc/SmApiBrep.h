@@ -443,9 +443,9 @@ SMAPI_EXPORT SmApiStatus SmApiFilletEdges(
     SmTArray<SmEdge*>& rEdges,            ///< [in ]: Edges to fillet                                        <br>
     double dRadius,                       ///< [in ]: Fillet radius                                          <br>
     ULONG lXSectType,                     ///< [in ]: 0=linear, 1=circular, 2=blend curve                    <br>
-    ULONG lContinuity,                    ///< [in ]: 1=G1, 2=G2, 3=G3 for blend curves; three-edge corner   <br>
-                                          ///<        boundaries guarantee only G1 regardless of this value  <br>
-    double dThumbweight                  ///< [in ]: Thumbweight for blend (default 1.0)                    <br>
+    ULONG lContinuity,                    ///< [in ]: n of the G^n section (2 to 4) for blend curves; three- <br>
+                                          ///<        edge corner boundaries guarantee only G1 regardless    <br>
+    double dThumbweight                  ///< [in ]: its thumbweight, in [0, 1) (SM_GN_DEFAULT_THUMBWEIGHT)  <br>
 );
 
 SMAPI_EXPORT SmApiStatus SmApiFilletEdgesPerEdge(
@@ -453,9 +453,9 @@ SMAPI_EXPORT SmApiStatus SmApiFilletEdgesPerEdge(
     SmTArray<SmEdge*>& rEdges,                              ///< [in ]: Edges to fillet                                    <br>
     SmTArray<double>& rRadii,                               ///< [in ]: Per-edge radius values                             <br>
     SmTArray<SmFilletSurfaceGeneratorType>& rXSectTypes,    ///< [in ]: Per-edge cross section types                       <br>
-    ULONG lContinuity,                                      ///< [in ]: 1=G1, 2=G2, 3=G3; three-edge corner boundaries    <br>
-                                                            ///<        guarantee only G1 regardless of this value          <br>
-    double dThumbweight                                    ///< [in ]: Thumbweight for blend (default 1.0)                <br>
+    ULONG lContinuity,                                      ///< [in ]: n of the G^n section (2 to 4) for blend curves;   <br>
+                                                            ///<        three-edge corner boundaries guarantee only G1      <br>
+    double dThumbweight                                    ///< [in ]: its thumbweight, in [0, 1) (SM_GN_DEFAULT_THUMBWEIGHT) <br>
 );
 
 SMAPI_EXPORT SmApiStatus SmApiVariableRadiusFillet(
@@ -464,8 +464,8 @@ SMAPI_EXPORT SmApiStatus SmApiVariableRadiusFillet(
     double dStartRadius,                  ///< [in ]: Radius at start of edge                                <br>
     double dEndRadius,                    ///< [in ]: Radius at end of edge                                  <br>
     ULONG lXSectType,                     ///< [in ]: 0=linear, 1=circular, 2=blend curve                    <br>
-    ULONG lContinuity                    ///< [in ]: 1=G1, 2=G2, 3=G3 for blend curves; three-edge corner  <br>
-                                          ///<        boundaries guarantee only G1 regardless of this value  <br>
+    ULONG lContinuity                    ///< [in ]: n of the G^n section (2 to 4) for blend curves (built  <br>
+                                          ///<        for a constant radius only); three-edge corners: G1    <br>
 );
 
 SMAPI_EXPORT SmApiStatus SmApiSurfaceSurfaceFillet(

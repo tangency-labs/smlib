@@ -11,6 +11,7 @@
 #include <SmApiPrimitives.h>
 #include <SmApiQueries.h>
 #include <SmVector3d.h>
+#include <SmWorkCounters.h>
 
 using namespace smlib_shim;
 
@@ -62,6 +63,25 @@ extern "C" int64_t smlib_current_call(char *buf, int64_t cap)
     std::memcpy(buf, g_current, m);
     buf[m] = '\0';
     return static_cast<int64_t>(m);
+}
+
+// The counters are atomics (SmWorkCounters.h), so neither takes the lock.
+extern "C" int32_t smlib_work_counters_reset(void)
+{
+    SmWorkCounters::Reset();
+    return SMLIB_OK;
+}
+
+extern "C" int32_t smlib_work_counters(int64_t out[3])
+{
+    if (out == nullptr)
+    {
+        return SMLIB_ERR_ARG;
+    }
+    out[0] = SmWorkCounters::Get(SmWorkCounters::eClosureFaceuses);
+    out[1] = SmWorkCounters::Get(SmWorkCounters::eFacePairs);
+    out[2] = SmWorkCounters::Get(SmWorkCounters::eShellFaceusesMoved);
+    return SMLIB_OK;
 }
 
 extern "C" void smlib_brep_free(smlib_brep *brep)

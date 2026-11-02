@@ -22,12 +22,17 @@
 
 #include <SmApiQueries.h>
 #include <SmAttribute.h>
+#include <SmCurve.h>
 #include <SmEdge.h>
 #include <SmFace.h>
+#include <SmVertex.h>
 
+#include <algorithm>
+#include <cmath>
 #include <map>
 #include <set>
 #include <unordered_map>
+#include <vector>
 
 using namespace smlib_shim;
 
@@ -45,21 +50,25 @@ constexpr long TAG_MAX = 1L << 30;
 
 using Origin = std::pair<long, long>;
 
-// What a face or edge stands for: the operand entities it came from, and for a face tagged
-// directly, its own boundary edges then (to tell a face that is still whole).
+// What a face or edge stands for: the operand entities it came from, for a face tagged
+// directly its own boundary edges then (to tell a face that is still whole), and for an edge
+// tagged directly where it lay then (points along it, ends first: to tell an edge that moved).
 class Tag : public SmAttribute
 {
 public:
     std::set<Origin> origins;
     std::set<long> edges;
+    std::vector<SmPoint3d> at;
 
-    Tag(std::set<Origin> o, std::set<long> e) : SmAttribute(TAG_ID, SM_AB_COPY), origins(std::move(o)), edges(std::move(e))
+    Tag(std::set<Origin> o, std::set<long> e, std::vector<SmPoint3d> p = {})
+        : SmAttribute(TAG_ID, SM_AB_COPY), origins(std::move(o)), edges(std::move(e)), at(std::move(p))
     {
     }
 
+    // A copy is the same entity where it was.
     SmAttribute *MakeCopy(const SmContext &c) const override
     {
-        return new (c) Tag(origins, edges);
+        return new (c) Tag(origins, edges, at);
     }
 
     SM_TYPE GetType() const override
@@ -71,16 +80,24 @@ public:
         return t == TAG_TYPE ? TRUE : SmAttribute::IsKindOf(t);
     }
 
-    // A split: both children stand for what the split object stood for.
+    // A split: both children stand for what the split object stood for, and lie where it lay
+    // (each a piece of it).
     void Split(SmAObject *split, SmAObject *a, SmAObject *b) override
     {
-        if (a != split)
+        for (SmAObject *x : {a, b})
         {
-            join(a, origins, edges);
-        }
-        if (b != split)
-        {
-            join(b, origins, edges);
+            if (x == split)
+            {
+                continue;
+            }
+            if (on(x) == nullptr && x != nullptr && !origins.empty())
+            {
+                set(x, origins, edges, at);
+            }
+            else
+            {
+                join(x, origins, edges);
+            }
         }
     }
 
@@ -134,16 +151,111 @@ public:
         x->AddAttribute(new (*x->GetContext()) Tag(o, e));
     }
 
-    // Replaces whatever tag `x` has with exactly `o` and `e`.
-    static void set(SmAObject *x, std::set<Origin> o, std::set<long> e)
+    // Replaces whatever tag `x` has with exactly `o`, `e` and `p`.
+    static void set(SmAObject *x, std::set<Origin> o, std::set<long> e, std::vector<SmPoint3d> p = {})
     {
         if (SmAttribute *old = x->FindAttribute(TAG_ID))
         {
             x->RemoveAttribute(old);
         }
-        x->AddAttribute(new (*x->GetContext()) Tag(std::move(o), std::move(e)));
+        x->AddAttribute(new (*x->GetContext()) Tag(std::move(o), std::move(e), std::move(p)));
     }
 };
+
+// Points along `e`: its two ends, then three between, evenly in its parameter. Empty where it
+// can't be evaluated.
+std::vector<SmPoint3d> samples(const SmEdge *e)
+{
+    const SmCurve *curve = e->GetCurve();
+    if (curve == nullptr)
+    {
+        return {};
+    }
+    SmExtent1d ivl = e->GetInterval();
+    std::vector<SmPoint3d> p;
+    for (double t : {0.0, 1.0, 0.25, 0.5, 0.75})
+    {
+        SmVector3d v[1];
+        if (curve->Evaluate(ivl.GetMin() + t * (ivl.GetMax() - ivl.GetMin()), 0, TRUE, v) != SM_SUCCESS)
+        {
+            return {};
+        }
+        p.push_back(SmPoint3d(v[0].x, v[0].y, v[0].z));
+    }
+    return p;
+}
+
+// Have `pieces`, the result edges standing for one edge, moved from where its tag says it lay?
+// Together they must run between its ends (the vertices only one piece ends on; none for an edge
+// closed on itself, whose end some piece still ends on), and every point it ran through must lie
+// on one of them (within `tol`). One piece is the edge still whole; more, the edge cut by
+// vertices. Pieces with no record of where the edge lay have not moved.
+bool moved(const std::vector<SmEdge *> &pieces, double tol)
+{
+    const Tag *t = nullptr;
+    for (SmEdge *e : pieces)
+    {
+        const Tag *p = Tag::on(e);
+        if (p != nullptr && p->at.size() >= 2)
+        {
+            t = p;
+            break;
+        }
+    }
+    if (t == nullptr)
+    {
+        return false;
+    }
+    auto near = [&](const SmPoint3d &a, const SmPoint3d &b) { return (a - b).Length() <= tol; };
+    std::map<SmVertex *, int> ends;
+    for (SmEdge *e : pieces)
+    {
+        SmVertex *s = nullptr, *f = nullptr;
+        e->GetVertices(s, f);
+        if (s == nullptr || f == nullptr)
+        {
+            return true;
+        }
+        ++ends[s];
+        ++ends[f];
+    }
+    std::vector<SmPoint3d> open;
+    for (const auto &[v, n] : ends)
+    {
+        if (n % 2 == 1)
+        {
+            open.push_back(v->GetPoint());
+        }
+    }
+    const SmPoint3d &a = t->at[0], &b = t->at[1];
+    bool span = open.size() == 2 ? (near(open[0], a) && near(open[1], b)) || (near(open[0], b) && near(open[1], a))
+                : open.empty() ? near(a, b) && std::any_of(ends.begin(), ends.end(), [&](const auto &v) { return near(v.first->GetPoint(), a); })
+                               : false;
+    if (!span)
+    {
+        return true;
+    }
+    for (size_t k = 2; k < t->at.size(); ++k)
+    {
+        bool on = false;
+        for (SmEdge *e : pieces)
+        {
+            SmPoint3d q;
+            double param = 0.0;
+            double d = HUGE_VAL;
+            on = SmApiEdgeClosestPoint(e, t->at[k], q, param, d) == SM_SUCCESS && d <= tol;
+            if (on)
+            {
+                break;
+            }
+        }
+        if (!on)
+        {
+            return true;
+        }
+    }
+    return false;
+}
 
 // What `x`'s tag says; false when it has none.
 bool read(const SmAObject *x, std::set<Origin> &o, std::set<long> &e)
@@ -213,7 +325,7 @@ extern "C" int32_t smlib_history_tag(const smlib_brep *brep, int32_t operand, sm
             }
             for (ULONG i = 0; i < edges.GetSize(); ++i)
             {
-                Tag::set(edges[i], {{operand, static_cast<long>(i)}}, {});
+                Tag::set(edges[i], {{operand, static_cast<long>(i)}}, {}, samples(edges[i]));
             }
             return take(r, out);
         }
@@ -238,6 +350,7 @@ extern "C" int32_t smlib_history_read(const smlib_brep *result, int64_t *buf, in
             auto face_at = positions(faces);
             auto edge_at = positions(edges);
             ULONG nf = faces.GetSize(), ne = edges.GetSize();
+            const double tol = result->p->GetTolerance();
 
             std::vector<std::set<Origin>> fo(nf), eo(ne);
             std::vector<std::set<long>> fe(nf);
@@ -277,21 +390,36 @@ extern "C" int32_t smlib_history_read(const smlib_brep *result, int64_t *buf, in
                     }
                     else
                     {
-                        // Kept when its boundary is still exactly the edges it had, each whole
-                        // (one origin, under no other result edge) and its own operand's.
+                        // Kept when its boundary is still exactly where the edges it had were:
+                        // each boundary edge one of its own operand's, standing for one edge only,
+                        // every piece of that edge on this face (an edge only cut by a vertex, as
+                        // splitting the face beside it cuts it, is still all there), the pieces
+                        // where it lay (an edge an operation moved, as a draft moves a tilted
+                        // face's neighbours' edges, leaves those faces trimmed differently), and
+                        // those edges exactly the ones it had.
                         SmTArray<SmEdge *> bound;
                         faces[i]->GetEdges(bound);
-                        std::set<long> now;
+                        std::map<long, std::vector<SmEdge *>> pieces;
                         bool whole = true;
                         for (ULONG j = 0; j < bound.GetSize() && whole; ++j)
                         {
                             auto it = edge_at.find(bound[j]);
                             const std::set<Origin> *e = it == edge_at.end() ? nullptr : &eo[static_cast<size_t>(it->second)];
-                            whole = e != nullptr && e->size() == 1 && e->begin()->first == o.first && edge_uses[*e->begin()] == 1;
+                            whole = e != nullptr && e->size() == 1 && e->begin()->first == o.first;
                             if (whole)
                             {
-                                now.insert(e->begin()->second);
+                                std::vector<SmEdge *> &p = pieces[e->begin()->second];
+                                if (std::find(p.begin(), p.end(), bound[j]) == p.end())
+                                {
+                                    p.push_back(bound[j]);
+                                }
                             }
+                        }
+                        std::set<long> now;
+                        for (const auto &[edge, p] : pieces)
+                        {
+                            whole = whole && static_cast<long>(p.size()) == edge_uses[{o.first, edge}] && !moved(p, tol);
+                            now.insert(edge);
                         }
                         change = whole && now == fe[i] ? SMLIB_CHANGE_KEPT : SMLIB_CHANGE_MODIFIED;
                     }

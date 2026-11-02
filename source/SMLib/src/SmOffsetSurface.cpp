@@ -12,6 +12,11 @@
 #include <SmExtent2d.h>
 #include <SmBSplineSurface.h>
 #include <SmOffsetSurface.h>
+#include <SmSurfOfRevolution.h>
+#include <SmCone.h>
+#include <SmSphere.h>
+#include <SmTorus.h>
+#include <vector>
 #include <SmGraphicsExtern.h>
 #include <SmExtent3d.h>
 #include <SmPseudoBox.h>
@@ -492,6 +497,445 @@ static SmStatus sm_ExtendToward
 } // end sm_ExtendToward
 
 /*******************************************************************//**
+PURPOSE: SolidCraft change. Extend a cylinder's, cone's, sphere's or
+   torus's NURB as itself so that its domain reaches crLo and crHi, built
+   directly from the surface it is tagged as: its spans are kept, and new
+   spans are joined at its ends by a knot of full multiplicity, so it is
+   the same surface, at the same parameters, over its own domain.
+
+NOTES: Round the axis every row of control points is a circle about it;
+   a torus's or sphere's generator is a circle too (about the torus's tube
+   centre, the sphere's centre), and a cone's or cylinder's a straight line.
+   A circle is carried on by the standard construction: rational quadratic
+   arc spans, the middle control point where the end tangents meet, at
+   weight cos(half the span's angle) times the end's. Each span takes the
+   base domain's parameter length per radian (the same spans whatever the
+   reach, so two extensions agree where both reach). The generator's spans
+   are quarter turns. Round the axis the gap that closes the turn is split
+   in two, one half each side, and each half into equal spans of a quarter
+   turn at most (sm_RotTurn): an extension that would reach round the turn
+   ends at the turn's closure (bCloseTurn) and reaches no further, the axis
+   direction is then periodic (sm_ExtendSurface wraps parameters past it),
+   and any extension that does not close the turn has the same spans where
+   both reach. A straight direction (degree
+   1) carries its last span's homogeneous control points on linearly: the
+   same rational line. The generator is carried on in the rotation's first
+   column, its points carried to every other column by that column's turn
+   and scale about the axis (the net is the generator's, turned).
+***********************************************************************/
+namespace
+{
+// A control point and its weight.
+struct sm_CPt
+{
+  SmPoint3d P;
+  double    W;
+};
+
+// x turned by t about the line through o along unit a.
+SmPoint3d sm_TurnAbout( const SmPoint3d & x, const SmPoint3d & o, const SmVector3d & a, double t )
+{
+  const SmVector3d v = x - o;
+  return o + v * cos( t ) + ( a * v ) * sin( t ) + a * ( a.Dot( v ) * ( 1.0 - cos( t )));
+}
+
+// The control points of n spans of dAngle (a quarter turn at most) carrying on, about the line
+// through o along unit a, the circle that ends at e: middle, end, middle, end, ...
+void sm_ArcSpans( const sm_CPt & e, const SmPoint3d & o, const SmVector3d & a, ULONG n, double dAngle, std::vector<sm_CPt> & rOut )
+{
+  const double dCos = cos( 0.5 * dAngle );
+  const SmPoint3d sFoot = o + a * a.Dot( e.P - o );
+  for ( ULONG k = 1; k <= n; k++ )
+    {
+      const SmPoint3d sMid = sm_TurnAbout( e.P, o, a, ( k - 0.5 ) * dAngle );
+      rOut.push_back( sm_CPt{ sFoot + ( sMid - sFoot ) * ( 1.0 / dCos ), e.W * dCos } );
+      rOut.push_back( sm_CPt{ sm_TurnAbout( e.P, o, a, k * dAngle ), e.W } );
+    }
+}
+
+// The radial part of x about the line through o along unit z.
+SmVector3d sm_Radial( const SmPoint3d & x, const SmPoint3d & o, const SmVector3d & z )
+{
+  const SmVector3d v = x - o;
+  return v - z * z.Dot( v );
+}
+// How a cylinder's, cone's, sphere's or torus's NURB is carried on round its axis.
+struct sm_RotTurn
+{
+  ULONG  lRot;      // the NURB direction round the axis: 0 = u, 1 = v
+  double dAngle;    // each extension span's angle, radians: a quarter turn at most
+  double dSpan;     // each extension span's parameter length (the base domain's per radian)
+  ULONG  lClose;    // the spans on either side that close the turn
+  double dLo, dHi;  // the closed turn's parameters: lClose spans past either end of the base
+};
+
+SmStatus sm_GetRotTurn( const SmBSplineSurface * pSurface, sm_RotTurn & rTurn )
+{
+  const SmSurfOfRevolution * pRev = (const SmSurfOfRevolution *)pSurface;
+  SmSurfParamType eRot = SM_SP_U;
+  const SmExtent1d sIvl = pRev->GetRotateParamExtent( &eRot );
+  rTurn.lRot = ( eRot == SM_SP_U ) ? 0 : 1;
+  const double dArc    = ( pRev->GetEndAngleDeg() - pRev->GetStartAngleDeg() ) * ( SM_PI / 180.0 );
+  const double dLength = sIvl.GetMax() - sIvl.GetMin();
+  if ( !( dArc > 0.0 ) || !( dArc <= 2.0 * SM_PI ) || !( dLength > 0.0 ))
+    { return SM_ERR; }
+  const double dHalfGap = SM_PI - 0.5 * dArc;
+  rTurn.lClose = (ULONG)ceil( dHalfGap / ( 0.5 * SM_PI ));
+  rTurn.dAngle = ( rTurn.lClose > 0 ) ? dHalfGap / rTurn.lClose : 0.5 * SM_PI;
+  rTurn.dSpan  = dLength / dArc * rTurn.dAngle;
+  rTurn.dLo    = sIvl.GetMin() + -1.0 * ( rTurn.lClose * rTurn.dSpan );
+  rTurn.dHi    = sIvl.GetMax() +  1.0 * ( rTurn.lClose * rTurn.dSpan );
+  return SM_SUCCESS;
+}
+
+// SolidCraft change: whether a surface of revolution's generator is an arc of one circle, and
+// if so that circle's centre (in the first column's meridian plane) and the arc's angle. A
+// circle's NURB spans are rational quadratic arcs: per span (a Bezier span: interior knots of
+// multiplicity 2), end points P0, P2 and middle P1 where the end tangents meet, |P0 P1| =
+// |P1 P2|, and the middle weight over the ends' geometric mean the cosine of half the span's
+// angle, which is also half the turn at P1 (pi - the angle P0 P1 P2). Every span on one circle:
+// one centre and radius. (A round's cross section revolved round a boss's axis, the surface
+// SMLib's concave round of an arc is.)
+SmBoolean sm_GeneratorIsCircle( const SmBSplineSurface * pSurface, SmPoint3d & rCentre, double & rAngle )
+{
+  rAngle = 0.0;
+  sm_RotTurn sTurn;
+  if ( sm_GetRotTurn( pSurface, sTurn ) != SM_SUCCESS )
+    { return FALSE; }
+  const ULONG lGen = 1 - sTurn.lRot;
+  const SmSurfParamType eGen = ( lGen == 0 ) ? SM_SP_U : SM_SP_V;
+  if ( pSurface->GetDegree( eGen ) != 2 )
+    { return FALSE; }
+  ULONG lNumU = 0, lNumV = 0;
+  SmTArray<SmPoint3d> sPts;
+  SmTArray<double>    sWts;
+  if ( pSurface->GetControlPointNet( lNumU, lNumV, sPts, sWts ) != SM_SUCCESS || sPts.GetSize() != lNumU * lNumV
+       || ( sWts.GetSize() != 0 && sWts.GetSize() != sPts.GetSize() ))
+    { return FALSE; }
+  SmTArray<double> sKnots;
+  SmTArray<ULONG>  sMults;
+  if ( pSurface->GetKnots( eGen, sKnots, &sMults ) != SM_SUCCESS || sKnots.GetSize() < 2 )
+    { return FALSE; }
+  for ( ULONG k = 1; k + 1 < sMults.GetSize(); k++ )
+    {
+      if ( sMults[k] != 2 )
+        { return FALSE; }
+    }
+  const ULONG lSpans = sKnots.GetSize() - 1;
+  const ULONG lNum = ( lGen == 0 ) ? lNumU : lNumV;
+  if ( lNum != 2 * lSpans + 1 )
+    { return FALSE; }
+  // the first column along the generator
+  auto At = [&]( ULONG g ) -> sm_CPt {
+    const ULONG i = ( lGen == 0 ) ? g : 0, j = ( lGen == 0 ) ? 0 : g;
+    return sm_CPt{ sPts[i * lNumV + j], sWts.GetSize() ? sWts[i * lNumV + j] : 1.0 };
+  };
+  double dRadius = 0.0;
+  for ( ULONG sp = 0; sp < lSpans; sp++ )
+    {
+      const sm_CPt a = At( 2 * sp ), m = At( 2 * sp + 1 ), b = At( 2 * sp + 2 );
+      const double dLa = ( m.P - a.P ).Length(), dLb = ( b.P - m.P ).Length();
+      const double dTol = 1.0e-9 * ( 1.0 + dLa + dLb );
+      if ( !( a.W > 0.0 ) || !( b.W > 0.0 ) || !( m.W > 0.0 ) || !( dLa > dTol ) || fabs( dLa - dLb ) > dTol )
+        { return FALSE; }
+      const double dCos = m.W / sqrt( a.W * b.W );
+      if ( !( dCos > 0.0 ) || !( dCos < 1.0 ))
+        { return FALSE; }
+      SmVector3d sTa = m.P - a.P, sTb = b.P - m.P;
+      if ( sTa.Unitize() != SM_SUCCESS || sTb.Unitize() != SM_SUCCESS )
+        { return FALSE; }
+      // half the turn of the tangent at P1 is half the span's angle
+      const double dHalf = 0.5 * acos( smos_Max( -1.0, smos_Min( 1.0, sTa.Dot( sTb ))));
+      if ( fabs( cos( dHalf ) - dCos ) > 1.0e-9 )
+        { return FALSE; }
+      // the centre: from P0 square to its tangent, toward P2, a radius |P0 P1| / tan(half) away
+      SmVector3d sIn = ( b.P - a.P ) - sTa * sTa.Dot( b.P - a.P );
+      if ( sIn.Unitize() != SM_SUCCESS )
+        { return FALSE; }
+      const double dR = dLa / tan( dHalf );
+      const SmPoint3d sC = a.P + sIn * dR;
+      if ( sp == 0 )
+        {
+          rCentre = sC;
+          dRadius = dR;
+        }
+      else if ( sC.DistanceBetween( rCentre ) > 1.0e-9 * ( 1.0 + dRadius ) || fabs( dR - dRadius ) > 1.0e-9 * ( 1.0 + dRadius ))
+        { return FALSE; }
+      rAngle += 2.0 * dHalf;
+    }
+  return rAngle > 0.0 ? TRUE : FALSE;
+}
+} // namespace
+
+static SmStatus sm_ExtendAsItself
+  (const SmContext        & crContext,       // in : context for new object
+   SmBSplineSurface       * pSurface,        // in : surface to extend: an SmCone, SmSphere or SmTorus (an SmCylinder is an SmCone), or a surface of revolution whose generator is a circle
+   const SmPoint2d        & crLo,            // in : the domain's least corner to reach
+   const SmPoint2d        & crHi,            // in : the domain's greatest corner to reach
+   SmBoolean                bCloseTurn,      // in : TRUE = round the axis reach the turn's closure (sm_RotTurn), crLo and crHi aside
+   SmBSplineSurface      *& rpExtended)      // out: new extended surface
+{
+  rpExtended = NULL;
+  const SmSurfOfRevolution * pRev = (const SmSurfOfRevolution *)pSurface;
+  sm_RotTurn sTurn;
+  SER( sm_GetRotTurn( pSurface, sTurn ));
+  const ULONG lRot = sTurn.lRot, lGen = 1 - lRot;
+  // SolidCraft change: a surface of revolution whose generator is a circle (sm_GeneratorIsCircle)
+  // carries it on as a torus does
+  SmPoint3d sGenCentre;
+  double    dGenCircleAngle = 0.0;
+  const SmBoolean bRevCircle = !pSurface->IsKindOf( SmCone_TYPE ) && !pSurface->IsKindOf( SmTorus_TYPE ) && !pSurface->IsKindOf( SmSphere_TYPE )
+                               && sm_GeneratorIsCircle( pSurface, sGenCentre, dGenCircleAngle );
+  const SmBoolean bGenCircle = pSurface->IsKindOf( SmTorus_TYPE ) || pSurface->IsKindOf( SmSphere_TYPE ) || bRevCircle;
+
+  // The net as G[r][g]: r along the rotation, g along the generator.
+  ULONG lNumU = 0, lNumV = 0;
+  SmTArray<SmPoint3d> sPts;
+  SmTArray<double>    sWts;
+  SER( pSurface->GetControlPointNet( lNumU, lNumV, sPts, sWts ));
+  if ( lNumU < 2 || lNumV < 2 || sPts.GetSize() != lNumU * lNumV || ( sWts.GetSize() != 0 && sWts.GetSize() != sPts.GetSize() ))
+    { return SM_ERR; }
+  const ULONG aNum[2] = { lNumU, lNumV };
+  std::vector< std::vector<sm_CPt> > G( aNum[lRot], std::vector<sm_CPt>( aNum[lGen] ));
+  for ( ULONG i = 0; i < lNumU; i++ )
+    {
+      for ( ULONG j = 0; j < lNumV; j++ )
+        {
+          const ULONG r = ( lRot == 0 ) ? i : j, g = ( lRot == 0 ) ? j : i;
+          G[r][g] = sm_CPt{ sPts[i * lNumV + j], sWts.GetSize() ? sWts[i * lNumV + j] : 1.0 };
+        }
+    }
+  ULONG aDeg[2] = { pSurface->GetDegree( SM_SP_U ), pSurface->GetDegree( SM_SP_V ) };
+  SmTArray<double> aKnots[2];
+  SmTArray<ULONG>  aMults[2];
+  SER( pSurface->GetKnots( SM_SP_U, aKnots[0], &aMults[0] ));
+  SER( pSurface->GetKnots( SM_SP_V, aKnots[1], &aMults[1] ));
+  std::vector<double> K[2];
+  std::vector<ULONG>  M[2];
+  for ( ULONG d = 0; d < 2; d++ )
+    {
+      for ( ULONG k = 0; k < aKnots[d].GetSize(); k++ )
+        {
+          K[d].push_back( aKnots[d][k] );
+          M[d].push_back( aMults[d][k] );
+        }
+      if ( K[d].size() < 2 || M[d].front() != aDeg[d] + 1 || M[d].back() != aDeg[d] + 1 )
+        { return SM_ERR; }
+    }
+  // Circles are rational quadratics; a cone's generator is a line.
+  if ( aDeg[lRot] != 2 || aDeg[lGen] != ( bGenCircle ? 2UL : 1UL ))
+    { return SM_ERR; }
+
+  const SmPoint3d  sO = pRev->GetOrigin();
+  SmVector3d sZ = pRev->GetZAxis();
+  if ( sZ.Unitize() != SM_SUCCESS )
+    { return SM_ERR; }
+  const double dDeg = SM_PI / 180.0;
+  const double dGenAngle = bRevCircle ? dGenCircleAngle : pRev->GetSTEPUVDomain().GetSize().y * dDeg;
+  const double aGoalLo[2] = { crLo.x, crLo.y }, aGoalHi[2] = { crHi.x, crHi.y };
+  const double aLength[2] = { K[0].back() - K[0].front(), K[1].back() - K[1].front() };   // the base domain's
+
+  // The spans of parameter length dSpan from parameter dFrom to past dGoal (outward, dSign), their
+  // knots into rKnots: at least one where the goal lies past dFrom.
+  auto Spans = [&]( double dSpan, double dFrom, double dGoal, double dSign, std::vector<double> & rKnots ) -> SmStatus {
+    if ( !( dSpan > 0.0 ))
+      { return SM_ERR; }
+    const ULONG n = (ULONG)ceil( ( dGoal - dFrom ) * dSign / dSpan );
+    if ( n > 4096 )
+      { return SM_ERR; }
+    for ( ULONG k = 1; k <= n; k++ )
+      { rKnots.push_back( dFrom + dSign * ( k * dSpan )); }
+    return SM_SUCCESS;
+  };
+  // The knots appended at one end of direction d, outward: the end becomes a knot of the
+  // degree's multiplicity, each new span ends at one, the last at one more.
+  auto Join = [&]( ULONG d, SmBoolean bHigh, const std::vector<double> & crNew ) {
+    if ( crNew.empty() )
+      { return; }
+    if ( bHigh )
+      {
+        M[d].back() = aDeg[d];
+        for ( double t : crNew )
+          {
+            K[d].push_back( t );
+            M[d].push_back( aDeg[d] );
+          }
+        M[d].back() = aDeg[d] + 1;
+      }
+    else
+      {
+        M[d].front() = aDeg[d];
+        for ( double t : crNew )
+          {
+            K[d].insert( K[d].begin(), t );
+            M[d].insert( M[d].begin(), aDeg[d] );
+          }
+        M[d].front() = aDeg[d] + 1;
+      }
+  };
+
+  // The generator first, in the rotation's first column, then carried to every column.
+  for ( ULONG e = 0; e < 2; e++ )
+    {
+      const SmBoolean bHigh = ( e == 1 );
+      const double dFrom = bHigh ? K[lGen].back() : K[lGen].front();
+      const double dGoal = bHigh ? aGoalHi[lGen] : aGoalLo[lGen];
+      const double dSign = bHigh ? 1.0 : -1.0;
+      if ( !( ( dGoal - dFrom ) * dSign > 0.0 ))
+        { continue; }
+      const ULONG lG = (ULONG)G[0].size();
+      const ULONG gEnd = bHigh ? lG - 1 : 0, gIn = bHigh ? lG - 2 : 1;
+      std::vector<double> sNewKnots;
+      std::vector< std::vector<sm_CPt> > sNew( G.size() );   // per column, outward
+      if ( bGenCircle )
+        {
+          if ( !( dGenAngle > 0.0 ))
+            { return SM_ERR; }
+          SER( Spans( aLength[lGen] / dGenAngle * ( 0.5 * SM_PI ), dFrom, dGoal, dSign, sNewKnots ));
+          // The generator's circle: about the sphere's centre, or the torus's tube centre in
+          // the first column's meridian plane.
+          const sm_CPt & crEnd = G[0][gEnd];
+          SmPoint3d sCentre = sO;
+          SmVector3d sOut = sm_Radial( crEnd.P, sO, sZ );
+          if ( pSurface->IsKindOf( SmTorus_TYPE ))
+            {
+              if ( sOut.Unitize() != SM_SUCCESS )
+                { return SM_ERR; }
+              sCentre = sO + sOut * ( (const SmTorus *)pSurface )->GetMajorRadius();
+            }
+          else if ( bRevCircle )
+            { sCentre = sGenCentre; }
+          // turning outward: from the inner control point through the end
+          SmVector3d sAxis = ( crEnd.P - sCentre ) * ( crEnd.P - G[0][gIn].P );
+          if ( sAxis.Unitize() != SM_SUCCESS )
+            { return SM_ERR; }
+          sm_ArcSpans( crEnd, sCentre, sAxis, (ULONG)sNewKnots.size(), 0.5 * SM_PI, sNew[0] );
+          // Every other column is the first turned about the axis and scaled from it: read off
+          // the generator point farthest from the axis.
+          ULONG gRef = 0;
+          double dRef = -1.0;
+          for ( ULONG g = 0; g < lG; g++ )
+            {
+              const double dR = sm_Radial( G[0][g].P, sO, sZ ).Length();
+              if ( dR > dRef ) { dRef = dR; gRef = g; }
+            }
+          if ( !( dRef > 0.0 ) || !( G[0][gRef].W > 0.0 ))
+            { return SM_ERR; }
+          const SmVector3d sRho0 = sm_Radial( G[0][gRef].P, sO, sZ );
+          for ( ULONG r = 1; r < G.size(); r++ )
+            {
+              const SmVector3d sRho = sm_Radial( G[r][gRef].P, sO, sZ );
+              const double dScale = sRho.Length() / dRef;
+              const double dTurn  = atan2( ( sRho0 * sRho ).Dot( sZ ), sRho0.Dot( sRho ));
+              const double dW     = G[r][gRef].W / G[0][gRef].W;
+              for ( const sm_CPt & c : sNew[0] )
+                {
+                  const SmVector3d sR = sm_Radial( c.P, sO, sZ );
+                  const SmPoint3d  sAlong = c.P - sR;
+                  sNew[r].push_back( sm_CPt{ sm_TurnAbout( sAlong + sR * dScale, sAlong, sZ, dTurn ), c.W * dW } );
+                }
+            }
+        }
+      else
+        {
+          // a line: the last span's homogeneous control points carried on to the goal
+          const double dLast = bHigh ? ( K[lGen].back() - K[lGen][K[lGen].size() - 2] ) : ( K[lGen][1] - K[lGen].front() );
+          if ( !( dLast > 0.0 ))
+            { return SM_ERR; }
+          const double dF = ( dGoal - dFrom ) * dSign / dLast;
+          sNewKnots.push_back( dGoal );
+          for ( ULONG r = 0; r < G.size(); r++ )
+            {
+              const sm_CPt & a = G[r][gEnd], & b = G[r][gIn];
+              const double dW = a.W + ( a.W - b.W ) * dF;
+              if ( !( dW > 0.0 ))
+                { return SM_ERR; }
+              sNew[r].push_back( sm_CPt{ ( a.P * a.W + ( a.P * a.W - b.P * b.W ) * dF ) * ( 1.0 / dW ), dW } );
+            }
+        }
+      for ( ULONG r = 0; r < G.size(); r++ )
+        {
+          if ( bHigh ) { G[r].insert( G[r].end(), sNew[r].begin(), sNew[r].end() ); }
+          else         { G[r].insert( G[r].begin(), sNew[r].rbegin(), sNew[r].rend() ); }
+        }
+      Join( lGen, bHigh, sNewKnots );
+    }
+
+  // Round the axis: every row a circle about it.
+  for ( ULONG e = 0; e < 2; e++ )
+    {
+      const SmBoolean bHigh = ( e == 1 );
+      const double dFrom = bHigh ? K[lRot].back() : K[lRot].front();
+      const double dGoal = bHigh ? aGoalHi[lRot] : aGoalLo[lRot];
+      const double dSign = bHigh ? 1.0 : -1.0;
+      if ( !( ( dGoal - dFrom ) * dSign > 0.0 ))
+        { continue; }
+      std::vector<double> sNewKnots;
+      if ( bCloseTurn )
+        {
+          // the turn's closure, exactly sm_RotTurn's dLo and dHi
+          for ( ULONG k = 1; k <= sTurn.lClose; k++ )
+            { sNewKnots.push_back( dFrom + dSign * ( k * sTurn.dSpan )); }
+        }
+      else
+        { SER( Spans( sTurn.dSpan, dFrom, dGoal, dSign, sNewKnots )); }
+      if ( sNewKnots.empty() )
+        { continue; }
+      const ULONG lR = (ULONG)G.size();
+      const ULONG rEnd = bHigh ? lR - 1 : 0, rIn = bHigh ? lR - 2 : 1;
+      // turning outward, read off the row farthest from the axis
+      ULONG gRef = 0;
+      double dRef = -1.0;
+      for ( ULONG g = 0; g < G[rEnd].size(); g++ )
+        {
+          const double dR = sm_Radial( G[rEnd][g].P, sO, sZ ).Length();
+          if ( dR > dRef ) { dRef = dR; gRef = g; }
+        }
+      const double dSense = ( ( G[rEnd][gRef].P - sO ) * ( G[rEnd][gRef].P - G[rIn][gRef].P )).Dot( sZ );
+      if ( !( dRef > 0.0 ) || dSense == 0.0 )
+        { return SM_ERR; }
+      const SmVector3d sAxis = ( dSense > 0.0 ) ? sZ : -sZ;
+      std::vector< std::vector<sm_CPt> > sNew( 2 * sNewKnots.size(), std::vector<sm_CPt>( G[rEnd].size() ));
+      for ( ULONG g = 0; g < G[rEnd].size(); g++ )
+        {
+          std::vector<sm_CPt> sRow;
+          sm_ArcSpans( G[rEnd][g], sO, sAxis, (ULONG)sNewKnots.size(), sTurn.dAngle, sRow );
+          for ( ULONG k = 0; k < sRow.size(); k++ )
+            { sNew[k][g] = sRow[k]; }
+        }
+      if ( bHigh ) { G.insert( G.end(), sNew.begin(), sNew.end() ); }
+      else         { G.insert( G.begin(), sNew.rbegin(), sNew.rend() ); }
+      Join( lRot, bHigh, sNewKnots );
+    }
+
+  // The extended net, i along u and j along v.
+  const ULONG lNewU = ( lRot == 0 ) ? (ULONG)G.size() : (ULONG)G[0].size();
+  const ULONG lNewV = ( lRot == 0 ) ? (ULONG)G[0].size() : (ULONG)G.size();
+  SmTArray<SmPoint3d> sNet;
+  SmTArray<double>    sWeights;
+  sNet.SetSize( lNewU * lNewV );
+  sWeights.SetSize( lNewU * lNewV );
+  for ( ULONG i = 0; i < lNewU; i++ )
+    {
+      for ( ULONG j = 0; j < lNewV; j++ )
+        {
+          const sm_CPt & c = ( lRot == 0 ) ? G[i][j] : G[j][i];
+          sNet[i * lNewV + j]     = c.P;
+          sWeights[i * lNewV + j] = c.W;
+        }
+    }
+  SmTArray<double> sKnotsU, sKnotsV;
+  SmTArray<ULONG>  sMultsU, sMultsV;
+  for ( ULONG k = 0; k < K[0].size(); k++ ) { sKnotsU.Add( K[0][k] ); sMultsU.Add( M[0][k] ); }
+  for ( ULONG k = 0; k < K[1].size(); k++ ) { sKnotsV.Add( K[1][k] ); sMultsV.Add( M[1][k] ); }
+  SER( SmBSplineSurface::CreateCanonical( crContext, aDeg[0], aDeg[1], sNet, SM_SF_UNSPECIFIED, sMultsU, sMultsV, sKnotsU, sKnotsV,
+                                          SM_KT_UNSPECIFIED, &sWeights, NULL, rpExtended ));
+  NER( rpExtended );
+  return SM_SUCCESS;
+
+} // end sm_ExtendAsItself
+
+/*******************************************************************//**
 PURPOSE: Make sure given DomainPoint is contained in
             domain of given surface by 
    1. Wrapping UV coordinates in domain periodic directions and
@@ -546,8 +990,48 @@ static SmStatus sm_ExtendSurface
   if((lSingularities & SM_SS_UMAX) && (rUV.x > sIvlU.GetMax())) { rUV.x = sIvlU.GetMax() ; }
   if((lSingularities & SM_SS_VMAX) && (rUV.y > sIvlV.GetMax())) { rUV.y = sIvlV.GetMax() ; }
   
+  // SolidCraft change: a cylinder, cone, sphere or torus continues as itself (sm_ExtendAsItself):
+  // its NURB spans are rational arcs and straight lines, whose polynomials carried on stay on the
+  // surface. A tangent extension (G1R) leaves it at once: a cylinder R25 continued 0.44 past its
+  // face's end was 0.0036 off the circle, and a round traced there (where a mitre's rails meet
+  // past a concave corner) was built that far off all along.
+  // So does a surface of revolution whose generator is a circle (a round's cross section revolved,
+  // as SMLib's concave round of an arc is): its generator carried on as its own circle.
+  SmPoint3d sGenCentre;
+  double    dGenAngle = 0.0;
+  const SmBoolean bAsItself =    pSurface->IsKindOf(SmCone_TYPE)
+                              || pSurface->IsKindOf(SmSphere_TYPE)
+                              || pSurface->IsKindOf(SmTorus_TYPE)
+                              || (pSurface->IsKindOf(SmSurfOfRevolution_TYPE) && sm_GeneratorIsCircle(pSurface, sGenCentre, dGenAngle));
+  SM_REF2(sGenCentre, dGenAngle);
+
+  // SolidCraft change: round the axis such a surface is a circle, and its extension reaches no
+  // further than closing the turn (half the gap past either end, sm_RotTurn); from there on that
+  // direction is periodic, its parameters wrapped to the closed turn like a periodic surface's.
+  // Carried on past it, a 294 deg arc grown a domain either way covered its turn two and a half
+  // times over.
+  sm_RotTurn sTurn = {0, 0.0, 0.0, 0, 0.0, 0.0};
+  SmBoolean  bCanClose = FALSE;
+  if (bAsItself)
+    {
+      SER(sm_GetRotTurn(pSurface, sTurn));
+      const SmBoolean bPeriodic = (sTurn.lRot == 0) ? bIsPeriodicOnU : bIsPeriodicOnV;
+      const ULONG lSingular = (sTurn.lRot == 0) ? (SM_SS_UMIN | SM_SS_UMAX) : (SM_SS_VMIN | SM_SS_VMAX);
+      bCanClose = !bPeriodic && !(lSingularities & lSingular);
+    }
+  const SmExtent1d sTurnIvl(sTurn.dLo, sTurn.dHi);
+  auto Rot = [&](SmPoint2d & rP) -> double & { return (sTurn.lRot == 0) ? rP.x : rP.y; };
+  // an extension from dLo to dHi round the axis that would reach round the turn
+  auto Closes = [&](double dLo, double dHi) -> SmBoolean
+    { return bCanClose && dHi - dLo >= sTurn.dHi - sTurn.dLo; };
+
   // if PeriodicWrap or Singularity clamping inserted point into domain - all done
   SmExtent2d sHave = (pOptCurrent != NULL) ? *pOptCurrent : sDomain;
+  {
+    SmPoint2d sHaveLo = sHave.GetMin(), sHaveHi = sHave.GetMax();
+    if (Closes(Rot(sHaveLo), Rot(sHaveHi)))
+      { Rot(rUV) = sTurnIvl.PeriodicWrap(Rot(rUV)); }
+  }
   if (sDomain.ContainsPoint2d(rUV) || sHave.ContainsPoint2d(rUV))
     { return SM_SUCCESS; }
 
@@ -579,6 +1063,19 @@ static SmStatus sm_ExtendSurface
     { sLo.y = smos_Min(sLo.y, Reach(sDomain.GetMin().y, sSize.y, rUV.y, -1.0)); }
   if (!bIsPeriodicOnV && !(lSingularities & SM_SS_VMAX))
     { sHi.y = smos_Max(sHi.y, Reach(sDomain.GetMax().y, sSize.y, rUV.y,  1.0)); }
+  if (bAsItself)
+    {
+      // reaching round the turn: to its closure, and the point wrapped to it
+      const SmBoolean bClose = Closes(Rot(sLo), Rot(sHi));
+      if (bClose)
+        {
+          Rot(sLo)  = sTurn.dLo;
+          Rot(sHi)  = sTurn.dHi;
+          Rot(rUV)  = sTurnIvl.PeriodicWrap(Rot(rUV));
+        }
+      SER(sm_ExtendAsItself(crContext, pSurface, sLo, sHi, bClose, rpExtended));
+      return SM_SUCCESS;
+    }
 
   // Extend the base toward the low corner, then the result toward the high corner (a side that
   // does not grow keeps its middle coordinate).

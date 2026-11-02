@@ -42,6 +42,9 @@
 #include <SmTools.h>
 #include <SmHealData.h>
 #include <SmOffsetSurface.h>
+#include <map>
+#include <set>
+#include <vector>
 #include <SmCopyBrepMap.h>
 #include <SmTopologySolver.h>
 #include <SmShape.h>
@@ -53,6 +56,7 @@
 #include <SmOffsetGeometryCreation.h>
 #include <SmMatrix.h>
 #include <SmBoxSearch.h>
+#include <SmWorkCounters.h>
 
 #include <unordered_set>
 #include <cmath>
@@ -1610,6 +1614,132 @@ SmBoolean bDebugMe = FALSE ;
   return SM_SUCCESS;
 
 } // end SmBrep::CombineCoincidentVertices
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. Split a vertex where the body touches itself
+    into one vertex per fan of faces round it.
+
+NOTES: The edgeuses at a vertex of a solid form one fan (the faces round
+    it in order, each edgeuse's previous one in its loop, then that one's
+    radial, back to the first) at a manifold vertex. Where the body touches
+    itself at a point (two cubes sharing a corner, or the up and down
+    halves of squares drawn edge to edge, each missing a quadrant on
+    opposite sides) they form several, sharing no edge. Each fan is a
+    corner of its own; one vertex per fan, all at the same point, is the
+    manifold form of the same body. The vertex keeps the fan of its first
+    vertexuse; each other fan's vertexuses move to a new vertex. A vertex
+    with a vertexuse not on a loop's edgeuse (a wire, a vertex loop or
+    shell), or whose fans share an edge, is left as it is.
+***********************************************************************/
+SmStatus SmBrep::SplitVertexByFans
+  (SmVertex             * pVertex,       // in : the vertex
+   SmTArray<SmVertex*>  & rNewVertices)  // out: the vertices made for its other fans
+{
+  NER(pVertex);
+  SmTArray<SmVertexuse*> sUses;
+  pVertex->GetVertexuses( sUses );
+  for (ULONG i=0; i<sUses.GetSize(); i++)
+    {
+      SmVertexuse * pVU = sUses[i];
+      if ( pVU == NULL || pVU->GetVertexuseType() != SmEdgeuse_TYPE || pVU->GetEdgeuse() == NULL || !pVU->GetEdgeuse()->IsLoopEdgeuse() )
+        { return SM_SUCCESS; }
+    }
+
+  // the fans, as the edges each one's faces meet at the vertex
+  std::vector< std::set<SmEdge*> > vFans;
+  std::map<SmEdge*, size_t>        sFanOf;
+  for (ULONG i=0; i<sUses.GetSize(); i++)
+    {
+      SmEdgeuse * pStart = sUses[i]->GetEdgeuse();
+      if ( sFanOf.count( pStart->GetEdge() ))
+        { continue; }
+      std::set<SmEdge*> sFan;
+      SmEdgeuse * pEU = pStart;
+      for (ULONG lSteps=0; ; lSteps++)
+        {
+          // every step takes two vertexuses' edges: a fan is no longer than the vertex's uses
+          if ( lSteps > sUses.GetSize() )
+            { SER( SM_ERR ); }
+          SmEdgeuse * pIn = pEU->GetCWEdgeuse();   NER(pIn);   // the edgeuse before, ending at the vertex
+          sFan.insert( pEU->GetEdge() );
+          sFan.insert( pIn->GetEdge() );
+          pEU = pIn->GetRadial();                   NER(pEU);   // the next face's edgeuse from the vertex
+          if ( pEU == pStart )
+            { break; }
+        }
+      for (SmEdge * pEdge : sFan)
+        {
+          if ( sFanOf.count( pEdge ))
+            { return SM_SUCCESS; }  // fans sharing an edge: not a vertex the body touches itself at
+        }
+      for (SmEdge * pEdge : sFan)
+        { sFanOf[pEdge] = vFans.size(); }
+      vFans.push_back( sFan );
+    }
+
+  // every fan but the first on a vertex of its own
+  for (size_t f=1; f<vFans.size(); f++)
+    {
+      SmVertex * pNew = new (this) SmVertex();   NER(pNew);
+      pNew->SetPoint( pVertex->GetPoint() );
+      pNew->SetTolerance( pVertex->GetTolerance(), FALSE, FALSE );
+      SER( m_pVertexListHead->PostInsert( pNew ));
+      for (ULONG i=0; i<sUses.GetSize(); i++)
+        {
+          SmVertexuse * pVU = sUses[i];
+          if ( sFanOf[pVU->GetEdgeuse()->GetEdge()] != f )
+            { continue; }
+          SER( pVertex->Remove( pVU ));
+          SER( pNew->PostInsert( pVU ));
+        }
+      rNewVertices.Add( pNew );
+    }
+  return SM_SUCCESS;
+
+} // end SmBrep::SplitVertexByFans
+
+/*******************************************************************//**
+PURPOSE: SolidCraft change. Join two vertices at one point whose faces
+    share no edge into one (the inverse of SplitVertexByFans).
+
+NOTES: pOther's vertexuses move onto pSurvivingVertex and pOther is
+    deleted. The two must be at one point (within the larger of their
+    tolerances) and share no edge.
+***********************************************************************/
+SmStatus SmBrep::JoinVertexFans
+  (SmVertex * pSurvivingVertex,   // in : the vertex that stays
+   SmVertex * pOther)             // in : the vertex joined to it, deleted
+{
+  NER(pSurvivingVertex);
+  NER(pOther);
+  if ( pSurvivingVertex == pOther || pSurvivingVertex->GetBrep() != this || pOther->GetBrep() != this )
+    { SER( SM_ERR_INVALID_INPUT ); }
+  double dTol = smos_Max( (double)pSurvivingVertex->GetTolerance(), (double)pOther->GetTolerance() );
+  if ( pSurvivingVertex->GetPoint().DistanceBetween( pOther->GetPoint() ) > dTol )
+    { SER( SM_ERR_INVALID_INPUT ); }
+  SmTArray<SmEdge*> sEdges, sOtherEdges;
+  pSurvivingVertex->GetEdges( sEdges );
+  pOther->GetEdges( sOtherEdges );
+  for (ULONG i=0; i<sOtherEdges.GetSize(); i++)
+    {
+      for (ULONG j=0; j<sEdges.GetSize(); j++)
+        {
+          if ( sOtherEdges[i] == sEdges[j] )
+            { SER( SM_ERR_INVALID_INPUT ); }
+        }
+    }
+  SmTArray<SmVertexuse*> sUses;
+  pOther->GetVertexuses( sUses );
+  for (ULONG i=0; i<sUses.GetSize(); i++)
+    {
+      SER( pOther->Remove( sUses[i] ));
+      SER( pSurvivingVertex->PostInsert( sUses[i] ));
+    }
+  SER( m_pVertexListHead->Remove( pOther ));
+  delete pOther;
+  return SM_SUCCESS;
+
+} // end SmBrep::JoinVertexFans
 
 /*******************************************************************//**
 PURPOSE: Compute the area, volume, center of gravity and moments
@@ -7658,6 +7788,76 @@ SmStatus SmBrep::DeleteFace
 } // end SmBrep::DeleteFace
 
 /*******************************************************************//**
+PURPOSE: SolidCraft fork: the exact B-spline form of an edge's curve over the
+  edge's interval, running the curve's way, for joining it with a neighbour:
+  a B-spline curve (lines included) copied and trimmed; a curve on a B-spline
+  surface whose UV curve is a line of constant u or v (the seam an extrusion
+  leaves on its wall) the surface's iso curve over that stretch, which is the
+  same curve exactly. Anything else: rpNewCurve stays NULL.
+***********************************************************************/
+static SmStatus sm_ExactBSplineOfEdge
+  (const SmContext  & crContext,
+   const SmEdge     * pEdge,
+   SmBSplineCurve  *& rpNewCurve)
+{
+  rpNewCurve = NULL;
+  const SmCurve * pCurve = pEdge->GetCurve();
+  NER( pCurve );
+  SmExtent1d sIvl = pEdge->GetInterval();
+
+  if ( pCurve->IsKindOf( SmBSplineCurve_TYPE ) )
+    {
+      SmCurve * pCopy = NULL;
+      SER( pCurve->Copy( crContext, pCopy ));
+      SmBSplineCurve * pBS = SM_CAST_PTR( SmBSplineCurve, pCopy );
+      if ( pBS == NULL )
+        { delete pCopy; return SM_SUCCESS; }
+      SmObjDelete sClean( pBS );
+      SER( pBS->Trim( sIvl ));   // may snap sIvl by tol to existing knots
+      sClean.Clear();
+      rpNewCurve = pBS;
+      return SM_SUCCESS;
+    }
+
+  const SmCrvOnSurf * pCOS = ( pCurve->IsKindOf( SmCrvOnSurf_TYPE ) ? static_cast<const SmCrvOnSurf *>( pCurve ) : NULL );
+  if ( pCOS == NULL || pCOS->GetUVCurve() == NULL || ! pCOS->GetUVCurve()->IsKindOf( SmLine_TYPE ) )
+    { return SM_SUCCESS; }
+  const SmBSplineSurface * pSurf = ( pCOS->GetBaseSurface() != NULL && pCOS->GetBaseSurface()->IsKindOf( SmBSplineSurface_TYPE ) ? static_cast<const SmBSplineSurface *>( pCOS->GetBaseSurface() ) : NULL );
+  if ( pSurf == NULL )
+    { return SM_SUCCESS; }
+
+  SmPoint3d sA, sB;
+  SER( pCOS->GetUVCurve()->EvaluatePoint( sIvl.GetMin(), sA ));
+  SER( pCOS->GetUVCurve()->EvaluatePoint( sIvl.GetMax(), sB ));
+  SmExtent2d sDom = pSurf->GetNaturalUVDomain();
+  double dZeroU = SM_EFF_ZERO * sDom.GetUInterval().GetLength();
+  double dZeroV = SM_EFF_ZERO * sDom.GetVInterval().GetLength();
+  SmSurfParamType eIso;
+  double dIso, dFrom, dTo;
+  if ( smos_Fabs( sA.x - sB.x ) <= dZeroU )      { eIso = SM_SP_U; dIso = sA.x; dFrom = sA.y; dTo = sB.y; }
+  else if ( smos_Fabs( sA.y - sB.y ) <= dZeroV ) { eIso = SM_SP_V; dIso = sA.y; dFrom = sA.x; dTo = sB.x; }
+  else
+    { return SM_SUCCESS; }
+
+  SmExtent2d sTrim = ( eIso == SM_SP_U )
+                       ? SmExtent2d( dIso, smos_Min( dFrom, dTo ), dIso, smos_Max( dFrom, dTo ) )
+                       : SmExtent2d( smos_Min( dFrom, dTo ), dIso, smos_Max( dFrom, dTo ), dIso );
+  SmBSplineCurve * pIso = NULL;
+  SER( pSurf->CreateIsoParametricCurve( crContext, eIso, dIso, 0.0, pIso, &sTrim ));
+  NER( pIso );
+  SmObjDelete sClean( pIso );
+  if ( dTo < dFrom )
+    {
+      SmExtent1d sNewIvl;
+      SER( pIso->ReverseParameterization( pIso->GetNaturalInterval(), sNewIvl ));
+    }
+  sClean.Clear();
+  rpNewCurve = pIso;
+  return SM_SUCCESS;
+
+} // end sm_ExactBSplineOfEdge
+
+/*******************************************************************//**
 PURPOSE: Delete a topological vertex.
 
 NOTES: A topological vertex is a vertex that could be removed without
@@ -7811,18 +8011,23 @@ SmBoolean bDebugMe=FALSE;
       // Combine the curves.
       // Make copies of the two curves, and trim the copies to their Edge's domains.
       const SmContext *pContext = GetContext();
-      SmCurve *pCopy;
-      SER( pCurveDelete->Copy( *pContext, pCopy ));
-      SmBSplineCurve *pTrimmedCurve = SM_CAST_PTR( SmBSplineCurve, pCopy) ;
+      // SolidCraft fork: each curve as its exact B-spline over its edge (sm_ExactBSplineOfEdge):
+      // the seam of a periodic face whose seam the merge ran on through a covered face is an
+      // SmLine and the extrusion's SmCrvOnSurf iso line, both exactly B-splines. The cast of the
+      // SmCrvOnSurf copy to SmBSplineCurve failed and was dereferenced (a crash). A curve with
+      // no exact B-spline form is not joined: the silent error below, with nothing changed yet,
+      // leaves the vertex in place.
+      SmBSplineCurve *pTrimmedCurve = NULL;
+      SER( sm_ExactBSplineOfEdge( *pContext, pEdgeToDelete, pTrimmedCurve ));
+      if ( pTrimmedCurve == NULL )
+        { return SM_ERR; }
       SmObjDelete sClean( pTrimmedCurve) ;
-      SmExtent1d sIvl = pEdgeToDelete->GetInterval();
-      SER( pTrimmedCurve->Trim( sIvl ));   // may snap sIvl by tol to existing knots
 
-      sIvl = pSurvivingEdge->GetInterval();
-      SER( pCurveSurvive->Copy (*pContext, pCopy ));
-      SmBSplineCurve *pCurveSurviveCopy = SM_CAST_PTR( SmBSplineCurve, pCopy) ;
+      SmBSplineCurve *pCurveSurviveCopy = NULL;
+      SER( sm_ExactBSplineOfEdge( *pContext, pSurvivingEdge, pCurveSurviveCopy ));
+      if ( pCurveSurviveCopy == NULL )
+        { return SM_ERR; }
       SmObjDelete sClean2( pCurveSurviveCopy) ;
-      SER( pCurveSurviveCopy->Trim( sIvl ));  // may snap sIvl by tol to existing knots
 
       // Do the join.
       if(pCurveSurviveCopy->JoinWith( lJoinEndSurvive, pTrimmedCurve, lJoinEndDelete, &dMaxEdgeGap ) != SM_SUCCESS )
@@ -12107,6 +12312,20 @@ SmStatus SmBrep::LocalOperation
   // get Brep Bounding box and that box's sphere center and radius
   SmExtent3d sBBox;
   SER( CalculateBoundingBox( sBBox)  );
+
+  // SolidCraft change: the box also holds the replacement surfaces. Their faces' edges are
+  // found by extending the neighbouring surfaces to meet them, by a distance sized from this
+  // box: sized from the original body alone, a face moved further than about its size away
+  // left the extended neighbours short of it and the edge was not found.
+  for ( ULONG j=0; j<rNewSurfaces.GetSize(); j++ )
+    {
+      SmSurface *pNewSurf = rNewSurfaces[j];
+      if ( pNewSurf == NULL ) { continue; }
+      SmExtent3d sSurfBox;
+      SER( pNewSurf->CalculateBoundingBox( pNewSurf->GetNaturalUVDomain(), &sSurfBox) );
+      sBBox.Union( sSurfBox, sBBox );
+    }
+
   SmPoint3d sCenter;
   double dSphRadius;
   sBBox.ComputeSphereBound( sCenter, dSphRadius) ;
@@ -13353,6 +13572,30 @@ SmBoolean bDebugMe=FALSE;
           pFace->GetLoops(sFaceLoops) ;
           // SmLoop  * pFaceOuterLoop = sFaceLoops[0] ;
 
+          // On a plane the region a loop bounds lies within the loop's box, so an inner loop
+          // sampled outside the box of pNewF's outer loop is not in pNewF and stays in pFace:
+          // without this every closed loop imprinted in a face classified each of its inner
+          // loops, n^2 work for a sheet of n holes. Only when every edge has a box.
+          SmExtent3d sNewFOuterBox ;
+          SmBoolean  bHaveNewFOuterBox = pFace->GetSurface()->IsKindOf(SmPlane_TYPE)
+                                      && pNewF->GetSurface()->IsKindOf(SmPlane_TYPE) ;
+          if (bHaveNewFOuterBox)
+            {
+              SmTArray<SmEdge*> sNewFOuterEdges ;
+              pNewF->GetOuterLoopEdges(sNewFOuterEdges) ;
+              bHaveNewFOuterBox = sNewFOuterEdges.GetSize() > 0 ;
+              for (ULONG e=0; bHaveNewFOuterBox && e<sNewFOuterEdges.GetSize(); e++)
+                {
+                  SmEdge     * pE = sNewFOuterEdges[e] ;
+                  SmExtent3d   sEdgeBox ;
+                  if (   pE->GetCurve() == NULL
+                      || pE->GetCurve()->CalculateBoundingBox(pE->GetInterval(), &sEdgeBox) != SM_SUCCESS)
+                    { bHaveNewFOuterBox = FALSE ; break ; }
+                  sEdgeBox.ExpandAbsolute(pE->GetTolerance()) ;
+                  sNewFOuterBox.Union(sEdgeBox, sNewFOuterBox) ;
+                }
+            }
+
           // for every pFace->InnerLoop - move nested inner loops from pFace to pNewF as needed
           for (ULONG i=1; i<sFaceLoops.GetSize();i++)
             {
@@ -13385,6 +13628,11 @@ SmBoolean bDebugMe=FALSE;
 
                   SER(pEdge->GetCurve()->EvaluatePoint(sIvl.Evaluate(0.34567),sTestPoint)) ;
                 }
+
+              // no move - TestPoint is outside pNewF->OuterLoop's box, even at the retry tolerance below
+              if (bHaveNewFOuterBox && !sNewFOuterBox.ContainsPoint3d(sTestPoint, dPointTol*100.0))
+                { continue ; }
+              SmWorkCounters::Add(SmWorkCounters::eLoopsClassified); // SolidCraft fork: work count
 
 #ifdef SM_DEBUG_CODE
               // draw TestPoint(red), LoopBeingClassified(blue), pNewF(green)
@@ -14082,12 +14330,35 @@ SmStatus SmBrep::MakeEdgeTopology
           pEndShell->m_pList = NULL ; SER( pEndShell->UpdateListSize()  );
           SM_ASSERT(pVU != NULL) ; delete pVU ; pVU = NULL ;
         }
+      else if (pStartShell->IsWireShell() && pEndShell->IsFaceuseShell())
+        {
+          // A wire shell meeting a faceuse shell: the faceuse shell takes the wires, and the
+          // wire shell's place in the region, and the wire shell goes. Moving the faceuse shell's
+          // children into the wire shell instead ends the same (a faceuse shell holding the same
+          // faceuses in the same order, and both shells' wires), but costs the faceuse shell's
+          // size and a pass over every edge of the Brep (SmShell::GetWireEdges), once for each
+          // edge a boolean makes from a faceuse shell to a wire.
+          SmRegion *pReg = pStartShell->GetRegion();
+          SER( pStartShell->TransferChildrenTo(pEndShell,NULL) );
+          SER( pReg->Remove(pEndShell) );
+          SER( pReg->InsertAfter(pEndShell, pStartShell) );
+          SER( pReg->Remove(pStartShell) );
+          SM_ASSERT(pStartShell != NULL) ; delete pStartShell ;
+          pStartShell = pEndShell ;
+          pEndShell   = NULL ;
+        }
       else
         {
+          // SolidCraft fork: work count
+          SmWorkCounters::Add(SmWorkCounters::eShellFaceusesMoved,
+                              pEndShell->IsFaceuseShell() ? pEndShell->GetSize() : 0);
           SER(pEndShell->TransferChildrenTo(pStartShell,NULL));
         }
-      SER( pEndShell->GetRegion()->Remove(pEndShell) );
-      SM_ASSERT(pEndShell != NULL) ; delete pEndShell ; pEndShell = NULL ;
+      if (pEndShell != NULL)
+        {
+          SER( pEndShell->GetRegion()->Remove(pEndShell) );
+          delete pEndShell ; pEndShell = NULL ;
+        }
     }
 
   // Note that an error will invoke destructors of these items
@@ -16084,6 +16355,7 @@ SmStatus SmBrep::MakeFaceWithCurves
   SmShell                          *& rpNewShell,           // out: New shell if any.  Trimmed surfaces always create a new shell.
   SmFace                           *& rpNewFace,            // out: the new face
   const SmBoolean                   * pbOptCrvOnSurf)       // in : Optional flag to utilize CrvOnSurf for face construction from UV curves. NULL to ignore. Default is NULL.
+                                                            //      With 3D curves given, TRUE = the edgeuses keep the UV curves as their trim curves.
      //  SmBoolean                           bRunHeal)             // in : TRUE = Run Healer on new Face - may edit Face data to fix problems
      //                                                            //      FALSE= don't
      //                                                            //      default:[FALSE]
@@ -26943,20 +27215,22 @@ SmStatus SmBrep::StitchFaces
    double            & rdMaxEdgeFaceTrimCurveGap, // out: max gap found between coincident edges    considered for glueing
    SmTArray<SmFace*> * pOptFaces,                 // in : only stitch topology connected to these faces, NULL=all faces
                                                   //      default:[NULL]
-   SmBoolean           bAllowSpineEdges)          // in : if true this allows formation of spine edges. See c below.
+   SmBoolean           bAllowSpineEdges,          // in : if true this allows formation of spine edges. See c below.
                                                   //      default:[FALSE]
                                                   // NOTE: some coincident vertex and edge pairs do not get glued due to
                                                   //       a. gaps exceeding tolerances
                                                   //       b. a failure within the glue edge function
                                                   //       c. not being lamina when m_bMakingManifoldSolid == TRUE
+   SmStitchCallback  * pOptCallback)              // in : SolidCraft change: picks which of two coincident vertices or edges
+                                                  //      to keep, NULL = SmStitchCallback's own choice. default:[NULL]
 {
   SmLockBrepBox lockit (this); // lock brep bounding box, until goes out of scope
 
   // StitchCallback has SelectTopologyToKeep(): pick KeepItem and DeleteItem from a glue ItemPair
   SmStitchCallback sCallBack;
 
-  // construct Stitch manager using default coincident keep/delete logic for glue ItemPairs
-  SmStitch sStitch(sCallBack, dXSectTol3d);
+  // construct Stitch manager using the caller's keep/delete logic for glue ItemPairs, else the default coincident one
+  SmStitch sStitch(pOptCallback != NULL ? *pOptCallback : sCallBack, dXSectTol3d);
 
   // Set the SmStitch DoStitch state bits as desired
   //    sStitch.m_bDoRegionNesting        = FALSE;        // default:[TRUE]
@@ -28409,14 +28683,14 @@ SmStatus SmBrep::TestClosureSplitRegion
   SmNewMarkAndLock sMarkLock((SmContext *)GetContext()) ; // increments newly locked mark
   SmMarkType       eMarkType = sMarkLock.GetMarkType() ;
 
-  // See if pFUStart is connected to a set of closed Faceuse neighbors
-  // side effect: increment sMarkLock
+  // See if pFUStart is connected to a set of closed Faceuse neighbors.
+  // Searched from both sides at once: a face that does not split the region finds its mate
+  // near it, where a walk from one side may cross the whole shell first (once per new face
+  // in a boolean, so quadratic in the shell's size). Nothing below reads its marks.
   SmTopologyTraverser sTT;
   SmBoolean bIsClosed;
-  SER( sTT.ClosureTraversal(pFUStart,     // in : target faceuse (gets marked)
-                            bIsClosed,    // out: TRUE=faceuse connects to closed faceuse set, FALSE=doesn't
-                            NULL,         // out: List of all connected faces (get marked), NULL to ignore.
-                            sMarkLock)) ; // in : specify mark for target objects (incremented)
+  SER( sTT.ClosureTraversalFromBothSides(pFUStart,     // in : target faceuse
+                                         bIsClosed)) ; // out: TRUE=faceuse connects to closed faceuse set, FALSE=doesn't
 
   // no work - pFUStart is not connected to a set of closed Faceuse neighbors
   if(bIsClosed == FALSE )
@@ -29349,8 +29623,6 @@ SmStatus SmBrep::Transform
 
   // We can scale and rotate a brep by transforming all of its 3D geometry
   // (points on vertices, curves on edges, and surfaces on faces.
-  SmExtent3d sVertBBox ;
-  
   // vertices
   SmTArray<SmVertex *> sVertices;
   GetVertices(sVertices);
@@ -29366,7 +29638,6 @@ SmStatus SmBrep::Transform
         }
       crRotateNMove.TransformPoint(sVertPnt,sVertPnt);
       sVertices[ii]->SetPoint(sVertPnt ) ;
-      sVertBBox.AddPoint3d(sVertPnt) ;
     } // end iter ii, scale and rotate all vertex->positions
   
   // curves
@@ -29438,17 +29709,28 @@ SmStatus SmBrep::Transform
       }
 
     // Scale Tolerances
-    if(cpOptScale && bScaleTol)
+    // SolidCraft change: a transform that scales by 1 (a rotation, a reflection, the unit stages of
+    // a decomposed 4x4) changes no tolerance, and a scale scales each object's own tolerance with
+    // the model, never below the new Brep tolerance. Every tolerance was set to the Brep's, so an
+    // edge wider than it (a blend's intersection edge, its curve fitted to 8e-5 mm) came out
+    // with the Brep's 1e-5 mm, narrower than its own geometry's gap.
+    const double dTolScale = cpOptScale ? smos_Max(smos_Fabs(cpOptScale->x), smos_Max(smos_Fabs(cpOptScale->y), smos_Fabs(cpOptScale->z)))
+                                        : 1.0 ;
+    if(cpOptScale && bScaleTol && smos_Fabs(dTolScale - 1.0) > SM_EFF_ZERO)
       {
-        // set ModelSizeEstimate from Vertex BBox size
+        // set ModelSizeEstimate from the Brep's box: its vertices', edges' and faces' boxes.
+        // SolidCraft change: it was the box of the vertices alone, empty for a Brep with none (a
+        // lone torus or a closed spline face), which made the Brep tolerance zero.
+        SmExtent3d sModelBBox ;
+        SER( CalculateBoundingBox(sModelBBox, FALSE, FALSE, FALSE) );
 #ifdef SM_USE_NEWTOL
-        SM_NEWTOL_LINE SmTol::SetModelSizeEstimate(this, sVertBBox.GetSize().Length());
+        SM_NEWTOL_LINE SmTol::SetModelSizeEstimate(this, sModelBBox.GetSize().Length());
 #else // SM_USE_OLDTOL
         // double dOldModelSize                         = m_dThisModelSizeEstimate ;     
         // SM_OLDTOL_LINE SmZoneTol3d sOldBrepZoneTol3d = SmTol::SizeEstimateToZoneTol3d(dOldModelSize) ;
 
-        SmTol::SetModelSizeEstimate(*this, sVertBBox.GetSize().Length()) ;                      // set this->m_dThisModelSizeEstimate and this->m_sThisZoneTol3d
-        SmTol::SetModelSizeEstimate(*(SmContext *)GetContext(), sVertBBox.GetSize().Length()) ; // set this->pContext->m_dThisModelSizeEstimate and this->pContext->m_sThisZoneTol3d
+        SmTol::SetModelSizeEstimate(*this, sModelBBox.GetSize().Length()) ;                      // set this->m_dThisModelSizeEstimate and this->m_sThisZoneTol3d
+        SmTol::SetModelSizeEstimate(*(SmContext *)GetContext(), sModelBBox.GetSize().Length()) ; // set this->pContext->m_dThisModelSizeEstimate and this->pContext->m_sThisZoneTol3d
 #endif // SM_USE_OLDTOL 
 
 #ifdef SM_DEBUG_CODE
@@ -29476,7 +29758,7 @@ SmBoolean bDebugMe = FALSE ;
           { // GWC: oldTol: keep it simple - set every tol to BrepTol
             //      newTol: store max gaps - compute obj tol from modeling tolerance and maxGap values that exceed XSectTol3d
             // obsolete: SM_OLDTOL_LINE SmZoneTol3d sOldZoneTol3d = sVertices[ii]->GetTolerance() ;
-            SM_OLDTOL_LINE sVertices[ii]->SetTolerance(m_sThisZoneTol3d, // in : Desired New ZoneTol3d Value
+            SM_OLDTOL_LINE sVertices[ii]->SetTolerance(SmZoneTol3d(smos_Max(static_cast<double>(m_sThisZoneTol3d), static_cast<double>(sVertices[ii]->GetTolerance()) * dTolScale)), // in : Desired New ZoneTol3d Value
                                                        FALSE,            // in : default:[TRUE] = set tolerance only if sZoneTol3d > m_sZoneTol3d
                                                                          //      FALSE          = always set tolerance (allow shrinking TolValues)
                                                        FALSE) ;          // NotUsed: in : not used here: default:[TRUE] = Chg VtxTol to be >= EdgeTol (previous behavior)
@@ -29490,7 +29772,7 @@ SmBoolean bDebugMe = FALSE ;
           { // GWC: oldTol: keep it simple - set every tol to BrepTol
             //      newTol: store max gaps - compute obj tol from modeling tolerance and maxGap values that exceed XSectTol3d
             // obsolete: SM_OLDTOL_LINE SmZoneTol3d sOldZoneTol3d = sEdges[ii]->GetTolerance() ;
-            SM_OLDTOL_LINE sEdges[ii]->SetTolerance(m_sThisZoneTol3d, // in : Desired New ZoneTol3d Value
+            SM_OLDTOL_LINE sEdges[ii]->SetTolerance(SmZoneTol3d(smos_Max(static_cast<double>(m_sThisZoneTol3d), static_cast<double>(sEdges[ii]->GetTolerance()) * dTolScale)), // in : Desired New ZoneTol3d Value
                                                     FALSE,            // in : default:[TRUE] = set tolerance only if sZoneTol3d > m_sZoneTol3d
                                                                       //      FALSE          = always set tolerance (allow shrinking TolValues)
                                                     FALSE) ;          // NotUsed: in : not used here: default:[TRUE] = Chg VtxTol to be >= EdgeTol (previous behavior)
@@ -29503,7 +29785,7 @@ SmBoolean bDebugMe = FALSE ;
           { // GWC: oldTol: keep it simple - set every tol to BrepTol
             //      newTol: store max gaps - compute obj tol from modeling tolerance and maxGap values that exceed XSectTol3d
             // obsolete: SM_OLDTOL_LINE SmZoneTol3d sOldZoneTol3d = sFaces[ii]->GetTolerance() ;
-            SM_OLDTOL_LINE sFaces[ii]->SetTolerance(m_sThisZoneTol3d, // in : Desired New ZoneTol3d Value
+            SM_OLDTOL_LINE sFaces[ii]->SetTolerance(SmZoneTol3d(smos_Max(static_cast<double>(m_sThisZoneTol3d), static_cast<double>(sFaces[ii]->GetTolerance()) * dTolScale)), // in : Desired New ZoneTol3d Value
                                                     FALSE,            // in : default:[TRUE] = set tolerance only if sZoneTol3d > m_sZoneTol3d
                                                                       //      FALSE          = always set tolerance (allow shrinking TolValues)
                                                     FALSE) ;          // NotUsed: in : not used here: default:[TRUE] = Chg VtxTol to be >= EdgeTol (previous behavior)

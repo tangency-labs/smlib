@@ -2,13 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // smlib_brep_mass_properties and smlib_brep_area: SMLib's exact (integrated, not tessellated)
-// area, volume, centroid and inertia; smlib_brep_bounds: the exact box.
+// area, volume, centroid and inertia; smlib_brep_bounds: the exact box;
+// smlib_brep_edge_face_distance: how far an edge lies from a face's surface, as SMLib measures it;
+// smlib_brep_classify_point: where a point lies against a body, exactly.
 
 #include "smlib_shim.h"
 
 #include <SmAttribute.h>
+#include <SmEdge.h>
 #include <SmExtent3d.h>
 #include <SmFace.h>
+#include <SmGap.h>
+#include <SmPointClass.h>
+#include <SmSurface.h>
 #include <SmRegion.h>
 #include <SmVertex.h>
 
@@ -18,7 +24,7 @@ namespace
 {
 // Every face counted once (SmApiBrepComputeArea, with the [1e-8, 1e-1] envelope instead of its
 // [1e-4, 1e-1]): the total area and, when `first` is given, the area's first moments about `o`.
-int32_t faces_area(const SmBrep *b, double accuracy, const SmPoint3d &o, double &area, SmVector3d *first)
+int32_t faces_area(const SmBrep *b, double accuracy, const SmPoint3d &o, double &area, SmVector3d *first, bool (*counted)(const SmFace *) = nullptr)
 {
     area = 0.0;
     SmVector3d sum(0.0, 0.0, 0.0);
@@ -28,6 +34,10 @@ int32_t faces_area(const SmBrep *b, double accuracy, const SmPoint3d &o, double 
     for (ULONG i = 0; i < faces.GetSize(); ++i)
     {
         const SmFace *f = faces[i];
+        if (counted != nullptr && !counted(f))
+        {
+            continue;
+        }
         SmExtent3d box;
         int32_t s = status(f->CalculateBoundingBox(box));
         if (s != SMLIB_OK)
@@ -57,6 +67,19 @@ int32_t faces_area(const SmBrep *b, double accuracy, const SmPoint3d &o, double 
         *first = sum;
     }
     return std::isfinite(area) ? SMLIB_OK : static_cast<int32_t>(SM_ERR_INVALID_INPUT);
+}
+// A face with material on neither side: a sheet face, standing free or hung on a solid (a blend
+// sheet stitched between two boxes). SmBrep::ComputePreciseProperties takes its area only from
+// faces between a solid region and a void, so such a face is counted on its own.
+bool sheet_face(const SmFace *f)
+{
+    SmFaceuse *a = nullptr, *b = nullptr;
+    f->GetFaceuses(a, b);
+    auto void_side = [](const SmFaceuse *u) {
+        const SmRegion *r = u != nullptr ? u->GetRegion() : nullptr;
+        return r == nullptr || r->IsVoid() == TRUE;
+    };
+    return void_side(a) && void_side(b);
 }
 } // namespace
 
@@ -152,6 +175,14 @@ extern "C" int32_t smlib_brep_mass_properties(const smlib_brep *brep, double rel
             {
                 return static_cast<int32_t>(SM_ERR_INVALID_INPUT);
             }
+            // The area of every face of the body: the solid's boundary and the sheet faces.
+            double sheets = 0.0;
+            s = faces_area(b, accuracy, o, sheets, nullptr, sheet_face);
+            if (s != SMLIB_OK)
+            {
+                return s;
+            }
+            area += sheets;
             // m[4]: first moments about o; m[7]: (y^2+z^2, z^2+x^2, x^2+y^2) about o; m[6]: (yz, zx, xy)
             // about o. Parallel axes from o to the centroid (unit density: mass = volume).
             const double d[3] = {m[4].x / mass, m[4].y / mass, m[4].z / mass};
@@ -229,6 +260,99 @@ extern "C" int32_t smlib_brep_bounds(const smlib_brep *brep, double lo[3], doubl
             std::memcpy(lo, r, 3 * sizeof(double));
             std::memcpy(hi, r + 3, 3 * sizeof(double));
             return SMLIB_OK;
+        }
+    );
+}
+
+extern "C" int32_t smlib_brep_edge_face_distance(const smlib_brep *brep, int64_t edge, int64_t face, double *out)
+{
+    if (!valid(brep) || out == nullptr || edge < 0 || face < 0)
+    {
+        return SMLIB_ERR_ARG;
+    }
+    Call c("smlib_brep_edge_face_distance", handle(brep) + ", edge=" + std::to_string(edge) + ", face=" + std::to_string(face));
+    c.input("brep", brep);
+    return c.run(
+        [&]
+        {
+            SmTArray<SmEdge *> edges;
+            SmTArray<SmFace *> faces;
+            brep->p->GetEdges(edges);
+            brep->p->GetFaces(faces);
+            if (static_cast<uint64_t>(edge) >= edges.GetSize() || static_cast<uint64_t>(face) >= faces.GetSize())
+            {
+                return static_cast<int32_t>(SMLIB_ERR_ARG);
+            }
+            const SmEdge *e = edges[static_cast<ULONG>(edge)];
+            const SmCurve *curve = e->GetCurve();
+            const SmSurface *surface = faces[static_cast<ULONG>(face)]->GetSurface();
+            SmExtent1d interval = e->GetInterval();
+            if (curve == nullptr || surface == nullptr || !(interval.GetMax() > interval.GetMin()))
+            {
+                return static_cast<int32_t>(SM_ERR_INVALID_INPUT);
+            }
+            // SMLib's own edge/face gap (SmEdgeuse::CalcMaxEdgeFaceGap's): the tolerance only
+            // classifies the samples, it does not change the distances.
+            SmCrvSrfGapFunction gaps(SmTol::GetXSectTol3d(brep->p->GetContext()), curve, interval, surface, 20);
+            SmGapSample *largest = nullptr;
+            int32_t s = status(gaps.GetMaxGapSample(largest));
+            if (s != SMLIB_OK)
+            {
+                return s;
+            }
+            if (largest == nullptr || !std::isfinite(largest->GetLength()))
+            {
+                return static_cast<int32_t>(SM_ERR_INVALID_INPUT);
+            }
+            *out = largest->GetLength();
+            return SMLIB_OK;
+        }
+    );
+}
+
+extern "C" int32_t smlib_brep_classify_point(const smlib_brep *brep, double x, double y, double z, int32_t *out)
+{
+    if (!valid(brep) || out == nullptr || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+    {
+        return SMLIB_ERR_ARG;
+    }
+    Call c("smlib_brep_classify_point", handle(brep) + ", point=[" + num(x) + "," + num(y) + "," + num(z) + "]");
+    c.input("brep", brep);
+    return c.run(
+        [&]
+        {
+            const SmBrep *b = brep->p;
+            // With boundary intersections on, Point3DClassify first solves the point against the
+            // body's vertices, edges and faces at the given zone tolerance (BrepPointSolve,
+            // lowest-dimensional hit first) and only then fires rays for the region, so a point on
+            // the boundary is reported as such and never decided by a ray.
+            SmPointClassification pc;
+            int32_t s = status(b->Point3DClassify(SmPoint3d(x, y, z), SmTol::GetZoneTol3d(b), TRUE, pc));
+            if (s != SMLIB_OK)
+            {
+                return s;
+            }
+            switch (pc.GetPointClass())
+            {
+            case SM_PC_VERTEX:
+            case SM_PC_EDGE:
+            case SM_PC_FACE:
+                *out = SMLIB_POINT_ON_BOUNDARY;
+                return SMLIB_OK;
+            case SM_PC_REGION:
+            {
+                const SmRegion *r = static_cast<const SmRegion *>(pc.GetObject());
+                if (r == nullptr)
+                {
+                    return static_cast<int32_t>(SM_ERR);
+                }
+                *out = r->IsVoid() == TRUE ? SMLIB_POINT_OUTSIDE : SMLIB_POINT_INSIDE;
+                return SMLIB_OK;
+            }
+            default:
+                // Point3DClassify reports only the four classes above on success.
+                return static_cast<int32_t>(SM_ERR);
+            }
         }
     );
 }

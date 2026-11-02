@@ -127,7 +127,7 @@ NOTES:
 
   2. 3d Curve EndPoints are set as part of a construction process.
      This currently happens in fillet construction in calls
-       SmCircularCrossSectionFSG::CreateSurfaceFromCurves()
+       SmGnSectionFSG::CircleSurfaceFromCurves()
   
   3. UVTrimCurve endPoints are also moded to make 0.0 sized endGaps
      in SmTrimmingTools::FixTrimLoopTinyParameterSpaceGaps().

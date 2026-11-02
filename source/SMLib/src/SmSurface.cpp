@@ -55,6 +55,8 @@
 #include <SmSrfInVolume.h>
 #include <SmGap.h>
 #include <SmCurveBoundedSurface.h>
+#include <SmProceduralBlend.h>
+#include <SmBallPatch.h>
 #include <SmTrimmingTools.h>
 
 #include <SmAdvSurfaceIntersector.h>
@@ -1017,6 +1019,26 @@ if ( bDebugMeDump )
 
       // Update pApproxSurf using cubic Bezier approximations to each patch.
 
+      // SolidCraft change: the patches below are the cubic Bezier pieces between knots, which
+      // needs every inner knot of full multiplicity (control points 3 apart per span). A starter
+      // copied from a root B-spline with simple inner knots (the offset of a fitted bicubic
+      // patch) is put in that form first, exactly, by knot insertion; it was left as it was, its
+      // spans overran its control points and the approximation returned success with no surface.
+      for (int dir = 0; dir < 2; dir++)
+        {
+          const SmSurfParamType eDir = dir == 0 ? SM_SP_U : SM_SP_V;
+          const ULONG lDeg = dir == 0 ? lUDeg : lVDeg;
+          SmTArray<double> &rKnots = dir == 0 ? sUKnots : sVKnots;
+          SmTArray<ULONG> &rMult = dir == 0 ? sUMult : sVMult;
+          SER( pApproxSurf->GetKnots( eDir, rKnots, &rMult ) );
+          sMoreKnots.ReSet();
+          for ( ii=1; ii+1<rKnots.GetSize(); ii++ )
+            {
+              for ( kk=rMult[ii]; kk<lDeg; kk++ ) { sMoreKnots.Add( rKnots[ii] ); }
+            }
+          if ( sMoreKnots.GetSize() > 0 ) { SER( pApproxSurf->InsertKnots( eDir, sMoreKnots ) ); }
+        }
+
       // get knots of the subdivided surface
       SER( pApproxSurf->GetKnots( SM_SP_U, sUKnots, &sUMult ) );
       SER( pApproxSurf->GetKnots( SM_SP_V, sVKnots, &sVMult ) );
@@ -1054,8 +1076,8 @@ if ( bDebugMeDump )
                       if (   lUMin+iub >= lNumCtrlU
                           || lVMin+ivb >= lNumCtrlV)
                         {
-                          SE(SM_ERR); // Some problem here with knots
-                          return SM_SUCCESS;
+                          // SolidCraft change: an error, not success with no surface.
+                          SER_MSG(SM_ERR, _T("ApproximateSurface: a patch runs past the control points")) ;
                         }
                       SER( pApproxSurf->GetControlPoint( eForm, lUMin+iub, lVMin+ivb, sPnt, dWeight ) );
                       dWeight = 1.0;
@@ -7781,6 +7803,12 @@ SmBoolean bDebugMe2 = FALSE;
 
 } // end CoincidenceCheck
 
+// The fraction of the domain, in u and in v, a step of CoverCoincidentSurface()'s drops
+// may cover before sm_CrossedSeamOrPole() calls it a crossing of a seam or a pole.
+// SolidCraft fork: at file scope, so the seam-jump test in CoverCoincidentSurface()
+// reads the same limit.
+static constexpr double sdMaxStepRatio = 0.4;
+
 /*******************************************************************//**
 PURPOSE: Static helper for CoverCoincidentSurface():
   Check whether a step crossed a seam or a pole.
@@ -7821,8 +7849,7 @@ static SmBoolean sm_CrossedSeamOrPole( SmSurface *pSurf,
   // But first it should be sufficient to check against half the domain:
   // assuming the step size was not too large, a jump that big probably
   // indicates some kind of problem that would justify a failure return
-  // from CoverCoincidentSurface().
-  constexpr double sdMaxStepRatio = 0.4;
+  // from CoverCoincidentSurface(). The limit is sdMaxStepRatio (file scope).
 
   // Check u and v separately.
   double dDomSizeU = crDomain.GetUInterval().GetLength();
@@ -7977,8 +8004,9 @@ SmStatus SmSurface::CoverCoincidentSurface
   SmBoolean        & rbSuccess,     // out: pOther will fit inside this; see notes above
   double           & rdMaxDist,     // out: max distance found; see notes above
   SmExtent2d       * pOtherDomain,          // in : optional: use this subset of pOther
-  SmExtent2d       * pOptCoveredSTEPDomain) // out: covered subset in this surface's STEP parameters
+  SmExtent2d       * pOptCoveredSTEPDomain, // out: covered subset in this surface's STEP parameters
                                           //      valid when rbSuccess is TRUE
+  SmBoolean          bAcrossWrappedSeams)   // in : SolidCraft: cover across a seam this surface wraps
 {
   // init outputs
   rbSuccess = FALSE;
@@ -8018,6 +8046,28 @@ SmBoolean bDebugMe = FALSE;
   SmExtent2d sOtherDomain = ( pOtherDomain != NULL )
                               ? *pOtherDomain
                               : pOther->GetNaturalUVDomain();
+
+  // A plane is unbounded and its STEP parameterization affine, so it can grow to cover the other
+  // surface however far that lies from this face (two holes 1.5 m apart on a 3 m sheet, each
+  // face a few millimetres wide). GetMaxAnalyticDomain's fixed reach of 100 widths is for
+  // B-splines, whose extension degrades with distance; for a plane, grow the search domain to
+  // the orthogonal projection of the other surface's bounding box, which holds every point the
+  // checks below drop.
+  if ( this->GetType() == SmPlane_TYPE )
+    {
+      const SmPlane * pPlane = static_cast<const SmPlane *>( this );
+      SmExtent3d sOtherBox;
+      SER( pOther->CalculateTightBoundingBox( sOtherDomain, &sOtherBox ) );
+      sOtherBox.ExpandAbsolute( dTol );
+      SmTArray<SmPoint3d> sBoxCorners;
+      sOtherBox.GetCorners( sBoxCorners );
+      for ( ULONG cc=0; cc<sBoxCorners.GetSize(); cc++ )
+        {
+          SmPoint2d sCornerUV;
+          SER( pPlane->ProjectPointToUVDomain( sBoxCorners[cc], sCornerUV ) );
+          sBigDomain.AddPoint2d( sCornerUV );
+        }
+    }
 
   SmPoint2d sUVThis, sUVOther;
   SmPoint3d sPt, sPt2;
@@ -8192,6 +8242,24 @@ SmBoolean bDebugMe = FALSE;
 
   sGuessUV = sCornerUVs[0][0];
 
+  // SolidCraft fork: a surface whose domain already closes on itself in a direction (a cylinder's
+  // full turn, the face on it wrapping all the way round) covers a face that straddles its seam:
+  // that face's points lie on it on both sides of the seam, and the face merged into it is the
+  // periodic face whose seam runs on through the covered part (the merge adds that piece of the
+  // seam, SmFace::SplitAtSeam). A step of the boundary walk across the seam in such a direction
+  // is no failure; the domain in it stays the period it already spans. In any other direction,
+  // or across a pole, a crossing still means the other face does not fit inside this one.
+  const SmExtent2d sThisDomain = this->GetNaturalUVDomain();
+  // bAcrossWrappedSeams FALSE asks for the cover only within one period, as without the fork.
+  // The steps are in STEP parameters (u round a surface of revolution's axis), the closure is
+  // the NURBS's: a surface whose NURBS swaps them (SmSurfOfRevolution's m_bSwapUV) wraps in STEP u
+  // where its NURBS closes in v.
+  const SmBoolean  bSwapUV     = ( pBSplineSurface0 != NULL && pBSplineSurface0->GetSwapUVBit() ) ? TRUE : FALSE;
+  const SmBoolean  bWrapsU     = bAcrossWrappedSeams && this->IsClosed( sThisDomain, bSwapUV ? SM_SP_V : SM_SP_U );
+  const SmBoolean  bWrapsV     = bAcrossWrappedSeams && this->IsClosed( sThisDomain, bSwapUV ? SM_SP_U : SM_SP_V );
+  SmBoolean        bCrossedU   = FALSE;
+  SmBoolean        bCrossedV   = FALSE;
+
   for ( ii=0; ii<4; ii++ )
     {
       // Get the corner guess.  (Sorry, a bit slick:)
@@ -8236,7 +8304,16 @@ SmBoolean bDebugMe = FALSE;
 
           // Here we check seams/poles.
           if ( sm_CrossedSeamOrPole( this, sGuessUV, sDropUV, sBigDomain ) )
-            { return SM_SUCCESS; }
+            {
+              // Across which seam: a step longer than the helper allows (sdMaxStepRatio).
+              SmVector2d sStep( sDropUV - sGuessUV );
+              SmBoolean  bJumpU = smos_Fabs( sStep.x ) > sdMaxStepRatio * sBigDomain.GetUInterval().GetLength();
+              SmBoolean  bJumpV = smos_Fabs( sStep.y ) > sdMaxStepRatio * sBigDomain.GetVInterval().GetLength();
+              if ( ( bJumpU && !bWrapsU ) || ( bJumpV && !bWrapsV ) || eLocation == SM_LT_POLE )
+                { return SM_SUCCESS; }
+              bCrossedU = bCrossedU || bJumpU;
+              bCrossedV = bCrossedV || bJumpV;
+            }
 
           // Check max distance.
           SER( this->EvaluateSTEPPoint( sDropUV, sPt2 ) );
@@ -8272,6 +8349,17 @@ SmBoolean bDebugMe = FALSE;
   // with our original domain, and update our domain to it.
   SmExtent2d sOrigDomain = this->GetSTEPUVDomain();
   sOrigDomain.Union( sNewDomain, sUpdateDomain );
+  // SolidCraft fork: across a seam it already wraps, this surface keeps its period (see above).
+  if ( bCrossedU )
+    {
+      sUpdateDomain = SmExtent2d( SmPoint2d( sOrigDomain.GetMin().x, sUpdateDomain.GetMin().y ), SmPoint2d( sOrigDomain.GetMax().x, sUpdateDomain.GetMax().y ) );
+      sNewDomain    = SmExtent2d( SmPoint2d( sOrigDomain.GetMin().x, sNewDomain.GetMin().y ),    SmPoint2d( sOrigDomain.GetMax().x, sNewDomain.GetMax().y ) );
+    }
+  if ( bCrossedV )
+    {
+      sUpdateDomain = SmExtent2d( SmPoint2d( sUpdateDomain.GetMin().x, sOrigDomain.GetMin().y ), SmPoint2d( sUpdateDomain.GetMax().x, sOrigDomain.GetMax().y ) );
+      sNewDomain    = SmExtent2d( SmPoint2d( sNewDomain.GetMin().x, sOrigDomain.GetMin().y ),    SmPoint2d( sNewDomain.GetMax().x, sOrigDomain.GetMax().y ) );
+    }
 
   // SolidCraft fork: a B-spline surface covers past its natural domain by continuing its end
   // spans, and that continuation need not be one sheet: the straight lines of a swept planar
@@ -8383,7 +8471,8 @@ SmStatus SmSurface::CoverOtherCoincidentSurface(
                 SmSurface  * & pCoveringSurf, // out: covering surface, NULL if not possible
                 const SmExtent2d * cpOptThisDomain,  // in : subset of this in NURBS parameters; NULL uses natural domain
                 const SmExtent2d * cpOptOtherDomain, // in : subset of pOther in NURBS parameters; NULL uses natural domain
-                SmExtent2d * pOptMergedDomain // out: union in covering surface's final NURBS parameters, if covering succeeds
+                SmExtent2d * pOptMergedDomain, // out: union in covering surface's final NURBS parameters, if covering succeeds
+                SmBoolean    bAcrossWrappedSeams // in : SolidCraft: cover across a seam the covering surface wraps
         )
 {
   // Init output
@@ -8418,7 +8507,7 @@ SmBoolean bDebugMe = FALSE;
     {
       bSuccess = FALSE;
       if (pOptMergedDomain == NULL)
-        { return pCover->CoverCoincidentSurface(pCovered, dTol, bSuccess, rdMaxDist, &rCoveredDomain); }
+        { return pCover->CoverCoincidentSurface(pCovered, dTol, bSuccess, rdMaxDist, &rCoveredDomain, NULL, bAcrossWrappedSeams); }
 
       // STEP coordinates survive rebuilding an analytic surface's NURBS form.
       // Save the retained subset before coverage changes the surface, union it
@@ -8428,7 +8517,7 @@ SmBoolean bDebugMe = FALSE;
       if (eCoverStat != SM_SUCCESS)
         { return eCoverStat; }
       eCoverStat = pCover->CoverCoincidentSurface(pCovered, dTol, bSuccess, rdMaxDist,
-                                                 &rCoveredDomain, &sOtherSTEPDomain);
+                                                 &rCoveredDomain, &sOtherSTEPDomain, bAcrossWrappedSeams);
       if (eCoverStat != SM_SUCCESS || !bSuccess)
         { return eCoverStat; }
       sThisSTEPDomain.Union(sOtherSTEPDomain, sMergedSTEPDomain);
@@ -10365,7 +10454,15 @@ static SmBoolean sm_GoodDropResult(
   SmVector3d sGap( crPtToDrop - sSrfPoint );
   double Fu = sGap.Dot( Su );
   double Fv = sGap.Dot( Sv );
-  if ( smos_Fabs( Fu ) + smos_Fabs( Fv ) < 0.0001 ) {
+  // SolidCraft change: a foot point is one the local solve converged to by its own tight
+  // tolerance (LocalPointSolve_1's, the gap's components along the unit tangents); any other
+  // stalled, and the global solve finds the foot. It was any 1e-4 mm off along the surface (in
+  // the interior 1e-3 mm in each direction), then the face's tolerance: a local solve that stopped
+  // short where the surface's parameter is slow (a corner patch near its collapsed side, 0.043 mm
+  // per unit there) was taken for the foot point 6.9e-5 mm off it, and on a raked wedge one
+  // 6.05e-4 mm off gave a gap of 7.07e-4 where it is about 3.7e-4.
+  const double dTightTol = SM_EFF_ZERO * ( 1.0 + crPtToDrop.GetMaxDimension() );
+  if ( smos_Fabs( Fu ) + smos_Fabs( Fv ) < dTightTol ) {
       return TRUE;
   }
 
@@ -10387,7 +10484,7 @@ static SmBoolean sm_GoodDropResult(
           return FALSE;
       }
   }
-  else if ( smos_Fabs( Fu ) > 0.001 )
+  else if ( smos_Fabs( Fu ) > dTightTol )
   {
       return FALSE; // interior, bad fcn value.
   }
@@ -10406,7 +10503,7 @@ static SmBoolean sm_GoodDropResult(
           return FALSE;
       }
   }
-  else if ( smos_Fabs( Fv ) > 0.001 )
+  else if ( smos_Fabs( Fv ) > dTightTol )
   {
       return FALSE; // interior, bad fcn value.
   }
@@ -10416,8 +10513,10 @@ static SmBoolean sm_GoodDropResult(
   // (Remember, this routine uses MINIMIZE.)
   SmPoint3d sGuess3dPt;
   if ( pSurface->EvaluatePoint( crGuessUV, sGuess3dPt ) != SM_SUCCESS ) { return FALSE ; } // SolidCraft: a drop that can't be evaluated isn't shown good
-  double dDsqGuess  = crPtToDrop.DistanceBetweenSquared( sSrfPoint );
-  double dDsqResult = crPtToDrop.DistanceBetweenSquared( sGuess3dPt );
+  // SolidCraft change: the result's distance and the guess's were swapped, so a result nearer
+  // than its guess was refused and one farther taken.
+  double dDsqGuess  = crPtToDrop.DistanceBetweenSquared( sGuess3dPt );
+  double dDsqResult = crPtToDrop.DistanceBetweenSquared( sSrfPoint );
   if ( dDsqResult > dDsqGuess )
   {
       return FALSE;
@@ -34754,6 +34853,8 @@ SmStatus SmSurface::ReadFromDB
       case SmTorus_TYPE               : { return( SmTorus::               ReadFromDB(lType, rDB, crContext, rpNewSurface, lDBVersionNumber) ) ; }
       case SmCurveBoundedSurface_TYPE : { return( SmCurveBoundedSurface:: ReadFromDB(lType, rDB, crContext, rpNewSurface, lDBVersionNumber) ) ; }
       case SmOffsetSurface_TYPE       : { return( SmOffsetSurface::       ReadFromDB(lType, rDB, crContext, rpNewSurface, lDBVersionNumber) ) ; }
+      case SmProceduralBlend_TYPE     : { return( SmProceduralBlend::     ReadFromDB(lType, rDB, crContext, rpNewSurface, lDBVersionNumber) ) ; } // SolidCraft change
+      case SmBallPatch_TYPE           : { return( SmBallPatch::           ReadFromDB(lType, rDB, crContext, rpNewSurface, lDBVersionNumber) ) ; } // SolidCraft change
       case SmSrfInVolume_TYPE         : { return( SmSrfInVolume::         ReadFromDB(lType, rDB, crContext, rpNewSurface, lDBVersionNumber) ) ; }
       case SmSTEPSurface_TYPE         : { return( SmSTEPSurface::         ReadFromDB(lType, rDB, crContext, rpNewSurface, lDBVersionNumber) ) ; }
       default : SE(SM_ERR) ; return (SM_ERR) ; break ;
@@ -34836,6 +34937,8 @@ void SmSurface::Dump
       case SmTorus_TYPE               : smos_sprintf(sDerivedName,_T("%s"),_T("[SmTorus_TYPE]")) ;               break ;
       case SmCurveBoundedSurface_TYPE : smos_sprintf(sDerivedName,_T("%s"),_T("[SmCurveBoundedSurface_TYPE]")) ; break ;
       case SmOffsetSurface_TYPE       : smos_sprintf(sDerivedName,_T("%s"),_T("[SmOffsetSurface_TYPE]")) ;       break ;
+      case SmProceduralBlend_TYPE     : smos_sprintf(sDerivedName,_T("%s"),_T("[SmProceduralBlend_TYPE]")) ;     break ;
+      case SmBallPatch_TYPE           : smos_sprintf(sDerivedName,_T("%s"),_T("[SmBallPatch_TYPE]")) ;           break ;
       case SmSTEPSurface_TYPE         : smos_sprintf(sDerivedName,_T("%s"),_T("[SmSTEPSurface_TYPE]")) ;         break ;
       case SmSrfInVolume_TYPE         : smos_sprintf(sDerivedName,_T("%s"),_T("[SmSrfInVolume_TYPE]")) ;         break ;
       default : smos_sprintf(sDerivedName,_T("%s"),_T("[UnKnown Derived Type]")) ; break ;

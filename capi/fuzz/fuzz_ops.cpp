@@ -146,7 +146,24 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         case 5:
         {
             double sizes[4] = {in.tame(0.1, 12), in.tame(0.1, 12), in.tame(0.1, 12), in.tame(0.1, 12)};
-            st = smlib_blend(target, static_cast<int32_t>(in.byte() % 5), p, sizes, n, in.tame(0.01, 1), &r, &failed);
+            int32_t kind = static_cast<int32_t>(in.byte() % 5);
+            if (in.byte() % 3 == 0)
+            {
+                // The corner the last point picks set back with an ease, both hostile (a
+                // negative ease is refused), open or closed.
+                double setback = in.tame(0.1, 15);
+                double ease = in.tame(-1, 15);
+                int64_t holes[256];
+                int64_t len = 0;
+                st = (in.byte() & 1) != 0 ? smlib_blend_setback_open_eased(target, kind, p, sizes, n, pts + 9, &setback, &ease, 1, in.tame(0.01, 1),
+                                                                           &r, holes, 256, &len, &failed, nullptr)
+                                          : smlib_blend_setback_eased(target, kind, p, sizes, n, pts + 9, &setback, &ease, 1, in.tame(0.01, 1), &r,
+                                                                      &failed, nullptr);
+            }
+            else
+            {
+                st = smlib_blend(target, kind, p, sizes, n, in.tame(0.01, 1), &r, &failed);
+            }
             break;
         }
         case 6:

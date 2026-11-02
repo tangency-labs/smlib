@@ -447,6 +447,10 @@ public:
 
     virtual SmStatus TrimWithDomain(SmExtent2d & crTrimDomain);
 
+    // SolidCraft change: its trim rebuilds its NURB from its analytic domain, not shown to keep the map
+    virtual SmBoolean TrimKeepsParameterization(const SmExtent2d & crTrimDomain) const
+                                     { SM_REF1(crTrimDomain) ; return FALSE; }
+
     // get memory used for curve but not its attributes
     virtual ULONG GetMemoryUsed
     (

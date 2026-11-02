@@ -18,11 +18,15 @@
 #include <SmPrimitiveCreation.h>
 #include <SmTrimmingTools.h>
 #include <SmTopologyTraverser.h>
+#include <SmCurveClass.h>
+#include <SmFace.h>
 
 #include <SmTree.h>
 // Remove Composites
 //  #include <SmCFace.h>
 #include <SmAssertArray.h>
+
+#include <unordered_set>
 
 
 /*******************************************************************//**
@@ -884,17 +888,17 @@ SmBoolean bDebugMe=FALSE;
             { continue; }
         }
 
-      // SolidCraft change: an edge the caller keeps, or one between two faces it keeps apart (a
-      // fillet's input), stays
-      if ( m_sPostProcessKeptEdges.count( pEdge ) != 0 )
-        { continue; }
-      if ( ! m_sPostProcessKeptFaces.empty() )
+      // SolidCraft change: an edge of a fillet's input, or one between two of its faces, stays,
+      // unless one face lies on both its sides: removing that slit merges no faces.
+      if ( m_bPostProcessKeepsFilletInput )
         {
           SM_PTR_ARRAY(sKeptFaces, SmFace, 8);
           pEdge->GetFaces( sKeptFaces );
-          SmBoolean bAllKept = sKeptFaces.GetSize() > 0;
+          if ( sKeptFaces.GetSize() != 1 && pEdge->FindAttribute( SM_AI_FILLET_INPUT ) != NULL )
+            { continue; }
+          SmBoolean bAllKept = sKeptFaces.GetSize() > 1;
           for ( ULONG kf=0; kf<sKeptFaces.GetSize() && bAllKept; kf++ )
-            { bAllKept = m_sPostProcessKeptFaces.count( sKeptFaces[kf] ) != 0; }
+            { bAllKept = sKeptFaces[kf]->FindAttribute( SM_AI_FILLET_INPUT ) != NULL; }
           if ( bAllKept )
             { continue; }
         }
@@ -1167,6 +1171,19 @@ SmBoolean bDebugMe=FALSE;
 
       // Preserve the face-domain union across DeleteEdge's possible surface swap.
       pSurfToKeep->GetFace()->SetUVDomain(sMergedFaceDomain);
+
+      // SolidCraft: a face that wraps its surface's period may have taken in a face straddling
+      // the seam (SmSurface::CoverCoincidentSurface): the merged face is the periodic face whose
+      // seam runs on through that part. Add the missing piece of the seam, splitting the edges
+      // that cross it, as a face on a periodic surface has it (SmFace::SplitAtSeam).
+      {
+        SmFace *pMerged = pSurfToKeep->GetFace();
+        SmCurveClassification sSeamClassU, sSeamClassV;
+        SmSurfParamType eCrossedSeam = SM_SP_NEITHER, eMissingSeam = SM_SP_NEITHER, eNearMissSeam = SM_SP_NEITHER;
+        SER( pMerged->HasSeamProblem( sSeamClassU, sSeamClassV, eCrossedSeam, eMissingSeam, eNearMissSeam ) );
+        if ( SmFace::HasSeamProblem( eCrossedSeam, eMissingSeam ) )
+          { SER( pMerged->SplitAtSeam( sSeamClassU, sSeamClassV, eCrossedSeam, eMissingSeam, eNearMissSeam ) ); }
+      }
 
       // SolidCraft: the merged face's edges that now have it on both sides are checked too (sLeftInsideFace).
       SmTArray<SmEdge*> sFaceEdges;

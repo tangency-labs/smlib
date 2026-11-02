@@ -10,6 +10,8 @@
 #include <SmApiPrimitives.h>
 #include <SmVector3d.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -799,6 +801,149 @@ void equal_tubes_join()
     }
 }
 
+// A cylinder r 10, z 0..10, joined to a crescent prism z 10..15 standing on its rim from outside:
+// the crescent is the disc r 6 about (10, 0) less the cylinder's circle, so the two touch only
+// along the arc of the rim. The arc runs across the cylinder's seam at (10, 0, 10); turned a
+// quarter turn it does not. Across the seam, closing the intersection loop related the rim's
+// long arc to the crescent's r 6 arc, which only shares its ends, and the r 6 wall was built
+// on the rim's circle (an edge 37.9 off its face). Two solids touching along the arc.
+void crescent_on_rim_join()
+{
+    const double x = (100.0 - 36.0 + 100.0) / 20.0, y = std::sqrt(100.0 - x * x);
+    const double th = std::atan2(y, x), ph = std::atan2(y, x - 10.0);
+    const double lens = 100.0 * std::acos(0.82) + 36.0 * std::acos(0.3) - 0.5 * std::sqrt(6.0 * 14.0 * 6.0 * 26.0);
+    const double want = PI * 100.0 * 10.0 + (PI * 36.0 - lens) * 5.0;
+    smlib_brep *cyl = cylinder(2, 0, 0, 0, 10, 10);
+    for (int turned = 0; turned < 2; ++turned)
+    {
+        // The r 6 arc from the lower corner round through the far side to the upper one, then the
+        // rim's arc back (counter-clockwise about -z).
+        const int64_t kinds[2] = {SMLIB_CURVE_ARC, SMLIB_CURVE_ARC};
+        const double c = turned ? 0.0 : 1.0, sn = turned ? 1.0 : 0.0;
+        const double reals[24] = {10 * c, 10 * sn, 10, 0, 0, 1, c, sn, 0, 6, -ph, ph,
+                                  0, 0, 10, 0, 0, -1, c * std::cos(th) - sn * std::sin(th), sn * std::cos(th) + c * std::sin(th), 0, 10, 0, 2 * th};
+        const double up[3] = {0, 0, 1};
+        smlib_brep *cres = nullptr;
+        CHECK(smlib_extrude(kinds, 2, reals, 24, up, 5.0, 0.0, SMLIB_DRAFT_CORNER_TANGENT, 1, &cres, nullptr) == SMLIB_OK);
+        if (cres != nullptr)
+        {
+            expect(turned ? "crescent clear of the seam" : "crescent across the seam", cyl, cres, SMLIB_BOOLEAN_UNION, want, 1e-9, 2);
+            smlib_brep_free(cres);
+        }
+    }
+    smlib_brep_free(cyl);
+}
+
+// A bicycle frame's seat tube (r 16, from (0, 0, 300) towards the seat top (-150, 0, 820)) one
+// end of it 3.7e-4 short of the seat top, where the top tube (r 16, on to (600, 0, 860)) starts:
+// the seat tube's length rounded to the micrometre, as SolidCraft's bench rounds an agent's
+// numbers. At the side where the two walls touch, the seat's end circle runs within the
+// tolerance of the top tube's wall for a stretch and crosses it there too: the crossing and the
+// stretch's ends fell in one ProtoVertex (its capture ball) as three VertexDefinitions too far
+// apart to combine, and the stretch's edge was kept whole past the crossing's vertex. The
+// merge's classification then found a vertex that was not the edge's and the join failed
+// (SM_ERR) for gaps from 1e-4 to 1e-3. The join now succeeds; its body is one solid between
+// the larger tube and both together, and sound (an 8.6e-5 piece of the top tube's wall cut by
+// the seat's end plane once failed its own check: SmExtent1d::ContainsPeriodicValue).
+void near_coincident_tube_ends_join()
+{
+    // Each tube's circle starts at the side `side` (y = 16 side, -16 the other): the top tube's
+    // seam on the side where the walls touch.
+    auto tube = [](const double a[3], const double b[3], double r, double side)
+    {
+        const double d[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        const double l = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        const double n[3] = {d[0] / l, d[1] / l, d[2] / l};
+        const int64_t kinds[1] = {SMLIB_CURVE_ARC};
+        const double reals[12] = {a[0], a[1], a[2], n[0], n[1], n[2], 0, side, 0, r, 0, 2 * PI};
+        smlib_brep *out = nullptr;
+        CHECK(smlib_extrude(kinds, 1, reals, 12, n, l, 0.0, SMLIB_DRAFT_CORNER_TANGENT, 1, &out, nullptr) == SMLIB_OK);
+        return out;
+    };
+    const double bb[3] = {0, 0, 300}, st[3] = {-150, 0, 820}, ht[3] = {600, 0, 860};
+    const double L = std::sqrt(150.0 * 150.0 + 520.0 * 520.0), l = L - 3.7e-4;
+    const double end[3] = {bb[0] + (st[0] - bb[0]) * l / L, 0, bb[2] + (st[2] - bb[2]) * l / L};
+    smlib_brep *top = tube(st, ht, 16, -1.0), *seat = tube(bb, end, 16, 1.0);
+    if (top != nullptr && seat != nullptr)
+    {
+        smlib_brep *r = nullptr;
+        CHECK(smlib_boolean(top, seat, SMLIB_BOOLEAN_UNION, &r) == SMLIB_OK && r != nullptr);
+        if (r != nullptr)
+        {
+            const double v = volume(r), vt = volume(top), vs = volume(seat);
+            CHECK(v > std::max(vt, vs) && v < vt + vs);
+            CHECK(sound(r));
+            int64_t n = -1;
+            CHECK(smlib_brep_solid_count(r, &n) == SMLIB_OK && n == 1);
+            smlib_brep_free(r);
+        }
+    }
+    smlib_brep_free(top);
+    smlib_brep_free(seat);
+
+    // The same two tubes as SolidCraft's bench builds them: each axis rounded to 1e-6 and its
+    // height to 1e-3, the circle started 0.6131 rad round from its frame's x (Z x axis, or X
+    // for an axis within 0.9 of Z). The top tube's wall cut by the seat's end plane runs
+    // within the tolerance of the seat's end circle between two of the joint's vertices; the
+    // intersection curve was imprinted on the seat's end cap beside that circle, which merging
+    // then copied into the top tube's wall beside the curve's own edge (SmFace tests 33, 34).
+    auto bench_tube = [](const double a[3], const double b[3], double r)
+    {
+        auto r6 = [](double v) { return std::round(v * 1e6) / 1e6; };
+        auto r3 = [](double v) { return std::round(v * 1e3) / 1e3; };
+        const double d[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        const double l = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        double n[3] = {r6(d[0] / l), r6(d[1] / l), r6(d[2] / l)};
+        const double nl = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        for (double &c : n)
+        {
+            c /= nl;
+        }
+        // x: Z x n (or X), made square to n; y = n x x; the seam 0.6131 rad from x.
+        double x[3] = {1, 0, 0};
+        if (std::fabs(n[2]) <= 0.9)
+        {
+            x[0] = -n[1];
+            x[1] = n[0];
+            x[2] = 0;
+        }
+        const double xn = x[0] * n[0] + x[1] * n[1] + x[2] * n[2];
+        for (int i = 0; i < 3; ++i)
+        {
+            x[i] -= n[i] * xn;
+        }
+        const double xl = std::sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]);
+        for (double &c : x)
+        {
+            c /= xl;
+        }
+        const double y[3] = {n[1] * x[2] - n[2] * x[1], n[2] * x[0] - n[0] * x[2], n[0] * x[1] - n[1] * x[0]};
+        const double cs = std::cos(0.6131), sn = std::sin(0.6131);
+        const int64_t kinds[1] = {SMLIB_CURVE_ARC};
+        const double reals[12] = {r3(a[0]), r3(a[1]), r3(a[2]), n[0], n[1], n[2],
+                                  x[0] * cs + y[0] * sn, x[1] * cs + y[1] * sn, x[2] * cs + y[2] * sn, r, 0, 2 * PI};
+        smlib_brep *out = nullptr;
+        CHECK(smlib_extrude(kinds, 1, reals, 12, n, r3(l), 0.0, SMLIB_DRAFT_CORNER_TANGENT, 1, &out, nullptr) == SMLIB_OK);
+        return out;
+    };
+    top = bench_tube(st, ht, 16);
+    seat = bench_tube(bb, st, 16);
+    if (top != nullptr && seat != nullptr)
+    {
+        smlib_brep *r = nullptr;
+        CHECK(smlib_boolean(top, seat, SMLIB_BOOLEAN_UNION, &r) == SMLIB_OK && r != nullptr);
+        if (r != nullptr)
+        {
+            CHECK(sound(r));
+            int64_t n = -1;
+            CHECK(smlib_brep_solid_count(r, &n) == SMLIB_OK && n == 1);
+            smlib_brep_free(r);
+        }
+    }
+    smlib_brep_free(top);
+    smlib_brep_free(seat);
+}
+
 // The other caller of sm_GetEllipseTrimIntervals, SmCone::IntersectWithPlane (a cone cut
 // obliquely by a plane), with the cone's natural domain and with a trimmed one: a cylinder
 // r 10 x 100 and a cone r 20 -> 10 x 100 (axis z) less everything above a plane through
@@ -838,6 +983,183 @@ void oblique_cone_cuts()
     }
 }
 
+// SolidCraft inspect.interference: a pin of radius 3 a hair (1e-6, inside the tolerance) off the
+// axis of a hole of its own radius through a 20 x 20 x 5 plate, both cylinders extruded from a
+// circle whose seam is at 0.6131 rad (SolidCraft's cylinders), so the two seams lie a micrometre
+// apart. Their walls are one surface to the tolerance: the plate and the pin share no material,
+// their intersection is empty. It failed (SM_ERR) where a breakpoint on one seam, classified onto
+// the other wall right at its seam, solved to both ends of that wall's period and was dropped as
+// unclassified (SmPointClassification::ComputePointParameters). 0.01 off they share the crescent
+// left of the lens of two circles, 5 high.
+void hair_off_pin_at_a_seam()
+{
+    const double seam = 0.6131;
+    auto pin = [&](double x) {
+        const int64_t kinds[1] = {SMLIB_CURVE_ARC};
+        const double reals[12] = {x, 0, -2, 0, 0, 1, std::cos(seam), std::sin(seam), 0, 3, 0, 2 * PI};
+        const double up[3] = {0, 0, 1};
+        smlib_brep *b = nullptr;
+        CHECK(smlib_extrude(kinds, 1, reals, 12, up, 9.0, 0.0, SMLIB_DRAFT_CORNER_TANGENT, 1, &b, nullptr) == SMLIB_OK);
+        return b;
+    };
+    smlib_brep *plate = box(-10, -10, 0, 10, 10, 5);
+    smlib_brep *drill = pin(0.0);
+    smlib_brep *holed = nullptr;
+    CHECK(plate != nullptr && drill != nullptr && smlib_boolean(plate, drill, SMLIB_BOOLEAN_SUBTRACT, &holed) == SMLIB_OK);
+    for (double e : {1e-6, 1e-2})
+    {
+        smlib_brep *p = pin(e);
+        smlib_brep *shared = nullptr;
+        int32_t s = holed != nullptr && p != nullptr ? smlib_boolean(holed, p, SMLIB_BOOLEAN_INTERSECT, &shared) : SMLIB_ERR_ARG;
+        std::printf("pin %g off its hole, seams at %g rad: status %d\n", e, seam, static_cast<int>(s));
+        if (e < 1e-5)
+        {
+            CHECK(s == SMLIB_ERR_EMPTY && shared == nullptr);
+        }
+        else
+        {
+            const double r = 3.0;
+            const double lens = 2.0 * r * r * std::acos(e / (2.0 * r)) - e / 2.0 * std::sqrt(4.0 * r * r - e * e);
+            CHECK(s == SMLIB_OK && shared != nullptr && sound(shared) && near(volume(shared), 5.0 * (PI * r * r - lens), 1e-6));
+        }
+        smlib_brep_free(shared);
+        smlib_brep_free(p);
+    }
+    for (smlib_brep *x : {plate, drill, holed})
+    {
+        smlib_brep_free(x);
+    }
+}
+
+// A planar join of large bodies takes time near linear in their size. Level-3 Menger sponges
+// (8000 unit cubes, 7326 faces) joined face to face in a row: two, that pair to a copy of itself,
+// and that four to a copy of itself, each join along one face of a sponge. Each face SMLib made
+// from the other body searched for its own mate depth-first, across the shell
+// (SmBrep::TestClosureSplitRegion), every face of one body was tried against every face of the
+// other (SmTopologyIntersector::IntersectTopology), and each edge from a faceuse shell to a wire
+// moved the faceuse shell (SmBrep::MakeEdgeTopology): the join of the fours did about 16 times
+// the work of the join of two sponges, now at most about 4 times (smlib_work_counters). The
+// results are the ones those joins always gave.
+smlib_brep *moved(const smlib_brep *b, double x, double y, double z)
+{
+    // rows 0-2 the axes' images, row 3 the translation
+    const double m[4][4] = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {x, y, z, 1}};
+    smlib_brep *r = nullptr;
+    CHECK(b != nullptr && smlib_brep_transform(b, m, &r) == SMLIB_OK);
+    return r;
+}
+
+void menger_sponges_row_join()
+{
+    using clock = std::chrono::steady_clock;
+    smlib_brep *sponge = box(0, 0, 0, 1, 1, 1);
+    double size = 1.0;
+    for (int level = 0; level < 3 && sponge != nullptr; ++level)
+    {
+        std::vector<smlib_brep *> parts;
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                for (int k = 0; k < 3; ++k)
+                    if ((i == 1) + (j == 1) + (k == 1) < 2)
+                        parts.push_back(moved(sponge, i * size, j * size, k * size));
+        smlib_brep *next = nullptr;
+        CHECK(smlib_boolean_union_all(parts.data(), static_cast<int64_t>(parts.size()), &next) == SMLIB_OK);
+        for (smlib_brep *p : parts)
+            smlib_brep_free(p);
+        smlib_brep_free(sponge);
+        sponge = next;
+        size *= 3.0;
+    }
+    int64_t n[3] = {0, 0, 0};
+    CHECK(sponge != nullptr && smlib_brep_counts(sponge, n) == SMLIB_OK && n[0] == 7326);
+
+    // a join, its work counted (and timed, for information), and its result's faces, edges,
+    // vertices and volume
+    auto join = [&](const smlib_brep *a, double shift, const int64_t want[3], double cubes, int64_t work[3]) {
+        smlib_brep *b = moved(a, shift, 0, 0);
+        smlib_brep *r = nullptr;
+        CHECK(smlib_work_counters_reset() == SMLIB_OK);
+        const auto t0 = clock::now();
+        CHECK(a != nullptr && b != nullptr && smlib_boolean(a, b, SMLIB_BOOLEAN_UNION, &r) == SMLIB_OK);
+        const double seconds = std::chrono::duration<double>(clock::now() - t0).count();
+        CHECK(smlib_work_counters(work) == SMLIB_OK);
+        int64_t c[3] = {0, 0, 0};
+        CHECK(r != nullptr && smlib_brep_counts(r, c) == SMLIB_OK);
+        std::printf("  %lld faces, %lld edges, %lld vertices in %.3f s; %lld closure-test faceuses, %lld face "
+                    "pairs, %lld faceuses moved\n",
+                    static_cast<long long>(c[0]), static_cast<long long>(c[1]), static_cast<long long>(c[2]), seconds,
+                    static_cast<long long>(work[0]), static_cast<long long>(work[1]),
+                    static_cast<long long>(work[2]));
+        CHECK(c[0] == want[0] && c[1] == want[1] && c[2] == want[2]);
+        CHECK(r != nullptr && near(volume(r), cubes, 1e-9));
+        smlib_brep_free(b);
+        return r;
+    };
+    const int64_t want2[3] = {14354, 32952, 15232};
+    const int64_t want4[3] = {28410, 65016, 29872};
+    const int64_t want8[3] = {56522, 129144, 59152};
+    int64_t w2[3] = {0, 0, 0}, w4[3] = {0, 0, 0}, w8[3] = {0, 0, 0};
+    smlib_brep *pair = join(sponge, 27.0, want2, 16000.0, w2);
+    smlib_brep *four = join(pair, 54.0, want4, 32000.0, w4);
+    smlib_brep *eight = join(four, 108.0, want8, 64000.0, w8);
+    CHECK(eight != nullptr && sound(eight));
+    // Twice the body, one face of contact each time. A join near linear in the body's size (the
+    // box search's n log n) does at most about twice the work of the join before it: 3.9 times
+    // the first join's closure-test faceuses at the eighth (20074, 39566, 77884), the same 1481
+    // face pairs (the contact is the same), no faceuse shell moved. A quadratic one does about
+    // four times the work at each doubling, sixteen at the eighth: before the box search, the
+    // closure test from both sides and the faceuse shell kept, the joins visited 5.47, 18.6 and
+    // 68.8 million faceuses, examined 53.7, 206 and 807 million face pairs and moved 3.67, 15.1
+    // and 60.1 million faceuses (12.6, 15.0 and 16.4 times the first). Work counts, not times:
+    // a ratio of times depends on the machine (10.9 on one runner where it was 5.5 on another).
+    CHECK(w2[0] > 0 && w2[1] > 0);
+    for (int i = 0; i < 3; ++i)
+    {
+        CHECK(w4[i] <= 3 * w2[i] && w8[i] <= 6 * w2[i]);
+    }
+    for (smlib_brep *x : {sponge, pair, four, eight})
+        smlib_brep_free(x);
+}
+
+// Rig case booleans/5197 (ladder 02-booleans/025): flush layers joined, both bodies as SolidCraft
+// hands them over (tests/data/flush-chord-layers-*.txt). The top: a disc r 37 (z -1.2..0)
+// carrying 15 of the 19 regions of a disc cut by 18 chords (z -3.6..-1.2; the bands y -29..-24,
+// -13..-8, 8..11 and 24..27 left out). The base: an annulus r 35..37 (z -5.6..-3.6) on a disc
+// r 37 (z -8..-5.6). Their r 37 walls are coincident faces of full-turn cylinders, merged across
+// the cylinders' seams. A cover retaken on the faces' trims after the stored-domain cover had
+// already widened the covering cylinder left the joined body unsound (26 failed tests, UV gaps of
+// 1.3 along the axis); the cover now crosses a wrapped seam only on the trim-derived bounds. The
+// layers meet face to face, so the volume is their sum: pi 37^2 (1.2 + 2.4) + (pi 37^2 - B) 2.4
+// + pi (37^2 - 35^2) 2, B the four bands' area, each int 2 sqrt(37^2 - y^2) dy.
+void flush_chord_layers_join()
+{
+    smlib_brep *top = from_flat_file(SMLIB_TEST_DATA "/flush-chord-layers-top.txt");
+    smlib_brep *base = from_flat_file(SMLIB_TEST_DATA "/flush-chord-layers-base.txt");
+    smlib_brep *r = nullptr;
+    CHECK(top != nullptr && base != nullptr);
+    if (top != nullptr && base != nullptr)
+    {
+        const double R = 37.0;
+        auto band = [R](double a, double b) {
+            auto f = [R](double y) { return y * std::sqrt(R * R - y * y) + R * R * std::asin(y / R); };
+            return f(b) - f(a);
+        };
+        const double bands = band(-29, -24) + band(-13, -8) + band(8, 11) + band(24, 27);
+        const double disc = PI * R * R;
+        const double want = disc * (1.2 + 2.4) + (disc - bands) * 2.4 + PI * (R * R - 35.0 * 35.0) * 2.0;
+        CHECK(smlib_boolean(top, base, SMLIB_BOOLEAN_UNION, &r) == SMLIB_OK && sound(r));
+        if (r != nullptr)
+        {
+            std::printf("flush chord layers joined: volume %.9f, want %.9f\n", volume(r), want);
+            CHECK(near(volume(r), want, 1e-7));
+        }
+    }
+    for (smlib_brep *b : {top, base, r})
+    {
+        smlib_brep_free(b);
+    }
+}
+
 int main(int argc, char **argv)
 {
     struct Case
@@ -858,6 +1180,11 @@ int main(int argc, char **argv)
         {"equal_rods_join", equal_rods_join},
         {"equal_tubes_join", equal_tubes_join},
         {"oblique_cone_cuts", oblique_cone_cuts},
+        {"hair_off_pin_at_a_seam", hair_off_pin_at_a_seam},
+        {"crescent_on_rim_join", crescent_on_rim_join},
+        {"near_coincident_tube_ends_join", near_coincident_tube_ends_join},
+        {"menger_sponges_row_join", menger_sponges_row_join},
+        {"flush_chord_layers_join", flush_chord_layers_join},
     };
     for (const Case &c : cases)
     {

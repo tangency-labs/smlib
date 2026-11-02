@@ -7,13 +7,22 @@
 
 #include "../src/smlib_shim.h"
 
+#include <SmApiBrep.h>
 #include <SmApiPrimitives.h>
+#include <SmApiTrimmedSurfaces.h>
 #include <SmAxis2Placement.h>
+#include <SmBSplineSurface.h>
 #include <SmCircle.h>
+#include <SmEdge.h>
+#include <SmFace.h>
+#include <SmLine.h>
+#include <SmVertex.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <functional>
+#include <vector>
 
 static int failures = 0;
 
@@ -189,6 +198,27 @@ int main()
     CHECK(smlib_brep_area(&sb, 1e-4, &a) == SMLIB_OK && std::fabs(a - 200.0) < 1e-9);
     delete sheet;
 
+    // A sheet hung on a solid (SolidCraft's blend sheet stitched between two boxes): a 10 mm cube
+    // and a 10 x 10 sheet on from its top front edge, merged into one body. Its area is every
+    // face's, the cube's 600 and the sheet's 100, not the cube's boundary alone; its volume the
+    // cube's.
+    {
+        SmBrep *cube = nullptr, *flap = nullptr, *both = nullptr;
+        CHECK(SmApiCreateBox(SmVector3d(0, 0, 0), 10.0, 10.0, 10.0, cube) == SM_SUCCESS && cube != nullptr);
+        CHECK(SmApiCreatePlane(SmVector3d(10, 0, 10), 10.0, 10.0, flap) == SM_SUCCESS && flap != nullptr);
+        CHECK(cube != nullptr && flap != nullptr && SmApiBooleanMerge(cube, flap, both) == SM_SUCCESS && both != nullptr);
+        if (both != nullptr)
+        {
+            smlib_brep merged{both};
+            double hm[11];
+            CHECK(smlib_brep_mass_properties(&merged, 1e-8, hm) == SMLIB_OK);
+            std::printf("cube with a sheet hung on it: area %.9f volume %.9f\n", hm[0], hm[1]);
+            CHECK(std::fabs(hm[0] - 700.0) < 1e-6 && std::fabs(hm[1] - 1000.0) < 1e-6);
+            merged.p = nullptr;
+            delete both;
+        }
+    }
+
     // The tight box of part of a NURBS arc is the part's: a quarter circle of radius 50 over the
     // first third of its parameter reaches y = 25 or so, not the arc's last knot at (0, 50). (An
     // imported sphere cap's seam, 30 degrees of a quarter-circle NURBS, boxed the cap down to the
@@ -211,6 +241,246 @@ int main()
             CHECK(std::fabs(box.GetVMin()) < 1e-9 && std::fabs(box.GetVMax() - end.y) < 1e-9);
             delete arc;
         }
+    }
+
+    // The tight box of a trimmed face is the face's, not its surface's: a crowned patch whose
+    // surface peaks outside its trim. A bicubic height field z(x, y) over [-20, 20]^2 (8 uniform
+    // spans each way, control points at their Greville abscissae, so its parameters are x and y)
+    // is zero but for two control points: the middle one, height 9, whose basis function is
+    // nonzero on (-10, 10) each way and 2/3 at its middle, and the corner one, height 50, nonzero
+    // on [-20, -15) each way only. Trimmed to the square [-10, 10]^2, z = 0 on the trim and the
+    // face rises to 9 * (2/3)^2 = 4 at (0, 0); the surface's highest point, z = 50 at the corner
+    // (-20, -20), is outside the trim. The box is (-10, -10, 0) to (10, 10, 4), not its edges'
+    // (z up to 0) as when the surface's peak alone was classified.
+    {
+        const SmContext &ctx = *SmApiGetOrCreateContext();
+        const ULONG n = 11;
+        SmTArray<double> unique, greville;
+        SmTArray<ULONG> mult;
+        std::vector<double> knots;
+        for (int k = 0; k <= 8; ++k)
+        {
+            unique.Add(-20.0 + 5.0 * k);
+            mult.Add(k == 0 || k == 8 ? 4 : 1);
+            for (ULONG m = 0; m < (k == 0 || k == 8 ? 4u : 1u); ++m)
+            {
+                knots.push_back(-20.0 + 5.0 * k);
+            }
+        }
+        for (ULONG i = 0; i < n; ++i)
+        {
+            greville.Add((knots[i + 1] + knots[i + 2] + knots[i + 3]) / 3.0);
+        }
+        SmTArray<SmPoint3d> net;
+        net.SetSize(n * n);
+        for (ULONG i = 0; i < n; ++i)
+        {
+            for (ULONG j = 0; j < n; ++j)
+            {
+                const double z = (i == 5 && j == 5) ? 9.0 : (i == 0 && j == 0) ? 50.0 : 0.0;
+                net[i * n + j] = SmPoint3d(greville[i], greville[j], z);
+            }
+        }
+        SmBSplineSurface *field = nullptr;
+        CHECK(SmBSplineSurface::CreateCanonical(ctx, 3, 3, net, SM_SF_UNSPECIFIED, mult, mult, unique, unique, SM_KT_UNSPECIFIED,
+                                                nullptr, nullptr, field) == SM_SUCCESS && field != nullptr);
+        const SmPoint3d corner[4] = {SmPoint3d(-10, -10, 0), SmPoint3d(10, -10, 0), SmPoint3d(10, 10, 0), SmPoint3d(-10, 10, 0)};
+        SmTArray<SmCurve *> sides;
+        for (int k = 0; k < 4; ++k)
+        {
+            SmLine *side = nullptr;
+            CHECK(SmLine::CreateLineSegment(ctx, 3, corner[k], corner[(k + 1) % 4], side) == SM_SUCCESS && side != nullptr);
+            sides.Add(side);
+        }
+        SmTArray<ULONG> loops;
+        loops.Add(4);
+        SmBrep *patch = nullptr;
+        CHECK(field != nullptr && SmApiTrimSurfaceWith3dCurves(field, loops, sides, patch) == SM_SUCCESS && patch != nullptr);
+        if (patch != nullptr)
+        {
+            smlib_brep pb{patch};
+            double plo[3], phi[3];
+            CHECK(smlib_brep_bounds(&pb, plo, phi) == SMLIB_OK);
+            std::printf("crowned patch peaking outside its trim: box (%.9f %.9f %.9f) to (%.9f %.9f %.9f)\n", plo[0], plo[1], plo[2], phi[0],
+                        phi[1], phi[2]);
+            const double want_lo[3] = {-10, -10, 0}, want_hi[3] = {10, 10, 4};
+            for (int i = 0; i < 3; ++i)
+            {
+                CHECK(std::fabs(plo[i] - want_lo[i]) < 1e-6 && std::fabs(phi[i] - want_hi[i]) < 1e-6);
+            }
+            pb.p = nullptr;
+            delete patch;
+        }
+    }
+
+    // The tight box of a face is the face's, not its boundary's tolerance band: the corner of a
+    // box of 10 where three edges are rounded r 1 is a sphere octant about (1, 1, 1), in [0, 1]^3.
+    // Its sphere runs on past the octant's arcs, and points up to the face's zone tolerance past
+    // an arc classify on the face's boundary (4e-5 past the arc in y = 1): counted as the face's,
+    // they boxed it to y 1.0000243. Only points inside count; the boundary's extremes are its
+    // edges' (NVIDIA SmPyLib test test_surface_closest_point_uses_natural_domain finds the corner
+    // face by its box).
+    {
+        SmApiGetOrCreateContext();
+        SmBrep *b = nullptr;
+        CHECK(SmApiCreateBox(SmVector3d(0, 0, 0), 10, 10, 10, b) == SM_SUCCESS && b != nullptr);
+        if (b != nullptr)
+        {
+            SmTArray<SmVertex *> vertices;
+            b->GetVertices(vertices);
+            SmTArray<SmEdge *> edges;
+            for (ULONG i = 0; i < vertices.GetSize(); ++i)
+            {
+                if (vertices[i]->GetPoint().Length() < 1e-9)
+                {
+                    vertices[i]->GetEdges(edges);
+                }
+            }
+            CHECK(edges.GetSize() == 3 && SmApiFilletEdges(b, edges, 1.0, 1, 1, 1.0) == SM_SUCCESS);
+            SmTArray<SmFace *> faces;
+            b->GetFaces(faces);
+            ULONG corners = 0;
+            for (ULONG i = 0; i < faces.GetSize(); ++i)
+            {
+                SmExtent3d box;
+                CHECK(faces[i]->CalculateTightBoundingBox(box) == SM_SUCCESS);
+                if (box.GetUMax() > 2.0 || box.GetVMax() > 2.0 || box.GetWMax() > 2.0)
+                {
+                    continue;
+                }
+                corners++;
+                std::printf("rounded box corner: face box (%.12f %.12f %.12f) to (%.12f %.12f %.12f)\n", box.GetUMin(), box.GetVMin(),
+                            box.GetWMin(), box.GetUMax(), box.GetVMax(), box.GetWMax());
+                CHECK(std::fabs(box.GetUMin()) < 1e-9 && std::fabs(box.GetVMin()) < 1e-9 && std::fabs(box.GetWMin()) < 1e-9);
+                CHECK(std::fabs(box.GetUMax() - 1.0) < 1e-9 && std::fabs(box.GetVMax() - 1.0) < 1e-9 && std::fabs(box.GetWMax() - 1.0) < 1e-9);
+            }
+            CHECK(corners == 1);
+            delete b;
+        }
+    }
+
+    // The tight box of a threaded part is the part's: a thread's walls (rational screw surfaces of
+    // many spans, smlib_screw_sweep) are cut off by the part's ends, so each wall's highest and
+    // lowest points are on its edges there, the wall rising past them along the helix. External:
+    // the ISO 68-1 groove of an M10x1.5 thread (as tests/sweeps.cpp cuts it) running from below
+    // z = 0 to above 12, cut from a shaft of radius 5 and 12 long: (-5, -5, 0) to (5, 5, 12).
+    // Internal: the groove of the M10x1.5 nut thread (P/8 wide at the major radius, widening by
+    // 2 tan 30 per unit of radius inwards) cut into the bore of radius 4.3 of a 20 x 20 x 8 block:
+    // the block's box.
+    {
+        auto polygon = [](const std::vector<double> &rz, std::vector<int64_t> &kinds, std::vector<double> &reals)
+        {
+            const size_t n = rz.size() / 2;
+            for (size_t i = 0; i < n; ++i)
+            {
+                const size_t j = (i + 1) % n;
+                kinds.push_back(SMLIB_CURVE_LINE);
+                reals.insert(reals.end(), {rz[2 * i], 0.0, rz[2 * i + 1], rz[2 * j], 0.0, rz[2 * j + 1]});
+            }
+        };
+        const double p = 1.5, h = p * std::sqrt(3.0) / 2.0, slope = std::tan(PI / 6.0), tol = p * 1e-4;
+        const double O[3] = {0, 0, 0}, Z[3] = {0, 0, 1};
+        struct Threaded
+        {
+            const char *name;
+            bool external;
+            std::vector<double> rz;
+            double turns;
+            double lo[3], hi[3];
+        };
+        const double r0 = 5.0 - 5.0 * h / 8.0, r1 = 5.0 + 0.05 * p, w0 = p / 8.0, w1 = (p / 4.0 + 2.0 * (r1 - r0) * slope) / 2.0;
+        const double ri = 4.2, ro = 5.0, wi0 = p / 16.0, wi1 = wi0 + (ro - ri) * slope;
+        const Threaded parts[] = {
+            {"M10x1.5 shaft 12", true, {r0, -p - w0, r1, -p - w1, r1, -p + w1, r0, -p + w0}, 15.0 / p, {-5, -5, 0}, {5, 5, 12}},
+            {"M10x1.5 nut 8", false, {ri, -p - wi1, ro, -p - wi0, ro, -p + wi0, ri, -p + wi1}, 11.0 / p, {-10, -10, 0}, {10, 10, 8}},
+        };
+        for (const Threaded &t : parts)
+        {
+            std::vector<int64_t> kinds;
+            std::vector<double> reals;
+            polygon(t.rz, kinds, reals);
+            smlib_brep *groove = nullptr, *part = nullptr, *cut = nullptr;
+            CHECK(smlib_screw_sweep(kinds.data(), static_cast<int64_t>(kinds.size()), reals.data(), static_cast<int64_t>(reals.size()), O, Z, p,
+                                    t.turns, tol, &groove) == SMLIB_OK);
+            if (t.external)
+            {
+                CHECK(smlib_make_cylinder(O, 5.0, 12.0, &part) == SMLIB_OK);
+            }
+            else
+            {
+                smlib_brep *block = nullptr, *bore = nullptr;
+                const double corner[3] = {-10, -10, 0}, size[3] = {20, 20, 8}, below[3] = {0, 0, -1};
+                CHECK(smlib_make_box(corner, size, &block) == SMLIB_OK);
+                CHECK(smlib_make_cylinder(below, 4.3, 10.0, &bore) == SMLIB_OK);
+                CHECK(block != nullptr && bore != nullptr && smlib_boolean(block, bore, SMLIB_BOOLEAN_SUBTRACT, &part) == SMLIB_OK);
+                smlib_brep_free(block);
+                smlib_brep_free(bore);
+            }
+            CHECK(groove != nullptr && part != nullptr && smlib_boolean(part, groove, SMLIB_BOOLEAN_SUBTRACT, &cut) == SMLIB_OK && cut != nullptr);
+            if (cut != nullptr)
+            {
+                double lo[3], hi[3];
+                const auto start = std::chrono::steady_clock::now();
+                CHECK(smlib_brep_bounds(cut, lo, hi) == SMLIB_OK);
+                const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+                std::printf("%s: box (%.9f %.9f %.9f) to (%.9f %.9f %.9f) in %.2f s\n", t.name, lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], secs);
+                for (int i = 0; i < 3; ++i)
+                {
+                    CHECK(std::fabs(lo[i] - t.lo[i]) < 1e-6 && std::fabs(hi[i] - t.hi[i]) < 1e-6);
+                }
+            }
+            smlib_brep_free(groove);
+            smlib_brep_free(part);
+            smlib_brep_free(cut);
+        }
+    }
+
+    // Point classification: exact, at the body's own zone tolerance. A 10 x 20 x 30 box at the
+    // origin: inside, outside, on a face, on an edge, on a vertex. A cylinder of radius 5 about +Z:
+    // off its curved wall by half its tolerance is on it, by ten tolerances inside or outside.
+    {
+        auto where = [](const smlib_brep *b, double x, double y, double z)
+        {
+            int32_t c = -1;
+            const int32_t s = smlib_brep_classify_point(b, x, y, z, &c);
+            return s == SMLIB_OK ? c : -100 - s;
+        };
+        smlib_brep *bx = nullptr, *cyl = nullptr;
+        const double o[3] = {0, 0, 0}, size[3] = {10, 20, 30};
+        CHECK(smlib_make_box(o, size, &bx) == SMLIB_OK && bx != nullptr);
+        CHECK(smlib_make_cylinder(o, 5.0, 10.0, &cyl) == SMLIB_OK && cyl != nullptr);
+        if (bx != nullptr && cyl != nullptr)
+        {
+            CHECK(where(bx, 5, 10, 15) == SMLIB_POINT_INSIDE);
+            CHECK(where(bx, 5, 10, 31) == SMLIB_POINT_OUTSIDE);
+            CHECK(where(bx, -1, -1, -1) == SMLIB_POINT_OUTSIDE);
+            CHECK(where(bx, 5, 10, 30) == SMLIB_POINT_ON_BOUNDARY);
+            CHECK(where(bx, 10, 10, 30) == SMLIB_POINT_ON_BOUNDARY);
+            CHECK(where(bx, 10, 20, 30) == SMLIB_POINT_ON_BOUNDARY);
+            CHECK(where(bx, 0, 0, 0) == SMLIB_POINT_ON_BOUNDARY);
+
+            const double tol = static_cast<double>(SmTol::GetZoneTol3d(cyl->p));
+            std::printf("cylinder zone tolerance %.3g mm\n", tol);
+            CHECK(tol > 0.0 && tol < 1e-2);
+            const double c45 = std::sqrt(0.5);
+            for (double r : {5.0 - 0.5 * tol, 5.0 + 0.5 * tol})
+            {
+                CHECK(where(cyl, r * c45, r * c45, 5) == SMLIB_POINT_ON_BOUNDARY);
+            }
+            CHECK(where(cyl, (5.0 - 10 * tol) * c45, (5.0 - 10 * tol) * c45, 5) == SMLIB_POINT_INSIDE);
+            CHECK(where(cyl, (5.0 + 10 * tol) * c45, (5.0 + 10 * tol) * c45, 5) == SMLIB_POINT_OUTSIDE);
+            CHECK(where(cyl, 0, 0, 5) == SMLIB_POINT_INSIDE);
+            CHECK(where(cyl, 0, 0, 10) == SMLIB_POINT_ON_BOUNDARY);
+
+            int32_t c = 7;
+            CHECK(smlib_brep_classify_point(nullptr, 0, 0, 0, &c) == SMLIB_ERR_ARG);
+            CHECK(smlib_brep_classify_point(bx, NAN, 0, 0, &c) == SMLIB_ERR_ARG);
+            CHECK(smlib_brep_classify_point(bx, 0, INFINITY, 0, &c) == SMLIB_ERR_ARG);
+            CHECK(smlib_brep_classify_point(bx, 0, 0, 0, nullptr) == SMLIB_ERR_ARG);
+            CHECK(c == 7);
+        }
+        smlib_brep_free(bx);
+        smlib_brep_free(cyl);
     }
 
     // Rejected arguments.

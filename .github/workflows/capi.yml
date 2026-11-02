@@ -28,11 +28,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Blacksmith runners for everything but Windows ARM64, which stays on GitHub's (Blacksmith has
+        # none).
         include:
-          - { name: Linux x86_64, runner: ubuntu-22.04 }
-          - { name: Linux aarch64, runner: ubuntu-22.04-arm }
-          - { name: macOS universal, runner: macos-14, cmake: '"-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0' }
-          - { name: Windows x64 (MSVC), runner: windows-latest, cmake: '-A x64' }
+          # GCC with the USD build's warnings as errors, so SMLib stays clean for that build too.
+          - { name: Linux x86_64, runner: blacksmith-4vcpu-ubuntu-2404, cmake: '-DSMLIB_STRICT_WARNINGS=ON' }
+          - { name: Linux aarch64, runner: blacksmith-4vcpu-ubuntu-2404-arm }
+          - { name: macOS universal, runner: blacksmith-6vcpu-macos-15, cmake: '"-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0' }
+          - { name: Windows x64 (MSVC), runner: blacksmith-8vcpu-windows-2025, cmake: '-A x64' }
           - { name: Windows ARM64 (MSVC), runner: windows-11-arm, cmake: '-A ARM64' }
     steps:
       - uses: actions/checkout@v4

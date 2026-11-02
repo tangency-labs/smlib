@@ -86,8 +86,8 @@ void bind_fillets(BoundModule& m)
        py::arg("brep"), py::arg("edges"),
        py::kw_only(),
        py::arg("radius"),
-       py::arg("xsect_type") = 1, py::arg("continuity") = 1,
-       py::arg("thumbweight") = 1.0,
+       py::arg("xsect_type") = 1, py::arg("continuity") = 2,
+       py::arg("thumbweight") = SM_GN_DEFAULT_THUMBWEIGHT,
        "Mutates: brep; returns the same handle for chaining.\n"
        "\n"
        "Fillet selected edges of a Brep with a chosen cross-section type.\n"
@@ -100,19 +100,19 @@ void bind_fillets(BoundModule& m)
        "        tolerance (8e-5 by default). Keyword-only.\n"
        "    xsect_type: Cross-section integer: ``0`` = linear (not the\n"
        "        constant-distance ``chamfer_fillet`` solver), ``1`` = circular\n"
-       "        (default), ``2`` = blend (variable continuity blend curve).\n"
+       "        (default), ``2`` = the G^n section of order ``continuity``.\n"
        "        These are not the ``FilletXSect`` values:\n"
        "        ``FilletXSect.LINEAR`` is ``1`` and selects circular.\n"
        "        Keyword-only.\n"
-       "    continuity: For ``xsect_type == 2``: ``1`` = G1 (tangent),\n"
-       "        ``2`` = G2 (curvature), ``3`` = G3. Ignored for other\n"
-       "        cross-section types. Defaults to ``1``. Where three filleted\n"
+       "    continuity: For ``xsect_type == 2``: the order n of the G^n\n"
+       "        section, ``2`` (curvature) to ``4``. Ignored for other\n"
+       "        cross-section types. Defaults to ``2``. Where three filleted\n"
        "        edges meet, only G1 continuity is guaranteed across the\n"
        "        corner-patch boundary. Keyword-only.\n"
-       "    thumbweight: Fullness control for blend cross-sections; values\n"
-       "        greater than ``1`` produce a fuller blend, less than ``1``\n"
-       "        a thinner one. Ignored unless ``xsect_type == 2``. Defaults\n"
-       "        to ``1.0``. Keyword-only.\n"
+       "    thumbweight: The G^n section's thumbweight, in [0, 1): raising it\n"
+       "        pulls the section towards the edge. Ignored unless\n"
+       "        ``xsect_type == 2``. Defaults to ``0`` (no thumbweight).\n"
+       "        Keyword-only.\n"
        "\n"
        "Notes:\n"
        "    Use G2 for visible consumer surfaces, G3 for automotive Class-A.\n"
@@ -212,7 +212,7 @@ void bind_fillets(BoundModule& m)
     }, py::return_value_policy::reference,
        py::arg("brep"), py::arg("edges"), py::arg("radii"), py::arg("xsect_types"),
        py::kw_only(),
-       py::arg("continuity") = 1, py::arg("thumbweight") = 1.0,
+       py::arg("continuity") = 2, py::arg("thumbweight") = SM_GN_DEFAULT_THUMBWEIGHT,
        "Mutates: brep; returns the same handle for chaining.\n"
        "\n"
        "Fillet selected edges with a per-edge radius and cross-section type.\n"
@@ -225,12 +225,12 @@ void bind_fillets(BoundModule& m)
        "        (8e-5 by default).\n"
        "    xsect_types: Per-edge cross-section as a list of\n"
        "        ``FilletXSect`` values. Length must equal ``len(edges)``.\n"
-       "    continuity: For blend cross-sections: ``1`` = G1, ``2`` = G2,\n"
-       "        ``3`` = G3. At a vertex where three filleted edges meet, only\n"
-       "        G1 continuity is guaranteed across the corner-patch boundary.\n"
-       "        Defaults to ``1``. Keyword-only.\n"
-       "    thumbweight: Fullness control for blend cross-sections.\n"
-       "        Defaults to ``1.0``. Keyword-only.\n"
+       "    continuity: For blend cross-sections: the order n of the G^n\n"
+       "        section, ``2`` (curvature) to ``4``. At a vertex where three\n"
+       "        filleted edges meet, only G1 continuity is guaranteed across\n"
+       "        the corner-patch boundary. Defaults to ``2``. Keyword-only.\n"
+       "    thumbweight: The G^n section's thumbweight, in [0, 1).\n"
+       "        Defaults to ``0``. Keyword-only.\n"
        "\n"
        "See Also:\n"
        "    fillet_edges: Single radius and cross-section across all edges.\n"

@@ -63,6 +63,9 @@ protected:
   SmBoolean                 m_bCalcAsConstRad;       // See notes below.
 
   SmBoolean                 m_bTopologyAdjusted;     // TRUE = corner topology has been altered
+  SmBoolean                 m_bBevelGapPatch;        // SolidCraft change: TRUE = a bevel (mitre) whose rails meet the side
+                                                     //   edge at two places, the gap between them on the side face's
+                                                     //   continuation filled by a patch (SmBlendCorner::AdjustTwoBlendTopology)
   SmBoolean                 m_bExtendedSurfacePatch; // TRUE = EndFace->Surface is defined by sideFace->ExtendedSurface
                                                      // FALSE=EndFace->Surface is defined by interpolating filletEdges
                                                      // default:[TRUE]
@@ -70,6 +73,11 @@ protected:
   double                    m_dSetBackDist;          // Distance of setback (from the filleted vertex).
                                                      // No setbacks if m_dSetBackDist = 0.0
                                                      // Note, this makes no sense with Bevel.
+  double                    m_dEaseDist;             // SolidCraft change: length along each edge before the setback over which
+                                                     //   each round's cross-section eases, by a C2 law, from its own to the
+                                                     //   curvature-continuous section (SM_FSG_BLEND_CURVE, G2, at thirds), and
+                                                     //   the corner's rail-rail curves meet the rails curvature-continuously.
+                                                     //   0.0 = none (the setback's sections are the round's own).
   double                    m_dThisApproxTol3d;   // 3D tolerance for corner patch creation
   double                    m_dTangencyTolRadians;   // Angle tol for tangent field approximation
                             
@@ -131,7 +139,7 @@ public:
 
   // key SmFilletCorner methods driven by SmFilletExecutive::CreateFilletBrep() to Fillet a Brep
   virtual SmStatus MakeCornerTopology   ()=0 ;                 // 1st : Add FilletVertices (topo only) connected by FilletEdges (topo only)
-  SmStatus         CalcCornerVertGeom   () ;                   // 2nd : Set FilletVertex point positions
+  virtual SmStatus CalcCornerVertGeom   () ;                   // 2nd : Set FilletVertex point positions
   SmBoolean        CheckAndFixDegeneracy() ;                   // 3rd : check for and deal with degenerate corner
   virtual SmStatus AdjustTopology       (){return SM_SUCCESS;} // 4th : Adjust topo for NonDegenerate cases depending on part geometry
                                                                // 5th : SmFilletSolver::CalcFilletGeom()
@@ -188,6 +196,10 @@ public:
   SmStatus            GetPatchFaces(SmTArray<SmFace*> & rFaces) const;
   const SmVertex    * GetFilletedVertex()                              { return m_cpVertex; }
   double              GetSetBackDist()                                 { return m_dSetBackDist; }
+  // SolidCraft change: the setback along one of the corner's filleted edges (a setback corner of
+  // the blend corner sets each edge back by its own; elsewhere one setback holds for all).
+  virtual double      GetSetBackDistAlong(const SmEdge * pEdge)        { SM_REF1(pEdge) ; return m_dSetBackDist; }
+  double              GetEaseDist()                                    { return m_dEaseDist; } // SolidCraft change
   SmFilStatus         GetStatus()                                      { return m_eStatus; }
   double              GetTangencyTolRadians()                          { SM_ASSERT_TOL(m_dTangencyTolRadians) ; return m_dTangencyTolRadians; }
 
@@ -198,6 +210,7 @@ public:
   // simple assignments
   void SetBevel         ( SmBoolean bIsBevel )  { m_bBevel          = bIsBevel; }
   void SetSetBackDist   ( double dSetBackDist ) { m_dSetBackDist    = dSetBackDist; }
+  void SetEaseDist      ( double dEaseDist )    { m_dEaseDist       = dEaseDist; } // SolidCraft change: see m_dEaseDist
   void SetCalcAsConstRad( SmBoolean bConst )    { m_bCalcAsConstRad = bConst; }
   void SetStatus        ( SmFilStatus eStatus ) { m_eStatus         = eStatus; }
 
@@ -210,6 +223,12 @@ public:
   SmBoolean IsCalcAsConstRad()                 const { return m_bCalcAsConstRad; }
 //cbi551 ???  SmBoolean IsEdgeuseSolverEU(SmEdgeuse * pEU) const;
   virtual SmBoolean IsTangentCorner()          const { return FALSE; }
+  // SolidCraft change: a Join of one closed blended edge meeting itself (SmBlendCorner)
+  virtual SmBoolean IsClosedJoin()             const { return FALSE; }
+  // SolidCraft change: an End on its end face(s) (SmBlendCorner)
+  virtual SmBoolean IsEndOnEndFace()           const { return FALSE; }
+  // SolidCraft change: the surface an End at a smooth vertex is cut by (SmBlendCorner), or NULL
+  virtual SmSurface * GetEndCapSurface()       const { return NULL; }
 
   // utilities
   void RecordFilletError(SmFilletErrorType  eErrorType,
@@ -231,76 +250,16 @@ public:
 // GWC:BIND_TEMPLATE_MOVE     SM_TARRAY_TEMPLATE_PREDECLARATION(SmFilletCorner*) ;
 
 /*******************************************************************//**
-PURPOSE: Create a 1x1 corner. Typically, when only one (closed & non-
-    lamina) edge is connected to this corner vertex such that it separates
-    two adjacent surfaces, a closed-fillet surface can be defined by rolling
-    along this edge. (e.g. when two tori form an '8' shape, only one
-    vertex and one edge are defined at the intersection)
-
-NOTES: Will only handle the tangency cases for now.
-***********************************************************************/
-class SM_EXPORT SmFillet1x1Corner : public SmFilletCorner
-{
-public:
-    SmFillet1x1Corner(const SmContext      & crContext,
-                      const SmVertex       * cpVertex,
-                      SmTArray<SmEdgeuse*> * pSolverEUs,
-                      SmTArray<SmEdgeuse*> * pAllEUs,
-                      SmFilletExecutive    * pExec,
-                      double                 dApproxTol3d,
-                      double                 dTangencyTolRadians);
-
-    virtual SmFilletCornerType GetCornerType() const { return SM_FCR_1_x_1; }
-
-    virtual void GetName(TCHAR * pcMyName, size_t lMyNameAllocLen) const {smos_WStrCpy(pcMyName, lMyNameAllocLen, _T("SmFillet1x1Corner")); }
-
-    virtual SmFilletSolver * GetTangentFilletSolver( const SmFilletSolver *pFS );
-
-    virtual SmStatus MakeCornerTopology();
-
-} ; // end class SmFillet1x1Corner
-
-/*******************************************************************//**
-PURPOSE: Create a 2x2 corner. When two edges are connected to this
-    corner vertex with G1-continuity, a cross section can be defined to
-    separate two G1-continuous fillets at this corner
-
-NOTES: Will only handle the tangency cases for now.
-***********************************************************************/
-class SM_EXPORT
-SmFillet2x2Corner : public SmFillet1x1Corner
-{
-public:
-    SmFillet2x2Corner(const SmContext      & crContext,
-                      const SmVertex       * cpVertex,
-                      SmTArray<SmEdgeuse*> * pSolverEUs,
-                      SmTArray<SmEdgeuse*> * pAllEUs,
-                      SmFilletExecutive    * pExec,
-                      double                 dApproxTol3d,
-                      double                 dTangencyTolRadians);
-
-    virtual SmFilletCornerType GetCornerType() const { return SM_FCR_2_x_2; }
-
-    virtual void GetName(TCHAR * pcMyName, size_t lMyNameAllocLen) const { smos_WStrCpy(pcMyName, lMyNameAllocLen, _T("SmFillet2x2Corner")); }
-
-    virtual SmFilletSolver * GetTangentFilletSolver( const SmFilletSolver *pFS );
-
-    virtual SmStatus MakeCornerTopology();
-
-} ; // end class SmFillet2x2Corner
-
-/*******************************************************************//**
 PURPOSE: Create a Nx1 closed corner. Typically, this might happen when we
     have a corner with 2 or 3 edges (such as in cylindrical solids)
     and one 'closed' edge is filleted.
 
-NOTES: Will only handle the tangency cases for now.
+NOTES: The closed edge meets itself at an angle (SmFilletCorner::Create
+    makes a G1-closed edge the blend corner's Join).
 ***********************************************************************/
 class SM_EXPORT SmFilletNx1ClosedCorner : public SmFilletCorner
 {
 public:
-    SmBoolean  m_bG1Case;  // Is the closed edge also G1?
-
     SmFilletNx1ClosedCorner(const SmContext      & crContext,
                             const SmVertex       * cpVertex,
                             SmTArray<SmEdgeuse*> * pSolverEUs,
@@ -309,12 +268,6 @@ public:
                             double                 dApproxTol3d,
                             double                 dTangencyTolRadians);
 
-    virtual SmStatus AdjustTangentCorner();
-
-    virtual SmFilletSolver * GetTangentFilletSolver( const SmFilletSolver *pFS );
-
-    virtual SmBoolean IsTangentCorner() const { return m_bG1Case; }
-
     virtual SmFilletCornerType GetCornerType() const { return SM_FCR_N_x_1_CLOSED; }
 
     virtual void GetName(TCHAR * pcMyName, size_t lMyNameAllocLen) const { smos_WStrCpy(pcMyName, lMyNameAllocLen, _T("SmFilletNx1ClosedCorner")); }
@@ -322,94 +275,6 @@ public:
     virtual SmStatus MakeCornerTopology();
 
 } ; // end SmFilletNx1ClosedCorner
-
-/*******************************************************************//**
-PURPOSE: Create Nx1 corner by specifying the boundary of the incoming
-    fillet. If the filleted edge is a concave edge, an 'end' surface will
-    be created to fill the hole of the side face. When a convex edge of
-    a concave corner is filleted, a new side surface will also be created
-
-NOTES: Corners with N > 3 are not yet implemented.
-
-***********************************************************************/
-class SM_EXPORT SmFilletNx1Corner : public SmFilletCorner
-{
-public:
-    SmFilletNx1Corner(const SmContext      & crContext,
-                      const SmVertex       * cpVertex,
-                      SmTArray<SmEdgeuse*> * pSolverEUs,
-                      SmTArray<SmEdgeuse*> * pAllEUs,
-                      SmFilletExecutive    * pExec,
-                      double                 dApproxTol3d,
-                      double                 dTangencyTolRadians);
-
-    static SmBoolean CheckNx1Degeneracy(const SmVertex * pCornerVert,
-                                        SmEdgeuse * pFilEdgeuse);
-
-    virtual SmStatus CreateCornerPatch();
-
-    virtual SmStatus CalcCornerEdgeGeom();
-
-    virtual SmFilletCornerType GetCornerType() const { return SM_FCR_N_x_1; }
-
-    virtual void GetName(TCHAR * pcMyName, size_t lMyNameAllocLen) const { smos_WStrCpy(pcMyName, lMyNameAllocLen, _T("SmFilletNx1Corner")); }
-
-    virtual SmStatus MakeCornerTopology();
-
-} ; // end class SmFilletNx1Corner
-
-/*******************************************************************//**
-PURPOSE: Create an open-end corner (i.e. corner with lamina edge) to
-    determine the trimming boundary of fillet at this corner.
-    Typically, this will be needed when we do shell-filleting.
-
-NOTES: For now, it will only handle 3x1 case.
-***********************************************************************/
-class SM_EXPORT SmFilletDegenerateCorner : public SmFilletCorner
-{
-public:
-    SmFilletDegenerateCorner(const SmContext      & crContext,
-                             const SmVertex       * cpVertex,
-                             SmTArray<SmEdgeuse*> * pSolverEUs,
-                             SmTArray<SmEdgeuse*> * pAllEUs,
-                             SmFilletExecutive    * pExec,
-                             double                 dApproxTol3d,
-                             double                 dTangencyTolRadians);
-
-    virtual SmFilletCornerType GetCornerType() const { return SM_FCR_DEGENERATE; }
-
-    virtual void GetName(TCHAR * pcMyName, size_t lMyNameAllocLen) const { smos_WStrCpy(pcMyName, lMyNameAllocLen, _T("SmFilletDegenerateCorner")); }
-
-    virtual SmStatus MakeCornerTopology();
-
-} ; // end class SmFilletDegenerateCorner
-
-/*******************************************************************//**
-PURPOSE: Create an open-end corner (i.e. corner with lamina edge) to
-    determine the trimming boundary of fillet at this corner.
-    Typically, this will be needed when we do shell-filleting.
-
-NOTES: For now, it will only handle 3x1 case.
-***********************************************************************/
-class SM_EXPORT
-SmFilletOpenCorner : public SmFilletNx1Corner
-{
-public:
-    SmFilletOpenCorner(const SmContext      & crContext,
-                       const SmVertex       * cpVertex,
-                       SmTArray<SmEdgeuse*> * pSolverEUs,
-                       SmTArray<SmEdgeuse*> * pAllEUs,
-                       SmFilletExecutive    * pExec,
-                       double                 dApproxTol3d,
-                       double                 dTangencyTolRadians);
-
-    virtual SmFilletCornerType GetCornerType() const { return SM_FCR_OPEN; }
-
-    virtual void GetName(TCHAR * pcMyName, size_t lMyNameAllocLen) const { smos_WStrCpy(pcMyName, lMyNameAllocLen, _T("SmFilletOpenCorner")); }
-
-    virtual SmStatus MakeCornerTopology();
-
-} ; // end SmFilletOpenCorner
 
 /*******************************************************************//**
 PURPOSE: A 3x2 corner whose two filleted edges has different edge convexity
@@ -439,54 +304,6 @@ public:
     virtual SmStatus MakeCornerTopology();
 
 } ; // end class SmFillet3x2MixedConvexityCorner
-
-/*******************************************************************//**
-PURPOSE: An Nx2 corner represents a corner with N adjacent
-    edges and two of them are filleted. If N = 3, typically, a bevel corner
-    (i.e. without corner surface) will be created for convex and
-    tangential corners, and a blending corner patch will be generated
-    for concave filleted edges. If N = 4, the two filleted edges
-    should not share the same face and the corner will consists of only
-    one intersection curve between two fillets just as in 3x2 case.
-
-
-NOTES: Corners with N > 4 are not yet implemented.
-
-***********************************************************************/
-class SM_EXPORT SmFilletNx2Corner : public SmFilletCorner
-{
-public:
-    SmBoolean  m_bG1Case;  // Do the two filleted edges meet G1?
-
-    SmFilletNx2Corner(const SmContext      & crContext,
-                      const SmVertex       * cpVertex,
-                      SmTArray<SmEdgeuse*> * pSolverEUs,
-                      SmTArray<SmEdgeuse*> * pAllEUs,
-                      SmFilletExecutive    * pExec,
-                      double                 dApproxTol3d,
-                      double                 dTangencyTolRadians);
-
-    SmStatus AdjustConcaveCornerTopology();
-
-    virtual SmStatus AdjustTangentCorner();
-
-    virtual SmStatus AdjustTopology();
-
-    virtual SmStatus CreateCornerPatch();
-
-    virtual SmFilletSolver * GetTangentFilletSolver( const SmFilletSolver *pFS );
-
-    virtual SmBoolean IsTangentCorner() const { return m_bG1Case; }
-
-    virtual SmFilletCornerType GetCornerType() const { return SM_FCR_N_x_2; }
-
-    virtual void GetName(TCHAR * pcMyName, size_t lMyNameAllocLen) const { smos_WStrCpy(pcMyName, lMyNameAllocLen, _T("SmFilletNx2Corner")); }
-
-    virtual SmStatus MakeCornerTopology();
-
-    SmStatus Make4x2ConcaveCornerTopology();
-
-} ; // end class SmFilletNx2Corner
 
 /*******************************************************************//**
 PURPOSE: A 4x3 corner represents a corner with 4 adjacent

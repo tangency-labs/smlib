@@ -1036,6 +1036,51 @@ SmBoolean bDebugMe2 = FALSE;
 
   } // end iter every testpoint
 
+  // SolidCraft change: where the fillet's offsets change along the trace (a variable radius),
+  // the rails between two points must follow the fillet, not only lie on the faces: on a
+  // plane every uv curve does, so the test above holds for any span, the step grows to the
+  // angle tolerance, and the Hermite rails cut across the radius law between the points
+  // (0.05 mm off a round of 13.5 tapering to a point over 40 mm). The fillet is solved at
+  // the test points (a step of that share of the span from the start), and the span is
+  // rejected where a solution's contacts lie farther than the tolerance from the rails.
+  if ( m_rFilletSolver.OffsetRadiiCanChange() && dStepSize > SM_EFF_ZERO*100.0 )
+    {
+      for ( i=0; i<NUM_TEST_POINTS; i++ )
+        {
+          double dPartStep = dStepSize * dParamsToTest[i];
+          SmBoolean bFound = FALSE, bPartClipped = FALSE, bPartBoundary = FALSE;
+          SmTsectPnt sPart;
+          m_rFilletSolver.ReloadSurfaceOffsets();
+          SER( m_rFilletSolver.StepSolve( rTsectPnt, dPartStep, m_vUVDomain[0], m_vUVDomain[1],
+                                          bFound, bPartClipped, bPartBoundary, sPart ) );
+          m_rFilletSolver.SetSurfacesToZeroOffset();
+          if ( ! bFound || bPartClipped )
+            {
+              continue; // no solution inside the span there: the rails' own test stands
+            }
+          SmPoint3d sContact0, sContact1;
+          SER( m_cpSurface[0]->EvaluatePoint( m_vUVDomain[0].ClampPoint2d( sPart.UVPos(0) ), sContact0 ) );
+          SER( m_cpSurface[1]->EvaluatePoint( m_vUVDomain[1].ClampPoint2d( sPart.UVPos(1) ), sContact1 ) );
+          SmHermiteCurve * apRails[2] = { &s3DCrv0, &s3DCrv1 };
+          SmPoint3d asContacts[2] = { sContact0, sContact1 };
+          for ( ULONG j=0; j<2; j++ )
+            {
+              SmSolution sSol;
+              SmBoolean bOn = FALSE;
+              SER( apRails[j]->LocalPointSolve( apRails[j]->GetNaturalInterval(), SM_SO_MINIMIZE, asContacts[j],
+                                                NULL, NULL, NULL, dParamsToTest[i], bOn, sSol ) );
+              SmPoint3d sOnRail;
+              SER( apRails[j]->EvaluatePoint( bOn ? sSol.m_vStart[0] : dParamsToTest[i], sOnRail ) );
+              if ( sOnRail.DistanceBetweenSquared( asContacts[j] ) > dTolSq )
+                {
+                  m_rFilletSolver.ReloadSurfaceOffsets();
+                  rbFoundGoodPoint = FALSE;
+                  return SM_SUCCESS;
+                }
+            }
+        }
+    }
+
   // arrive here after every test point passed tolerance check
 
   // set output and return FoundGoodPoint == TRUE

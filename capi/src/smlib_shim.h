@@ -69,7 +69,8 @@ inline std::atomic<size_t> g_current_len{0};
 
 // SMLib's status as the C API's: SMLIB_OK for success; an offset whose walls would meet
 // (SM_ERR_OFFSET_WALLS_TOUCH, from any offset: a shell, a solid offset, a face move)
-// SMLIB_ERR_WALLS_TOUCH; any other status unchanged.
+// SMLIB_ERR_WALLS_TOUCH; one that would move a vertex past its edge's end
+// (SM_ERR_OFFSET_EDGE_VANISHES) SMLIB_ERR_UNSUPPORTED; any other status unchanged.
 inline int32_t status(SmApiStatus s)
 {
     switch (s)
@@ -78,6 +79,8 @@ inline int32_t status(SmApiStatus s)
         return SMLIB_OK;
     case SM_ERR_OFFSET_WALLS_TOUCH:
         return SMLIB_ERR_WALLS_TOUCH;
+    case SM_ERR_OFFSET_EDGE_VANISHES:
+        return SMLIB_ERR_UNSUPPORTED;
     default:
         return static_cast<int32_t>(s);
     }

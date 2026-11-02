@@ -4951,9 +4951,16 @@ static SmStatus sm_CoverOtherCoincidentFace
         { sDomain1 = sTrimDomain; }
     }
 
+  // SolidCraft: across a seam the covering surface wraps only on the trim-derived bounds. The
+  // stored domains are conservative and may be the faces' whole surfaces: across the seam they
+  // cover too (CoverCoincidentSurface keeps the period there), and the merged face took them as
+  // its domain, 360 x 208 for three half-turn faces 1 high whose trims span 180 x 3. Within one
+  // period they cover as before; a cover that must cross the seam takes the faces' trims, which
+  // run across it only where a face really goes all the way round.
   SmStatus eStat = pSurf0->CoverOtherCoincidentSurface(pSurf1, dTol, rdMaxDist,
                                                        rpCoveringSurf, &sDomain0,
-                                                       &sDomain1, &rMergedDomain);
+                                                       &sDomain1, &rMergedDomain,
+                                                       bRefineDomains);
   if (eStat != SM_SUCCESS || rpCoveringSurf != NULL)
     { return eStat; }
 
@@ -5020,6 +5027,20 @@ const
   // 3rd edgeuse locals = same oriented edgeuse on different face to edgeuse[0]
   SmEdgeuse * pEU2   = sEUs[2];
   SmFace    * pFace2 = pEU2->GetFace();
+
+  // SolidCraft change: the same face on both sides, and the edge's primary edgeuse and its radial
+  // partner in two loopuses (the face meeting itself along the edge from its two sides, or its
+  // radial pairing the other way round): SmBrep::DeleteEdge, which reads that pair, would take
+  // the two sides for two faces and merge the face into itself, deleting it. Not removable.
+  // With the pair in one loopuse it is a slit, which DeleteEdge splits off the loop.
+  {
+    const SmEdgeuse * pPrimary = GetPrimaryEdgeuse();
+    const SmEdgeuse * pRadial  = ( pPrimary != NULL ) ? pPrimary->GetRadial() : NULL;
+    if ( pPrimary == NULL || pRadial == NULL )
+      { return FALSE; }
+    if ( pPrimary->GetFace() == pRadial->GetFace() && pPrimary->GetLoopuse() != pRadial->GetLoopuse() )
+      { return FALSE; }
+  }
   paSurf[1]          = pFace2->GetSurface();
   saUVDomain[1]      = paSurf[1]->GetNaturalUVDomain() ; 
 
@@ -6736,7 +6757,7 @@ PURPOSE: A generic routine to test if an edge is filletable.
 NOTES:
    Returns Edgeuse for the edge, if filletable, else Null.
    If this Edge is Lamina, not filletable, return Null.
-   If this Edge is tangent (to within 2 degrees), not filletable, return Null.
+   If this Edge is tangent (to within half a degree), not filletable, return Null.
    If this Edge separates two Regions (e.g., manifold),
      return an Edgeuse that does not point into the infinite region,
      and has SM_OT_SAME orientation.
@@ -6802,7 +6823,7 @@ SmEdgeuse * SmEdge::GetBlendEdgeuse() const
   pEU1 = pEU0->GetRadial();
 
   // Test to determine if edge bounds two tangential faces
-  // test for smooth edge - don't fillet edges within 2 degrees of tangent
+  // test for smooth edge - don't fillet edges within half a degree of tangent
   double dTestParam = this->GetInterval().Evaluate( 0.34 );
   SmPoint3d sPnt, sPnt2;
 
@@ -6815,20 +6836,27 @@ SmEdgeuse * SmEdge::GetBlendEdgeuse() const
   SE( sBinVec.Unitize() );
   SE( sBinVec2.Unitize() );
 
-  // set max nonTangent angle to 88 degrees
-  double dMaxDotValue = smos_Cosine( 88.0*SM_PI / 180.0 );
+  // set max nonTangent angle to 89.5 degrees: faces within half a degree of each other are
+  // tangent (SolidCraft's one angle for a smooth edge). A crease of 0.5 to 2 degrees is an edge
+  // the model means (a draft meeting a flat) and is filleted like any other.
+  double dMaxDotValue = smos_Cosine( 89.5*SM_PI / 180.0 );
 
   // when 1st edgeuse surface normal is perpendicular to 2nd edgeuse binormal or 
   //      1st edgeuse binormal       is perpendicular to 2nd edgeuse surface normal
-  // the faces are tangent and can't be filleted
+  // the faces are tangent at the edge. They are smooth there, and can't be filleted, when
+  // their binormals point away from each other (the faces continue each other). When the
+  // binormals point the same way the faces fold back on each other in a cusp (a knife edge,
+  // the sector between them of no angle, or of a full turn): the ball touching both faces
+  // lies back from the edge, and the edge is filleted like any other.
+  SmBoolean bCusp = sBinVec.Dot( sBinVec2 ) > 0.0;
   double dDot1 = sBinVec2.Dot( sFaceuseNormal );
-  if(smos_Fabs( dDot1 ) < dMaxDotValue)
+  if(!bCusp && smos_Fabs( dDot1 ) < dMaxDotValue)
   {
     return NULL; // Tangent: unable to fillet
   }
 
   double dDot2 = sBinVec.Dot( sFaceuseNormal2 );
-  if(smos_Fabs( dDot2 ) < dMaxDotValue)
+  if(!bCusp && smos_Fabs( dDot2 ) < dMaxDotValue)
   {
     return NULL; // Tangent: unable to fillet
   }

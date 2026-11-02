@@ -1905,7 +1905,10 @@ static SmStatus my_test_loop_orientation_knot_sampling()
          eOrient, // out: measured orientation
          NULL,    // out: optional UV bounds
          TRUE));  // in : use defining 3D curves
-      SmOrientType eExpected = lCase == 5 ? SM_OT_UNKNOWN : bReverse ? SM_OT_OPPOSITE : SM_OT_SAME;
+      // SolidCraft: case 5, the polygon shrunk 1e-5 times about the middle, is oriented as the
+      // others are: its area is held to a floor relative to its own box, not the face's domain
+      // (54ca3e0), so it reads CCW (SM_OT_UNKNOWN under the absolute floor before).
+      SmOrientType eExpected = bReverse ? SM_OT_OPPOSITE : SM_OT_SAME;
       if(eOrient != eExpected || sUses[0]->GetUVTrimCurve() != pOldTrim) { return SM_ERR; }
     }
   MYPRINTF(_T("\nLoop orientation knot sampling: thirteen cases passed"));

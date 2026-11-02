@@ -14,7 +14,9 @@
 //
 // smlib_split_body slices a solid with a one-face sheet on the tool surface (SM_BO_SLICE, which
 // keeps the solid on the side the sheet's normal points away from and closes it with the sheet's
-// piece inside it), once with the sheet and once with it flipped.
+// piece inside it), once with the sheet and once with it flipped. smlib_split_body_by_sheet slices
+// it the same way with a sheet of several faces as it is, its surfaces first turned to agree
+// (SmBrep::OrientSheetSurfaces, as SM_BO_SLICE needs an oriented sheet).
 
 #include "smlib_shim.h"
 
@@ -285,6 +287,81 @@ extern "C" int32_t smlib_split_faces(const smlib_brep *body, const int64_t *face
     );
 }
 
+namespace
+{
+
+// `body` sliced by `sheet` (consumed): the solid on the side the sheet's surfaces' normals point
+// into, closed by the sheet's piece inside it (SM_BO_SLICE reads the side from the surfaces, not
+// from the faces' uses). Null `part` when nothing is left.
+int32_t slice(const smlib_brep *body, Owned sheet, Owned &part)
+{
+    int32_t s = SMLIB_OK;
+    Owned a = copy_of(body, s);
+    if (s != SMLIB_OK)
+    {
+        return s;
+    }
+    SmBrep *r = nullptr;
+    s = status(SmApiBooleanWithOptions(a.get(), sheet.get(), SM_BO_SLICE, FALSE, FALSE, FALSE, FALSE, FALSE, r));
+    if (s != SMLIB_OK)
+    {
+        return s;
+    }
+    // The sheet is consumed by the slice.
+    sheet.release();
+    if (r != nullptr && r != a.get())
+    {
+        a.release();
+        a.reset(r);
+    }
+    if (a == nullptr || a->GetNumFaces() == 0)
+    {
+        part.reset();
+        return SMLIB_OK;
+    }
+    part = std::move(a);
+    return SMLIB_OK;
+}
+
+// Both parts, `side(flip, sheet)` making each side's sheet (turned over for the back), handed
+// out as smlib_split_body says. With `whole`, each part must be a manifold solid: SM_BO_SLICE
+// with a sheet that only nicks a region behaves as SM_BO_DIFFERENCE (SmCoreTypes.h), leaving the
+// sheet's piece as a slit in the body and a lamina on the other side, which is no cut.
+template <class Side> int32_t both_sides(const smlib_brep *body, Side side, smlib_brep **back, smlib_brep **front, bool whole = false)
+{
+    if (body->p->IsManifoldSolid() != TRUE)
+    {
+        return static_cast<int32_t>(SMLIB_ERR_NOT_SOLID);
+    }
+    Owned parts[2];
+    for (int k = 0; k < 2; ++k)
+    {
+        Owned sheet;
+        int32_t s = side(k == 0, sheet);
+        if (s == SMLIB_OK)
+        {
+            s = slice(body, std::move(sheet), parts[k]);
+        }
+        if (s != SMLIB_OK)
+        {
+            return s;
+        }
+    }
+    if (parts[0] == nullptr || parts[1] == nullptr)
+    {
+        return SMLIB_ERR_NO_CUT;
+    }
+    if (whole && (parts[0]->IsManifoldSolid() != TRUE || parts[1]->IsManifoldSolid() != TRUE))
+    {
+        return SMLIB_ERR_NO_CUT;
+    }
+    *back = new smlib_brep{parts[0].release()};
+    *front = new smlib_brep{parts[1].release()};
+    return SMLIB_OK;
+}
+
+} // namespace
+
 extern "C" int32_t smlib_split_body(const smlib_brep *body, const smlib_surface *tool, smlib_brep **back, smlib_brep **front)
 {
     if (!valid(body) || tool == nullptr || tool->s == nullptr || back == nullptr || front == nullptr)
@@ -296,28 +373,17 @@ extern "C" int32_t smlib_split_body(const smlib_brep *body, const smlib_surface 
     return c.run(
         [&]
         {
-            if (body->p->IsManifoldSolid() != TRUE)
-            {
-                return static_cast<int32_t>(SMLIB_ERR_NOT_SOLID);
-            }
             const SmContext &ctx = *SmApiGetOrCreateContext();
-            // One side: the body sliced by the tool's sheet, its normal turned away from it.
-            auto side = [&](bool flip, Owned &part) -> int32_t
+            // One face on the tool surface; for the back, the surface turned over (its normal
+            // reversed).
+            auto side = [&](bool flip, Owned &sheet) -> int32_t
             {
-                int32_t s = SMLIB_OK;
-                Owned a = copy_of(body, s);
-                if (s != SMLIB_OK)
-                {
-                    return s;
-                }
                 SmSurface *surface = nullptr;
                 if (tool->s->Copy(ctx, surface) != SM_SUCCESS || surface == nullptr)
                 {
                     delete surface;
                     return static_cast<int32_t>(SM_ERR);
                 }
-                // The other side's sheet is the surface turned over (its normal reversed);
-                // SMLib's slice reads the side from the surface, not the face's use.
                 if (flip)
                 {
                     int32_t st = status(surface->SwapUV());
@@ -327,53 +393,56 @@ extern "C" int32_t smlib_split_body(const smlib_brep *body, const smlib_surface 
                         return st;
                     }
                 }
-                Owned sheet(new (ctx) SmBrep());
-                sheet->SetTolerance(a->GetTolerance());
+                sheet.reset(new (ctx) SmBrep());
+                sheet->SetTolerance(body->p->GetTolerance());
                 SmFace *face = nullptr;
-                s = status(sheet->CreateFaceFromSurface(surface, surface->GetNaturalUVDomain(), face));
+                int32_t s = status(sheet->CreateFaceFromSurface(surface, surface->GetNaturalUVDomain(), face));
                 if (s != SMLIB_OK || face == nullptr)
                 {
                     return s != SMLIB_OK ? s : static_cast<int32_t>(SMLIB_ERR_EMPTY);
                 }
-                SmBrep *r = nullptr;
-                // The sheet is consumed by the slice.
-                s = status(SmApiBooleanWithOptions(a.get(), sheet.get(), SM_BO_SLICE, FALSE, FALSE, FALSE, FALSE, FALSE, r));
+                return SMLIB_OK;
+            };
+            return both_sides(body, side, back, front);
+        }
+    );
+}
+
+extern "C" int32_t smlib_split_body_by_sheet(const smlib_brep *body, const smlib_brep *sheet, int64_t face, smlib_brep **back, smlib_brep **front)
+{
+    if (!valid(body) || !valid(sheet) || body == sheet || back == nullptr || front == nullptr || face < 0)
+    {
+        return SMLIB_ERR_ARG;
+    }
+    Call c("smlib_split_body_by_sheet", handle(body) + ", " + handle(sheet) + ", " + std::to_string(face));
+    c.input("body", body);
+    c.input("sheet", sheet);
+    return c.run(
+        [&]
+        {
+            if (sheet->p->IsSheet() != TRUE || static_cast<uint64_t>(face) >= sheet->p->GetNumFaces())
+            {
+                return static_cast<int32_t>(SMLIB_ERR_ARG);
+            }
+            // The sheet's surfaces turned to agree with face `face`'s (SMLib orients a sheet
+            // through its faces' shared edges); for the back, all turned over.
+            auto side = [&](bool flip, Owned &copy) -> int32_t
+            {
+                int32_t s = SMLIB_OK;
+                copy = copy_of(sheet, s);
                 if (s != SMLIB_OK)
                 {
                     return s;
                 }
-                sheet.release();
-                if (r != nullptr && r != a.get())
+                SmTArray<SmFace *> faces;
+                copy->GetFaces(faces);
+                if (static_cast<uint64_t>(face) >= faces.GetSize())
                 {
-                    a.release();
-                    a.reset(r);
+                    return static_cast<int32_t>(SMLIB_ERR_ARG);
                 }
-                if (a == nullptr || a->GetNumFaces() == 0)
-                {
-                    part.reset();
-                    return SMLIB_OK;
-                }
-                part = std::move(a);
-                return SMLIB_OK;
+                return status(copy->OrientSheetSurfaces(faces[static_cast<ULONG>(face)], flip ? FALSE : TRUE));
             };
-            Owned b, f;
-            int32_t s = side(true, b);
-            if (s != SMLIB_OK)
-            {
-                return s;
-            }
-            s = side(false, f);
-            if (s != SMLIB_OK)
-            {
-                return s;
-            }
-            if (b == nullptr || f == nullptr)
-            {
-                return SMLIB_ERR_NO_CUT;
-            }
-            *back = new smlib_brep{b.release()};
-            *front = new smlib_brep{f.release()};
-            return SMLIB_OK;
+            return both_sides(body, side, back, front, true);
         }
     );
 }

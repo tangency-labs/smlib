@@ -2332,13 +2332,11 @@ SmStatus SmSurfaceIntersector::StepBackFromSingularity
    SmTsectPnt & rCurrPnt,
    double dStepSize)
 {
-    if (!bDirection) {
-        rPrevPnt.CrvDeriv() = rCurrPnt.CrvDeriv();
-    }
-    else {
-        rCurrPnt.CrvDeriv() = rPrevPnt.CrvDeriv();
-    }
-
+    // SolidCraft change: the points keep their own curve tangents.  The tangent at the
+    // singular point comes from the surface's limit normal there (ComputePointValues), so
+    // it is exact; copying the other point's tangent over it bent the fitted span into the
+    // pole by the angle between the two tangents.  Only the surface derivatives are taken
+    // from the stepped-back point.
 
     SmHermiteCurve sHerm(rPrevPnt.CrvPos(), rPrevPnt.CrvDeriv() * dStepSize,
                          rCurrPnt.CrvPos(), rCurrPnt.CrvDeriv() * dStepSize );

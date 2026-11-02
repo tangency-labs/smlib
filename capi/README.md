@@ -33,7 +33,9 @@ links it) on Windows.
 So far the API covers what's needed to prove the build (init, copy, free, box, volume, counts,
 manifold check and native file read/write), SMLib's own validity check (`smlib_brep_check`),
 exact mass properties (`smlib_brep_mass_properties`, `smlib_brep_area`), the exact box
-(`smlib_brep_bounds`), history and the flat
+(`smlib_brep_bounds`), how far an edge lies from a face's surface
+(`smlib_brep_edge_face_distance`), exact point classification
+(`smlib_brep_classify_point`), history and the flat
 arrays below. SolidCraft's kernel adapter adds the rest, one shim at a time, each with a case in
 a fuzz target.
 history, the flat arrays below and the operations. SolidCraft's kernel adapter adds the rest,
@@ -66,7 +68,8 @@ tangentially and closes it smoothly: a cylinder's top rim rounded (`smlib_fillet
 curvature blend and the variable round are not refused for taking the face either, but SMLib
 cannot build them that wide yet (`SM_ERR`). A chamfer's distance is the setback along each face
 at the edge's midpoint; it is cut by SMLib's constant-radius solver with a linear section, whose ball radius
-is the setback times tan(a/2), a being the angle between the faces there. A shell's thickness
+is the setback times tan(a/2), a being the angle between the faces there (at a cusp, whose faces meet at
+no angle, the ball of radius the setback: the chord between its contacts). A shell's thickness
 is negative inward, positive outward. An inward wall that leaves no room inside the body is
 `SMLIB_ERR_NO_ROOM`, refused before SMLib's offset sees it (which corrupts memory there,
 tangency-labs/solidcore#380): the shim looks for a point inside the solid farther than the wall
@@ -84,15 +87,44 @@ moving the sheet back by half with `SmApiOffsetBrepFull`.
 
 `smlib_blend` gives each picked edge its own size and one of four
 blends: a round (circular section, constant radius, as `smlib_fillet`), a curvature-continuous
-round (SMLib's G2 blend-curve section between the contact lines of the round of that radius), a
+round (the G^2 section between the contact lines of the round of that radius, as
+`smlib_blend_order` builds at order 2), a
 chord round (circular section at a constant width from contact to contact, SMLib's
-constant-distance solver) and the chamfer above. `smlib_fillet_variable` rounds one edge with a
+constant-distance solver) and the chamfer above. `smlib_blend_order` blends by a section of a
+given order of contact with the faces along the contact lines: 0 the chord (the chamfer), 1 the
+ball's circle (the round), 2 to 4 the G^n section f T1(1 - p1) + (1 - f) T2(p2) between them
+(`SmGnSectionFSG`), its fullness set by a thumbweight. `smlib_blend_turn` sets how a chain of
+rounds turns where two meet at an unblended side edge: mitred (the default, a crease) or swept
+(the section revolved about the side edge, `SmFilletExecutive::SetSweptTurns`, built by
+`SmBlendCorner`), refused at a sharp concave side edge. Swept is built so far where the side
+edge is straight and square to both rounded edges on a plane, between rounds of one radius: an
+exact torus, tangent to both rounds; elsewhere `SMLIB_ERR_CORNER_UNSUPPORTED`. `smlib_fillet_variable` rounds one edge with a
 radius that follows a clamped B-spline law (degree 1 to 3) over the edge's parameter, 0 at the
 end nearest a given point; it becomes an `SmBSplineFilletLaw` on SMLib's variable-radius solver,
 whose law curve carries the radius as x and, as SMLib's own laws do, the parameter itself as y
 (control points at the Greville abscissae), so a constant law can be extended past the edge's ends.
 Where the law has a corner the round turns and is split into faces there; a law whose radius is
 zero inside the edge (the round would pinch to a point) is `SMLIB_ERR_UNSUPPORTED`.
+`smlib_blend_reason` gives the last blend's failure in SMLib's words (a fold, a swept turn at a
+sharp concave side edge), naming the radius. When SMLib refused the blend as too large
+(`SMLIB_ERR_NO_ROOM`), `smlib_blend_fit_size` gives the largest size that builds (0: none does).
+Its unit depends on the call:
+- a round's radius or an equal chamfer's distance;
+- a chord-width blend's width;
+- for a chamfer of two distances, the factor on both (`SMLIB_FIT_SCALE`);
+- for a set-back corner, the largest setback (`SMLIB_FIT_SETBACK`).
+The size comes from the refusal's cause, never from building again; where the cause's bound is
+open it is the bound less a thousand of the edge's tolerances. Sized so far:
+- a ball that does not fit its face's curve (closed) or folds (open);
+- unequal offsets that fold (open);
+- a blend that would cut the part in two;
+- rails that leave their faces, onto a tangent face, or past a boundary into the material;
+- bands that meet on a shared face (closed);
+- a corner that takes the whole edge;
+- a planar face taken whole, bounded by one circle or by straight blended edges;
+- a setback longer than an edge;
+- a swept turn at a sharp concave side edge (none).
+A round on a radius law has no single size: `SMLIB_ERR_EMPTY`, and the reason says so.
 
 `smlib_merge_faces` removes a body's topological edges and vertices
 (`SmBrep::RemoveTopologicalEdgesAndVertices`): faces on one surface that meet along an edge
@@ -105,7 +137,9 @@ follow the merge (a merged face carries both faces' tags).
 regression cases, both against analytic volumes and `smlib_brep_check` level 2.
 
 exact mass properties (`smlib_brep_mass_properties`, `smlib_brep_area`), the exact box
-(`smlib_brep_bounds`), history, the flat
+(`smlib_brep_bounds`), how far an edge lies from a face's surface
+(`smlib_brep_edge_face_distance`), exact point classification
+(`smlib_brep_classify_point`), history, the flat
 arrays and surface/surface intersection below. SolidCraft's kernel adapter adds the rest, one
 shim at a time, each with a case in a fuzz target.
 
@@ -196,6 +230,14 @@ units and length rule. The conversion is `src/smlib_flat.cpp`, a USD-free port o
   their circles as plain B-splines, so those export as NURBS. So do booleans' intersection curves.
 - A cone with a negative semi-angle is rebuilt in the equivalent positive-angle form on import.
   Its second export therefore differs from its first, and from then on the arrays are stable.
+- Definitions (an addition to SmuConvert): a face whose surface is defined beyond its net carries
+  that definition. Today that means the Ball corner's `SmBallPatch`: surface kind
+  `SMLIB_FLAT_SURFACE_BALL_PATCH`, its NURBS block, range and UV trims as for a NURBS face, and its
+  sphere's centre and radius in `FACE_DEFINITION_REAL_COUNT` / `FACE_DEFINITION_REALS`, so its
+  offsets stay exact through a round trip. Import builds the `SmBallPatch` only once
+  `SmBallPatch::IsOnSphere` certifies the net on that sphere (the exact Bernstein identity per
+  Bezier piece, to rounding); otherwise it refuses the B-rep. USD's BrepArray does not carry
+  definitions yet.
 - Attributes, materials and colours are not carried.
 - Shell order (an addition to SmuConvert): SMLib takes a region's first shell as the one that
   encloses it, and a body whose first shell is an inner one fails its check (test 12, "inner
@@ -278,6 +320,13 @@ the tool surface (`SM_BO_SLICE`), once as it is and once turned over (`SwapUV`; 
 the side from the surface's normal, not from the face's use), giving the part behind the surface
 and the part in front of it. A tool that misses leaves both parts the whole body.
 
+`smlib_split_body_by_sheet(body, sheet, face, &back, &front)` slices the same way with a sheet of
+one or more faces as it is (a smooth sheet of several faces, bounded where its faces end): its
+surfaces are first turned to agree with face `face`'s (`SmBrep::OrientSheetSurfaces`), and for
+the back all turned over, so the sides are those of that face's normal. A sheet that only nicks
+the body (`SM_BO_SLICE` then behaves as a difference, a slit in the body and a lamina beside it)
+leaves a part that is no manifold solid, and is `SMLIB_ERR_NO_CUT`.
+
 `smlib_face_points(body, out, n_faces)` gives a point inside each face
 (`SmFace::CalculateAnInternalPoint`), so a trim can tell which side of its tool each piece lies on.
 
@@ -327,6 +376,12 @@ face of a sheet onto its surface's offset along its normal (`SmApiOffsetBrepFull
   replay a call, read those back with `smlib_brep_read` and call the function again.
 - **Crash reports:** `smlib_current_call` copies the call in flight into a caller buffer. It takes
   no lock and doesn't allocate, so a crash handler can record it.
+- **Work counters:** for tests and profiling, `smlib_work_counters` reads three counts of the work
+  a boolean does where its cost once grew with the square of the body's size: faceuses visited by
+  new faces' closure tests, face pairs examined for intersection, and faceuses moved between
+  shells by new edges. `smlib_work_counters_reset` zeroes them. They are process-wide atomics,
+  shared by every thread and call (not thread-scoped), and take no lock. A test of how a
+  boolean's work grows with the body checks them in place of times, which depend on the machine.
 
 ## Fuzzing
 
@@ -366,6 +421,11 @@ a static build no longer instantiates every `SmTArray<T>` in every file (see bel
 ## Changes from upstream
 
 This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
+- **Ball patches through the flat arrays** (`smlib_flat.cpp`, `SmBallPatch::IsOnSphere`;
+  smlib#102): export wrote a Ball corner's `SmBallPatch` as a bare NURBS and import read it back as
+  an `SmBSplineSurface`, losing the sphere. A box rounded all round then failed to shell after a
+  round trip. It is now its own surface kind with its sphere as its definition, and import certifies
+  the net on the sphere before taking it.
 - **`SM_RAND_SEED`** (`SmConfig.h`, `SmFace.cpp`, `SmShell.cpp`): upstream seeds `rand()` from
   the clock before its random sampling, so results could differ from run to run. This build
   fixes the seed (`-DSMLIB_RAND_SEED=`; leave it empty for upstream's behaviour).
@@ -627,6 +687,15 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   the offset edge along its end, which the mating shrinks to a corner, is squeezed out. A collapsed
   face that cannot be bridged so (not four-sided, or a collapsed face across it) is refused with
   `SM_ERR_DEGENERATE_SURFACE`.
+- **A round of revolution moved in past its radius has no offset** (`SmSurfOfRevolution.cpp`/`.h`,
+  new `SmSurfOfRevolution::OffsetCollapses`; `CreateOffsetSurface`): a fillet along a circular
+  edge is a surface of revolution of an arc (a torus in all but its type), which had no collapse
+  test, so moved in past its radius its generatrix's offset was built as the arc turned inside
+  out round its centre and the offset was no closed solid (1001: a disc r 15 with its rim rounded
+  r 1.5, shelled 1.6 or 2; SolidCraft shell_of_a_disc_rounded_smaller_than_the_wall, #319). Such
+  a surface now collapses when its generatrix is one arc and the offset runs towards the arc's
+  centre by its radius or more (the radius left below the tolerance), as a torus's does, and the
+  faces either side are mated across it.
 - **Triangles held to the chord tolerance** (`SmTess.cpp`/`.h`, new
   `SmTess::RefineTrianglesToChordHeight`, called from `AddQuadBoundaries`): the subdivision tree
   bounds each cell's chord height, but the triangles made in it were never measured. The cell strip
@@ -642,7 +711,7 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   `SmBSplineFilletLaw::GetCornerParameters`, `SmFilletExecutive::DoFillet`, `DoFilleting`,
   `NoteRadiusCornerSurfaces`, `SplitFilletFacesAtRadiusCorners`; `SmFilletSolver.h`,
   `SmFilletStandardSolver.h`/`.cpp`, `SmVariableRadiusFS::GetRadiusCornerParameters`,
-  `IsAtRadiusCorner`, `GetRadiusParameter`, `SmCircularCrossSectionFSG::CreateSurface`;
+  `IsAtRadiusCorner`, `GetRadiusParameter`, `SmGnSectionFSG::CircleSurface`;
   `SmFilletSolver.cpp`, `CalcFilletGeom`; `SmFilletIntersector.cpp`, `ComputeNextPoint`,
   `FlushCurve`): a radius law whose slope jumps inside the edge (straight 4 to 2 and back to 4)
   turns the round's center curve and rails there. The trace's tangent there was a central
@@ -732,30 +801,60 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   a convex one is a cliff overflow (below). This replaces the earlier change that merged such a
   fillet into the body face by face (`RailsLeaveTheirFaces`), which built a round or a chamfer
   across the openings it ran into.
-- **The cliff overflow of a convex blend** (new `SmFilletCliffOverflow.cpp`:
-  `SmFilletExecutive::SubtractRemovalRegion`, `CutFilletAtOpenEnd`, `CloseRemovalRegion`;
-  `SmFilletExecutive.cpp`, `CreateFilletBrep`, `DoFilleting`, `sm_BlendAddsMaterial`;
-  `SmFilletSolver.cpp`, `RailsFitTheirFaces`, `sm_InsideMaterial`; `SmFilletCorner.cpp`,
-  `SmFilletNx1Corner::CalcCornerEdgeGeom`; `SmFilletGeom.h`, `SM_FILERR_NOT_EXACT`): a convex
-  blend (one that removes material: its edge is convex,
-  `SmFilletSolver::IsConcaveEdge`) whose rail leaves its face across a cliff is
-  built on the faces' continuations and subtracted. The rails' crossings are not rolled over
-  (`TestRollOver` is skipped); an Nx1 corner whose rails miss their side edges (or meet them
-  only clamped at the side edge's far vertex, off the fillet) leaves that end uncut, and the
-  fillet is cut there by the end face's plane (the section nearest the edge's end). The sheet of
-  fillet and corner faces is closed with a face on the surface of each target face its boundary
-  runs on, the plane continued exactly (a new plane on the same frame over a larger domain),
-  bounded by the sheet's boundary there, the blended edges and the side edges joining them
-  (continued along their lines past their ends), stitched and oriented as a solid, and
-  subtracted from the body with `SmMerge::ManifoldBoolean` (`SM_BO_DIFFERENCE`). The result is
-  the body blended as if the cliffs were not there, then cut by what the cliffs cut away (rig
-  5158 and 5181, #422, solidcraft#1080). Refused: a round whose rail runs on into the body's
-  material (beyond a wall: the knife edge it would leave under the wall, `SM_FILERR_NO_ROOM`,
-  solidcraft#3435); a needed continuation of a non-planar surface past its domain or of a side
-  edge that is not a line (`SM_FILERR_NOT_EXACT`); an overflow with a tangent rollover, a fillet
-  end on several faces or on a non-planar face, concave blends in the same call, a sheet
-  boundary that does not pass from face to face along side edges, or a variable round on planes
-  whose surface misses its law (`sm_HoldsItsLaw`): too large, `SM_FILERR_NO_ROOM`, as before.
+- **The cliff overflow of a convex blend** (new `SmFilletOverflow.cpp`:
+  `SmFilletExecutive::TrimAtCreases`; `SmFilletExecutive.cpp`, `CreateFilletBrep`, `DoFilleting`,
+  `sm_BlendAddsMaterial`; `SmFilletSolver.cpp`, `RailsFitTheirFaces`, `sm_InsideMaterial`,
+  `IsTangentEdge`; `SmFilletCorner.cpp`, `SmFilletNx1Corner::CalcCornerEdgeGeom`): a convex
+  blend (one that removes material: its edge is convex, `SmFilletSolver::IsConcaveEdge`) whose
+  rail leaves its face across a cliff keeps its surface, built on the faces' continuations, and
+  the sharp edge moves (the owner's ruling, rig 5158, 5181, 5236, #422, solidcraft#1080). The
+  rails' crossings are not rolled over (`TestRollOver` is skipped); an Nx1 corner whose rails miss
+  their side edges (or meet them only clamped at the side edge's far vertex, off the fillet)
+  leaves that end uncut, and the fillet is cut there by the end face's plane, whatever lies past
+  it (`CutFilletAtOpenEnd`: a lip over a shelled box's rim is left over the chamfer). Each face of the sheet of fillet and corner faces is sectioned by the
+  surface of each body face near it that holds none of its boundary: by a plane exactly
+  (`CreatePlanarSectionCurves`: a line on a cylinder, a conic on a cone, a circle on a torus),
+  by SMLib's surface intersection otherwise, fitted to the body's tolerance; each crease is kept
+  where it lies inside both faces, the sheet face split along them and the pieces inside the
+  body kept (each piece's UV domain from its own trims). A support face whose kept rail runs past
+  its foot into the material (a pocket rim's chamfer past the floor, an end rib under a lip)
+  carries on along its plane to the rail: between the lines of its side edges, or back along its
+  own boundary from where the rail crosses it, the way round on the side the blend takes off. The kept sheet's boundary is imprinted on the
+  body's faces (`SmBrep::MergeCurvesOnSurface`), the faces it encloses round the blended edges
+  are deleted, and the sheet is merged in (`SmBrep::MergeBrep`: the body keeps its tolerance, the
+  edges it is sewn along take the sheet's), stitched and oriented. No boolean: the body is only
+  trimmed, so the blend never bridges an opening. This replaces building the region the blend
+  removes and subtracting it (`SmMerge::ManifoldBoolean`). Refused: a round whose rail runs on
+  into the body's material (beyond a wall: the knife edge it would leave under the wall,
+  `SM_FILERR_NO_ROOM`, solidcraft#3435); a crease on a face that runs on tangentially from a face
+  the sheet rolls on (the rail would roll over onto a round already there: a 5 wide end with
+  both uprights rounded r3); a rail past a face's boundary partway along it, or past a face that
+  is not planar, into the material; an overflow with a tangent rollover, a fillet end on several
+  faces, concave blends in the same call, or a variable round on planes whose surface misses its
+  law (`sm_HoldsItsLaw`, the touch circle): too large, `SM_FILERR_NO_ROOM`.
+- **A fillet meeting its face steeply trims it** (`SmFilletGeom.cpp`, `TrimOriginalSurfaces`): the
+  piece of a face 'inside' a fillet's rail (to be deleted) was the one whose binormal along the
+  rail made a dot of more than 0.2 with the fillet's, as if anything less were noise. The pieces'
+  binormals are opposite, so the inside one is the one whose dot is positive, the larger of the
+  two; a fixed 0.2 refused a fillet meeting its face at more than 78 degrees. The chamfer of
+  solidcraft#851's knife edge does (81 degrees at d 0.5, dot 0.15): nothing was deleted and the
+  chamfer face was left apart from the body (SMLIB_ERR_NOT_SOLID) for d 0.5 to 0.8.
+- **An overflow goes first** (`SmFilletExecutive.h`/`.cpp`, `SetOverflowFirst`, `SetClassifyOnly`,
+  `GetOverflowEdges`, `SM_FILERR_OVERFLOW_FIRST`; `smlib_ops.cpp`, `overflow_first`; new
+  `smlib_blend_dropping`): rounds of several edges where some overflow their faces across cliffs
+  were blended together, and a corner of an overflowing round and the rounds of the edges it
+  takes away had no geometry (R21 with R5 on a 20 cube's corner: 1001, "Corner Geometry
+  Computation Failure"; with all three rounds together every rail was classified as leaving its
+  face). The blends that overflow on their own (each edge's alone, classified and not built) are
+  built first, the picked edges tagged; each other picked edge is then what is left of it, rounded
+  at its size. An edge the overflow removes whole is gone, flagged by `smlib_blend_dropping`; one
+  it cuts keeps the rest of its length. R21 with R5 on the corner's other edges is R21's alone
+  (6107.529370); with R5 on the back upright the R5 rounds the upright above the R21 cylinder.
+  Where no edge overflows on its own, or every one does, the edges are blended together as before.
+  Rounds mitred at a face's concave corner (`SmBlendCorner::IsMitre`, `GetMitredEdges`) are one
+  corner: a round mitred to one that goes first goes with it (a sloped basin's rim rounded R4,
+  solidcraft#1080, its front round past the 1 mm rim: the right round, built after it, met its
+  cut beyond its wall and was refused, SMLIB_ERR_NO_ROOM).
 - **A trace that reaches its rails** (`SmFilletExecutive.cpp`, `sm_ExtendTraceToItsRails`;
   `SmFilletSolver.h`/`.cpp`, `GetDomainExtension`, `SetTraceReach`; `SmFilletStandardSolver.cpp`,
   `SmVariableRadiusFS::LoadInitialValues`): the fillet trace runs over its base surfaces' domains
@@ -825,9 +924,13 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   the corner and the far crossing with the walls' common tangents there, through the crossing
   halfway up, and its UV curves are exact (affine on a plane, a rational quartic within one span
   of a cone, whose spans are laid out so each seam lies in one). Every seam and UV curve is checked
-  on its walls. A corner whose curves do not meet, a wall that closes before the far end, or a
-  corner of a curve that is neither a line nor an arc is refused with its point
-  (`SM_TCR_APART`, `SM_TCR_WALL_CLOSES`, `SM_TCR_NOT_EXACT`). For a profile of lines and arcs
+  on its walls. A wall whose section shrinks to nothing below the far end (its neighbours'
+  crossings meet on it) ends there at its apex, and its neighbours meet from there up along the
+  seam they make; two lines brought face to face so close together along their common line, and
+  the walls beyond them meet from its other end (a slot drafted shut). A corner whose curves do
+  not meet, a wall closing in a way that pinches the far end or the whole section, an arc that
+  shrinks to its centre, or a corner of a curve that is neither a line nor an arc is refused with
+  its point (`SM_TCR_APART`, `SM_TCR_WALL_CLOSES`, `SM_TCR_NOT_EXACT`). For a profile of lines and arcs
   `SM_OC_LINEAR_EXTENSION` runs through the same construction, an arc's end continued by a flat
   piece along its tangent where a corner opens a gap: upstream's corner pieces were faces of their
   own ruled to the corner even beside a line, so two lines met through two flat triangles (a
@@ -1192,3 +1295,82 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   curvature-continuous or other sections) or a blend it cannot take off, `SMLIB_ERR_UNSUPPORTED`;
   a removal needing a non-planar surface or a curved edge continued, `SMLIB_ERR_NOT_EXACT`; a blend
   that no longer fits the moved faces, `SMLIB_ERR_NO_ROOM` (the fillet's own rules).
+- **Rounds of a knife edge** (`SmEdge.cpp`, `SmEdge::GetBlendEdgeuse`; `SmFilletStandardSolver.cpp`,
+  new `sm_SectorSides`, used by the `SmConstantRadiusFS`, `SmConstantDistanceFS` and
+  `SmVariableRadiusFS` constructors; `SmFilletCorner.cpp`, `SmFilletNx1Corner::CheckNx1Degeneracy`):
+  an edge whose faces are tangent along it but fold back on each other (a cusp: a curved wall
+  running out into a flat face at no angle, solidcraft#851) was refused as smooth
+  (`SM_ERR_INVALID_INPUT`): all three took faces tangent at the edge for faces continuing each
+  other. A cusp's binormals point the same way, a smooth edge's apart; at a cusp the faces part
+  to second order, and the side of each face the other lies on (the side its offset surface is
+  offset to) is the sign of the difference of their normal curvatures across the edge. Its end
+  corners, the faces' normals there anti-parallel, are ordinary corners, not degenerate ones
+  where the fillet runs out to the vertex (normals parallel). The knife edge of SolidCraft's arc
+  part (a plane against a cylinder of radius 21) rounds r 0.5, 2 and 5 to the ball touching both
+  faces sqrt(4 R r) back from the tip, mirrored too (`ops_kernel` `knife_edge_rounds`). A smooth
+  edge, and a cusp whose faces' curvatures match across it, are still refused.
+- **A stitched solid with a cavity** (`SmStitch.cpp`, `SmStitch::StitchIntoSolid`): stitching
+  found the infinite region only (`SM_VS_INFINITEREGION_SWAP`), so the region inside a closed
+  shell nested in another stayed solid and the shells stayed where the gluing put them. A sweep
+  of a holed square round a closed path (`smlib_sweep_stations`, `SMLIB_ENDS_JOINED`; SolidCraft
+  issue_2005) measured as if it had no hole, and with a half-turn twist SMLib's check refused it
+  (Test #12, an inner shell not inside its region's outer shell). A stitched solid is now a
+  nested solid model (`SM_VS_NESTEDSOLID`): material inside the outer shell, a void inside a
+  shell within it, each region's outer shell first (`sweeps` `stations: holed ring`).
+- **Work counters** (new `SmWorkCounters.h`; `SmTopologyTraverser.cpp`,
+  `ClosureTraversalFromBothSides`; `SmTopologyIntersector.cpp`, `IntersectTopology`; `SmBrep.cpp`,
+  `MakeEdgeTopology`): process-wide atomic counts of the faceuses a new face's closure test
+  visits, the face pairs examined for intersection and the faceuses moved between shells, read by
+  `smlib_work_counters`. They change no result.
+- **A convex and a concave blend meeting across a tangent seam** (new `SmBlendCornerMixed.cpp`,
+  `SM_BCE_MIXED` in `SmBlendCorner.h`; routed from `SmFilletCorner::Create`): two blends of opposite
+  convexity whose edges continue each other G1 at a vertex, the third edge a tangent seam between
+  their other faces, their common face a plane (a bar's front top edge and the concave arc where its
+  top meets a cylinder it runs tangent into). The old corner met both blends on their end sections
+  at the rails' crossing, where no smooth patch is tangent to both, and folded or failed. Each blend
+  is now trimmed along the other's rail continued, and the corner is two four-sided faces either
+  side of an inflection curve in the plane, G1 to every neighbour and G1 inside, with their ribbons
+  along the rounds' own cross partials (exact Möbius reparametrization at a torus's knots), and
+  along the wall's line at the vertex (a drafted wall). `smlib_blend` and `smlib_fillet` build it.
+- **A round's trace runs to its edge's end** (`SmFilletSolver.cpp`, `CalcFilletGeom`;
+  `sm_FindFilletTsectPnt`): at an end whose corner does not blend, a trace that stops short of the
+  edge's end makes the edge's section there a through point, solved over the trace's extended
+  surfaces, before it is extended. A round's extension had been measured from where the trace
+  stopped, which left the mixed corner's rails short of the seam.
+- **An open elliptic arc ending near its seam keeps its end angle** (`SmEllipse.cpp`,
+  `SmPolarConversion::SetUpPolarConversion`): its end angles came from `STEPInversion` over a
+  temporary full circle, whose closed-curve rule turned an open arc ending 1.17e-6 degrees short of
+  360 into 360, its analytic domain then 1.45e-8 off its NURB (SmEllipse test 1). Only a closed NURB
+  takes that rule now.
+- **A round ending at a smooth vertex** (`SmBlendCornerEnd.cpp`, `SM_BEND_AT_SMOOTH`): a round
+  selected on part of a tangent chain, whose edge runs on tangentially into an edge of its
+  convexity that is not rounded, ends there on the plane through the vertex square to its edge,
+  capped by a plane face. Upstream did not end it there: the End took the tangent edge for its
+  side edge, or the corner failed.
+- **A rail past its side edge is refused, naming its size** (`SmBlendCornerEnd.cpp`,
+  `RadiusReachingSideEdgeEnd`, `RefuseEndOverflowingSideEdge`; `SmFilletExecutive.cpp`): a rail
+  that runs past its side edge's far end, or a concave round whose rail passes over the side edge
+  of the other convexity at a mixed End (the round would add material over the end face), is
+  refused `SMLIB_ERR_NO_ROOM`, naming the largest radius whose rail still ends on that edge (less
+  the part's tolerance where the bound is open), instead of failing with a corner error.
+- **A side edge continued across a seam's vertex** (`SmBlendCorner.cpp`,
+  `sm_SideEdgeuseAcrossSeamVertex`; `SmFilletGeom.cpp`, `SmFilletVertex::CalcRailIntEdgeuse`,
+  `SmFilletEdge::CalcEdgeOnEdge`): where a periodic face's seam ends on a side edge and nothing
+  else meets it there, the rail's end is looked for on the next edge too, and the round's end
+  takes in the seam's vertex. Upstream looked on the first edge only, so whether a round built
+  depended on where a cylinder's seam fell. A real edge at that vertex is still a corner.
+- **Four or more rounds at a vertex** (`SmBlendCornerBall.cpp`, `SmBlendCorner::ClassifyBall`;
+  `SmBlendCornerSetback.cpp`; `SmFilletCorner.cpp`): where n >= 4 edges between planes are rounded
+  alike and one ball touches every face, the corner is that ball's sphere, its n-gon fanned into
+  n - 2 exact rational patches of degree (4, 2); elsewhere it is the setback corner. Upstream built
+  a fitted patch there (6e-3 rad off G1 and 1e-3 past the faces at an irregular apex).
+- **Open setbacks with no fill** (`SmBlendCornerSetback.cpp`, `OpenSetBackSprings`;
+  `SmFilletOverflow.cpp`, `TrimAtCreases`; `capi/src/smlib_ops.cpp`): an open G1 setback corner
+  is the setback's hole, its face curves the exact spring parabolas imprinted on the faces with no
+  fill surface; an open G2 one takes its face curves from the order-2 fill, stored non-rational
+  (their weights are 1 by construction). The hole now has nine edges (a box corner's sheet
+  [9, 27, 19]). The overflow's merge keeps each blend's sheet on its own side of the body: a
+  convex one in the material, a concave one in the void.
+- **Setbacks only at setback corners** (`SmFilletCorner.cpp`, `capi/src/smlib_ops.cpp`): the old
+  convex and concave n-edge corners' setback paths are deleted; a setback asked at a corner the
+  setback corner does not build is refused `SMLIB_ERR_UNSUPPORTED`, naming the corner.

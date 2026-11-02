@@ -740,6 +740,29 @@ SmStatus SmPointClassification::ComputePointParameters
                                      SM_SR_SINGLE, 
                                      sSolutions));
 
+      // SolidCraft: a point on the seam of a face that closes on itself (a whole cylinder's wall)
+      // has its parameters at both ends of the period: two solutions that are one point. Take the
+      // nearest when every solution evaluates to the same point to the zone tolerance.
+      auto one_point = [&](SmSolutionArray & rSols) -> SmBoolean
+        {
+          if (rSols.GetSize() < 2) { return FALSE ; }
+          SmPoint3d sFirst ;
+          if (pObjSurface->EvaluatePoint(SmPoint2d(rSols[0].m_vStart[0], rSols[0].m_vStart[1]), sFirst) != SM_SUCCESS) { return FALSE ; }
+          ULONG lBest = 0 ;
+          for (ULONG kk = 1; kk < rSols.GetSize(); kk++)
+            {
+              SmPoint3d sOther ;
+              if (pObjSurface->EvaluatePoint(SmPoint2d(rSols[kk].m_vStart[0], rSols[kk].m_vStart[1]), sOther) != SM_SUCCESS
+                  || sOther.DistanceBetween(sFirst) > m_sSrcZoneTol3d)
+                { return FALSE ; }
+              if (rSols[kk].m_vStart.m_dSolutionValue < rSols[lBest].m_vStart.m_dSolutionValue) { lBest = kk ; }
+            }
+          if (lBest != 0) { rSols[0] = rSols[lBest] ; }
+          rSols.SetSizeValue(1) ;
+          return TRUE ;
+        } ;
+      (void)one_point(sSolutions) ;
+
       // when a distinct solution was not found
       if (sSolutions.GetSize() != 1) 
         {
@@ -752,6 +775,7 @@ SmStatus SmPointClassification::ComputePointParameters
                                          SM_SR_SINGLE, 
                                          sSolutions));
 
+          (void)one_point(sSolutions) ;
           // still no solutions - return an error
           if (sSolutions.GetSize() != 1) 
             {

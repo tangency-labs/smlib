@@ -12,6 +12,10 @@
 #include <SmFilletCorner.h>
 #endif
 
+#ifndef __SMBLENDCORNER_H__
+#include <SmBlendCorner.h>
+#endif
+
 #ifndef __SMFILLETSOLVER_H__
 #include <SmFilletSolver.h>
 #endif
@@ -37,46 +41,6 @@
 ***********************************************************************/
 
 /********************************************************************
-PURPOSE: Given a side edgeuse determine whether itself or its radial
-            is the one which FilletSolver use in solving Rail_x_SideEdge
-NOTES:
-********************************************************************/
-static SmEdgeuse * sm_FindSideEdgeuse      // rtn: edgeuse
- (SmEdgeuse * pFilEdgeuse,           // in : target fillet edgeuse
-  SmEdgeuse * pSideEU,               // in : target sideEdgeuse - connects to a filleted edge at an filletCorner
-  int         iDebugLevel)
-{
-  // locals - filleted edge and CW neighbor to SideEU
-  SmEdge    * pFilletedEdge = pFilEdgeuse->GetEdge();
-  SmEdgeuse * pEU           = pSideEU;
-  SmEdge    * pE            = pEU->GetCWEdgeuse()->GetEdge();
-
-  // when edgeuses connect to different edges
-  if (pFilletedEdge != pE)
-    {
-      // check the radial edgeuse
-      pEU = pEU->GetRadial();
-      pE  = pEU->GetCCWEdgeuse()->GetEdge();
-      if (pFilletedEdge != pE)
-          return NULL;
-    }
-
-#ifdef SM_DEBUG_CODE
-  if ( iDebugLevel ) 
-    {
-      smgfx_SetLook(1,2, 1,0,0); pFilEdgeuse->Draw() ; sm_GraphicsLoop();
-      smgfx_SetLook(1,2, 1,0,0); pEU->Draw(); sm_GraphicsLoop();
-      sm_GraphicsLoop();
-    }
-#else
-    SM_REF1(iDebugLevel);
-#endif // SM_DEBUG_CODE
-
-  return pEU;
-
-} // end sm_FindSideEdgeuse
-
-/********************************************************************
 PURPOSE: Given an index of rail and filleted edgeuse determine whether
             a given closed-side-edgeuse or its mate is the one which
             FilletSolver use in solving Rail_x_SideEdge.
@@ -89,7 +53,7 @@ PURPOSE: Given an index of rail and filleted edgeuse determine whether
 
 NOTES:
 ********************************************************************/
-static SmEdgeuse * sm_FindClosedSideEdgeuse
+SmEdgeuse * sm_FindClosedSideEdgeuse
  (ULONG            lRailIndex,
   SmFilletSolver * pFilSolver,
   SmEdgeuse      * pSideEU,
@@ -117,152 +81,6 @@ static SmEdgeuse * sm_FindClosedSideEdgeuse
   return pEU;
 
 } // end sm_FindClosedSideEdgeuse
-
-/********************************************************************
-PURPOSE:  Determine if two adjacent edges are tangent to each other
-             at a given vertex
-NOTES:
-********************************************************************/
-static SmBoolean sm_TestG1Continuity // rtn: TRUE = Edge EndTangents at vertex are within tolerance of being tangent
-  (const SmVertex * pVert,           // in : Target Vertex
-   const SmEdge   * pEdge1,          // in : 1st edge connecting to vertex
-   const SmEdge   * pEdge2,          // in : 2nd edge connectint to vertex
-   double           dAngTolDeg,      // in : Angle tolerance in degrees
-   double         * pdAngDeg,        // out: angle (degrees) between edges at vertex
-   int              iDebugLevel)     // in : 
-{
-  // no work - not given 3 valid pointers
-  if (   pVert  == NULL
-      || pEdge1 == NULL
-      || pEdge2 == NULL) 
-   { return FALSE ; }
-
-  // locals
-  SmVector3d  sPV1[2] ;
-  SmCurve   * pCrv1   = pEdge1->GetCurve() ;
-  SmExtent1d  sIvl1   = pEdge1->GetInterval() ;
-  double      dParam1 = (pEdge1->GetStartVertex() == pVert) ? sIvl1.GetMin() : sIvl1.GetMax() ;
-
-  // get Edge1 tangent at vertex
-  // SolidCraft change: a tangent that cannot be evaluated is no tangency
-  if (pCrv1->Evaluate(dParam1,1,TRUE,sPV1) != SM_SUCCESS)
-   { return FALSE ; }
-
-  // locals
-  SmVector3d  sPV2[2];
-  SmCurve   * pCrv2   = pEdge2->GetCurve();
-  SmExtent1d  sIvl2   = pEdge2->GetInterval();
-  double      dParam2 = (pEdge2 == pEdge1 || pEdge2->GetStartVertex() != pVert) ? sIvl2.GetMax() : sIvl2.GetMin() ;
-
-  // get Edge2 tangent at vertex
-  if (pCrv2->Evaluate(dParam2,1,TRUE,sPV2) != SM_SUCCESS)
-   { return FALSE ; }
-  
-#ifdef SM_DEBUG_CODE
-    if ( iDebugLevel > 0 ) 
-      {
-        smgfx_SetLook(1,6, 1,0,0); pVert->Draw(); sm_GraphicsLoop();
-        sPV1[1].Draw(sPV1); sm_GraphicsLoop();
-        sPV2[1].Draw(sPV2); sm_GraphicsLoop();
-        sm_GraphicsLoop();
-      }
-#else
-  SM_REF1(iDebugLevel);
-#endif // SM_DEBUG_CODE
-
-  if (   sPV1[1].LengthSquared() > SM_EFF_ZERO_SQ
-      && sPV2[1].LengthSquared() > SM_EFF_ZERO_SQ)
-    {
-      // get angle (degrees) between Edge1 and Edge2 endTangents
-      double dAngDeg;
-      SE(sPV1[1].AngleBetween(sPV2[1],dAngDeg));
-      if (dAngDeg > SM_PI/2.0) dAngDeg = SM_PI - dAngDeg;
-      dAngDeg = SM_RAD2DEG(dAngDeg);
-
-      // set optional output
-      if (pdAngDeg) { *pdAngDeg = dAngDeg; }
-
-      // check for in tolerance angle
-      if (dAngDeg < dAngTolDeg)
-        {
-          return TRUE;
-        }
-    } // end nonDegenerate endTangent check
-
-  // endTangents are not within tolerance
-  return FALSE;
-
-} // end sm_TestG1Continuity
-
-/********************************************************************
-PURPOSE:  return face connected to sectors of two given edgeuses,
-             return NULL when no such face exists.
-
-NOTES:
-   use pEU3 to specify a face to skip, this forces the function
-   to return another face that connects both edges or NULL.
-
-   When pEU3 != NULL, the function returns NULL when the
-     edges are not connected to a common face or when
-     they are only connected to one common face which
-     is equal to pEU3->Face.
-
-METHOD ---
-  4 faces are examined pEU1->SectorBeginFace, pEU1->SectorEndFace
-                       pEU2->SectorBeginFace, pEU2->SectorEndFace
-  and the common face is returned.
-  Note in nonManifold modeling not all faces attaced to pEU->edges are examined.
-
-********************************************************************/
-static SmFace * sm_GetFaceByTwoEdgeuses
- (SmEdgeuse * pEU1,       // in : bounding edge 1
-  SmEdgeuse * pEU2,       // in : bounding edge 2
-  SmEdgeuse * pEU3)       // in : opt edgeuse to specify a face to ignore.
-                          //      function will not return pEU3->Face.
-                          //      NULL to ignore.
-{
-  if (   pEU1 == NULL
-      || pEU2 == NULL) 
-    { return NULL; }
-
-  // locals
-  SmTArray<SmFace*> sFaces1;
-  SmTArray<SmFace*> sFaces2;
-
-  // let sFaces1 = two faces attached to pEU1->Sector
-  sFaces1.Add(pEU1->GetFace());
-  sFaces1.Add(pEU1->GetRadial()->GetFace());
-
-  // let sFaces2 = two faces attached to pEU2->Sector
-  sFaces2.Add(pEU2->GetFace());
-  sFaces2.Add(pEU2->GetRadial()->GetFace());
-
-  // for every pEU1->Sector->Face
-  ULONG ii, jj;
-  for (ii=0; ii<sFaces1.GetSize(); ii++)
-    {
-      SmFace * pFace1 = sFaces1[ii];
-
-      // when asked skip pEU3->Face
-      if (pEU3 && pEU3->GetFace() == pFace1) 
-        { continue; }
-
-      // for every pEU2->Sector->Face
-      for (jj=0; jj<sFaces2.GetSize(); jj++)
-        {
-          SmFace * pFace2 = sFaces2[jj];
-
-          // return 1st found common face
-          if (pFace1 == pFace2)
-            {
-              return pFace2;
-            }
-        } // end iter every pEU2->Sector->Face
-    } // end iter every pEU1->Sector->Face
-
-  return NULL;
-
-} // end sm_GetFaceByTwoEdgeuses
 
 /********************************************************************
 PURPOSE: Determine if the edgeuse bounded two tangential faces
@@ -299,7 +117,7 @@ NOTES:
     Unlike sm_CheckTangentialEdgeuse(), the faces are compared at the
     vertex, and a knife edge (opposite normals) is not tangential.
 ********************************************************************/
-static SmBoolean sm_CheckTangentialEdgeuseAtVertex
+SmBoolean sm_CheckTangentialEdgeuseAtVertex
  (SmEdgeuse      * pEU,
   const SmVertex * cpVertex,
   double           dAngTolDeg)
@@ -326,6 +144,64 @@ static SmBoolean sm_CheckTangentialEdgeuseAtVertex
 } // end sm_CheckTangentialEdgeuseAtVertex
 
 /********************************************************************
+PURPOSE: Determine whether a side edge of a filleted edge at a vertex is a
+            tangent seam T that the rail on its side crosses: a tangent end
+            (SmBlendCorner::MakeEndOnEndFace)
+NOTES:
+    The edge's faces meet tangentially at the vertex, and across it
+    their normal curvatures differ, so that the face across it is a
+    different surface touching the rail's face along T (a bar's flat
+    side running into the cylinder of its round end). Faces on one
+    surface split by a tangent edge (two pieces of one cone) are not
+    T: the rail rolls on across such an edge. Nor is an edge that
+    continues the filleted edge tangentially across the vertex: the
+    rail runs alongside it and never crosses it.
+********************************************************************/
+SmBoolean sm_IsTangentSeamAtVertex
+ (SmEdgeuse      * pFilEdgeuse,
+  SmEdgeuse      * pEU,
+  const SmVertex * cpVertex,
+  double           dAngTolDeg)
+{
+  if ( ! sm_CheckTangentialEdgeuseAtVertex( pEU, cpVertex, dAngTolDeg ) )
+    { return FALSE; }
+  if ( sm_TestG1Continuity( cpVertex, pFilEdgeuse->GetEdge(), pEU->GetEdge(), dAngTolDeg, NULL, 0 ) )
+    { return FALSE; }
+
+  SmEdge   * pEdge = pEU->GetEdge();
+  SmExtent1d sIvl  = pEdge->GetInterval();
+  SmPoint3d  sLo, sHi;
+  if (   pEdge->GetCurve()->EvaluatePoint( sIvl.GetMin(), sLo ) != SM_SUCCESS
+      || pEdge->GetCurve()->EvaluatePoint( sIvl.GetMax(), sHi ) != SM_SUCCESS )
+    { return FALSE; }
+  SmPoint3d sAt = cpVertex->GetPoint();
+  double    dT  = ( sLo.DistanceBetweenSquared( sAt ) <= sHi.DistanceBetweenSquared( sAt ) ) ? sIvl.GetMin() : sIvl.GetMax();
+
+  // each face's normal curvature across T, its binormal there, signed by the faceuse normal
+  double      adKappa[2] = { 0.0, 0.0 };
+  SmEdgeuse * apEU[2]    = { pEU, pEU->GetRadial() };
+  for ( ULONG kk=0; kk<2; kk++ )
+    {
+      SmPoint3d  sPnt;
+      SmVector3d sBin, sNormal;
+      SmPoint2d  sUV;
+      SmVector2d sUVDir;
+      if (   apEU[kk]->EvaluateBinormal( dT, FALSE, sPnt, sBin, NULL, &sNormal, &sUV, &sUVDir ) != SM_SUCCESS
+          || apEU[kk]->GetFace() == NULL || apEU[kk]->GetFace()->GetSurface() == NULL )
+        { return FALSE; }
+      SmVector3d aDerivs[3];
+      if ( apEU[kk]->GetFace()->GetSurface()->EvaluateDirectionalDerivs( sUV, sUVDir, 2, aDerivs ) != SM_SUCCESS )
+        { return FALSE; }
+      double dSpeedSq = aDerivs[1].Dot( aDerivs[1] );
+      if ( dSpeedSq < SM_EFF_ZERO )
+        { return FALSE; }
+      adKappa[kk] = sNormal.Dot( aDerivs[2] ) / dSpeedSq;
+    }
+  return ( smos_Fabs( adKappa[0] - adKappa[1] ) > SM_EFF_ZERO_SQRT * ( 1.0 + smos_Fabs( adKappa[0] ) + smos_Fabs( adKappa[1] ))) ? TRUE : FALSE;
+
+} // end sm_IsTangentSeamAtVertex
+
+/********************************************************************
 PURPOSE: Classify a face's corner at a given vertex as convex or
     concave by examining the shape of the face->Corners bounding edgeuses.
     For a 3x2 vertex (pOptRefEU NULL), this checks for mixed convexity:
@@ -346,7 +222,7 @@ NOTES:
        are no longer bounding the same face.
 
 ********************************************************************/
-static SmBoolean sm_CheckFaceComplimentaryCornerConcavity (
+SmBoolean sm_CheckFaceComplimentaryCornerConcavity ( // SolidCraft change: shared with the blend corner (SmBlendCorner.h)
  const SmVertex * pCornerVert, // in : target corner vertex
  SmEdgeuse      * pTestEU1,    // in : 1st target edgeuse - points outward from CornerVert
  SmEdgeuse      * pTestEU2,    // in : 2nd target edgeuse - points outward from CornerVert
@@ -478,7 +354,7 @@ NOTES:
   The edges are given by an edgeuse of each.
 
 ***********************************************************************/
-static SmBoolean same_convexity_edges // rtn: TRUE=convexities are the same, FALSE=convexities are opposite
+SmBoolean same_convexity_edges // rtn: TRUE=convexities are the same, FALSE=convexities are opposite
  (SmEdgeuse      * pEdgeuse1,         // in : edgeuse of first edge
   SmEdgeuse      * pEdgeuse2,         // in : edgeuse of second edge
   const SmVertex * pVertex,           // in : common vertex between the two edges
@@ -553,7 +429,7 @@ NOTES:
   edge's edgeuse is the one in the region of the first edge's concave
   sector.
 ***********************************************************************/
-static SmBoolean same_convexity_edges_round_vertex // rtn: TRUE=convexities are the same, FALSE=opposite
+SmBoolean same_convexity_edges_round_vertex // rtn: TRUE=convexities are the same, FALSE=opposite
  (SmEdgeuse * pEdgeuse1,                         // in : edgeuse of first edge
   SmEdge    * pEdge2)                            // in : second edge
 {
@@ -615,75 +491,12 @@ static void sm_FindConcaveEdgeuses
 } // end sm_FindConcaveEdgeuses
 
 /********************************************************************
-PURPOSE: Compute the angle between two given edgeuses
-
-NOTES:
-********************************************************************/
-static double sm_FindAngleBetweenEdgeuses
- (const SmVertex * cpCornerVert,
-  SmEdgeuse      * pEU1,
-  SmEdgeuse      * pEU2,
-  int              iDebugLevel )
-{
-#ifdef SM_DEBUG_CODE
-  if ( iDebugLevel ) 
-    {
-      smgfx_SetLook(1,2, 1,0,0); pEU1->Draw(); sm_GraphicsLoop();
-      pEU2->Draw(); sm_GraphicsLoop();
-      sm_GraphicsLoop();
-    }
-#else
-    SM_REF1(iDebugLevel);
-#endif // SM_DEBUG_CODE
-
-  SmBoolean bAtEdgeStart1 = TRUE;
-  SmVertex * pVert1 = pEU1->GetVertexuse()->GetVertex();
-  if(   (cpCornerVert == pVert1 && pEU1->GetOrientation() == SM_OT_OPPOSITE)
-     || (cpCornerVert != pVert1 && pEU1->GetOrientation() == SM_OT_SAME)) 
-    {
-      bAtEdgeStart1 = FALSE;
-    }
-
-  SmVector3d sTangent1;
-  SmEdge   * pE1 = pEU1->GetEdge();
-
-  SER(pE1->GetEndTangent(bAtEdgeStart1,sTangent1));
-  if (!bAtEdgeStart1) 
-    {
-      sTangent1 = -sTangent1;
-    }
-
-  SmBoolean  bAtEdgeStart2 = TRUE;
-  SmVertex * pVert2        = pEU2->GetVertexuse()->GetVertex();
-
-  if (   (cpCornerVert == pVert2 && pEU2->GetOrientation() == SM_OT_OPPOSITE)
-      || (cpCornerVert != pVert2 && pEU2->GetOrientation() == SM_OT_SAME)) 
-    {
-      bAtEdgeStart2 = FALSE;
-    }
-
-  SmVector3d sTangent2;
-  SmEdge * pE2 = pEU2->GetEdge();
-  SER(pE2->GetEndTangent(bAtEdgeStart2,sTangent2));
-  if (!bAtEdgeStart2) 
-    {
-      sTangent2 = -sTangent2;
-    }
-
-  double dAngle;
-  SE(sTangent1.AngleBetween(sTangent2,dAngle));
-
-  return dAngle;
-
-} // end sm_FindAngleBetweenEdgeuses
-
-/********************************************************************
 PURPOSE: Estimate an extension distance for fillet at Nx1
             or 3x2Mixed corner equal to 10*maxRadius distance
 
 NOTES:
 ********************************************************************/
-static double sm_FindSurfaceExtensionDistAtCorner
+double sm_FindSurfaceExtensionDistAtCorner
  (SmEdgeuse      * pFilEdgeuse,
   SmFilletSolver * pFilSolver,
   const SmVertex * cpNx1CornerVert)
@@ -1005,76 +818,6 @@ static SmStatus sm_GetFilletRadius // SolidCraft change: returns the status of t
 } // end sm_GetFilletRadius
 
 /*******************************************************************//**
-PURPOSE: If a uv point is outside the domain, check whether it can be moved
-   into the domain due to periodicity.  Move it if so, and return TRUE.
-
-NOTES: This is also defined in SmFilletGeom.cpp.
-***********************************************************************/
-static SmBoolean sm_CheckSeamOut( const SmSurface *pSurf, SmPoint2d & rUV, double dTol, SmSurfParamType eClosure )
-{
-  if ( eClosure == SM_SP_NEITHER ) { return FALSE; }
-  if ( rUV.x   <= -SM_BIG_DOUBLE ) { return FALSE; }
-  if ( rUV.y   <= -SM_BIG_DOUBLE ) { return FALSE; }
-
-  SmExtent2d sDom = pSurf->GetNaturalUVDomain();
-
-  if ( sDom.ContainsPoint2d( rUV, dTol ) )
-    { return FALSE; }
-
-  SmBoolean bRet = FALSE;
-
-  if ( eClosure == SM_SP_U || eClosure == SM_SP_BOTH )
-    {
-      SmExtent1d sDomU = sDom.GetUInterval();
-      if ( rUV.x < sDomU.GetMin() - dTol )
-        {
-          rUV.x += sDomU.GetLength();
-          bRet = TRUE;
-        }
-      if ( rUV.x > sDomU.GetMax() + dTol )
-        {
-          rUV.x -= sDomU.GetLength();
-          bRet = TRUE;
-        }
-    }
-
-  if ( eClosure == SM_SP_V || eClosure == SM_SP_BOTH )
-    {
-      SmExtent1d sDomV = sDom.GetVInterval();
-      if ( rUV.y < sDomV.GetMin() - dTol )
-        {
-          rUV.y += sDomV.GetLength();
-          bRet = TRUE;
-        }
-      if ( rUV.y > sDomV.GetMax() + dTol )
-        {
-          rUV.y -= sDomV.GetLength();
-          bRet = TRUE;
-        }
-    }
-
-  return bRet;
-
-} // end static sm_CheckSeamOut
-
-/*******************************************************************//**
-PURPOSE: Set surface closure flags.
-
-NOTES: 
-***********************************************************************/
-static SmSurfParamType sm_SetSurfaceClosure( const SmSurface *pSurf, const SmExtent2d & rDomain )
-{
-  SmSurfParamType eRet = SM_SP_NEITHER;
-
-  if ( pSurf->IsClosed( rDomain, SM_SP_U ) )
-    { eRet = SM_SP_U; }
-  if ( pSurf->IsClosed( rDomain, SM_SP_V ) )
-    { eRet = ( eRet == SM_SP_NEITHER ) ? SM_SP_V : SM_SP_BOTH; }
-
-  return eRet;
-}
-
-/*******************************************************************//**
     END - Static functions
 ***********************************************************************/
 
@@ -1103,8 +846,10 @@ SmFilletCorner::SmFilletCorner
    m_bDegenerate(FALSE),
    m_bCalcAsConstRad(FALSE),
    m_bTopologyAdjusted(FALSE),
+   m_bBevelGapPatch(FALSE),
    m_bExtendedSurfacePatch(TRUE),
    m_dSetBackDist(0.0),
+   m_dEaseDist(0.0),
    m_dThisApproxTol3d(dApproxTol3d),
    m_dTangencyTolRadians(dTangencyTolRadians)
 {
@@ -1385,24 +1130,29 @@ static int iDebugLevel = 0; // Note: Can't call DebugLevel() from a static metho
                   // Corner with one 'closed' edge filleted
                   switch (lTotalEUs)
                     {
-                      case 1: // Need to be G1-closed
-                          if (sm_TestG1Continuity(cpVertex,pEdge,pEdge, dTanTolDeg,NULL, iDebugLevel )) 
-                            {
-                              pNewCorner = new(crContext) SmFillet1x1Corner(crContext,
-                                                                            cpVertex,
-                                                                            pSolverEUs,
-                                                                            pAllEUs,
-                                                                            pExec,
-                                                                            dApproxTol3d,
-                                                                            dTangencyTolRadians);
-                            }
-                          else 
-                            {
-                              MSG(_T("Corner Case Not Implemented"));
-                            }
-                          break;
+                      case 1:
                       case 2:
                       case 3:
+                          // SolidCraft change: a closed edge meeting itself G1 is the blend corner's
+                          // Join (its shared section)
+                          if (sm_TestG1Continuity(cpVertex,pEdge,pEdge, dTanTolDeg,NULL, iDebugLevel ))
+                            {
+                              pNewCorner = new(crContext) SmBlendCorner(crContext,
+                                                                        cpVertex,
+                                                                        pSolverEUs,
+                                                                        pAllEUs,
+                                                                        pExec,
+                                                                        dApproxTol3d,
+                                                                        dTangencyTolRadians,
+                                                                        SM_BCE_JOIN,
+                                                                        SM_BT_MITRE);
+                              break;
+                            }
+                          if (lTotalEUs == 1)
+                            {
+                              MSG(_T("Corner Case Not Implemented"));
+                              break;
+                            }
                           pNewCorner = new(crContext) SmFilletNx1ClosedCorner(crContext,
                                                                               cpVertex,
                                                                               pSolverEUs,
@@ -1415,37 +1165,23 @@ static int iDebugLevel = 0; // Note: Can't call DebugLevel() from a static metho
                     } // end switch on total number of edgeuses connected to vertex
                   break;
                 }
-              // Degeneracy-check needs to be checked first
-              if (SmFilletNx1Corner::CheckNx1Degeneracy(cpVertex,pEU0)) 
-                {
-                  pNewCorner = new(crContext) SmFilletDegenerateCorner(crContext,
-                                                                       cpVertex,
-                                                                       pSolverEUs,
-                                                                       pAllEUs,
-                                                                       pExec,
-                                                                       dApproxTol3d,
-                                                                       dTangencyTolRadians);
-                }
-              else if (bIsOpenEndCorner) 
-                {
-                  pNewCorner = new(crContext) SmFilletOpenCorner(crContext,
-                                                                 cpVertex,
-                                                                 pSolverEUs,
-                                                                 pAllEUs,
-                                                                 pExec,
-                                                                 dApproxTol3d,
-                                                                 dTangencyTolRadians);
-                }
-              else 
-                {
-                  pNewCorner = new(crContext) SmFilletNx1Corner(crContext,
-                                                                cpVertex,
-                                                                pSolverEUs,
-                                                                pAllEUs,
-                                                                pExec,
-                                                                dApproxTol3d,
-                                                                dTangencyTolRadians);
-                }
+              // SolidCraft change: one blend ending at the vertex is the blend corner's End
+              {
+                SmBlendCorner * pEnd = new(crContext) SmBlendCorner(crContext,
+                                                                    cpVertex,
+                                                                    pSolverEUs,
+                                                                    pAllEUs,
+                                                                    pExec,
+                                                                    dApproxTol3d,
+                                                                    dTangencyTolRadians,
+                                                                    SM_BCE_END,
+                                                                    SM_BT_MITRE);
+                pEnd->SetEnd(   SmBlendCorner::EndRunsOut( cpVertex, pEU0 )                           ? SM_BEND_RUNS_OUT
+                              : bIsOpenEndCorner                                                    ? SM_BEND_OPEN
+                              : SmBlendCorner::EndAtSmoothVertex( cpVertex, pEU0, *pAllEUs, dTanTolDeg ) ? SM_BEND_AT_SMOOTH
+                              :                                                                       SM_BEND_ON_END_FACE );
+                pNewCorner = pEnd;
+              }
           }
           break ;
 
@@ -1453,19 +1189,37 @@ static int iDebugLevel = 0; // Note: Can't call DebugLevel() from a static metho
           {
             SmEdgeuse * pEU0 = (*pSolverEUs)[0];
             SmEdgeuse * pEU1 = (*pSolverEUs)[1];
+            // SolidCraft change: no two-edge corner is built where an edge not blended there is
+            // a knife edge (its faces folded back on each other, as where a hole's wall touches
+            // the bottom face along a line): the corners take its faces to meet at an angle.
+            SmBoolean bKnife = FALSE;
+            for (ii=0; ii<lTotalEUs && !bKnife; ii++)
+              {
+                SmEdge * pE = (*pAllEUs)[ii]->GetEdge();
+                if ( pE != pEU0->GetEdge() && pE != pEU1->GetEdge() && SmFilletSolver::IsKnifeEdge( pE, dTangencyTolRadians ))
+                  { bKnife = TRUE; }
+              }
+            if ( bKnife )
+              {
+                MSG(_T("Corner Case Not Implemented"));
+                break;
+              }
             switch (lTotalEUs) 
               {
-                case 2: // 2x2: we can handle this only if it's a tangent fillet:
+                case 2: // SolidCraft change: two edges continuing each other alone at the vertex
+                        // are the blend corner's Join (its shared section)
                     if ( sm_TestG1Continuity( cpVertex, pEU0->GetEdge(),
                         pEU1->GetEdge(),  dTanTolDeg, NULL, iDebugLevel ))
                       {
-                        pNewCorner = new(crContext) SmFillet2x2Corner(crContext, 
-                                                                      cpVertex, 
-                                                                      pSolverEUs, 
-                                                                      pAllEUs, 
-                                                                      pExec,
-                                                                      dApproxTol3d, 
-                                                                      dTangencyTolRadians );
+                        pNewCorner = new(crContext) SmBlendCorner(crContext,
+                                                                  cpVertex,
+                                                                  pSolverEUs,
+                                                                  pAllEUs,
+                                                                  pExec,
+                                                                  dApproxTol3d,
+                                                                  dTangencyTolRadians,
+                                                                  SM_BCE_JOIN,
+                                                                  SM_BT_MITRE);
                       }
                     else 
                       {
@@ -1476,6 +1230,17 @@ static int iDebugLevel = 0; // Note: Can't call DebugLevel() from a static metho
                     if (    pEU0->IsConvexRadialSector(4)
                          != pEU1->IsConvexRadialSector(4) )
                       {
+                        // SolidCraft change: a convex and a concave blend continuing each other
+                        // across a tangent seam are the blend corner's Mixed (SmBlendCornerMixed.cpp)
+                        SmBlendCornerEvent eMixed = SM_BCE_NONE;
+                        if ( SmBlendCorner::ClassifyMixed( cpVertex, *pSolverEUs, *pAllEUs, pExec, dTanTolDeg, eMixed ) != SM_SUCCESS )
+                          { break; }
+                        if ( eMixed == SM_BCE_MIXED )
+                          {
+                            pNewCorner = new(crContext) SmBlendCorner(crContext, cpVertex, pSolverEUs, pAllEUs, pExec,
+                                                                      dApproxTol3d, dTangencyTolRadians, SM_BCE_MIXED, SM_BT_MITRE);
+                            break;
+                          }
                         pNewCorner = new(crContext) SmFillet3x2MixedConvexityCorner(crContext,
                                                                                     cpVertex,
                                                                                     pSolverEUs,
@@ -1487,13 +1252,24 @@ static int iDebugLevel = 0; // Note: Can't call DebugLevel() from a static metho
                       }
                     // else continue with case 4
                 case 4:
-                    pNewCorner = new(crContext) SmFilletNx2Corner(crContext,
-                                                                  cpVertex,
-                                                                  pSolverEUs,
-                                                                  pAllEUs,
-                                                                  pExec,
-                                                                  dApproxTol3d,
-                                                                  dTangencyTolRadians);
+                    // SolidCraft change: two blends of one convexity among three or four edges are
+                    // the blend corner's (SmBlendCorner::Classify: a Turn, Mitred or Swept, or a
+                    // Join). A corner the blend corner refuses has none (the reason noted).
+                    {
+                      SmBlendCornerEvent eEvent = SM_BCE_NONE;
+                      SmBlendTurn        eTurn  = SM_BT_MITRE;
+                      if ( SmBlendCorner::Classify( cpVertex, *pSolverEUs, *pAllEUs, pExec, dTanTolDeg, eEvent, eTurn ) != SM_SUCCESS )
+                        { break; }
+                      pNewCorner = new(crContext) SmBlendCorner(crContext,
+                                                                cpVertex,
+                                                                pSolverEUs,
+                                                                pAllEUs,
+                                                                pExec,
+                                                                dApproxTol3d,
+                                                                dTangencyTolRadians,
+                                                                eEvent,
+                                                                eTurn);
+                    }
                     break;
                 default:
                     MSG(_T("Corner Case Not Implemented"));
@@ -1503,6 +1279,27 @@ static int iDebugLevel = 0; // Note: Can't call DebugLevel() from a static metho
 
       case 3: // three SolverEUs
           {
+              // SolidCraft change: three equal rounds of one convexity, every edge there blended,
+              // are the blend corner's Ball (SmBlendCorner::ClassifyBall).
+              if (lTotalEUs == 3 && !bIsChamferCorner) {
+                  SmBlendCornerEvent eEvent = SM_BCE_NONE;
+                  SmStatus eBall = SmBlendCorner::ClassifyBall( cpVertex, *pSolverEUs, *pAllEUs, pExec, eEvent );
+                  if ( eBall != SM_SUCCESS ) {
+                      break;
+                  }
+                  if ( eEvent == SM_BCE_BALL ) {
+                      pNewCorner = new(crContext) SmBlendCorner(crContext,
+                                                                cpVertex,
+                                                                pSolverEUs,
+                                                                pAllEUs,
+                                                                pExec,
+                                                                dApproxTol3d,
+                                                                dTangencyTolRadians,
+                                                                eEvent,
+                                                                SM_BT_MITRE);
+                      break;
+                  }
+              }
               if (lTotalEUs == 4) {
                   pNewCorner = new(crContext) SmFillet4x3Corner(crContext,
                                                                 cpVertex,
@@ -1522,6 +1319,42 @@ static int iDebugLevel = 0; // Note: Can't call DebugLevel() from a static metho
               {
                 MSG(_T("Corner Case Not Implemented"));
                 break;
+              }
+            // SolidCraft change: a corner the blend corner sets back and fills
+            // (SmBlendCorner::ClassifySetBack); the others as before
+            if (bIsChamferCorner == FALSE)
+              {
+                SmBlendCornerEvent eEvent = SM_BCE_NONE;
+                ULONG              lOrder = 1;
+                // four or more rounds that one ball touches: the Ball (SmBlendCorner::ClassifyBall)
+                if ( lTotalEUs > 3 )
+                  {
+                    if ( SmBlendCorner::ClassifyBall( cpVertex, *pSolverEUs, *pAllEUs, pExec, eEvent ) != SM_SUCCESS )
+                      { break; }
+                    if ( eEvent == SM_BCE_BALL )
+                      {
+                        pNewCorner = new(crContext) SmBlendCorner(crContext, cpVertex, pSolverEUs, pAllEUs, pExec, dApproxTol3d,
+                                                                  dTangencyTolRadians, SM_BCE_BALL, SM_BT_MITRE);
+                        break;
+                      }
+                  }
+                if ( SmBlendCorner::ClassifySetBack( cpVertex, *pSolverEUs, *pAllEUs, pExec, dTanTolDeg, eEvent, lOrder ) != SM_SUCCESS )
+                  { break; }
+                if ( eEvent == SM_BCE_SETBACK )
+                  {
+                    SmBlendCorner * pSetBack = new(crContext) SmBlendCorner(crContext,
+                                                                            cpVertex,
+                                                                            pSolverEUs,
+                                                                            pAllEUs,
+                                                                            pExec,
+                                                                            dApproxTol3d,
+                                                                            dTangencyTolRadians,
+                                                                            SM_BCE_SETBACK,
+                                                                            SM_BT_MITRE);
+                    pSetBack->SetFillOrder( lOrder );
+                    pNewCorner = pSetBack;
+                    break;
+                  }
               }
             SmTArray<SmEdgeuse*> sConcaveEUs;
             if (bIsChamferCorner == FALSE) 
@@ -1798,7 +1631,9 @@ SmStatus SmFilletCorner::CalcCornerGeom()
   // a corner patch if indicated.   [Fillet iter: 124]
 
   // no work - Bevel corner or degenerate corner
-  if(  ( m_bBevel && lFilletEdges > 1 )
+  // SolidCraft change: a bevel with a gap to fill on a side face's continuation
+  // (m_bBevelGapPatch) builds the gap's patch.
+  if(  ( m_bBevel && lFilletEdges > 1 && !m_bBevelGapPatch )
      ||  lTotalEdges < 3)  // Corner patches are not defined
     { return SM_SUCCESS; }
 
@@ -2075,9 +1910,8 @@ SmStatus SmFilletCorner::CreateCornerPatch()
         {
           // Select degenerate corner - Pay special attention to Nx2 corners
           enum SmFilletCornerType eCornerType = GetCornerType();
-          if (   eCornerType == SM_FCR_N_x_2
-              || eCornerType == SM_FCR_3_x_2_MIXED
-              || eCornerType == SM_FCR_N_x_1)
+          if (   eCornerType == SM_FCR_BLEND
+              || eCornerType == SM_FCR_3_x_2_MIXED)
             {
               // for every corner vertex
               for (ii=0; ii<m_vVertices.GetSize(); ii++)
@@ -2094,7 +1928,7 @@ SmStatus SmFilletCorner::CreateCornerPatch()
                       case SM_FV_FILLET_X_FILLET  : pFVOfDegenerateCurve = pFV;
                                                     break;
 
-                      case SM_FV_ON_VERTEX        : if(eCornerType == SM_FCR_N_x_1)
+                      case SM_FV_ON_VERTEX        : if(IsEndOnEndFace())
                                                       { pFVOfDegenerateCurve = pFV; }
                                                     break ;
 
@@ -2108,11 +1942,13 @@ SmStatus SmFilletCorner::CreateCornerPatch()
                       case SM_FV_RAIL_X_VERTEX    :
                       case SM_FV_RAIL_X_EXTENDED_EDGEUSE:
                       case SM_FV_SETBACK          :
+                      case SM_FV_PRECOMPUTED      :
+                      case SM_FV_JOIN_SECTION     :
                       case SM_FV_UNKNOWN          : break;
 
                     } // end switch on corner->VertexType
                 } // end iter every corner vertex
-            } // end SM_FCR_N_x_2 or SM_FCR_3_x_2_MIXED corner type check
+            } // end SM_FCR_BLEND or SM_FCR_3_x_2_MIXED corner type check
 
           // when we have yet to select the degenerate corner
           if (pFVOfDegenerateCurve == NULL)
@@ -2638,7 +2474,7 @@ SmStatus SmFilletCorner::MakeVariableRadiusFillet
   double           dTol                   = m_dThisApproxTol3d;
   double           dStartRad              = 0.0, dEndRad = 0.0;
   SmFilletSurfaceGeneratorType eType      = SM_FSG_UNKNOWN;
-  double           dBlendScale            = 1.0; // For use in SmBlendCurveCrossSectionFSG cases only
+  double           dThumbweight           = SM_GN_DEFAULT_THUMBWEIGHT; // For use in SmGnSectionFSG cases only
   ULONG            lMaxContinuity         = 0;
   SmVector3d       sStartAxis,      sEndAxis;
   SmPoint3d        sStartArcCenter, sEndArcCenter;
@@ -2662,11 +2498,9 @@ SmStatus SmFilletCorner::MakeVariableRadiusFillet
           eType = pFSG->GetFilletSurfaceGeneratorType();
           if (eType == SM_FSG_BLEND_CURVE) 
             {
-              //return SM_ERR;  // Right now blend curve one is disabled
-              SmBlendCurveCrossSectionFSG * pBlendFSG =
-                  (SmBlendCurveCrossSectionFSG*)pFSG;
-              dBlendScale = pBlendFSG->GetBlendScale();
-              ULONG lContinuity = pBlendFSG->GetContinuity();
+              SmGnSectionFSG * pBlendFSG = (SmGnSectionFSG*)pFSG;
+              dThumbweight = pBlendFSG->GetThumbweight();
+              ULONG lContinuity = pBlendFSG->GetOrder();
               if (lContinuity > lMaxContinuity) 
                 { lMaxContinuity = lContinuity; }
             }
@@ -2677,9 +2511,8 @@ SmStatus SmFilletCorner::MakeVariableRadiusFillet
         
       else if (eType == SM_FSG_BLEND_CURVE) 
         {
-          SmBlendCurveCrossSectionFSG * pBlendFSG = (SmBlendCurveCrossSectionFSG*)pFSG;
-          double dOtherScale = pBlendFSG->GetBlendScale();
-          if (smos_Fabs(dBlendScale-dOtherScale) > SM_EFF_ZERO) 
+          SmGnSectionFSG * pBlendFSG = (SmGnSectionFSG*)pFSG;
+          if (smos_Fabs(dThumbweight-pBlendFSG->GetThumbweight()) > SM_EFF_ZERO || pBlendFSG->GetOrder() != lMaxContinuity) 
             { return SM_ERR; } // Unable to convert
         }
 
@@ -2932,9 +2765,9 @@ SmStatus SmFilletCorner::MakeVariableRadiusFillet
   SmObjDelete sDeleteFS(pNewFS);
 
   pNewFS->SetFilletExecutive(m_pExecutive);
-  SmLinearCrossSectionFSG     sFSGLinear;                               // Create Linear
-  SmCircularCrossSectionFSG   sFSGCircular(bApproxArcs,dApproxArcTol);  // Creates Circular
-  SmBlendCurveCrossSectionFSG sFSGBlend(dBlendScale,lMaxContinuity);    // Create blend
+  SmGnSectionFSG sFSGLinear( 0 );                               // Create Linear
+  SmGnSectionFSG sFSGCircular( SmArcSection( bApproxArcs, dApproxArcTol ) );  // Creates Circular
+  SmGnSectionFSG sFSGBlend(lMaxContinuity > 1 ? lMaxContinuity : 2, dThumbweight); // Create blend
 
   switch (eType) 
     {   // RCLxx I hope we have etype set by here
@@ -3241,21 +3074,22 @@ SmStatus SmFilletCorner::MakeConstantRadiusFillet
   SmFilletSurfaceGenerator   * pFSG0         = pFG0->GetFilletSolver()->GetFilletSurfaceGenerator();
   SmFilletSurfaceGenerator   * pFSG1         = pFG1->GetFilletSolver()->GetFilletSurfaceGenerator();
   SmFilletSurfaceGeneratorType eType         = pFSG0->GetFilletSurfaceGeneratorType();
-  double                      dBlendScale    = 1.5; // For use in SmBlendCurveCrossSectionFSG cases only
+  double                      dThumbweight   = SM_GN_DEFAULT_THUMBWEIGHT; // For use in SmGnSectionFSG cases only
   ULONG                       lMaxContinuity = 0;
   if (eType != pFSG1->GetFilletSurfaceGeneratorType()) 
     { return SM_ERR ; }
 
   if (eType == SM_FSG_BLEND_CURVE) 
     {
-      SmBlendCurveCrossSectionFSG * pBlendFSG = (SmBlendCurveCrossSectionFSG*)pFSG0;
-      dBlendScale                             = pBlendFSG->GetBlendScale();
-      pBlendFSG                               = (SmBlendCurveCrossSectionFSG*)pFSG1;
+      SmGnSectionFSG * pBlendFSG = (SmGnSectionFSG*)pFSG0;
+      dThumbweight               = pBlendFSG->GetThumbweight();
+      ULONG lFirstOrder          = pBlendFSG->GetOrder();
+      pBlendFSG                  = (SmGnSectionFSG*)pFSG1;
 
-      if (smos_Fabs(dBlendScale-pBlendFSG->GetBlendScale()) > SM_EFF_ZERO) 
+      if (smos_Fabs(dThumbweight-pBlendFSG->GetThumbweight()) > SM_EFF_ZERO || pBlendFSG->GetOrder() != lFirstOrder) 
         { return SM_ERR ; } // Unable to convert
      
-      ULONG lContinuity = pBlendFSG->GetContinuity();
+      ULONG lContinuity = pBlendFSG->GetOrder();
 
       if (lContinuity > lMaxContinuity) 
         { lMaxContinuity = lContinuity; }
@@ -3264,9 +3098,9 @@ SmStatus SmFilletCorner::MakeConstantRadiusFillet
   // Make a constant radius fillet solver
   SmFilletSolver            * pNewFS = NULL;
   SmFilletLaw               * pLaw   = NULL;
-  SmLinearCrossSectionFSG     sFSGLinear;                            // Create Linear
-  SmCircularCrossSectionFSG   sFSGCircular(TRUE,1.0e-3);             // Creates Circular
-  SmBlendCurveCrossSectionFSG sFSGBlend(dBlendScale,lMaxContinuity); // Create blend
+  SmGnSectionFSG sFSGLinear( 0 );                            // Create Linear
+  SmGnSectionFSG sFSGCircular( SmArcSection( FALSE, 1.0e-3 ) );            // Creates Circular
+  SmGnSectionFSG sFSGBlend(lMaxContinuity > 1 ? lMaxContinuity : 2, dThumbweight); // Create blend
   switch (eType) 
     {
       case SM_FSG_CIRCULAR:
@@ -3781,7 +3615,77 @@ SmBoolean SmFilletCorner::MakeAnalyticCornerSurface()
 } // end SmFilletCorner::MakeAnalyticCornerSurface
 
 /*******************************************************************//**
-PURPOSE: Create Face (and Edges and Verts) in m_pFilletBrep from 
+PURPOSE: SolidCraft change. The half of one of the corner's face curves
+   (an SM_FE_RAIL_RAIL_INTERPOLATION edge of crEdges) that a side
+   crIso of an N-sided patch's face runs along, as its own curve:
+   rpHalf, from crIso's start to its end; NULL when crIso is on no such
+   half (its ends not the half's to dTol).
+
+NOTES: N_FillNSidedHole splits each side of the hole at the middle of
+   its parameter and interpolates the halves by its surfaces, whose
+   boundaries carry the cross-derivative fields' degree and knots (a
+   quintic face curve's half came back degree 6 over 7 spans, off it to
+   tolerance). The face curve's half is the curve itself on half its
+   interval: at a corner whose rounds ease (m_dEaseDist) the face curve
+   is one quintic span (SmFilletEdge::CalcRailRailInterpolation, G2 to
+   the contact lines at both ends), so each half is one quintic span,
+   G2 to its contact line at the setback and to the other half at the
+   middle.
+***********************************************************************/
+static SmStatus sm_FaceCurveHalfAlong
+  (const SmContext               & crContext,
+   const SmTArray<SmFilletEdge*> & crEdges,
+   const SmCurve                 & crIso,
+   double                          dTol,
+   SmBSplineCurve               *& rpHalf)
+{
+  rpHalf = NULL;
+  SmExtent1d sIsoIvl = crIso.GetNaturalInterval();
+  SmPoint3d sIsoStart, sIsoEnd;
+  SER(crIso.EvaluatePoint(sIsoIvl.GetMin(), sIsoStart));
+  SER(crIso.EvaluatePoint(sIsoIvl.GetMax(), sIsoEnd));
+  for (ULONG e=0; e<crEdges.GetSize(); e++)
+    {
+      SmFilletEdge * pFE = crEdges[e];
+      if (pFE == NULL || pFE->GetFilletEdgeType() != SM_FE_RAIL_RAIL_INTERPOLATION)
+        { continue; }
+      SmBSplineCurve * pSide = SM_CAST_PTR(SmBSplineCurve, pFE->GetCurve());
+      if (pSide == NULL)
+        { continue; }
+      SmExtent1d sIvl = pSide->GetNaturalInterval();
+      double     adAt[3] = { sIvl.GetMin(), sIvl.Evaluate(0.5), sIvl.GetMax() };
+      SmPoint3d  asPnt[3];
+      for (ULONG i=0; i<3; i++)
+        { SER(pSide->EvaluatePoint(adAt[i], asPnt[i])); }
+      for (ULONG h=0; h<2; h++)
+        {
+          SmBoolean bSame =    asPnt[h].DistanceBetween(sIsoStart)   <= dTol
+                            && asPnt[h+1].DistanceBetween(sIsoEnd)   <= dTol;
+          SmBoolean bOpposite =    asPnt[h].DistanceBetween(sIsoEnd)   <= dTol
+                                && asPnt[h+1].DistanceBetween(sIsoStart) <= dTol;
+          if (!bSame && !bOpposite)
+            { continue; }
+          SmCurve * pCopy = NULL;
+          SER(pSide->Copy(crContext, pCopy));
+          SmObjDelete sCleanCopy(pCopy);
+          SmBSplineCurve * pHalf = SM_CAST_PTR(SmBSplineCurve, pCopy); NER(pHalf);
+          SmExtent1d sHalfIvl(adAt[h], adAt[h+1]);
+          SER(pHalf->Trim(sHalfIvl));
+          if (!bSame)
+            {
+              SmExtent1d sReversed;
+              SER(pHalf->ReverseParameterization(pHalf->GetNaturalInterval(), sReversed));
+            }
+          sCleanCopy.Clear();
+          rpHalf = pHalf;
+          return SM_SUCCESS;
+        }
+    }
+  return SM_SUCCESS;
+} // end sm_FaceCurveHalfAlong
+
+/*******************************************************************//**
+PURPOSE: Create Face (and Edges and Verts) in m_pFilletBrep from
          m_vSurfaces with call m_pFilletBrep->MakeFaceWithCurves()
 
 NOTES:   no Faces made when m_vSurfaces is empty
@@ -3943,6 +3847,24 @@ SmStatus SmFilletCorner::MakeFaceBrep()
       SER(pSurface->CreateIsoParametricCurve(m_crContext, SM_SP_V,sUVDomain.GetMin().y, 0.0, pNewBSC));
       s3DCurves.Add(pNewBSC);
       sCurveOrients.Add(SM_OT_OPPOSITE);
+
+      // SolidCraft change: at a corner whose rounds ease into their curvature-continuous
+      // sections (m_dEaseDist), a side of this face on one of the corner's face curves is that
+      // curve's own half (sm_FaceCurveHalfAlong), not the patch's iso-curve, which
+      // N_FillNSidedHole fits to the half only to tolerance, in its surfaces' degree and knots
+      if (m_dEaseDist > 0.0)
+        {
+          for (ULONG k=0; k<s3DCurves.GetSize(); k++)
+            {
+              SmBSplineCurve * pHalf = NULL;
+              SER(sm_FaceCurveHalfAlong(m_crContext, m_vEdges, *s3DCurves[k], m_dThisApproxTol3d, pHalf));
+              if (pHalf != NULL)
+                {
+                  delete s3DCurves[k];
+                  s3DCurves[k] = pHalf;
+                }
+            }
+        }
 
       SmRegion *pNewRegion = NULL;
       SmShell  *pNewShell = NULL;
@@ -4228,10 +4150,10 @@ void SmFilletCorner::DumpLevel
               : GetCornerType() == SM_FCR_4_x_3         ? _T("SM_FCR_4_x_3")
               : GetCornerType() == SM_FCR_N_x_1_CLOSED  ? _T("SM_FCR_N_x_1_CLOSED")
               : GetCornerType() == SM_FCR_N_x_1         ? _T("SM_FCR_N_x_1")
-              : GetCornerType() == SM_FCR_N_x_2         ? _T("SM_FCR_N_x_2")
               : GetCornerType() == SM_FCR_N_x_N         ? _T("SM_FCR_N_x_N")
               : GetCornerType() == SM_FCR_N_x_N_CONVEX  ? _T("SM_FCR_N_x_N_CONVEX")
               : GetCornerType() == SM_FCR_N_x_N_CONCAVE ? _T("SM_FCR_N_x_N_CONCAVE")
+              : GetCornerType() == SM_FCR_BLEND         ? _T("SM_FCR_BLEND")
               :                                           _T("SM_FCR_UNKNOWN"));
   smos_WriteBuffer(sBuff);
 
@@ -4438,257 +4360,6 @@ SmDisplayList * SmFilletCorner::Draw
 }  // end SmFilletCorner::Draw()
 
 /*******************************************************************//**
-PURPOSE: Create a 1x1 corner. Typically, when only one (closed & non-
-    lamina) edge is connected to this corner vertex such that it separates
-    two adjacent surfaces, a closed-fillet surface can be defined by rolling
-    along this edge. (e.g. when two tori form an '8' shape, only one
-    vertex and one edge are defined at the intersection)
-
-NOTES: Will only handle the tangency cases for now.
-***********************************************************************/
-SmFillet1x1Corner::SmFillet1x1Corner
-  (const SmContext      & crContext,
-   const SmVertex       * cpVertex,
-   SmTArray<SmEdgeuse*> * pSolverEUs,
-   SmTArray<SmEdgeuse*> * pAllEUs,
-   SmFilletExecutive    * pExec,
-   double                 dApproxTol3d,
-   double                 dTangencyTolRadians)
- : SmFilletCorner(crContext,
-                  cpVertex,
-                  pSolverEUs,
-                  pAllEUs,
-                  pExec,
-                  dApproxTol3d,
-                  dTangencyTolRadians)
-{
-
-} // end SmFillet1x1Corner::SmFillet1x1Corner
-
-/*******************************************************************//**
-PURPOSE: Create 1x1 corner by creating its boundary FilletCurves
-         and FilletPoints in m_pPseudoBrep. 
-
-NOTES: The topology of a 1x1 corner consists of only one fillet edge.
-***********************************************************************/
-SmStatus SmFillet1x1Corner::MakeCornerTopology
-  ()
-{
-  // locals
-  SmEdgeuse          * pFilEdgeuse = (*m_pSolverEUs)[0] ;
-  SmFilletSolver     * pFilSolver  = GetFilletExecutive()->GetFilletSolverOfEdgeuse(pFilEdgeuse); NER(pFilSolver) ;
-  SmFilletEdge       * pFilletEdge = NULL ;
-  SmFilletEdgeuse    * pNewEdgeuse = NULL ;
-  SmTArray<SmEdgeuse*> sFilEdgeuses ;
-
-  // Create a fillet vertex on one side of the edge
-  SmFilletVertex * pFV0   = new (m_pPseudoBrep) SmFilletVertex(this);
-  SmFace         * pFace0 = pFilEdgeuse->GetFace();
-  pFV0->SetPointClass(SM_PC_FACE, pFace0);
-  pFV0->SetFilletVertexType(SM_FV_ON_CROSS_SECTION);
-  m_vVertices.Add(pFV0);
-
-  // Create another fillet vertex on the other side of the edge
-  SmFilletVertex * pFV1   = new (m_pPseudoBrep) SmFilletVertex(this);
-  SmFace         * pFace1 = pFilEdgeuse->GetRadial()->GetFace();
-  pFV1->SetPointClass(SM_PC_FACE, pFace1);
-  pFV1->SetFilletVertexType(SM_FV_MATE);
-  pFV1->SetMate(0, pFV0);
-  pFV0->SetMate(0, pFV1);
-  m_vVertices.Add(pFV1);
-
-  // Corner consists of one fillet edge only (joining pFV0 & pFV1)
-  SER(SmFilletEdge::MakeFilletEdge(m_pPseudoBrep,    // in : target Brep to receive new topology objects
-                                   pFV0,             // in : start of new FilletEdge
-                                   pFV1,             // in : end   of new FilletEdge
-                                   pFilletEdge,      // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                   this));           // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                     //      NULL to ignore, default:[NULL]
-  pFilletEdge->SetFilletEdgeType(SM_FE_CROSS_SECTION);
-
-  //
-  SER( pFilletEdge->GetEdgeuses(sFilEdgeuses) );
-  if (sFilEdgeuses.GetSize() != 2) 
-    { SER(SM_ERR); }
-
-  //
-  SmFilletEdgeuse * pPrimEU     = (SmFilletEdgeuse*) pFilletEdge->GetPrimaryEdgeuse();
-  SmFilletGeom    * pFilletGeom = pFilSolver->GetFirstFilletGeom();
-  SmFilletEdgeuse * pMateEU     = (SmFilletEdgeuse*)pPrimEU->GetMate();
-  pPrimEU->SetFilletGeom(pFilletGeom);
-  pMateEU->SetFilletGeom(pFilletGeom);
-  m_vEdges.Add(pFilletEdge);
-
-  // Setup rails of fillet
-  ULONG lRailIndex = pFilSolver->FindIndexOfRailOnFace(pFace0);
-
-  // Need two edgeuses for each (closed-)rail
-  SER(pFilletGeom->MakeRailEdgeuse(m_pPseudoBrep, lRailIndex,   pFV0, pNewEdgeuse, SM_OT_SAME));
-  SER(pFilletGeom->MakeRailEdgeuse(m_pPseudoBrep, lRailIndex,   pFV0, pNewEdgeuse, SM_OT_OPPOSITE));
-
-  SER(pFilletGeom->MakeRailEdgeuse(m_pPseudoBrep, 1-lRailIndex, pFV1, pNewEdgeuse, SM_OT_SAME));
-  SER(pFilletGeom->MakeRailEdgeuse(m_pPseudoBrep, 1-lRailIndex, pFV1, pNewEdgeuse, SM_OT_OPPOSITE));
-
-  //
-  m_bBlending = TRUE;
-
-  // all done
-  return SM_SUCCESS;
-
-} // end SmFillet1x1Corner::MakeCornerTopology
-
-/*******************************************************************//**
-PURPOSE: If this FilletCorner has exactly two FilletSolvers, and their Edges
-   meet with G1 continuity, return the other one than the passed-in argument.
-
-NOTES:
-   If the passed-in FilletSolver is not one of ours, return Null with an error.
-   If there is only one FilletSolver, and it is the one passed in, return it.
-
-   This class of FilletCorner has only one FilletSolver, and it is G1 closed.
-***********************************************************************/
-SmFilletSolver * SmFillet1x1Corner::GetTangentFilletSolver( const SmFilletSolver *pFS )
-{
-  if ( m_pSolverEUs->GetSize() != 1 ) { SM_ASSERT_ERR; return NULL; }
-
-  SmEdgeuse      * pEU  = (*m_pSolverEUs)[0];
-  SmFilletSolver *pMyFS = m_pExecutive->GetFilletSolverOfEdgeuse( pEU );
-
-  if ( pMyFS != pFS ) { SM_ASSERT_ERR; return NULL; }
-
-  return pMyFS;
-
-} // end SmFillet1x1Corner::GetTangentFilletSolver
-
-/*******************************************************************//**
-PURPOSE: Create a 2x2 corner. When two edges are connected to this
-    corner vertex with G1-continuity, a cross section can be defined to
-    separate two G1-continuous fillets at this corner
-
-NOTES: Will only handle the tangency cases for now.
-***********************************************************************/
-SmFillet2x2Corner::SmFillet2x2Corner
-  (const SmContext      & crContext,
-   const SmVertex       * cpVertex,
-   SmTArray<SmEdgeuse*> * pSolverEUs,
-   SmTArray<SmEdgeuse*> * pAllEUs,
-   SmFilletExecutive    * pExec,
-   double                 dApproxTol3d,
-   double                 dTangencyTolRadians)
- : SmFillet1x1Corner(crContext,
-                     cpVertex,
-                     pSolverEUs,
-                     pAllEUs,
-                     pExec,
-                     dApproxTol3d,
-                     dTangencyTolRadians)
-{
-
-} // end SmFillet2x2Corner::SmFillet2x2Corner
-
-/*******************************************************************//**
-PURPOSE: Create 2x2 corner by specifying its boundary FilletCurves
-    and FilletPoints.
-
-NOTES:  The topology of a 2x2 corner consists of only one
-    fillet edge.
-***********************************************************************/
-SmStatus SmFillet2x2Corner::MakeCornerTopology()
-{
-  SmEdgeuse * pBaseEdgeuse1 = (*m_pSolverEUs)[0];
-  SmEdgeuse * pBaseEdgeuse2 = (*m_pSolverEUs)[1];
-  SmFilletSolver * pFilSolver1 = GetFilletExecutive()->
-      GetFilletSolverOfEdgeuse(pBaseEdgeuse1);
-  SmFilletSolver * pFilSolver2 = GetFilletExecutive()->
-      GetFilletSolverOfEdgeuse(pBaseEdgeuse2);
-  NER(pFilSolver1); NER(pFilSolver2);
-#ifdef SM_DEBUG_CODE
-  if (FALSE) {
-      smgfx_SetLook(1,2, 1,0,0); pBaseEdgeuse1->Draw(); sm_GraphicsLoop();
-      smgfx_SetLook(1,2, 1,0,0); pBaseEdgeuse2->Draw(); sm_GraphicsLoop();
-      sm_GraphicsLoop();
-  }
-#endif // SM_DEBUG_CODE
-
-  // Create a fillet vertex on one side of the edge
-  SmFilletVertex * pFV0 = new (m_pPseudoBrep) SmFilletVertex(this);
-  SmFace * pFace0 = pBaseEdgeuse1->GetFace();
-  pFV0->SetPointClass(SM_PC_FACE, pFace0);
-  pFV0->SetFilletVertexType(SM_FV_ON_CROSS_SECTION);
-  m_vVertices.Add(pFV0);
-  // Create another fillet vertex on the other side of the edge
-  SmFilletVertex * pFV1 = new (m_pPseudoBrep) SmFilletVertex(this);
-  SmFace * pFace1 = pBaseEdgeuse1->GetRadial()->GetFace();
-  pFV1->SetPointClass(SM_PC_FACE, pFace1);
-  pFV1->SetFilletVertexType(SM_FV_MATE);
-  pFV1->SetMate(0, pFV0);
-  pFV0->SetMate(0, pFV1);
-  m_vVertices.Add(pFV1);
-
-  // Corner consists of one fillet edge only (joining pFV0 & pFV1)
-  SmFilletEdge * pFilletEdge = NULL;
-  SER(SmFilletEdge::MakeFilletEdge(m_pPseudoBrep, // in : target Brep to receive new topology objects
-                                   pFV0,          // in : start of new FilletEdge
-                                   pFV1,          // in : end   of new FilletEdge
-                                   pFilletEdge,   // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                   this));        // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                  //      NULL to ignore, default:[NULL]
-  pFilletEdge->SetFilletEdgeType(SM_FE_CROSS_SECTION);
-  SmFilletEdgeuse * pPrimEU = (SmFilletEdgeuse*)
-      pFilletEdge->GetPrimaryEdgeuse();
-  SmFilletGeom * pFilletGeom1 = pFilSolver1->GetFirstFilletGeom();
-  pPrimEU->SetFilletGeom(pFilletGeom1);
-  SmFilletEdgeuse * pMateEU = (SmFilletEdgeuse*)pPrimEU->GetMate();
-  SmFilletGeom * pFilletGeom2 = pFilSolver2->GetFirstFilletGeom();
-  pMateEU->SetFilletGeom(pFilletGeom2);
-  m_vEdges.Add(pFilletEdge);
-
-  // Setup rails of fillet
-  SmFilletEdgeuse * pNewEdgeuse = NULL;
-  ULONG lRailIndex = pFilSolver1->FindIndexOfRailOnFace(pFace0);
-  SER(pFilletGeom1->MakeRailEdgeuse(m_pPseudoBrep,
-      lRailIndex,pFV0,pNewEdgeuse));
-  SER(pFilletGeom1->MakeRailEdgeuse(m_pPseudoBrep,
-      1-lRailIndex,pFV1,pNewEdgeuse));
-  ULONG lOtherRailIndex = pFilSolver2->FindIndexOfRailOnFace(pFace0);
-  SER(pFilletGeom2->MakeRailEdgeuse(m_pPseudoBrep,
-      lOtherRailIndex,pFV0,pNewEdgeuse));
-  SER(pFilletGeom2->MakeRailEdgeuse(m_pPseudoBrep,
-      1-lOtherRailIndex,pFV1,pNewEdgeuse));
-
-  m_bBlending = TRUE;
-
-  return SM_SUCCESS;
-
-} // end SmFillet2x2Corner::MakeCornerTopology
-
-/*******************************************************************//**
-PURPOSE: If this FilletCorner has exactly two FilletSolvers, and their Edges
-   meet with G1 continuity, return the other one than the passed-in argument.
-
-NOTES:
-   If the passed-in FilletSolver is not one of ours, return Null with an error.
-   If there is only one FilletSolver, and it is the one passed in, return it.
-
-   This class of FilletCorner has two FilletSolvers, and they meet with G1 continuity.
-***********************************************************************/
-SmFilletSolver * SmFillet2x2Corner::GetTangentFilletSolver( const SmFilletSolver *pFS )
-{
-  if ( m_pSolverEUs->GetSize() != 2 )  { SM_ASSERT_ERR; return NULL; }
-
-  SmFilletSolver * pFS1 = m_pExecutive->GetFilletSolverOfEdgeuse( (*m_pSolverEUs)[0] );
-  SmFilletSolver * pFS2 = m_pExecutive->GetFilletSolverOfEdgeuse( (*m_pSolverEUs)[1] );
-
-  if ( pFS1 == pFS )
-    { return pFS2; }
-  if ( pFS2 == pFS )
-    { return pFS1; }
-
-  SM_ASSERT_ERR; return NULL;
-
-} // end SmFillet2x2Corner::GetTangentFilletSolver
-
-/*******************************************************************//**
 PURPOSE: A 3x2 corner whose two filleted edges has different edge convexity
     such as in L-shaped box case.
 
@@ -4871,13 +4542,6 @@ iDebugLevel = DebugLevel();
         SM_SWAP_PTR(SmEdgeuse,pConcaveEdgeuse,pConvexEdgeuse);
     }
 
-    // Get Solvers
-    SmFilletExecutive * pExec = GetFilletExecutive();
-    SmFilletSolver * pConvexSolver = pExec->GetFilletSolverOfEdgeuse(pConvexEdgeuse);
-    SmFilletSolver * pConcaveSolver = pExec->GetFilletSolverOfEdgeuse(pConcaveEdgeuse);
-    SmFilletGeom * pConvexFG = pConvexSolver->GetFirstFilletGeom();
-    SmFilletGeom * pConcaveFG = pConcaveSolver->GetFirstFilletGeom();
-
     SmEdgeuse * pCurrEU = NULL;
     for (ULONG i=0; i<3; i++) {
         SmEdgeuse * pEU = (*m_pAllEUs)[i];
@@ -4888,31 +4552,64 @@ iDebugLevel = DebugLevel();
     }
     NER(pCurrEU);
 
+    // SolidCraft: the roles of the two filleted edges follow the convexity of the unfilleted
+    // edge (pCurrEU). The fillet of the other convexity than pCurrEU has its rail on the face
+    // they share cross pCurrEU itself (pCrossEU); the fillet of the same convexity has its rail
+    // cross pCurrEU extended past the vertex (pExtEU), into the face it shares with pCurrEU, and
+    // the face pCurrEU shares with pCrossEU is extended to meet it. In an L-shaped box pCurrEU is
+    // convex (the riser's front edge, running up from the vertex), so pCrossEU is the concave
+    // edge; where pCurrEU is concave (a boss standing over a box's side face, its line on that
+    // face running down from the vertex), pCrossEU is the convex edge, and taking the concave one
+    // for it put that fillet's rail on a crossing of pCurrEU that does not exist.
+    // SolidCraft: pCurrEU may be an edge whose faces meet tangentially at the vertex (a block's
+    // side running tangent into a cylinder, the block's top meeting the cylinder's wall above
+    // it): it has no convexity, and IsConvexRadialSector() on it reads only the sign of the
+    // rounding in the geometry (its notes: a G1 edge needs the step off). The roles then follow
+    // what they stand for: pCrossEU is the filleted edge whose face shared with pCurrEU turns
+    // less than half a turn between them at the vertex, so that its rail on that face runs
+    // into pCurrEU; on the other one's face pCurrEU's extension past the vertex runs on.
+    SmBoolean bCurrConcave = pCurrEU->IsConvexRadialSector(5);
+    if ( sm_CheckTangentialEdgeuseAtVertex( pCurrEU, m_cpVertex, SM_RAD2DEG( GetTangencyTolRadians() ) ) ) {
+        bCurrConcave = ! sm_CheckFaceComplimentaryCornerConcavity( m_cpVertex, pConvexEdgeuse, pCurrEU, NULL, iDebugLevel );
+    }
+    SmEdgeuse * pCrossEU = pConcaveEdgeuse;
+    SmEdgeuse * pExtEU   = pConvexEdgeuse;
+    if (bCurrConcave == TRUE) {
+        SM_SWAP_PTR(SmEdgeuse,pCrossEU,pExtEU);
+    }
+
+    // Get Solvers
+    SmFilletExecutive * pExec = GetFilletExecutive();
+    SmFilletSolver * pExtSolver = pExec->GetFilletSolverOfEdgeuse(pExtEU);
+    SmFilletSolver * pCrossSolver = pExec->GetFilletSolverOfEdgeuse(pCrossEU);
+    SmFilletGeom * pExtFG = pExtSolver->GetFirstFilletGeom();
+    SmFilletGeom * pCrossFG = pCrossSolver->GetFirstFilletGeom();
+
     ULONG lRailIndex, lOtherRailIndex;
     // This edgeuse is 'in-between' two filletted edgeuses
     SmFilletVertex * pFV0 = new (m_pPseudoBrep) SmFilletVertex(this);
-    SmEdgeuse * pSideEU = sm_FindSideEdgeuse(pConcaveEdgeuse, pCurrEU, iDebugLevel );
-    lRailIndex = pConcaveSolver->FindIndexOfRailXSideEdgeuse(pSideEU);
+    SmEdgeuse * pSideEU = sm_FindSideEdgeuse(pCrossEU, pCurrEU, iDebugLevel );
+    lRailIndex = pCrossSolver->FindIndexOfRailXSideEdgeuse(pSideEU);
     SmFilletEdgeuse * pNewEdgeuse = NULL;
-    SER(pConcaveFG->MakeRailEdgeuse(m_pPseudoBrep,lRailIndex,pFV0,pNewEdgeuse));
+    SER(pCrossFG->MakeRailEdgeuse(m_pPseudoBrep,lRailIndex,pFV0,pNewEdgeuse));
     pFV0->SetPointClass(SM_PC_EDGEUSE, pSideEU);
     pFV0->SetFilletVertexType(SM_FV_RAIL_X_EDGEUSE);
     m_vVertices.Add(pFV0);
 
     SmFace * pCommonFace = sm_GetFaceByTwoEdgeuses(
-        pConvexEdgeuse,pConcaveEdgeuse,pCurrEU);
+        pExtEU,pCrossEU,pCurrEU);
     SmFilletVertex * pFV1 = new (m_pPseudoBrep) SmFilletVertex(this);
     pFV1->SetPointClass(SM_PC_FACE, pCommonFace);
     pFV1->SetFilletVertexType(SM_FV_RAIL_X_RAIL);
     m_vVertices.Add(pFV1);
 
     // Setup rails of fillet
-    lRailIndex = pConcaveSolver->FindIndexOfRailOnFace(pCommonFace);
-    SER(pConcaveFG->MakeRailEdgeuse(m_pPseudoBrep,lRailIndex,pFV1,pNewEdgeuse));
-    lOtherRailIndex = pConvexSolver->FindIndexOfRailOnFace(pCommonFace);
-    SER(pConvexFG->MakeRailEdgeuse(m_pPseudoBrep,lOtherRailIndex,pFV1,pNewEdgeuse));
+    lRailIndex = pCrossSolver->FindIndexOfRailOnFace(pCommonFace);
+    SER(pCrossFG->MakeRailEdgeuse(m_pPseudoBrep,lRailIndex,pFV1,pNewEdgeuse));
+    lOtherRailIndex = pExtSolver->FindIndexOfRailOnFace(pCommonFace);
+    SER(pExtFG->MakeRailEdgeuse(m_pPseudoBrep,lOtherRailIndex,pFV1,pNewEdgeuse));
 
-    // Make a cross section on the concave fillet
+    // Make a cross section on the crossing fillet
     SmFilletEdge * pFE0 = NULL;
     SER(SmFilletEdge::MakeFilletEdge(m_pPseudoBrep, // in : target Brep to receive new topology objects
                                      pFV0,          // in : start of new FilletEdge
@@ -4922,18 +4619,18 @@ iDebugLevel = DebugLevel();
                                                     //      NULL to ignore, default:[NULL]
     pFE0->SetFilletEdgeType(SM_FE_CROSS_SECTION);
     SmFilletEdgeuse * pPrimEU = (SmFilletEdgeuse*)pFE0->GetPrimaryEdgeuse();
-    pPrimEU->SetFilletGeom(pConcaveFG);
+    pPrimEU->SetFilletGeom(pCrossFG);
     m_vEdges.Add(pFE0);
 
     SmFilletVertex * pFV2 = new (m_pPseudoBrep) SmFilletVertex(this);
     pFV2->SetFilletVertexType(SM_FV_RAIL_X_EXTENDED_EDGEUSE);
-    pSideEU = sm_FindSideEdgeuse(pConvexEdgeuse,pCurrEU, iDebugLevel );
-    lRailIndex = pConvexSolver->FindIndexOfRailXSideEdgeuse(pSideEU);
-    SER(pConvexFG->MakeRailEdgeuse(m_pPseudoBrep,lRailIndex,pFV2,pNewEdgeuse));
+    pSideEU = sm_FindSideEdgeuse(pExtEU,pCurrEU, iDebugLevel );
+    lRailIndex = pExtSolver->FindIndexOfRailXSideEdgeuse(pSideEU);
+    SER(pExtFG->MakeRailEdgeuse(m_pPseudoBrep,lRailIndex,pFV2,pNewEdgeuse));
     pFV2->SetPointClass(SM_PC_EDGEUSE, pSideEU);
     m_vVertices.Add(pFV2);
 
-    // Make a cross section on the conveex fillet
+    // Make a cross section on the extended fillet
     SmFilletEdge * pFE1 = NULL;
     SER(SmFilletEdge::MakeFilletEdge(m_pPseudoBrep, // in : target Brep to receive new topology objects
                                      pFV1,          // in : start of new FilletEdge
@@ -4943,7 +4640,7 @@ iDebugLevel = DebugLevel();
                                                     //      NULL to ignore, default:[NULL]
     pFE1->SetFilletEdgeType(SM_FE_CROSS_SECTION);
     SmFilletEdgeuse * pPrimEU1 = (SmFilletEdgeuse*)pFE1->GetPrimaryEdgeuse();
-    pPrimEU1->SetFilletGeom(pConvexFG);
+    pPrimEU1->SetFilletGeom(pExtFG);
     m_vEdges.Add(pFE1);
 
     SmFilletVertex * pFV3 = new (m_pPseudoBrep) SmFilletVertex(this);
@@ -4952,7 +4649,7 @@ iDebugLevel = DebugLevel();
     m_vVertices.Add(pFV3);
 
     // Find the original face
-    SmFace * pOrigFace = sm_GetFaceByTwoEdgeuses(pCurrEU,pConvexEdgeuse,NULL);
+    SmFace * pOrigFace = sm_GetFaceByTwoEdgeuses(pCurrEU,pExtEU,NULL);
     // Make an extended edge
     SmFilletEdge * pFE2 = NULL;
     SER(SmFilletEdge::MakeFilletEdge(m_pPseudoBrep, // in : target Brep to receive new topology objects
@@ -4981,8 +4678,8 @@ iDebugLevel = DebugLevel();
 
     // Extend the Side Surface if necessary
     double dExtDist = sm_FindSurfaceExtensionDistAtCorner(
-        pConvexEdgeuse,pConvexSolver,m_cpVertex);
-    SmFace * pOrigFace1 = sm_GetFaceByTwoEdgeuses(pCurrEU,pConcaveEdgeuse,NULL);
+        pExtEU,pExtSolver,m_cpVertex);
+    SmFace * pOrigFace1 = sm_GetFaceByTwoEdgeuses(pCurrEU,pCrossEU,NULL);
     SmSurface * pSurface = pOrigFace1->GetSurface(); NER(pSurface);
     SmSurface * pNewSurface = NULL;
     SER(pSurface->CreateExtendedSurface(m_crContext,dExtDist,SM_CT_G1,pNewSurface));
@@ -5016,8 +4713,6 @@ SmFilletNx1ClosedCorner::SmFilletNx1ClosedCorner
  : SmFilletCorner(crContext,cpVertex,pSolverEUs,pAllEUs,pExec,
                   dApproxTol3d,dTangencyTolRadians)
 {
-    m_bG1Case = FALSE;
-
 } // end SmFilletNx1ClosedCorner::SmFilletNx1ClosedCorner constructor
 
 /*******************************************************************//**
@@ -5031,15 +4726,11 @@ PURPOSE: Creates and connects all the FilletTopology objects needed to
     in the count of total edges, so the common case of a single side edge is called
     2x1 Closed.  In the 2x1 Closed case, the topology consists of 2 Fillet Vertices,
     the 1st located on the seamEdge and the 2nd on a face, connected by one fillet edge.
-    In the 3x1 Closed case, there are two side edges.  If the two side Edges are on
-    opposite sides of the filleted Edge, the topology will depend on the geometry:
-    whether or not the rolling ball hits both side Edges at the same location (of the ball).
-    That is handled in AdjustTangentCorner(), when we know the geometry.
-    In the 3x1 Closed case, we create a FilletVertex on each of the two side Edges.
+    In the 3x1 Closed case, there are two side edges, and we create a FilletVertex
+    on each of the two side Edges.
 
-    When the to-be-filleted edge is G1 closed the shape of the new fillet edge
-    is to be computed the same as the crossSection shape of the edge's filletSurface, else the
-    shape is to be determined by a fillet/fillet intersection.
+    The filleted edge meets itself at an angle (a G1-closed edge is the blend corner's
+    Join), so the shape of the new fillet edge is a fillet/fillet intersection.
 
     Only defines topology objects and their connections - does not define any
     shape information.
@@ -5049,15 +4740,13 @@ NOTES:
     - connects the Fillet Vertex to the railCurve with 2 FilletEdgeuse->FilletVertexuse pairs
     - adds two FilletEdgeuse->FilletVertexuse pair for each filletVertex because the railCurve is closed
   . Creates 2nd FilletVertex (added to m_vVertices list) on the opposing face
-    - When FilletEdge is G1 closed - sets VertexType == SM_FV_MATE
-      else                                VertexType == SM_FV_FILLET_X_FILLET
+    - sets VertexType == SM_FV_FILLET_X_FILLET
     - connects the Fillet Vertex to the railCurve with 2 FilletEdgeuse->FilletVertexuse pairs
     - adds two FilletEdgeuse->FilletVertexuse pair for each filletVertex because the railCurve is closed
   . Creates 1 FilletEdge connecting the 2 new FilletVertices
     - creates 2 pairs of FilletEdgeuse->FilletVertexuse object to connect the new edge
       to the 2 new vertices.
-    - When FilletEdge is G1 closed - sets EdgeType == SM_FE_CROSS_SECTION
-      else                                EdgeType == SM_FE_FILLET_X_FILLET
+    - sets EdgeType == SM_FE_FILLET_X_FILLET
     - adds new FilletEdge to corner m_vEdges list.
 
 ***********************************************************************/
@@ -5067,6 +4756,7 @@ int iDebugLevel = 0;
 #ifdef SM_DEBUG_CODE
 iDebugLevel = DebugLevel();
 #endif // SM_DEBUG_CODE
+SM_REF1(iDebugLevel);
 
   // locals - 1st outward bound fillet edgeuse, its FilletSolver, and its 1st fillet geom
   SmEdgeuse      * pFilEdgeuse   = (*m_pSolverEUs)[0];
@@ -5075,12 +4765,8 @@ iDebugLevel = DebugLevel();
   ULONG            lTotalEUs     = m_pAllEUs->GetSize();
   SmEdgeuse      * pSeamEdgeuse  = NULL;
 
-  // Test if the filleted edge is G1-closed
-  SmEdge         * pFilletedEdge = pFilEdgeuse->GetEdge();
-
-  m_bG1Case = sm_TestG1Continuity(m_cpVertex,pFilletedEdge,pFilletedEdge,
-                                  SM_RAD2DEG(m_dTangencyTolRadians),
-                                  NULL, iDebugLevel );
+  // The filleted edge is not G1-closed: SmFilletCorner::Create makes a G1-closed edge the
+  // blend corner's Join (the same sm_TestG1Continuity, at the same tolerance).
 
   // for all edges connected to this corner
   for (ULONG ii=0; ii<lTotalEUs; ii++)
@@ -5151,18 +4837,8 @@ iDebugLevel = DebugLevel();
       // remember that this vertex connects to the face
       pFV->SetPointClass(SM_PC_FACE, pFace);
 
-      // for tangent closed-curves - vertex is mate to vertex on seam edge
-      if (m_bG1Case)
-        {
-          // record that the two vertices are mates
-          pFV->SetFilletVertexType(SM_FV_MATE);
-          pFV->SetMate(0, pFV0);
-          pFV0->SetMate(0, pFV);
-        }
-      else // for non-g1 closed curves - vertex is located at fillet/fillet intersection
-        {
-          pFV->SetFilletVertexType(SM_FV_FILLET_X_FILLET);
-        }
+      // the vertex is located at the fillet/fillet intersection
+      pFV->SetFilletVertexType(SM_FV_FILLET_X_FILLET);
 
       // add the 2nd vertex to the FilletCorner list
       m_vVertices.Add(pFV);
@@ -5178,12 +4854,6 @@ iDebugLevel = DebugLevel();
 
     } // end lTotalEUs == 2 check
 
-  // This case is now implemented, at least for lTotalUEs == 3.  [B660]
-  // It is handled in AdjustTangentCorner(), when we know more about the geometry.
-  //   else
-  //     { SM_DBG_WARN(_T("Unexpected closed curve corner filleting case\n")) ; }
-  //
-
   // Corner consists of one fillet edge only (joining pFV0 & pFV1)
   SmFilletVertex * pFV1        = m_vVertices[1];
   SmFilletEdge   * pFilletEdge = NULL;
@@ -5196,20 +4866,11 @@ iDebugLevel = DebugLevel();
                                    pFilletEdge,    // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
                                    this));         // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
                                                    //      NULL to ignore, default:[NULL]
-  // when edge is tangent closed - edge shape = filletSurface crossSection shape
-  if (m_bG1Case)
-    {
-      // edge shape is same as filletSurface crossSection shape
-      pFilletEdge->SetFilletEdgeType(SM_FE_CROSS_SECTION);
-      m_bBlending = TRUE;
-    }
-  else // else closed curve not tangent - edge Shape = fillet/fillet intersection
-    {
-      // Split the fillet so that we don't self-intersection
-      pFilletGeom->SetSplitFlag(TRUE);
-      pFilletEdge->SetFilletEdgeType(SM_FE_FILLET_X_FILLET);
-      m_bBlending = FALSE;
-    }
+  // the closed curve is not tangent - edge Shape = fillet/fillet intersection
+  // Split the fillet so that we don't self-intersection
+  pFilletGeom->SetSplitFlag(TRUE);
+  pFilletEdge->SetFilletEdgeType(SM_FE_FILLET_X_FILLET);
+  m_bBlending = FALSE;
 
   // get edgeuses marking filletEdge sector
   SmTArray<SmEdgeuse*> sFilEdgeuses;
@@ -5230,35 +4891,6 @@ iDebugLevel = DebugLevel();
 
 } // end SmFilletNx1ClosedCorner::MakeCornerTopology
 
-/*******************************************************************//**
-PURPOSE: If this FilletCorner has exactly two FilletSolvers, and their Edges
-   meet with G1 continuity, return the other one than the passed-in argument.
-
-NOTES:
-   If the passed-in FilletSolver is not one of ours, return Null with an error.
-   If there is only one FilletSolver, and it is the one passed in, return it.
-
-   This class of FilletCorner has only one FilletSolver, not necessarily G1.
-***********************************************************************/
-SmFilletSolver * SmFilletNx1ClosedCorner::GetTangentFilletSolver( const SmFilletSolver *pFS )
-{
-  if ( m_pSolverEUs->GetSize() != 1 )  { SM_ASSERT_ERR; return NULL; }
-
-  SmEdgeuse      * pEdgeUse   = (*m_pSolverEUs)[0];
-  SmFilletSolver * pFilSolver = m_pExecutive->GetFilletSolverOfEdgeuse( pEdgeUse );
-
-  if ( pFilSolver != pFS )  { SM_ASSERT_ERR; return NULL; }
-
-  // We have to test its continuity.
-  SmEdge *pEdge = pEdgeUse->GetEdge();
-  int iDebugLevel = 0;  // ... enhance as needed.
-  double dTangencyTolDeg = SM_RAD2DEG( m_dTangencyTolRadians );
-  if ( sm_TestG1Continuity( m_cpVertex, pEdge, pEdge, dTangencyTolDeg, NULL, iDebugLevel ))
-    { return pFilSolver; }
-
-  return NULL; // not an error.
-
-} // end SmFilletNx1ClosedCorner::GetTangentFilletSolver
 
 
 /*******************************************************************//**
@@ -5298,12 +4930,6 @@ NOTES:
 SmStatus SmFilletConcaveNxNCorner::MakeCornerTopology
   ()
 {
-    // Determine if this is a setback corner
-    if (m_dSetBackDist > this->m_dThisApproxTol3d*100.0) {
-        // Let SmFilletConvexNxNCorner handle setbacks
-        return SmFilletConvexNxNCorner::MakeCornerTopology();
-    }
-
 int iDebugLevel = 0;
 #ifdef SM_DEBUG_CODE
     iDebugLevel = DebugLevel();
@@ -5744,12 +5370,6 @@ NOTES:
 SmStatus SmFilletConvexNxNCorner::MakeCornerTopology
   ()
 {
-    // Determine if this is a setback corner
-    SmBoolean bIsSetBack = FALSE;
-    if (m_dSetBackDist > this->m_dThisApproxTol3d*100.0) {
-        bIsSetBack = TRUE;
-    }
-
 #ifdef SM_DEBUG_CODE
     if ( DebugLevel() > 0 ) {
         for (ULONG f=0; f<m_pAllEUs->GetSize(); f++) {
@@ -5790,31 +5410,14 @@ SmStatus SmFilletConvexNxNCorner::MakeCornerTopology
 
         SmFilletGeom * pPrevFilletGeom = pPrevFilSolver->GetFirstFilletGeom();
         SmFilletGeom * pCurrFilletGeom = pCurrFilSolver->GetFirstFilletGeom();
-        if (!bIsSetBack) { // Regular corner, no setbacks
-            pCurrFV->SetFilletVertexType(SM_FV_RAIL_X_RAIL);
-            // Setup rails of fillets
-            SmFilletEdgeuse * pNewEdgeuse = NULL;
-            SER(pPrevFilletGeom->MakeRailEdgeuse(m_pPseudoBrep,
-                lPrevRailIndex,pCurrFV,pNewEdgeuse));
-            SER(pCurrFilletGeom->MakeRailEdgeuse(m_pPseudoBrep,
-                lCurrRailIndex,pCurrFV,pNewEdgeuse));
-            m_vVertices.Add(pCurrFV);
-        }
-        else {
-            // Will insert a new vertex before curr vert
-            SmFilletVertex * pNewV = new (m_pPseudoBrep) SmFilletVertex(this);
-            pNewV->SetPointClass(SM_PC_FACE, pCommonFace);
-            pNewV->SetFilletVertexType(SM_FV_MATE);
-            m_vVertices.Add(pNewV);
-            m_vVertices.Add(pCurrFV);
-            // Setup rails of fillets
-            SmFilletEdgeuse * pNewEdgeuse = NULL;
-            SER(pPrevFilletGeom->MakeRailEdgeuse(m_pPseudoBrep,
-                lPrevRailIndex,pNewV,pNewEdgeuse));
-            pCurrFV->SetFilletVertexType(SM_FV_SETBACK);
-            SER(pCurrFilletGeom->MakeRailEdgeuse(m_pPseudoBrep,
-                lCurrRailIndex,pCurrFV,pNewEdgeuse));
-        }
+        pCurrFV->SetFilletVertexType(SM_FV_RAIL_X_RAIL);
+        // Setup rails of fillets
+        SmFilletEdgeuse * pNewEdgeuse = NULL;
+        SER(pPrevFilletGeom->MakeRailEdgeuse(m_pPseudoBrep,
+            lPrevRailIndex,pCurrFV,pNewEdgeuse));
+        SER(pCurrFilletGeom->MakeRailEdgeuse(m_pPseudoBrep,
+            lCurrRailIndex,pCurrFV,pNewEdgeuse));
+        m_vVertices.Add(pCurrFV);
         pPrevFilSolver = pCurrFilSolver;
         pPrevEU = pCurrEU;
     }
@@ -5852,24 +5455,6 @@ SmStatus SmFilletConvexNxNCorner::MakeCornerTopology
         // Get next vertex
         lCount = (lCount+1)%lTotal;
         SmFilletVertex * pNextFV = m_vVertices[lCount];
-        if (bIsSetBack) {
-            // Insert a rail-rail-interpo edge
-            SmFilletEdge * pE = NULL;
-            SER(SmFilletEdge::MakeFilletEdge(m_pPseudoBrep, // in : target Brep to receive new topology objects
-                                             pCurrFV,       // in : start of new FilletEdge
-                                             pNextFV,       // in : end   of new FilletEdge
-                                             pE,            // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                             this));        // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                            //      NULL to ignore, default:[NULL]
-            pE->SetFilletEdgeType(SM_FE_RAIL_RAIL_INTERPOLATION);
-            SmFace *pCommonFace = SM_CAST_PTR(SmFace,
-                pNextFV->GetPointClassObject()); NER(pCommonFace);
-            pE->SetOriginalFace(pCommonFace);
-            m_vEdges.Add(pE);
-            pCurrFV = pNextFV;
-            lCount = (lCount+1)%lTotal;
-            pNextFV = m_vVertices[lCount];
-        }
         SmFilletEdge * pFilletEdge = NULL;
         if (m_bBevel) {
             // Make edge from curr vert to center
@@ -5898,10 +5483,6 @@ SmStatus SmFilletConvexNxNCorner::MakeCornerTopology
             SmFilletEdgeuse * pPrimEU = (SmFilletEdgeuse*)pFilletEdge->
                 GetPrimaryEdgeuse();
             pPrimEU->SetFilletGeom(pCurrFilletGeom);
-            if (bIsSetBack) {
-                pCurrFV->SetMate(0,pNextFV);
-                pNextFV->SetMate(0,pCurrFV);
-            }
         }
         m_vEdges.Add(pFilletEdge);
 
@@ -5919,2919 +5500,7 @@ SmStatus SmFilletConvexNxNCorner::MakeCornerTopology
 
 
 
-/*******************************************************************//**
-PURPOSE: Create Nx1 corner where only one edge was filleted.
 
-NOTES:
-***********************************************************************/
-SmFilletNx1Corner::SmFilletNx1Corner
-  (const SmContext      & crContext,
-   const SmVertex       * cpVertex,
-   SmTArray<SmEdgeuse*> * pSolverEUs,
-   SmTArray<SmEdgeuse*> * pAllEUs,
-   SmFilletExecutive    * pExec,
-   double                 dApproxTol3d,
-   double                 dTangencyTolRadians)
- : SmFilletCorner(crContext,
-                  cpVertex,
-                  pSolverEUs,
-                  pAllEUs,
-                  pExec,
-                  dApproxTol3d,
-                  dTangencyTolRadians)
-{
-
-} // end SmFilletNx1Corner::SmFilletNx1Corner constructor
-
-/*******************************************************************//**
-PURPOSE: For Nx1 cases, if two face-normals at the corner are parallel,
-    we'll classify it as degenerate corner
-
-NOTES:
-***********************************************************************/
-SmBoolean SmFilletNx1Corner::CheckNx1Degeneracy
-  (const SmVertex * pCornerVert,
-   SmEdgeuse * pFilEdgeuse)
-{
-    // Get adjacent edgeuses of filleted edgeuse
-    SmEdgeuse * pSideEU1 = pFilEdgeuse->GetCWEdgeuse();
-    SmEdgeuse * pSideEU2 = pFilEdgeuse->GetRadial()->GetCCWEdgeuse();
-    if (pSideEU1 == pSideEU2) {
-        // likely 2x1 case
-        pSideEU2 = pSideEU1->GetMate();
-    }
-
-    SmVertex * pVert1 = pSideEU1->GetVertexuse()->GetVertex();
-    SmExtent1d sIvl1 = pSideEU1->GetEdge()->GetInterval();
-    double dT1 = sIvl1.GetMax();
-    if (   (pVert1 == pCornerVert && pSideEU1->GetOrientation() == SM_OT_SAME)
-        || (pVert1 != pCornerVert && pSideEU1->GetOrientation() == SM_OT_OPPOSITE)) 
-      {
-        dT1 = sIvl1.GetMin();
-      }
-    SmVertex * pVert2 = pSideEU2->GetVertexuse()->GetVertex();
-    SmExtent1d sIvl2 = pSideEU2->GetEdge()->GetInterval();
-    double dT2 = sIvl2.GetMax();
-    if (   (pVert2 == pCornerVert && pSideEU2->GetOrientation() == SM_OT_SAME)
-        || (pVert2 != pCornerVert && pSideEU2->GetOrientation() == SM_OT_OPPOSITE)) 
-      {
-        dT2 = sIvl2.GetMin();
-      }
-    SmVector3d sBinPnt1, sBinPnt2, sBinVec1, sBinVec2, sFaceuseNormal1, sFaceuseNormal2;
-    SER(pSideEU1->EvaluateBinormal(dT1,FALSE,sBinPnt1,sBinVec1,NULL,&sFaceuseNormal1));
-    SER(pSideEU2->EvaluateBinormal(dT2,FALSE,sBinPnt2,sBinVec2,NULL,&sFaceuseNormal2));
-    // Check if faceuse normals are parallel to each other
-#ifdef SM_DEBUG_CODE
-    int iDebugLevel = 0; // Note: can't call DebugLevel() from a static method.
-    if ( iDebugLevel > 0 ) {
-        smgfx_SetLook(4,10, 1,0,0); pSideEU1->Draw(); sm_GraphicsLoop();
-        smgfx_SetLook(4,10, 0,0,1); sFaceuseNormal1.Draw(&sBinPnt1); sm_GraphicsLoop();
-        smgfx_SetLook(4,10, 0,1,0); pSideEU2->Draw(); sm_GraphicsLoop();
-        sFaceuseNormal2.Draw(&sBinPnt2); sm_GraphicsLoop();
-        sm_GraphicsLoop();
-    }
-#endif // SM_DEBUG_CODE
-    if (sFaceuseNormal1.IsParallelTo(sFaceuseNormal2,SM_EFF_ZERO_SQRT)) {
-        return TRUE;
-    }
-    return FALSE;
-
-} // end SmFilletNx1Corner::CheckNx1Degeneracy
-
-/*******************************************************************//**
-PURPOSE: Create 'end' patch from extended 'side-face' of original brep
-    if needed and create Face (and Edges and Verts) in m_pFilletBrep 
-    from m_vSurfaces with call 
-      SmFilletCorner::CreateCornerPatch() or
-      SmFilletCorner::CreateEndPatch()
-
-NOTES:
-***********************************************************************/
-SmStatus SmFilletNx1Corner::CreateCornerPatch
-  ()
-{
-  if (m_vEdges.GetSize() == 3)
-    {
-      if(m_bExtendedSurfacePatch)
-           { SER(CreateEndPatch()); }
-      else
-           { SER(SmFilletCorner::CreateCornerPatch()); }
-    }
-  else
-    { SM_DBG_WARN(_T("Unexpected SmFilletNx1Corner endFace construction case")) ; }
-
-  return SM_SUCCESS;
-
-} // end SmFilletNx1Corner::CreateCornerPatch
-
-/*******************************************************************//**
-PURPOSE: Calculate the corner edges' geometry, see
-    SmFilletCorner::CalcCornerEdgeGeom().
-
-NOTES: At a corner of uniform convexity and at most three edges, the one
-  corner edge is the end rib: where the fillet meets the end face between
-  the two side edges, from one rail's end on its side edge to the other's
-  (MakeCornerTopology). Each rail stays on its face, or rolls over a
-  tangent edge, up to the fillet's ends, unless it overflows a cliff
-  beside the edge (SmFilletSolver::RailsFitTheirFaces, LeavesPastAnEnd:
-  a concave fillet is refused then, a convex one a cliff overflow). A rail can
-  still miss its side edge (SM_FV_NO_INT_RAIL_EU), two ways:
-  - The side edge ends within the fillet's width (a top round's end arc
-    shortened by another round): the rail runs past the end face onto the
-    faces beyond the side edge's other end, so the fillet ends on more
-    than one face. As at a corner of more than three edges, there is no
-    end rib then: the global merge cuts the fillet off where it meets the
-    body.
-  - The side edge lies on the fillet's other side surface too (a hole's
-    rim split at a vertex): it continues the filleted edge between the
-    fillet's own two surfaces, the rail runs alongside it and the fillet
-    runs on past the vertex, crossing no end face. No end exists there,
-    and the end rib fails as before.
-  In a cliff overflow (SmFilletExecutive::m_bCliffOverflow) the fillet's
-  faces continue past their cliffs, and so does the end face: a rail that
-  misses its side edge there (either rail, or both), but for the second
-  way, runs past the side edge's far end on its face's continuation. The
-  end rib is left out then and the fillet uncut there; the executive cuts
-  it off by the end face's surface continued (SubtractRemovalRegion).
-***********************************************************************/
-SmStatus SmFilletNx1Corner::CalcCornerEdgeGeom
-  ()
-{
-  SmFilletEdge * pEndRib = ( m_vEdges.GetSize() == 1 ) ? m_vEdges[0] : NULL;
-  if (   pEndRib != NULL
-      && pEndRib->GetFilletEdgeType() == SM_FE_FILLET_X_SIDE_FACE )
-    {
-      SmFilletVertex * pStartFV = (SmFilletVertex*)pEndRib->GetVertex();
-      NER(pStartFV);
-      SmFilletVertex * pEndFV   = (SmFilletVertex*)pEndRib->GetOtherVertex( pStartFV );
-      NER(pEndFV);
-      SmFilletVertex * pMissFV  =   ( pStartFV->GetStatus() == SM_FV_NO_INT_RAIL_EU && pEndFV->IsProcessed() )
-                                  ? pStartFV
-                                  : (   ( pEndFV->GetStatus() == SM_FV_NO_INT_RAIL_EU && pStartFV->IsProcessed() )
-                                      ? pEndFV
-                                      : NULL );
-      // SolidCraft change: in a cliff overflow a rail can miss its side edge with the
-      // intersection clamped to the side edge's far vertex, off the fillet: that is a miss too;
-      // and both rails can miss.
-      SmBoolean abMiss[2] = { pStartFV->GetStatus() == SM_FV_NO_INT_RAIL_EU, pEndFV->GetStatus() == SM_FV_NO_INT_RAIL_EU };
-      if ( m_pExecutive->GetCliffOverflow() )
-        {
-          SmFilletEdgeuse * pRibEU = (SmFilletEdgeuse*)pEndRib->GetPrimaryEdgeuse();
-          SmFilletGeom    * pRibFG = ( pRibEU != NULL ) ? pRibEU->GetFilletGeom() : NULL;
-          SmSurface       * pFilletSurface = ( pRibFG != NULL ) ? pRibFG->GetFilletSurface() : NULL;
-          NER(pFilletSurface);
-          SmFilletVertex * apFV[2] = { pStartFV, pEndFV };
-          for (ULONG kk=0; kk<2; kk++)
-            {
-              if ( abMiss[kk] || !apFV[kk]->IsProcessed() )
-                { continue; }
-              SmBoolean bDropped = FALSE, bMulti = FALSE;
-              SmPoint2d sUV;
-              double    dGap = SM_BIG_DOUBLE;
-              SER( pFilletSurface->DropPoint( apFV[kk]->GetPoint(), pFilletSurface->GetNaturalUVDomain(), NULL, bDropped, sUV, dGap, bMulti ));
-              if ( !bDropped || dGap > 10.0 * m_dThisApproxTol3d )
-                {
-                  abMiss[kk] = TRUE;
-                  apFV[kk]->SetStatus( SM_FV_NO_INT_RAIL_EU );  // its rail is not trimmed there
-                }
-            }
-          if ( abMiss[0] || abMiss[1] )
-            { pMissFV = abMiss[0] ? pStartFV : pEndFV; }
-        }
-      SmBoolean bBothMiss = m_pExecutive->GetCliffOverflow() && abMiss[0] && abMiss[1];
-      if ( pMissFV != NULL && pMissFV->GetPointClass() == SM_PC_EDGEUSE )
-        {
-          // The side edge the rail missed, and the fillet's side face it does not bound.
-          SmEdgeuse * pSideEU     = (SmEdgeuse*)pMissFV->GetPointClassObject();
-          NER(pSideEU);
-          SmEdgeuse * pFilEdgeuse = (*m_pSolverEUs)[0];
-          SmFace    * pSideFaces[2] = { pSideEU->GetFace(), pSideEU->GetRadial()->GetFace() };
-          SmFace    * pOtherFace    = pFilEdgeuse->GetFace();
-          if ( pOtherFace == pSideFaces[0] || pOtherFace == pSideFaces[1] )
-            { pOtherFace = pFilEdgeuse->GetRadial()->GetFace(); }
-          NER(pOtherFace);
-          SmSurface * pOtherSurface = pOtherFace->GetSurface();
-          NER(pOtherSurface);
-          SmEdge    * pSideEdge     = pSideEU->GetEdge();
-          NER(pSideEdge->GetCurve());
-
-          SmBoolean  bRunsOn = FALSE;
-          SmSolution sSolution;
-          SER( pOtherSurface->SimpleCoincidenceChecker( pOtherSurface->GetNaturalUVDomain(),
-                                                        *pSideEdge->GetCurve(),
-                                                        pSideEdge->GetInterval(),
-                                                        m_dThisApproxTol3d,
-                                                        bRunsOn,
-                                                        sSolution ) );
-          if ( ! bRunsOn && m_pExecutive->GetCliffOverflow() )
-            {
-              // The end face: the side edge's face that is neither of the fillet's side faces.
-              SmFace * pEndFace = ( pSideFaces[0] == pOtherFace || pSideFaces[0] == pFilEdgeuse->GetFace()
-                                    || pSideFaces[0] == pFilEdgeuse->GetRadial()->GetFace() )
-                                  ? pSideFaces[1] : pSideFaces[0];
-              if (   pEndFace == pFilEdgeuse->GetFace()
-                  || pEndFace == pFilEdgeuse->GetRadial()->GetFace() )
-                { SER( SM_ERR ); }
-              SmFilletSolver * pFilSolver = GetFilletExecutive()->GetFilletSolverOfEdgeuse( pFilEdgeuse );
-              NER(pFilSolver);
-              SER( m_pExecutive->NoteOpenEnd( pFilSolver, SM_CONST_CAST(SmVertex*, m_cpVertex), pEndFace ));
-              SER( pEndRib->GetBrep()->DeleteEdge( pEndRib ) );
-              m_vEdges.ReSet();
-            }
-          else if ( ! bRunsOn && ! bBothMiss )
-            {
-              m_pExecutive->SetDoGlobalMerge( TRUE );
-              SER( pEndRib->GetBrep()->DeleteEdge( pEndRib ) );
-              m_vEdges.ReSet();
-            }
-        }
-    }
-
-  return SmFilletCorner::CalcCornerEdgeGeom();
-
-} // end SmFilletNx1Corner::CalcCornerEdgeGeom
-
-/*******************************************************************//**
-PURPOSE: Create Nx1 corner by specifying the FilletEdge
-    boundary of the incoming fillet. When needed define
-    endFaces and extra FilletEdges as needed.
-
-NOTES:
- For all cases:
- -  new SmFilletVertex objects are constructed and classified to each rail
-        m_pTargetBrep->edgeuse coming into this corner.
- -  new SmFilletVertices are added to this SmFilletCorner::m_vVertices array.
-
- - 1 new SmFilletEdge and 2 new SmFilletEdgeuses are constructed to
-          connect appropriate new SmFilletVertex pairs.
- - New SmFilletEdges are added to this SmFilletCorner::m_vEdges array.
-
- Every Nx1 fillet needs an end Face bounded by a FilletEdge (connecting
- the two side edges at the rail/sideEdge intersection points)
- and the side edges themselves from the original vertex to the
- to the rail/sideEdge intersections.  In various cases
- different bits of the endFace (surface, edges, and vertices) need
- to be defined or are already defined.  Every case
- needs 1 filletEdge defined as the intersection of the
- filletSurface and the endFace.  This edge is always terminated
- by a pair of filletVertices located at rail/sideEdge intersections.
-
- In addition to this vertex/edge/vertex set, sometimes a face will need
- to be extended (or a new end-cap face defined) because the fillet
- surface would not intersect anything even when extended.  Sometimes,
- in addition to the extended end face, one (but never both) of the
- side edges must be extended in order to intersect the corresponding
- rail edge of the fillet surface.  The cases depend on the relative
- convexities of the fillet edge and two topologically adjacent side
- edges.  (Note, if there are more than three edges, the convexities
- of the remaining 'remote' edges don't matter.)  If all three edges
- have the same convexity, then no extending needs to be done.  In
- mixed-convexity cases, it depends on whether one or both of the side
- edges have convexities opposite to the filleted edge:
-
- Convexity of side edges relative to the filleted edge:
- ----------
-  both same: nothing -- uniform convexity case.
-  both opp : extend end face(s).
-  same/opp : extend end face(s), and extend the side edge w/ same cvxty.
-
- (Note, 'side faces' are the two faces that contain the filleted edge,
- and 'end face(s)' are all other faces around this vertex (just one, in
- the normal 3x1 case).  End face(s) are what the fillet surface will
- intersect.)
-
- In the mixed-convexity case, the end face of the fillet will be either
- an extension of the original end surface, if the new fillet edges from
- the original vertex on the filleted edge to the rail/sideEdge intersections
- lie in the original end surface, otherwise a new end patch will be
- constructed that is G1 with end faces(s) at the two side edges.
-
- Note, regardless of convexities, there are cases where in which the
- expected intersections of fillet rail curves with side edges, or of
- the fillet surface with end surface(s), will not occur, due to
- geometric problems.  These will happen if the existing geometry
- (side edges or end faces) are short (generally, shorter than the
- fillet radius), or bend away from the vertex too quickly.
- These cases are not (yet) handled by this routine.
-
-
-***********************************************************************/
-SmStatus SmFilletNx1Corner::MakeCornerTopology()
-{
-  // locals
-  SmEdgeuse      * pFilEdgeuse = (*m_pSolverEUs)[0];
-  SmFilletSolver * pFilSolver  = GetFilletExecutive()->GetFilletSolverOfEdgeuse(pFilEdgeuse);
-  NER(pFilSolver);
-  SmFilletGeom   * pFilletGeom = pFilSolver->GetFirstFilletGeom();
-  ULONG            lTotalEUs   = m_pAllEUs->GetSize();
-  ULONG            lFilEUIndex = SM_BIG_ULONG;
-
-  // get the FIlEdgeuse index in the m_pAllEUs array
-  ULONG ii;
-  for ( ii=0; ii<lTotalEUs; ii++ )
-    {
-      if ( (*m_pAllEUs)[ii] == pFilEdgeuse )
-        {
-          lFilEUIndex = ii;
-          break;
-        }
-    }
-  SM_ASSERT(lFilEUIndex != SM_BIG_ULONG);
-
-  // Get Adjacent edge->edgeuses of filleted edge
-  // (the edges sharing a face with this filleted edge).
-
-  SmEdgeuse * pEU[2];
-  ULONG lIndexA = ((lFilEUIndex+lTotalEUs)-1)%lTotalEUs ; // 'behind' fil index
-  ULONG lIndex1 = (lFilEUIndex+1)%lTotalEUs ;           // 'ahead of' fil index
-  SM_ASSERT((lIndexA + 1)%lTotalEUs         == lFilEUIndex) ;
-  SM_ASSERT(((lIndex1+lTotalEUs)-1)%lTotalEUs == lFilEUIndex) ;
-  pEU[0] = (*m_pAllEUs)[lIndexA];
-  pEU[1] = (*m_pAllEUs)[lIndex1];
-
-  // check for 2x1 on non-closed-edge case with closed but not periodic side edge.
-  SmBoolean bClosedSideEdge = (pEU[1] == pEU[0]) ;
-
-int iDebugLevel = 0;
-
-#ifdef SM_DEBUG_CODE
-  // draw FilEdgeuse (red) and neighbor edgeuses (green, yellow)
-  // connected to edges sharing a common face
-  iDebugLevel = DebugLevel();
-  if ( iDebugLevel > 0 )
-    {
-      smgfx_SetLook(3,5, 1,0,0); pFilEdgeuse->Draw(); sm_GraphicsLoop();
-      smgfx_SetLook(3,5, 0,1,0); pEU[0]->Draw();      sm_GraphicsLoop(); // adjacent edgeuses to filleted edge
-      smgfx_SetLook(3,5, 1,1,0); pEU[1]->Draw();      sm_GraphicsLoop();
-      sm_GraphicsLoop();
-    }
-#endif // SM_DEBUG_CODE
-
-  // Check the relative convexities of the filleted edge
-  // and the two topologically adjacent side edges.  (See notes above.)
-
-  SmBoolean bSideEdgeSameCvxty[2];
-  bSideEdgeSameCvxty[0] = same_convexity_edges(pFilEdgeuse, pEU[0], m_cpVertex, iDebugLevel );
-  bSideEdgeSameCvxty[1] = same_convexity_edges(pFilEdgeuse, pEU[1], m_cpVertex, iDebugLevel );
-
-  // A side edge whose two faces meet tangentially at the vertex (a flat top
-  // running smoothly onto a round) is no edge of the corner: the side face the
-  // rail runs on continues across it. When the edge reached past it round the
-  // vertex has the filleted edge's convexity and the other side edge the
-  // opposite one, the corner is the mixed-convexity one of that edge
-  // (pCornerEU): its end face lies between it and the other side edge, and it
-  // is the edge extended into the side face. pEU stays the neighbour on the
-  // fillet's side face, which the rail ends against. lCornerEUs counts the
-  // corner's edges.
-  // So is the edge that continues the filleted edge tangentially across the
-  // vertex with the opposite convexity, on the side face (past any tangent
-  // edges, such as the side face's seam): a boss's base circle running on past
-  // a wall as the rim of the boss's overhang. The rail on the side face runs
-  // alongside it and never meets it; the round ends on the end face past it,
-  // whose extension cuts the side face.
-  SmEdgeuse * pCornerEU[2] = { pEU[0], pEU[1] };
-  ULONG       lCornerEUs   = lTotalEUs;
-  if ( ! bClosedSideEdge && lTotalEUs > 3 )
-    {
-      double dTanTolDeg = SM_RAD2DEG( GetTangencyTolRadians() );
-      for ( ULONG kk=0; kk<2; kk++ )
-        {
-          ULONG lOther = 1 - kk;
-          if (   bSideEdgeSameCvxty[ lOther ]
-              || sm_CheckTangentialEdgeuseAtVertex( pEU[ lOther ], m_cpVertex, dTanTolDeg ) )
-            { continue; }
-
-          ULONG lOtherIdx = ( kk == 0 ) ? lIndex1 : lIndexA;
-          ULONG lIdx      = ( kk == 0 ) ? lIndexA : lIndex1;
-          ULONG lSkipped  = 0;
-          SmBoolean bPassedContinuation = FALSE;
-          SmEdgeuse * pNextEU = pEU[ kk ];
-          while ( lTotalEUs - lSkipped > 3 )
-            {
-              if ( ! sm_CheckTangentialEdgeuseAtVertex( pNextEU, m_cpVertex, dTanTolDeg ) )
-                {
-                  // the filleted edge's continuation, of the opposite convexity, once
-                  if (   bPassedContinuation
-                      || pNextEU->GetEdge() == pFilEdgeuse->GetEdge()
-                      || ! sm_TestG1Continuity( m_cpVertex, pFilEdgeuse->GetEdge(), pNextEU->GetEdge(),
-                                                dTanTolDeg, NULL, iDebugLevel )
-                      || same_convexity_edges_round_vertex( pFilEdgeuse, pNextEU->GetEdge() ) )
-                    { break; }
-                  bPassedContinuation = TRUE;
-                }
-              lIdx = ( kk == 0 ) ? ( (lIdx + lTotalEUs) - 1 ) % lTotalEUs : ( lIdx + 1 ) % lTotalEUs;
-              if ( lIdx == lFilEUIndex || lIdx == lOtherIdx )
-                { lSkipped = 0; break; }
-              pNextEU = (*m_pAllEUs)[ lIdx ];
-              lSkipped++;
-            }
-
-          if (   lSkipped > 0
-              && same_convexity_edges_round_vertex( pFilEdgeuse, pNextEU->GetEdge() ) )
-            {
-              pCornerEU[ kk ]           = pNextEU;
-              bSideEdgeSameCvxty[ kk ]  = TRUE;
-              lCornerEUs               -= lSkipped;
-              break;
-            }
-        }
-    }
-
-  SmBoolean bMixedCvxty = ! bSideEdgeSameCvxty[0] || ! bSideEdgeSameCvxty[1];
-
-
-  // for both rails, create filletvertices for rail/filletEdge intersections
-  SmFilletVertex * pFVArray[2];
-
-  // when working with mixed convexity:
-  SmEdge * pExtendEdge = NULL; // sideEdge to be extended 
-  SmFace * pEndFace    = NULL; // Face to extend when endFace->surface can
-                               //   be defined by a surface extension.
-                               //   In the 3x1 case, this is a unique face,
-                               //   the one between the two side EU's.
-
-  for(ULONG lThisRailIdx=0; lThisRailIdx<2; lThisRailIdx++)
-    {
-      ULONG lOtherRailIdx = 1 - lThisRailIdx;
-
-      // construct FilletVertex to set on rail, and add it to m_vVertices
-      pFVArray[ lThisRailIdx ] = new (m_pPseudoBrep) SmFilletVertex( this );
-      m_vVertices.Add( pFVArray[ lThisRailIdx ] );
-      SmEdgeuse * pSideEU = NULL;
-
-      // get m_pTargetBrep->edge->edgeUse that intersects this rail
-      ULONG lSolverRailIndex;
-      if ( bClosedSideEdge )
-        {
-          // Assign rail index first, then find side edgeuse
-          lSolverRailIndex = lThisRailIdx;
-          pSideEU = sm_FindClosedSideEdgeuse(
-                          lSolverRailIndex, pFilSolver, pEU[ lThisRailIdx ], iDebugLevel );
-        }
-      else
-        { // Non-closed side edge (i.e. regular cases)
-          pSideEU = sm_FindSideEdgeuse( pFilEdgeuse, pEU[ lThisRailIdx ], iDebugLevel  );
-          lSolverRailIndex = pFilSolver->FindIndexOfRailXSideEdgeuse( pSideEU );
-        }
-
-      // set filletVertex to classify to the m_pTargetBrep->sideEdgeuse
-      pFVArray[ lThisRailIdx ]->SetPointClass( SM_PC_EDGEUSE, pSideEU );
-
-      // Connect vertex to rail edge with connection sequence:
-      //   RailFilletEdge->newFilletEdgeuse->newFilletVertexuse->FilletVertex
-      SmFilletEdgeuse * pNewEdgeuse = NULL;
-
-      SER( pFilletGeom->MakeRailEdgeuse( m_pPseudoBrep,
-              lSolverRailIndex, pFVArray[ lThisRailIdx ], pNewEdgeuse ));
-
-      // set FilletVertex type:
-      //    FilletVertexPosition will be the intersection of the rail
-      //    with the side edge.  Note, in the mixed-convexity case,
-      //    if the convexity of the side edge is the same as that of
-      //    the filleted edge (so the other side edge has opposite cvxty
-      //    to both), then this side edge will have to be extended.
-
-      SmFace * pFace = pEU[ lThisRailIdx ]->GetFace();
-
-      // At a mixed-convexity corner, if this side-edge has the same convexity
-      // as the filleted edge and the other side-edge has opposite convexity,
-      // then we'll need to extend this side-edge ('around the corner' of the
-      // other side-edge) so that it will intersect this rail.
-
-      if ( bMixedCvxty  &&  bSideEdgeSameCvxty[ lThisRailIdx ] )
-        {
-          pFVArray[ lThisRailIdx ]->SetFilletVertexType(SM_FV_RAIL_X_EXTENDED_EDGEUSE);
-
-          // Use the next edgeuse around the vertex, past the current one
-          //SmEdgeuse * pExtendEdgeuse =
-          //    ( lThisRailIdx==1 )
-          //        ? m_pAllEUs->GetAt( ((lFilEUIndex+lTotalEUs)-2)%lTotalEUs)
-          //        : m_pAllEUs->GetAt( (lFilEUIndex+2)%lTotalEUs) ;
-          //
-          // No, extend the edge with the same convexity, because it shares
-          // a face with the fillet rail-to-be which it will intersect.
-          // [bd, 3 Feb 06]
-          // (Past a tangent side edge, the corner's side edge: see pCornerEU.)
-          SmEdgeuse * pExtendEdgeuse = pCornerEU[ lThisRailIdx ];
-
-
-          // Find original EndFace to be extended:
-          //   the EndFace between the extended edge and the other side edge.
-          pEndFace = sm_GetFaceByTwoEdgeuses(
-                          pExtendEdgeuse, pCornerEU[ lOtherRailIdx ], NULL );
-          pExtendEdge = pExtendEdgeuse->GetEdge();
-
-          // Point Edgeuse to the Fillet (side) Face containing the cliff edge.
-          // (i.e. the one that's *not* getting extended.)
-          // (i.e. the one into which the edge will be extended.)
-          if (   pFace != pFilEdgeuse->GetFace()
-              && pFace != pFilEdgeuse->GetRadial()->GetFace())
-            {
-              pEU[ lThisRailIdx ] = pEU[ lThisRailIdx ]->GetRadial();
-            }
-
-#ifdef SM_DEBUG_CODE
-          if ( DebugLevel() > 0 ) 
-            {
-              smgfx_SetLook(1,2, 0,1,0); pExtendEdgeuse->Draw(); sm_GraphicsLoop();
-              smgfx_SetLook(1,2, 1,0,0); pEU[lThisRailIdx]->Draw(); sm_GraphicsLoop();
-              sm_GraphicsLoop();
-            }
-#endif // SM_DEBUG_CODE
-
-        } // end extend-side-edge branch
-      else  // Regular case
-        {
-          pFVArray[ lThisRailIdx ]->SetFilletVertexType( SM_FV_RAIL_X_EDGEUSE );
-
-          // Point Edgeuse to an EndFace (not a fillet side face).
-          if (   pFace == pFilEdgeuse->GetFace()
-              || pFace == pFilEdgeuse->GetRadial()->GetFace())
-            {
-              pEU[ lThisRailIdx ] = pEU[ lThisRailIdx ]->GetRadial();
-            }
-        }
-    } // end iter both rail vertices
-
-
-  // What's left to do: create the topology for the end rib curve
-  // (intersection of fillet surface with the end face),
-  // and, if at a mixed-convexity corner, create a capping surface
-  // (or extend the end surface).
-  // But, if the end rib is not a simple one-piece thing (i.e.,
-  // more than one end face), don't do it here.
-  // That would be the case if lTotalEUs > 3.
-
-  if ( !bMixedCvxty && lCornerEUs > 3 )
-    {
-      // Simple convex corner, OR more than one end face,
-      // just let global merge do the work.
-
-      m_pExecutive->SetDoGlobalMerge( TRUE );
-      return SM_SUCCESS;
-    }
-
-
-  // Ok, now we're either capping (mixed convexity),
-  // or the simple case of <=3 total edges at this vertex.
-
-  // compute how much to extend the endSurface to make sure it covers the 'hole'
-  double dExtDist =   bMixedCvxty 
-                    ? sm_FindSurfaceExtensionDistAtCorner(pFilEdgeuse, 
-                                                          pFilSolver, 
-                                                          m_cpVertex )
-                    : 0.0;
-
-  // Ok, get to work on the topology of the end of the fillet.
-  // Allocate the FilletEdge and its edgeuses connecting the two
-  // rail/filletEdge intersection vertices.  This edge will be
-  // the intersection of the fillet face with the end face.
-  //  - Add new FilletEdge to this SmFilletCorner::m_vEdges list.
-  //  - The shape of the new FilletEdge is not yet set - just the
-  //    topological connection.
-
-  SmFilletEdge * pFilletEndRibEdge = NULL;
-  SER( SmFilletEdge::MakeFilletEdge(m_pPseudoBrep,     // in : target Brep to receive new topology objects
-                                    m_vVertices[0],    // in : start of new FilletEdge
-                                    m_vVertices[1],    // in : end   of new FilletEdge
-                                    pFilletEndRibEdge, // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                    this ));           // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                       //      NULL to ignore, default:[NULL]
-  pFilletEndRibEdge->SetFilletEdgeType( SM_FE_FILLET_X_SIDE_FACE );
-  SmFilletEdgeuse * pPrimEU = (SmFilletEdgeuse*)pFilletEndRibEdge->GetPrimaryEdgeuse();
-  pPrimEU->SetFilletGeom( pFilletGeom );
-  m_vEdges.Add( pFilletEndRibEdge );
-
-  // In the mixed-cvxty case, pEndFace will be NULL when we arrive here
-  // if both side edges have opposite convexity to the filleted edge.
-  // In that case, the face connecting the two side edges will need to be
-  // used (or extended) to generate an endFace.
-
-  SmBoolean   bMultiNeighborEndFace = FALSE ;
-  SmEdgeuse * pOtherSideEdgeuse     = NULL ;
-
-  if ( pEndFace == NULL )
-    {
-      pEndFace = sm_GetFaceByTwoEdgeuses(pEU[0],pEU[1],NULL);
-
-      // when sm_GetFaceByTwoEdgeuses() fails to find a result
-      // there are more than 3 edges in this corner and the neighbor
-      // edges are not connected by a single face but rather a sequence
-      // of faces.
-
-      if ( pEndFace == NULL )
-        {
-          // Also note that, from the previous bailout (where we "just let
-          // global merge do the work"), we must be in the mixed-convexity
-          // case here.
-          SM_ASSERT( bMixedCvxty );
-
-          bMultiNeighborEndFace = TRUE ;
-
-          // assume that the endCap can be created by extending the
-          // face->Surface connected to the 1st cliff side edge.
-          // gwc:TODO in the future, new Surfaces can be defined which are
-          //   tangent continuous with both side edges.
-          if ( lCornerEUs > 3 )
-            {
-              MSG(_T("Building a FilletEndFace between two different faces - may be a G0 endPatch"));
-              // Use the side edge that is a cliff edge.
-              // If the two side edges have opposite convexities to each other,
-              // then the cliff edge will be the one with the same convexity as
-              // the filleted edge; otherwise (side edges both have opposite
-              // convexity to the filleted edge -- remember, we must be in the
-              // mixed-convexity case here) they're both cliff edges.
-              if ( bSideEdgeSameCvxty[0] )
-                {
-                  pEndFace          = pEU[0]->GetFace();
-                  pExtendEdge       = pEU[0]->GetEdge();
-                  pOtherSideEdgeuse = pEU[1] ;
-                }
-              else if ( bSideEdgeSameCvxty[1] )
-                {
-                  pEndFace          = pEU[1]->GetFace();
-                  pExtendEdge       = pEU[1]->GetEdge();
-                  pOtherSideEdgeuse = pEU[0] ;
-                }
-              else  // both are cliff edges, just pick one.
-                {
-                  pEndFace          = pEU[0]->GetFace();
-                  pExtendEdge       = pEU[0]->GetEdge();
-                  pOtherSideEdgeuse = pEU[1] ;
-                }
-            }
-          else
-            {
-              SM_DBG_WARN(_T("Found an unexpected multiNeighborEndFace with less than 4 vertex->edges")) ;
-              SER(SM_ERR); // Invalid brep topology
-            }
-        }
-    } // end pEndFace == NULL check
-
-  pFilletEndRibEdge->SetOriginalFace( pEndFace );
-
-  // compute how much to extend the sideSurface to make sure it covers the 'hole'
-  SmBoolean bDoExtend = ( pExtendEdge != NULL );
-  if ( dExtDist > SM_EFF_ZERO )
-    {
-      if (   bDoExtend == FALSE
-          && (   pFilSolver->GetSolverType() == SM_FS_CONST_RADIUS
-              || pFilSolver->GetSolverType() == SM_FS_CONST_RADIUS_ASSISTED))
-        {
-          dExtDist *= 0.1;   // use only a small extension
-          bDoExtend = TRUE;  // for constant radius only
-        }
-    }
-
-  // When a surface extension is needed to define the endFace shape,
-  // build and save it.
-
-  SmSurface *pNewExtendSurface = NULL ;
-  if ( bDoExtend )
-    {
-      SmSurface * pSurface = pEndFace->GetSurface();
-      NER(pSurface);
-      SmSurface * pNewSurface = NULL;
-
-      // create an extended surface large enough to fill in the endCap requirements
-      SER( pSurface->CreateExtendedSurface(m_crContext, dExtDist, SM_CT_G1, pNewSurface ));
-      SmObjDelete sCleanSurf( pNewSurface );
-
-      // Copy pNewSurface, when possible as an analytic surface
-      SER( pNewSurface->CopyAndAddAnalytics( m_crContext, pNewExtendSurface ));
-
-      // register the OrigFace/ExtendedSurface pair
-      // in the SmFilletExecutive::m_vExtendedSurfacesMap list
-      AddExtendedOriginalSurface( pEndFace, pNewExtendSurface );
-
-      // If AddExtendedOriginalSurface() deleted pNewExtendSurface, then
-      // pEndFace already had an extended surface, and we don't have to
-      // deal with it anymore.  But if pNewExtendSurface stayed in the
-      // map, we will have to do further checks on it.  So check whether
-      // it changed:
-      SmSurface *pTmpSrfPtr = GetExtendedSurface( pEndFace );
-      if ( pTmpSrfPtr != pNewExtendSurface )
-        {
-          pNewExtendSurface = NULL;  // deleted in AddExtendedOriginalSurface()
-        }
-    }
-
-  // When adding an endSurface to fill the 'hole',
-  // set up the topology for the end cap.
-  if ( bMixedCvxty )
-    {
-      // add a filletVertex at the origVertex location
-      SmFilletVertex * pFV = new (m_pPseudoBrep) SmFilletVertex(this);
-      pFV->SetPointClass(SM_PC_VERTEX, (SmObject*)m_cpVertex);
-      pFV->SetFilletVertexType( SM_FV_ON_VERTEX );
-      m_vVertices.Add( pFV );
-
-      // add two filletEdges from origVertex to rail/edge intersections
-
-      // Add 1st fillet edge from expected rail2/sideEdge2 intersection to origVertex
-      SmFilletEdge * pNewFilletEdge2 = NULL;
-      SER(SmFilletEdge::MakeFilletEdge(m_pPseudoBrep,   // in : target Brep to receive new topology objects
-                                       m_vVertices[1],  // in : start of new FilletEdge
-                                       m_vVertices[2],  // in : end   of new FilletEdge
-                                       pNewFilletEdge2, // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                       this));          // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                        //      NULL to ignore, default:[NULL]
-      // set FilletEdgeType based on analysis done and saved in filletVertexType
-      if (m_vVertices[1]->GetFilletVertexType() == SM_FV_RAIL_X_EXTENDED_EDGEUSE)
-        {
-          pNewFilletEdge2->SetFilletEdgeType( SM_FE_ON_EXTEND_EDGE );
-          pNewFilletEdge2->SetOriginalEdge( pExtendEdge );
-        }
-      else
-        {
-          pNewFilletEdge2->SetFilletEdgeType( SM_FE_ON_EDGE );
-
-          if (lCornerEUs <= 3)
-            {
-              // Register this edge and process it later
-              // when removing topological vertices
-              m_pExecutive->AddTopoEdges( pNewFilletEdge2 );
-            }
-          pNewFilletEdge2->SetOriginalEdge( pEU[1]->GetEdge() );
-        }
-
-      pNewFilletEdge2->SetOriginalFace( pEU[1]->GetFace() );
-      m_vEdges.Add( pNewFilletEdge2 );
-
-      // Add 2nd fillet edge from origVertex to other expected rail1/sideEdge intersection
-      SmFilletEdge *pNewFilletEdge1 = NULL ;
-      SER(SmFilletEdge::MakeFilletEdge(m_pPseudoBrep,   // in : target Brep to receive new topology objects
-                                       m_vVertices[2],  // in : start of new FilletEdge
-                                       m_vVertices[0],  // in : end   of new FilletEdge
-                                       pNewFilletEdge1, // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                       this));          // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                        //      NULL to ignore, default:[NULL]
-      // set FilletEdgeType based on analysis done and saved in filletVertexType
-      if (m_vVertices[0]->GetFilletVertexType() == SM_FV_RAIL_X_EXTENDED_EDGEUSE)
-        {
-          pNewFilletEdge1->SetFilletEdgeType( SM_FE_ON_EXTEND_EDGE );
-          pNewFilletEdge1->SetOriginalEdge( pExtendEdge );
-        }
-      else
-        {
-          pNewFilletEdge1->SetFilletEdgeType( SM_FE_ON_EDGE );
-          if ( lCornerEUs <= 3 )
-            {
-              m_pExecutive->AddTopoEdges( pNewFilletEdge1 );
-            }
-          pNewFilletEdge1->SetOriginalEdge( pEU[0]->GetEdge() );
-        }
-      pNewFilletEdge1->SetOriginalFace( pEU[0]->GetFace() );
-      m_vEdges.Add( pNewFilletEdge1 );
-
-     // all the corner topology is in place
-
-     // When endFace connects to more than the filletSurface and 1 other Face,
-     // check for gaps
-     if ( bMultiNeighborEndFace )
-       {
-          SM_ASSERT(pNewFilletEdge1->GetFilletEdgeType() == SM_FE_ON_EDGE) ;
-          SM_ASSERT(pNewFilletEdge2->GetFilletEdgeType() == SM_FE_ON_EDGE) ;
-
-          // in this case we can set FilletVertex and SideFilletEdge shapes
-          // without having the filletSurface - do so
-
-          // set filletVertex->Positions
-          SER( CalcCornerVertGeom()  );
-
-          // set FilletSideEdge->Curves
-          SER( pNewFilletEdge1->CalcCornerEdgeGeom()  );
-          SER( pNewFilletEdge2->CalcCornerEdgeGeom()  );
-
-          // When proposing an extended surface
-          if ( pNewExtendSurface )
-            {
-              // get extendedSurface/OtherSideEdge coincidence to within tolerance
-              SmBoolean  bFoundCoincidence = FALSE ;
-              SmSolution sSolution ;
-              SER( pNewExtendSurface->SimpleCoincidenceChecker(
-                  pNewExtendSurface->GetNaturalUVDomain(),
-                  *pOtherSideEdgeuse->GetEdge()->GetCurve(),
-                  pOtherSideEdgeuse->GetEdge()->GetInterval(),
-                  m_dThisApproxTol3d,
-                  bFoundCoincidence,
-                  sSolution
-              ) );
-
-              // when extendedSurface/OtherSideEdge are not coincident
-              if( bFoundCoincidence == FALSE )
-                {
-                  // can't define endFace->Surface as a sideFace->ExtendedSurface
-                  m_bExtendedSurfacePatch = FALSE ;
-
-                }
-            } // end pNewExtendSurface existence check
-        } // end endFace connects to more than the filletSurface and 1 other Face check
-
-    } // end bMixedCvxty check
-
-  // all done
-  return SM_SUCCESS;
-
-} // end SmFilletNx1Corner::MakeCornerTopology
-
-/*******************************************************************//**
-PURPOSE: An Nx2 corner represents a corner with N adjacent
-    edges and two of them are filleted. If N = 3, and all three edges
-    have the same convexity, a bevel corner will be created.  For
-    tangential corners, the two fillet surfaces should meet smoothly.
-    A blending corner patch will be generated for mixed-convexity
-    fillet corners.
-
-//cbi: changing this:
-    If N = 4, the two filleted edges should not share the same face
-    and the corner will consists of only one intersection curve between
-    two fillets just as in 3x2 case.
-
-
-NOTES: Corners with N > 4 are not yet implemented.
-
-***********************************************************************/
-SmFilletNx2Corner::SmFilletNx2Corner
-  (const SmContext      & crContext,
-   const SmVertex       * cpVertex,
-   SmTArray<SmEdgeuse*> * pSolverEUs,
-   SmTArray<SmEdgeuse*> * pAllEUs,
-   SmFilletExecutive    * pExec,
-   double                 dApproxTol3d,
-   double                 dTangencyTolRadians)
- : SmFilletCorner(crContext,
-                  cpVertex,
-                  pSolverEUs,
-                  pAllEUs,
-                  pExec,
-                  dApproxTol3d,
-                  dTangencyTolRadians)
-{
-
-} // end SmFilletNx2Corner::SmFilletNx2Corner constructor
-
-/*******************************************************************//**
-PURPOSE: Make corner topology which consists of an array of
-    SmFilletVertex and an array of SmFilletEdge.
-
-NOTES:
-***********************************************************************/
-SmStatus SmFilletNx2Corner::MakeCornerTopology()
-{
-int iDebugLevel = 0;
-#ifdef SM_DEBUG_CODE
-iDebugLevel = DebugLevel();
-#endif // SM_DEBUG_CODE
-
-  // locals
-  ULONG ii;
-  ULONG lTotalEUs = m_pAllEUs->GetSize();
-
-  // no work - unhandled case - Currently we handle only 3x2 and 4x2
-  if ( lTotalEUs > 4)
-    { SER(SM_ERR) ; } 
-     
-  // Nx2 corner, get the two filleted edgeuses from the base brep
-  SmEdgeuse * pBaseEdgeuse1 = (*m_pSolverEUs)[0];
-  SmEdgeuse * pBaseEdgeuse2 = (*m_pSolverEUs)[1];
-
-  // for 4 EU case
-  if (lTotalEUs == 4)
-    {
-#ifdef SM_DEBUG_CODE
-      if ( iDebugLevel > 0 ) 
-        {
-          SmBrep *pBrep = GetFilletExecutive()->GetTargetBrep() ;
-          smgfx_SetLook(1,2, 0,0,1); if(pBrep) pBrep->Draw(TRUE) ; sm_GraphicsLoop() ;
-          smgfx_SetLook(3,4, 1,0,0); pBaseEdgeuse1->Draw(); sm_GraphicsLoop();
-          smgfx_SetLook(3,4, 1,0,1); pBaseEdgeuse2->Draw(); sm_GraphicsLoop();
-          sm_GraphicsLoop();
-        }
-#endif // SM_DEBUG_CODE
-
-      // check state: to be filleted edgeuses are on list of outward edgeuses surrounding the corner
-      ULONG lFoundIndex1 = 0, lFoundIndex2 = 0;
-      if (   !m_pAllEUs->FindElement( pBaseEdgeuse1, lFoundIndex1 )
-          || !m_pAllEUs->FindElement( pBaseEdgeuse2, lFoundIndex2 ) )
-        { SER(SM_ERR) ; }
-
-      // Do a little test to make sure two filleted edgeuses
-      // are not adjacent to each other
-      if ( (lFoundIndex1+lFoundIndex2)%2 != 0 )
-        {
-          // 2 filleted edgeuses appeared next to each other
-          // in the all-edgeuses array
-          SER(SM_ERR);
-        }
-
-      // Check the non-filleted (side) edges for mixed convexity
-      for (ii=0; ii<lTotalEUs; ii++)
-        {
-          SmEdgeuse * pSideEU = (*m_pAllEUs)[ii];
-
-          // skip edgeuses to be filleted - looking for side (not filleted edgeuses)
-          if ( pSideEU == pBaseEdgeuse1 || pSideEU == pBaseEdgeuse2 )
-            { continue ; } // (not a side edge)
-
-          // Classify a face's corner at a given vertex as convex or concave
-          //            FALSE = inside face angle runs from 0 to 180+tol   degrees
-          //            TRUE  = inside face angle runs from 180+tol to 360 degrees
-          //  
-          //         |\\ - face    \\\\\|  CONCAVE        Special Case: tangential edgeuses
-          //  CONVEX |\\\   inside -\\\\|   FACE CORNER     Classified as CONVEX CORNER
-          //         +-----          \\\+-----               -----+-----
-          /*     FACE CORNER          \\\\\\\\                \\\\\\\\\\                   */
-          /*                            \\\\\\\                \\\\\\\\\                   */
-          /*                                                                               */  
-          SmBoolean bMixedCvxty = sm_CheckFaceComplimentaryCornerConcavity
-                                    (m_cpVertex,    // in : target corner vertex
-                                     pBaseEdgeuse1, // in : 1st target edgeuse - points outward from CornerVert
-                                     pBaseEdgeuse2, // in : 2nd target edgeuse - points outward from CornerVert
-                                     pSideEU,       // in : NULL    = EU1 and EU2 are immediate neighbors bounding same face
-                                                    //      notNULL = OptRefEU lies 'between' EU1 and EU2 so that EU1->edge and
-                                                    //        EU2->edge do not bound the same face. Needs to be a tangential edge.
-                                     iDebugLevel ); // in :
-
-          if ( bMixedCvxty )
-            {
-              return Make4x2ConcaveCornerTopology();
-            }
-        }
-      m_bBevel = TRUE ;
-
-    } // end 4 outward EUs from this corner vertex case check
-
-  // Determine if two edges are tangent at corner vertex.
-  // Set bIsTangentCase, dAngleDeg, and bMixedConvexity.
-
-  double dAngleDeg;
-  double dTangencyTolDeg = SM_RAD2DEG( m_dTangencyTolRadians );
-  SmBoolean bIsTangentCase = sm_TestG1Continuity          // rtn: TRUE = Edge EndTangents at vertex are within tolerance of being tangent
-                               (m_cpVertex,               // in : Target Vertex
-                                pBaseEdgeuse1->GetEdge(), // in : 1st edge connecting to vertex
-                                pBaseEdgeuse2->GetEdge(), // in : 2nd edge connectint to vertex
-                                dTangencyTolDeg,          // in : Tangency tolerance in degrees
-                                &dAngleDeg,               // out: angle (degrees) between edges at vertex
-                                iDebugLevel) ;            // in : 
-
-  // Store this value for later use.
-  m_bG1Case = bIsTangentCase;
-
-  SmBoolean bMixedConvexity = sm_CheckFaceComplimentaryCornerConcavity
-                                (m_cpVertex,     // in : target corner vertex
-                                 pBaseEdgeuse1,  // in : 1st target edgeuse - points outward from CornerVert
-                                 pBaseEdgeuse2,  // in : 2nd target edgeuse - points outward from CornerVert
-                                 NULL,           // in : NULL    = EU1 and EU2 are immediate neighbors bounding same face
-                                                 //      notNULL = OptRefEU lies 'between' EU1 and EU2 so that EU1->edge and
-                                                 //        EU2->edge do not bound the same face. Needs to be a tangential edge.
-                                 iDebugLevel) ;  // in :
-
-  // Test if we need to create a corner surface for concave cases
-  // Note: Only when angle is more than 5 degrees, cause otherwise
-  // it will be a very skinny surface & may cause problems in later process
-//    if (!bIsTangentCase && dAngleDeg < 5.0)
-//    if (!bIsTangentCase && dAngleDeg > 5.0)
-//
-
-  // Get Solvers and FilletGeoms for the two filleted edges at this vertex
-  SmFilletSolver * pFilSolver1  = GetFilletExecutive()->GetFilletSolverOfEdgeuse(pBaseEdgeuse1);
-  SmFilletSolver * pFilSolver2  = GetFilletExecutive()->GetFilletSolverOfEdgeuse(pBaseEdgeuse2);
-  SmFilletGeom   * pFilletGeom1 = pFilSolver1->GetFirstFilletGeom();
-  SmFilletGeom   * pFilletGeom2 = pFilSolver2->GetFirstFilletGeom();
-
-  // For the non-filleted edge(s), we expect the rails to hit it (them).
-  // Create a (fillet) vertex there, along with two rail edgeuses.
-  for (ii=0; ii<lTotalEUs; ii++)
-    {
-      SmEdgeuse * pCurrEU = (*m_pAllEUs)[ii];
-
-      if(   pCurrEU != pBaseEdgeuse1 
-         && pCurrEU != pBaseEdgeuse2 )
-        {
-          // This edgeuse is in between two filletted edgeuses
-          SmEdgeuse      * pSideEU    = sm_FindSideEdgeuse( pBaseEdgeuse1, pCurrEU, iDebugLevel );
-
-          //
-          SmFilletVertex * pNewSideFV = new (m_pPseudoBrep) SmFilletVertex( this );
-          pNewSideFV->SetPointClass( SM_PC_EDGEUSE, pSideEU );
-          pNewSideFV->SetFilletVertexType( SM_FV_RAIL_X_EDGEUSE );
-          m_vVertices.Add( pNewSideFV );
-
-          ULONG             lRailIndex      = pFilSolver1->FindIndexOfRailXSideEdgeuse( pSideEU );
-          ULONG             lOtherRailIndex = pFilSolver2->FindIndexOfRailXSideEdgeuse(pSideEU->GetRadial() );
-          SmFilletEdgeuse * pNewEdgeuse     = NULL;
-
-          // Make a FilletEdgeuse and a FilletVertexuse to connect 
-          // a given filletVertex to one of this FilletGeom's Fillet Rails.
-          SER( pFilletGeom1->MakeRailEdgeuse( m_pPseudoBrep, lRailIndex,      pNewSideFV, pNewEdgeuse ));
-          SER( pFilletGeom2->MakeRailEdgeuse( m_pPseudoBrep, lOtherRailIndex, pNewSideFV, pNewEdgeuse ));
-
-        } // end pCurrEU is a side EU check
-    } // end iter all outgoing edgeuses from this vertex 
-
-  // Create the topology for the fillet corner.
-  if ( lTotalEUs == 3 )
-    {
-      // In the normal uniform-convexity case, two rails will intersect
-      // in the common face, and the other two rails should intersect the
-      // un-filleted side edge at the same place.
-      // We make vertices at those two places, and an edge between them.
-      // For tangent and mixed-convexity cases ... see comments below.
-
-      // gwc: assuming two rails should intersect the un-filleted side edge AT THE SAME PLACE isn't always true.  
-      // This gets detected and processed with virtual call SmFilletCorner::AdjustTopology() made in SmFilletExecutive::CreateFilletBrep().
-
-      // Find the side EU -- the un-filleted one.
-      SmEdgeuse * pSideEU = NULL;
-      for(ii=0;ii<lTotalEUs;ii++)
-        {
-          SmEdgeuse * pCurrEU = (*m_pAllEUs)[ii];
-          if ( pCurrEU != pBaseEdgeuse1 && pCurrEU != pBaseEdgeuse2 )
-            {
-              pSideEU = pCurrEU;
-              break;
-            }
-        } // end iter all EUs looking for the side (nonFilleted) edgeuse
-
-      // locals
-      SmFace          * pCommonFace     = sm_GetFaceByTwoEdgeuses(pBaseEdgeuse1, pBaseEdgeuse2, pSideEU );
-      ULONG             lRailIndex      = pFilSolver1->FindIndexOfRailOnFace(pCommonFace);
-      ULONG             lOtherRailIndex = pFilSolver2->FindIndexOfRailOnFace(pCommonFace);
-      SmFilletVertex  * pNewSideFV      = m_vVertices[0];
-      SmFilletVertex  * pNewFaceFV      = new (m_pPseudoBrep) SmFilletVertex(this);
-      SmFilletEdgeuse * pNewEdgeuse     = NULL;
-
-      pNewFaceFV->SetPointClass( SM_PC_FACE, pCommonFace );
-      m_vVertices.Add( pNewFaceFV );
-
-      // mixed convexity case
-      if(   bMixedConvexity 
-         && !m_bBevel 
-         && dAngleDeg > 5.0 )
-        {
-          // Mixed-convexity 3x2 corner, will create a 3-sided corner face.
-          m_bBlending = TRUE;
-
-          // It will just be straight across from where the other rail
-          // hits the side edge (at pNewSideFV):
-          pNewFaceFV->SetFilletVertexType( SM_FV_MATE );
-          pNewFaceFV->SetMate( 0, pNewSideFV );
-          pNewSideFV->SetMate( 0, pNewFaceFV );
-
-          // Make a FilletEdgeuse and a FilletVertexuse to connect 
-          // a given filletVertex to one of this FilletGeom's Fillet Rails.
-          SER( pFilletGeom1->MakeRailEdgeuse( m_pPseudoBrep, lRailIndex, pNewFaceFV, pNewEdgeuse ));
-
-          // pNewFaceFV, in this case, will not be where the two rails meet
-          // in the common face, because they're not going to meet, we're
-          // going to put in a 3-sided face in between them.
-          // pNewFaceFV will be where one rail meets the 3-sided face,
-          // and we'll need another vertex for the other rail meeting it,
-          // plus two new edges.
-
-          SmFilletVertex * pNewFaceFV2 = new (m_pPseudoBrep) SmFilletVertex(this);
-          m_vVertices.Add( pNewFaceFV2 );
-          pNewFaceFV2->SetPointClass( SM_PC_FACE, pCommonFace ) ;
-
-          // It will just be straight across from where the other rail
-          // hits the side edge (at pNewSideFV):
-          pNewFaceFV2->SetFilletVertexType( SM_FV_MATE );
-          pNewFaceFV2->SetMate( 0, pNewSideFV );
-          pNewSideFV-> SetMate( 1, pNewFaceFV2 );
-
-          // Make a FilletEdgeuse and a FilletVertexuse to connect 
-          // a given filletVertex to one of this FilletGeom's Fillet Rails.
-          SER( pFilletGeom2->MakeRailEdgeuse( m_pPseudoBrep, lOtherRailIndex, pNewFaceFV2, pNewEdgeuse ));
-
-          // Make Fillet Edge: a straight-across rib to end filletGeom1.
-          SmFilletEdge * pNewRibFilEdge = NULL;
-          SER( SmFilletEdge::MakeFilletEdge( m_pPseudoBrep,  // in : target Brep to receive new topology objects
-                                             pNewSideFV,     // in : start of new FilletEdge
-                                             pNewFaceFV,     // in : end   of new FilletEdge
-                                             pNewRibFilEdge, // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                             this ));        // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                             //      NULL to ignore, default:[NULL]
-
-          pNewRibFilEdge->SetFilletEdgeType( SM_FE_CROSS_SECTION );
-          SmFilletEdgeuse * pPrimEU      = (SmFilletEdgeuse*)pNewRibFilEdge->GetPrimaryEdgeuse();
-          SmFilletGeom    * pFilletGeom3 = pFilSolver1->GetFirstFilletGeom();
-          pPrimEU->SetFilletGeom( pFilletGeom3 );
-          m_vEdges.Add( pNewRibFilEdge );
-
-          // Make the 3-sided face's third edge.
-          // This connects the two rails, and will lie inside the common face.
-          // (Well, eventually it will separate the common face from the new 3-sided face.)
-          SER( SmFilletEdge::MakeFilletEdge( m_pPseudoBrep,   // in : target Brep to receive new topology objects
-                                             pNewFaceFV,      // in : start of new FilletEdge
-                                             pNewFaceFV2,     // in : end   of new FilletEdge
-                                             pNewRibFilEdge,  // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                             this ));         // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                              //      NULL to ignore, default:[NULL]
-
-          pNewRibFilEdge->SetFilletEdgeType( SM_FE_RAIL_RAIL_INTERPOLATION );
-          pNewRibFilEdge->SetOriginalFace( pCommonFace );
-          m_vEdges.Add( pNewRibFilEdge );
-
-          // Make a straight-across rib to end filletGeom2.
-          SER( SmFilletEdge::MakeFilletEdge( m_pPseudoBrep,   // in : target Brep to receive new topology objects
-                                             pNewFaceFV2,     // in : start of new FilletEdge
-                                             pNewSideFV,      // in : end   of new FilletEdge
-                                             pNewRibFilEdge,  // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                             this ));         // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                              //      NULL to ignore, default:[NULL]
-
-          pNewRibFilEdge->SetFilletEdgeType( SM_FE_CROSS_SECTION );
-          pPrimEU                     = (SmFilletEdgeuse*)pNewRibFilEdge->GetPrimaryEdgeuse();
-          SmFilletGeom * pFilletGeom4 = pFilSolver2->GetFirstFilletGeom();
-          pPrimEU->SetFilletGeom( pFilletGeom4 );
-          m_vEdges.Add( pNewRibFilEdge );
-
-          // all done
-          return SM_SUCCESS;
-
-        }  // end mixed-concavity case branch.
-
-      //
-      if (   bIsTangentCase
-          // || dAngleDeg <= 2.0
-          || (bMixedConvexity && dAngleDeg <= 5.0) )
-        {
-          m_bBlending = TRUE;
-          // Two filleted edgeuses are tangent to each other.
-          // The new face-vertex will just be straight across from the
-          // rail-side edge intersection vertex.
-          pNewFaceFV->SetFilletVertexType( SM_FV_MATE );
-          pNewFaceFV->SetMate( 0, pNewSideFV );
-          pNewSideFV->SetMate( 0, pNewFaceFV );
-        }
-      else // Regular BEVEL corner branch
-        {
-          // The new face vertex will be the intersection of the rails.
-          pNewFaceFV->SetFilletVertexType( SM_FV_RAIL_X_RAIL );
-          m_bBevel = TRUE;
-        } // end regular BEVEL corner branch
-
-      // Setup rails of fillet
-      //   Make a FilletEdgeuse and a FilletVertexuse to connect 
-      //   a given filletVertex to one of this FilletGeom's Fillet Rails.
-      SER( pFilletGeom1->MakeRailEdgeuse( m_pPseudoBrep, lRailIndex, pNewFaceFV, pNewEdgeuse));
-      SER( pFilletGeom2->MakeRailEdgeuse( m_pPseudoBrep, lOtherRailIndex, pNewFaceFV, pNewEdgeuse));
-
-    }  // end lTotalEUs == 3 branch
-
-  else if ( lTotalEUs == 4 )
-    {
-      // Note, at this point we don't know what the topology will be.
-      // There are side-edges between both pairs of rails.
-      // (Note, we're assuming exactly one side-edge between each
-      // potentially-intersecting rails: we exluded other case above.)
-//cbi: haven't implemented this yet:
-      // If the two side-edge-rail-rail intersections are straight across
-      // from each other, then the two fillet surfaces will meet, at a
-      // single rib.  Otherwise, we will create a third fillet face to join
-      // the two.
-
-      // Set m_bBlending and m_bBevel in 4x2 case as well. [bd 050718]
-      if (   bIsTangentCase
-                           //dAngleDeg <= 2.0
-          || (bMixedConvexity && dAngleDeg <= 5.0) )
-        {
-          // Two filleted edgeuses are tangent to each other
-          m_bBlending = TRUE;
-          m_bBevel = FALSE;
-        }
-      else
-        {
-          // Regular BEVEL corner
-          m_bBevel = TRUE;
-          m_bBlending = FALSE;
-        }
-    }  // end lTotalEUs == 4 branch
-
-
-  // At this point, we have only one fillet (cross) edge at this corner.
-  // In the 3x2 case, it will run from the rail-rail intersection of the
-  // two rails in the common face to the rail/rail/side-edge intersection.
-  if(m_vVertices.GetSize() != 2)
-    { SER(SM_ERR) ; }
-
-  // Create the new cross-edge.
-  SmFilletEdge * pNewFilletCrossEdge = NULL;
-  SER( SmFilletEdge::MakeFilletEdge(m_pPseudoBrep,        // in : target Brep to receive new topology objects
-                                    m_vVertices[0],       // in : start of new FilletEdge
-                                    m_vVertices[1],       // in : end   of new FilletEdge
-                                    pNewFilletCrossEdge,  // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                    this ));              // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                          //      NULL to ignore, default:[NULL]
-  SmFilletEdgeuse * pPrimEU = (SmFilletEdgeuse*)pNewFilletCrossEdge->GetPrimaryEdgeuse() ;
-  SmFilletEdgeuse * pMateEU = (SmFilletEdgeuse*)pPrimEU->GetMate() ;
-  pPrimEU->SetFilletGeom(pFilletGeom1) ;
-  pMateEU->SetFilletGeom(pFilletGeom2) ;
-
-  // Note: in version 5, this said 'if ( bIsTangentCase )', but was changed
-  // to 'if ( m_bBlending )'.  In the 3x2 case, they're the same, but not
-  // in the 4x2 case.  'Or' is correct here.
-  // [bd 09 Nov 05, 050718]
-
-  // if (m_bBlending)
-  if ( bIsTangentCase || m_bBlending )
-    {
-      pNewFilletCrossEdge->SetFilletEdgeType( SM_FE_CROSS_SECTION );
-    }
-  else
-    {
-      pNewFilletCrossEdge->SetFilletEdgeType( SM_FE_FILLET_X_FILLET );
-    }
-
-  m_vEdges.Add( pNewFilletCrossEdge );
-
-  // all done
-  return SM_SUCCESS;
-
-} // end SmFilletNx2Corner::MakeCornerTopology
-
-/*******************************************************************//**
-PURPOSE: If this FilletCorner has exactly two FilletSolvers, and their Edges
-   meet with G1 continuity, return the other one than the passed-in argument.
-
-NOTES:
-   If the passed-in FilletSolver is not one of ours, return Null with an error.
-   If there is only one FilletSolver, and it is the one passed in, return it.
-***********************************************************************/
-SmFilletSolver * SmFilletNx2Corner::GetTangentFilletSolver( const SmFilletSolver *pFS )
-{
-  if ( m_pSolverEUs->GetSize() != 2 )  { SM_ASSERT_ERR; return NULL; }
-
-  // We have to test its continuity.
-  SmEdgeuse      * pEU0 = (*m_pSolverEUs)[0];
-  SmEdge *pEdge0 = pEU0->GetEdge();
-  SmEdgeuse      * pEU1 = (*m_pSolverEUs)[1];
-  SmEdge *pEdge1 = pEU1->GetEdge();
-
-  double dTangencyTolDeg = SM_RAD2DEG( m_dTangencyTolRadians );
-  int iDebugLevel = 0;  // ... enhance as needed.
-  if ( ! sm_TestG1Continuity( m_cpVertex, pEdge0, pEdge1, dTangencyTolDeg, NULL, iDebugLevel ))
-    { return NULL; }   // not an error.
-
-
-  SmFilletSolver * pFS0 = m_pExecutive->GetFilletSolverOfEdgeuse( pEU0 );
-  SmFilletSolver * pFS1 = m_pExecutive->GetFilletSolverOfEdgeuse( pEU1 );
-
-  if ( pFS0 == pFS )
-    { return pFS1; }
-  if ( pFS1 == pFS )
-    { return pFS0; }
-
-  SM_ASSERT_ERR; return NULL;
-
-} // end SmFilletNx2Corner::GetTangentFilletSolver
-
-/*******************************************************************//**
-PURPOSE: Make corner topology for 4x2-Concave Corner cases.
-    These (rare-)cases are very similiar to 3x2-Concave cases except that
-    an extra edge (very likely a topological edge) is connected to
-    the corner vertex
-
-NOTES:
-***********************************************************************/
-SmStatus SmFilletNx2Corner::Make4x2ConcaveCornerTopology
-  ()
-{
-int iDebugLevel = 0;
-#ifdef SM_DEBUG_CODE
-iDebugLevel = DebugLevel();
-#endif // SM_DEBUG_CODE
-
-    SmEdgeuse * pBaseEdgeuse1 = (*m_pSolverEUs)[0];
-    SmEdgeuse * pBaseEdgeuse2 = (*m_pSolverEUs)[1];
-
-    // Get Solvers
-    SmFilletSolver * pFilSolver1 = GetFilletExecutive()->
-        GetFilletSolverOfEdgeuse(pBaseEdgeuse1);
-    SmFilletSolver * pFilSolver2 = GetFilletExecutive()->
-        GetFilletSolverOfEdgeuse(pBaseEdgeuse2);
-    SmFilletGeom * pFilletGeom1 = pFilSolver1->GetFirstFilletGeom();
-    SmFilletGeom * pFilletGeom2 = pFilSolver2->GetFirstFilletGeom();
-
-    SmFace * pCommonFace = NULL;
-    SmFilletVertex * pFVOnCommonFace = NULL;
-    SmFilletVertex * pFVOnConvexEdge = NULL;
-    SmFilletGeom * pConvexFG = NULL;
-    SmFilletGeom * pConcaveFG = NULL;
-
-    // Make topology for all (both) of the non-filleted edges at this vertex.
-
-    ULONG ii;
-    for (ii=0; ii<4; ii++)
-    {
-        SmEdgeuse * pCurrEU = (*m_pAllEUs)[ii];
-        if (pCurrEU == pBaseEdgeuse1 || pCurrEU == pBaseEdgeuse2)
-        {
-            continue;  // Do only the non-filleted ones.
-        }
-
-        // This edgeuse is in between two filletted edgeuses
-        SmFilletVertex * pFV = new (m_pPseudoBrep) SmFilletVertex(this);
-        m_vVertices.Add(pFV);
-
-        SmEdgeuse * pSideEU = sm_FindSideEdgeuse(pBaseEdgeuse1, pCurrEU, iDebugLevel );
-        pFV->SetPointClass(SM_PC_EDGEUSE,pSideEU);
-        pFV->SetFilletVertexType(SM_FV_RAIL_X_EDGEUSE);
-
-        SmFilletVertex * pFV2 = NULL;
-
-        if ( sm_CheckFaceComplimentaryCornerConcavity(
-                m_cpVertex, pBaseEdgeuse1, pBaseEdgeuse2, pCurrEU, iDebugLevel )
-           )
-        {
-            double dAngle1 = sm_FindAngleBetweenEdgeuses(
-                    m_cpVertex, pCurrEU, pBaseEdgeuse1, iDebugLevel );
-
-            double dAngle2 = sm_FindAngleBetweenEdgeuses(
-                    m_cpVertex, pCurrEU, pBaseEdgeuse2, iDebugLevel );
-
-            //if (sm_CheckFaceComplimentaryCornerConcavity(
-                    //m_cpVertex, pCurrEU, pBaseEdgeuse1, NULL, iDebugLevel ))
-
-            if ( dAngle1 > dAngle2 )
-            {
-                pCommonFace = sm_GetFaceByTwoEdgeuses(
-                    pCurrEU,pBaseEdgeuse1,NULL);
-                pFV->SetPointClass(SM_PC_EDGEUSE,pSideEU->GetRadial());
-
-                pFVOnCommonFace = new (m_pPseudoBrep) SmFilletVertex(this);
-                pFVOnCommonFace->SetPointClass(SM_PC_FACE, pCommonFace);
-
-                pFV2 = pFVOnCommonFace;
-                pFV2->SetFilletVertexType(SM_FV_MATE);
-                SM_SWAP_PTR(SmFilletVertex,pFV,pFV2);
-                pConcaveFG = pFilletGeom1;
-                pConvexFG = pFilletGeom2;
-            }
-
-            //else if (sm_CheckFaceComplimentaryCornerConcavity(
-                    //m_cpVertex, pCurrEU, pBaseEdgeuse2, NULL, iDebugLevel ))
-
-            else // if ( dAngle1 < dAngle2 )  [bd 060424]
-            {
-                pCommonFace = sm_GetFaceByTwoEdgeuses(
-                    pCurrEU,pBaseEdgeuse2,NULL);
-
-                pFVOnCommonFace = new (m_pPseudoBrep) SmFilletVertex(this);
-                pFVOnCommonFace->SetPointClass(SM_PC_FACE, pCommonFace);
-
-                pFV2 = pFVOnCommonFace;
-                pFV2->SetFilletVertexType(SM_FV_MATE);
-                pConcaveFG = pFilletGeom2;
-                pConvexFG = pFilletGeom1;
-            }
-        }
-        else
-        {
-            pFV2 = pFV;
-            pFVOnConvexEdge = pFV;
-        }
-
-        ULONG lRailIndex = pFilSolver1->FindIndexOfRailXSideEdgeuse(pSideEU);
-        SmFilletEdgeuse * pNewEdgeuse = NULL;
-        SER(pFilletGeom1->MakeRailEdgeuse(m_pPseudoBrep,
-            lRailIndex,pFV,pNewEdgeuse));
-        ULONG lOtherRailIndex = pFilSolver2->FindIndexOfRailXSideEdgeuse(
-            pSideEU->GetRadial());
-        SER(pFilletGeom2->MakeRailEdgeuse(m_pPseudoBrep,
-            lOtherRailIndex,pFV2,pNewEdgeuse));
-
-    } // end loop on all (both) non-filleted edges.
-
-    NER(pFVOnCommonFace);
-    NER(pFVOnConvexEdge);
-    pFVOnCommonFace->SetMate(0, pFVOnConvexEdge);
-    pFVOnConvexEdge->SetMate(0, pFVOnCommonFace);
-    m_vVertices.Add(pFVOnCommonFace);
-
-    // Will create a 3-sided corner face
-    SmFilletVertex * pPrevFV = pFVOnCommonFace; //i.e. m_vVertices[2]
-    for (ii=0; ii<3; ii++)
-    {
-        SmFilletVertex * pCurrFV = m_vVertices[ii];
-        SmFilletEdge * pFilletEdge = NULL;
-        if (ii==1 || pCurrFV == pFVOnConvexEdge || pPrevFV == pFVOnConvexEdge)
-        {
-            // Make Fillet Edge
-            SER(SmFilletEdge::MakeFilletEdge(m_pPseudoBrep,  // in : target Brep to receive new topology objects
-                                             pPrevFV,        // in : start of new FilletEdge
-                                             pCurrFV,        // in : end   of new FilletEdge
-                                             pFilletEdge,    // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                             this));         // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                             //      NULL to ignore, default:[NULL]
-            pFilletEdge->SetFilletEdgeType(SM_FE_CROSS_SECTION);
-            SmFilletEdgeuse * pPrimEU = (SmFilletEdgeuse*)pFilletEdge->
-                GetPrimaryEdgeuse();
-            if (ii == 1) {
-                pPrimEU->SetFilletGeom(pConvexFG);
-            }
-            else {
-                pPrimEU->SetFilletGeom(pConcaveFG);
-            }
-        }
-        else
-        {
-            SER(SmFilletEdge::MakeFilletEdge(m_pPseudoBrep,  // in : target Brep to receive new topology objects
-                                             pPrevFV,        // in : start of new FilletEdge
-                                             pCurrFV,        // in : end   of new FilletEdge
-                                             pFilletEdge,    // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                             this));         // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                             //      NULL to ignore, default:[NULL]
-            pFilletEdge->SetFilletEdgeType(SM_FE_RAIL_RAIL_INTERPOLATION);
-            pFilletEdge->SetOriginalFace(pCommonFace);
-        }
-        m_vEdges.Add(pFilletEdge);
-        pPrevFV = pCurrFV;
-    }
-
-    return SM_SUCCESS;
-
-} // end SmFilletNx2Corner::Make4x2ConcaveCornerTopology
-
-/*******************************************************************//**
-PURPOSE: Adjust the corner topology for the mixed-convexity cases where two fillets
-   of the corner does not intersect each other on the side edge.
-   One additional corner edge will be added to fill the 'gap'.
-
-NOTES:
-***********************************************************************/
-SmStatus SmFilletNx2Corner::AdjustConcaveCornerTopology()
-{
-  // Find the fillet vertex to be adjusted, pAdjustVert.
-  // It's the only SM_FV_RAIL_X_EDGEUSE.
-
-  SmFilletVertex * pAdjustVert = NULL;
-  SmTArray<SmFilletGeom*> sGeoms;
-  ULONG ii;
-  for ( ii=0; ii<m_vVertices.GetSize(); ii++ )
-  {
-      SmFilletVertex * pV = m_vVertices[ii];
-      if ( pV->GetFilletVertexType() != SM_FV_RAIL_X_EDGEUSE )
-        { continue; }
-
-      pV->GetFilletGeoms( sGeoms );
-      if ( sGeoms.GetSize() != 2 )
-      { continue; }  //SER(SM_ERR);
-      pAdjustVert = pV;
-      break;
-  }
-  NER(pAdjustVert);
-
-  SmFilletGeom * pFilletGeom1 = sGeoms[0];
-  SmFilletGeom * pFilletGeom2 = sGeoms[1];
-  SmEdgeuse * pSideEU1 = (SmEdgeuse*)pAdjustVert->GetPointClassObject();
-  SmFilletVertexuse * pVU1 = pAdjustVert->GetVUAtRailEnd( pFilletGeom1 );
-  SmFilletVertexuse * pVU2 = pAdjustVert->GetVUAtRailEnd( pFilletGeom2, pVU1 );
-  double dEdgeParam1 = pVU1->GetTsectPnt().m_dCurveParameter;
-  double dEdgeParam2 = pVU2->GetTsectPnt().m_dCurveParameter;
-  SmPoint3d sPnt1, sPnt2;
-  SmCurve * pSideEdgeCurve = pSideEU1->GetEdge()->GetCurve();
-  SER( pSideEdgeCurve->EvaluatePoint( dEdgeParam1,sPnt1 ) );
-  SER( pSideEdgeCurve->EvaluatePoint( dEdgeParam2,sPnt2 ) );
-
-  // See if we have coincident geometry, i.e. two rails intersect at this vertex.
-  double dGapDist = sPnt1.DistanceBetween( sPnt2 );
-  if ( dGapDist < m_dThisApproxTol3d )
-  {
-      // No adjustments are needed
-      return SM_SUCCESS;
-  }
-
-#ifdef SM_DEBUG_CODE
-  if ( DebugLevel() > 0 ) {
-      smgfx_SetLook(1,2, 1,0,0); pAdjustVert->Draw(); sm_GraphicsLoop();
-      sm_GraphicsLoop();
-  }
-#endif // SM_DEBUG_CODE
-
-  // Create two new FilletVertices where each rail hits the side edge.
-  SmFilletVertex * pNewVertL = new (m_pPseudoBrep) SmFilletVertex( this );  // "Large"
-  pNewVertL->SetFilletVertexType( SM_FV_RAIL_X_EDGEUSE );
-  SmFilletVertex * pNewVertS = new (m_pPseudoBrep) SmFilletVertex( this );  // "Small"
-  pNewVertS->SetFilletVertexType( SM_FV_RAIL_X_EDGEUSE );
-  m_vVertices.Add( pNewVertL );
-  m_vVertices.Add( pNewVertS );
-
-  pAdjustVert->SetFilletVertexType( SM_FV_FILLET_X_FILLET );
-  pAdjustVert->SetStatus( SM_FIL_UNPROCESSED );
-
-  // See which of the two rail-side edge intersections is closer
-  // to the filleted vertex, to decide Large/Small.
-  SmPoint3d sVertPnt = m_cpVertex->GetPoint();
-  SmFilletGeom * pLargeFG = NULL;
-  SmFilletGeom * pSmallFG = NULL;
-  SmVertexuse * pVUOnLargeFG = NULL;
-  SmVertexuse * pVUOnSmallFG = NULL;
-  SmFace * pSideFace = NULL;
-  if ( sPnt1.DistanceBetween( sVertPnt ) < sPnt2.DistanceBetween( sVertPnt ) )
-  {
-      pNewVertL->SetPoint( sPnt2 );
-      pNewVertL->SetOriginalTParam( dEdgeParam2 );
-      pNewVertS->SetPoint( sPnt1 );
-      pNewVertS->SetOriginalTParam( dEdgeParam1 );
-      pLargeFG = pFilletGeom2;
-      pSmallFG = pFilletGeom1;
-      pVUOnLargeFG = pVU2;
-      pVUOnSmallFG = pVU1;
-      pSideFace = pSideEU1->GetFace();
-  }
-  else
-  {
-      pNewVertL->SetPoint( sPnt1 );
-      pNewVertL->SetOriginalTParam( dEdgeParam1 );
-      pNewVertS->SetPoint( sPnt2 );
-      pNewVertS->SetOriginalTParam( dEdgeParam2 );
-      pLargeFG = pFilletGeom1;
-      pSmallFG = pFilletGeom2;
-      pVUOnLargeFG = pVU1;
-      pVUOnSmallFG = pVU2;
-      pSideFace = pSideEU1->GetRadial()->GetFace();
-  }
-  pNewVertL->SetStatus( SM_FIL_PROCESSED );
-  pNewVertS->SetStatus( SM_FIL_PROCESSED );
-  SER( pAdjustVert->Remove( pVUOnLargeFG ) );
-  SER( pNewVertL->PostInsert( pVUOnLargeFG ));
-  SER( pAdjustVert->Remove( pVUOnSmallFG ) );
-  SER( pNewVertS->PostInsert( pVUOnSmallFG ));
-
-  SmFilletEdge * pNewEdge = NULL;
-  SER( SmFilletEdge::MakeFilletEdge(m_pPseudoBrep, // in : target Brep to receive new topology objects
-                                    pAdjustVert,   // in : start of new FilletEdge
-                                    pNewVertL,     // in : end   of new FilletEdge
-                                    pNewEdge,      // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                    this));        // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                   //      NULL to ignore, default:[NULL]
-  pNewEdge->SetFilletEdgeType( SM_FE_FILLET_X_SIDE_FACE );
-  pNewEdge->SetOriginalFace( pSideFace );
-  SmFilletEdgeuse * pPrimEU = (SmFilletEdgeuse*)pNewEdge->GetPrimaryEdgeuse();
-  pPrimEU->SetFilletGeom( pLargeFG );
-
-  // Need to extend the side surface
-  SmSurface * pSideSurface = pSideFace->GetSurface();
-  SmSurface * pNewSurface = NULL;
-  SER( pSideSurface->CreateExtendedSurface( m_crContext, 10.0*dGapDist, SM_CT_G1, pNewSurface) );
-  SmObjDelete sCleanSurf( pNewSurface );
-  //SmBSplineSurface * pSideSurface = SM_CAST_PTR( SmBSplineSurface, pSideFace->GetSurface() );
-  //SmBSplineSurface * pNewSurface = NULL;
-  //SER( pSideSurface->CreateExtendedSurface( m_crContext, 10.0*dGapDist, SM_CT_G1, pNewSurface) );
-  //SmObjDelete sCleanSurf( pNewSurface );
-  SmSurface *pNewAnalyticSurface;
-
-  // Copy pNewSurface, when possible as an analytic surface.
-  SER( pNewSurface->CopyAndAddAnalytics( m_crContext, pNewAnalyticSurface ));
-  AddExtendedOriginalSurface(pSideFace,pNewAnalyticSurface);
-  pNewAnalyticSurface = NULL; // to be safe: might have been deleted.
-
-  SmFilletEdge * pNewEdge1 = NULL;
-  SER( SmFilletEdge::MakeFilletEdge(m_pPseudoBrep,  // in : target Brep to receive new topology objects
-                                    pNewVertL,      // in : start of new FilletEdge
-                                    pNewVertS,      // in : end   of new FilletEdge
-                                    pNewEdge1,      // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                    this));         // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                    //      NULL to ignore, default:[NULL]
-  pNewEdge1->SetFilletEdgeType( SM_FE_ON_EDGE );
-  pNewEdge1->SetOriginalEdge( pSideEU1->GetEdge() );
-  pNewEdge1->SetOriginalFace( pSideFace );
-  // Set this edge as a topo edges so that it can be removed in the merge process
-  //m_pExecutive->AddTopoEdges( pNewEdge1 );
-
-  SmFilletEdge * pNewEdge2 = NULL;
-  SER( SmFilletEdge::MakeFilletEdge(m_pPseudoBrep, // in : target Brep to receive new topology objects
-                                    pNewVertS,     // in : start of new FilletEdge
-                                    pAdjustVert,   // in : end   of new FilletEdge
-                                    pNewEdge2,     // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                    this));        // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                   //      NULL to ignore, default:[NULL]
-  pNewEdge2->SetFilletEdgeType( SM_FE_RAIL_EXTENSION );
-  pNewEdge2->SetOriginalFace( pSideFace );
-  SmFilletEdgeuse * pPrimEU2 = (SmFilletEdgeuse*)pNewEdge2->GetPrimaryEdgeuse();
-  pPrimEU2->SetFilletGeom( pSmallFG );
-
-  m_vEdges.Add( pNewEdge  );
-  m_vEdges.Add( pNewEdge1 );
-  m_vEdges.Add( pNewEdge2 );
-
-  // pAdjustVert comes in with two mates, in the common face.
-  // Find them -- they are at the other end of the two FilletEdges
-  // of type SM_FE_CROSS_SECTION -- and reset them as mates of
-  // the two FilletVertices we just created.
-  //SmVertexuse * pSmallFilletVU = NULL;
-  //SmVertexuse * pLargeFilletVU = NULL;
-  SmTArray<SmVertexuse*> sVUs;
-  pAdjustVert->GetVertexuses( sVUs );
-  for ( ii=0; ii<sVUs.GetSize(); ii++ )
-  {
-      SmVertexuse * pVU = sVUs[ii];
-      SmFilletEdgeuse * pEU = (SmFilletEdgeuse*)pVU->GetEdgeuse();
-      SmFilletEdge * pFilletE = (SmFilletEdge*)pEU->GetEdge();
-      if ( pFilletE->GetFilletEdgeType() != SM_FE_CROSS_SECTION )
-        { continue; }
-
-      // FilletEdge of type SM_FE_CROSS_SECTION:
-      SmFilletVertex * pOtherVert = (SmFilletVertex*)pFilletE->GetOtherVertex( pAdjustVert );
-      SmFilletGeom * pFG = pEU->GetFilletGeom();
-      if ( pFG == NULL )
-      {
-          pEU = (SmFilletEdgeuse*)pEU->GetMate();
-          pFG = pEU->GetFilletGeom();
-          NER( pFG );
-      }
-      if ( pFG == pSmallFG && pOtherVert->GetMate(0) != NULL )
-      {
-          pNewVertS->SetMate(0,pOtherVert);
-          pOtherVert->SetMate(0,pNewVertS);
-      }
-      else if ( pFG == pLargeFG && pOtherVert->GetMate(0) != NULL )
-      {
-          pNewVertL->SetMate(0,pOtherVert);
-          pOtherVert->SetMate(0,pNewVertL);
-      }
-  }
-  pAdjustVert->SetMate( 0, NULL );
-  pAdjustVert->SetMate( 1, NULL );
-
-  // Allow fillets to be extended at the corner
-  m_bBlending = FALSE;
-
-  m_bTopologyAdjusted = TRUE;
-
-  return SM_SUCCESS;
-
-} // end SmFilletNx2Corner::AdjustConcaveCornerTopology
-
-
-/*******************************************************************//**
-PURPOSE: Adjust an Nx1 closed corner for when the two ends do not match up geometrically.
-
-NOTES:
-***********************************************************************/
-SmStatus SmFilletNx1ClosedCorner::AdjustTangentCorner()
-{
-  // First check that this is the appropriate type.
-  // Must be Nx1 tangent corner, and currently N must be 3.
-  if ( m_pSolverEUs == NULL  ||  m_pSolverEUs->GetSize() != 1 ) { return SM_SUCCESS; }
-  if ( m_pAllEUs    == NULL  ||  m_pAllEUs   ->GetSize() != 3 ) { return SM_SUCCESS; }
-
-  // Check that the two filleted edges are tangent at this vertex.
-
-  // Note: using NormalizedEvaluate() assumes that m_pSolverEUs go outward
-  // from the filleted vertex.
-  SmPoint3d sPt;
-  SmVector3d s1stDeriv1, s1stDeriv2;
-  SER( (*m_pSolverEUs)[0]->NormalizedEvaluate( 0.0, FALSE, sPt, &s1stDeriv1 ) );   // TRUE = UV Eval, FALSE = 3d Eval
-  SER( (*m_pSolverEUs)[0]->NormalizedEvaluate( 1.0, FALSE, sPt, &s1stDeriv2 ) );   // TRUE = UV Eval, FALSE = 3d Eval
-
-  double dAngTolDeg = 2.0; //cbi: some places use 5 degrees; sort that all out.
-  if ( !s1stDeriv1.IsParallelTo( s1stDeriv2, dAngTolDeg)  )
-      { return SM_SUCCESS; }
-
-
-  // Ok, we are an Nx1-closed tangent corner.
-
-  // Check whether the fillet surface meets itself smoothly: corner points will match.
-  SmPoint3d sSrfPt00, sSrfPt01, sSrfPt10, sSrfPt11;
-  // There will be two FilletGeoms, but they are the same.
-  // It contains the Fillet surface, rails, etc.
-  SmTArray< SmFilletGeom* > sFilletGeoms;
-  m_vVertices[0]->GetFilletGeoms( sFilletGeoms );
-  SM_ASSERT( sFilletGeoms.GetSize() == 2 ); // We know we're a 4x2 tangent corner.
-  SM_ASSERT( sFilletGeoms[0] == sFilletGeoms[1] );
-  SmFilletGeom *pOrigFG = sFilletGeoms[0];  // Call it 'Original' because we might split it.
-  SmSurface *pFilletSrf = pOrigFG->GetFilletSurface();
-
-  SmExtent2d sSrfDomain = pFilletSrf->GetNaturalUVDomain();
-  // u runs the long way, v goes across the fillet.
-  SER( pFilletSrf->EvaluatePoint( sSrfDomain.Evaluate( 0,0 ), sSrfPt00 ) );
-  SER( pFilletSrf->EvaluatePoint( sSrfDomain.Evaluate( 1,0 ), sSrfPt10 ) );
-  SER( pFilletSrf->EvaluatePoint( sSrfDomain.Evaluate( 0,1 ), sSrfPt01 ) );
-  SER( pFilletSrf->EvaluatePoint( sSrfDomain.Evaluate( 1,1 ), sSrfPt11 ) );
-
-  double dDist0 = sSrfPt00.DistanceBetween( sSrfPt10 );  // We'll use these again.
-  double dDist1 = sSrfPt01.DistanceBetween( sSrfPt11 );
-
-  if ( dDist0 < m_dThisApproxTol3d )
-  {
-      if ( dDist1 < m_dThisApproxTol3d )
-      {
-          return SM_SUCCESS;
-      }
-  }
-
-  // Ok, the fillet surface does not meet itself smoothly, we have to do something.
-  // Either it overlaps, or there is a gap.  Check that.
-  // We can work from the fillet surface corner points: drop the fillet surface end point
-  // to the pt/vector start point plus its u-derivative.
-  SmVector3d sSu00, sSv00;
-  double dT;
-  SER( pFilletSrf->Evaluate1stDerivatives( sSrfDomain.Evaluate(0,0), TRUE, TRUE, sSrfPt00, sSu00, sSv00 ) );
-  SER( smgu_LineClosestPoint( sSrfPt00, sSu00, sSrfPt10, dT ) );
-
-  // For convenience: collect all FilletVertexuses involved in the rails.
-
-  if ( dT > 0.0 )
-  {
-      // Overlap: we have to split.
-      // Find a FilletVertexuse at which to split.
-      // The FVU is used only to get the FilletVertex, and which rail.
-      // We could split at the low or high end.  Let's do the high end.
-      // That way the main fillet is first, type DEFAULT, and the ROLLOVER
-      // fillet will be the small gap geom.
-      // A splitting FilletVertex will be interior to its base Face.
-      // Look at all interior FVUs and take the farthest-back one, w.r.t the fillet surface.
-      // For this we can sort against the same point/vector used above.
-
-      SM_ASSERT( m_vVertices.GetSize() == 2 );
-
-      SmFilletVertex *pFV = m_vVertices[0];
-      // Looking for a vertex where a rail hits a side edge:
-      if ( pFV->GetFilletVertexType() != SM_FV_RAIL_X_EDGEUSE )
-      {
-          pFV = m_vVertices[1];
-          if ( pFV->GetFilletVertexType() != SM_FV_RAIL_X_EDGEUSE )
-            { SER( SM_ERR ); }
-      }
-
-
-      // The FG has four FVUs:
-      SmFilletVertexuse * pFVUs[4];
-      pFVUs[0] = pOrigFG->GetRailVertexuse( 0,0 );
-      pFVUs[1] = pOrigFG->GetRailVertexuse( 0,1 );
-      pFVUs[2] = pOrigFG->GetRailVertexuse( 1,0 );
-      pFVUs[3] = pOrigFG->GetRailVertexuse( 1,1 );
-
-      // Sort these: their int-curve parameters should be set.
-      SmTArray< double > sCrvParams  (4);
-      SmTArray< ULONG  > sSortIndices(4);
-      for ( ULONG ii=0; ii<4; ii++ )
-      {
-          double dIntParam = pFVUs[ii]->GetTsectPnt().m_dCurveParameter;
-          if ( dIntParam < -SM_EFF_ZERO )
-            SER( SM_ERR );  // If this happens, we'll have to figure out something else.
-
-          SER( smgu_AddSorted( dIntParam, ii, TRUE, sCrvParams, &sSortIndices ) );
-      }
-
-      // Ok, we have to make a new fillet face in between.
-
-      // Split at the 2nd sorted parameter: that will make pOrigFG be the beginning
-      // short piece of fillet, which is the rollover part, because it is currently
-      // outside the domain of one of the base faces.  When we trace the short
-      // rollover section, we will move the out-of-domain parameters by a period
-      // so that they are within the domain.
-
-
-      SmFilletVertex *pOppositeFV = NULL;
-
-      SmFilletVertexuse *pThisFVUse = pFVUs[ sSortIndices[ 1 ] ];
-
-      // Ok, here we have a fillet geom that needs to be split
-      // at this FilletVertex (pThisFVUse).
-
-      // Which end of the FilletGeom are we at?  0 for start, 1 for end.
-      // We're declaring this, because we'll keep the small rollover part at the beginning.
-      ULONG lWhichEnd = 0;
-
-      // It makes a difference to the split routine whether the original
-      // FG, or the new one, is a tangent-rollover.  The assumption is that
-      // 'this' FG is the low end, and the new one is the high end; so,
-      pOrigFG->SetFilletGeomType( SM_FG_TANGENT_ROLLOVER );
-
-      SmFilletGeom *pNewFG = NULL;
-      SmStatus eStat = pOrigFG->GetFilletSolver()->SplitFilletGeomAtSideEdge(
-                  pOrigFG,
-                  pThisFVUse,
-                  lWhichEnd,
-                  &pNewFG );
-
-      // If failure, the whole fillet could still succeed, so don't SER.
-      if ( eStat != SM_SUCCESS )
-        { return SM_SUCCESS; }
-
-#ifdef SM_DEBUG_CODE
-SmBoolean bDebug_FVUs=FALSE;
-      if ( bDebug_FVUs )
-      {
-        pOrigFG->DumpFilletVUs();
-        pNewFG ->DumpFilletVUs();
-      }
-#endif // SM_DEBUG_CODE
-
-      // After splitting, pOrigFG is the low end and pNewFG is the
-      // high end: the newly created fillet vertices are at the high
-      // end of pOrigFG and the low end of pNewFG.
-      //
-      // The fillet vertex at which we just split, pThisFV, is left at
-      // either the low end of pOrigFG (if lWhichEnd == 0) or the
-      // high end of pNewFG (otherwise).
-      //
-      // One of the new vertices now takes over for pThisFV, being the
-      // intersection of the rail and the (tangent) side edge.
-      // The split routine we just called takes care of that.
-      //
-      // The split fillet vertex, pThisFV, is now just a mate to the
-      // corresponding FV on the other rail.  Deal with that.
-
-      SmFilletVertex * pThisFV = SM_CAST_PTR( SmFilletVertex, pThisFVUse->GetVertex() );
-
-      pThisFV->SetFilletVertexType( SM_FV_MATE );
-      pThisFV->SetStatus( SM_FIL_UNPROCESSED );
-
-      // Set it as mate of its opposite fillet vertex.
-      SmFilletVertexuse *pOppositeFVU = NULL;
-
-      // Grab the correct rail.
-      ULONG lRailIdx;
-      SER( pOrigFG->GetRailIndexOfVertex( pThisFV, lRailIdx ) );
-      SmFilletEdge *pThisRail = pOrigFG->GetRail( lRailIdx );
-
-      if ( lWhichEnd == 0 )
-          pOppositeFVU = pOrigFG->GetRailVertexuse( 1-lRailIdx, 0 );
-      else
-          pOppositeFVU = pNewFG->GetRailVertexuse( 1-lRailIdx, 1 );
-
-      pOppositeFV = SM_CAST_PTR( SmFilletVertex, pOppositeFVU->GetVertex() );
-
-      if ( pOppositeFV != NULL )
-      {
-          pThisFV->SetMate( 0, pOppositeFV );
-          pOppositeFV->SetMate( 0, pThisFV );
-
-          // Also tell it that its geometry is kaput
-          // (because pThisFV is on a different base surface).
-          pOppositeFV->SetStatus( SM_FIL_UNPROCESSED );
-      }
-
-      // Also, pThisFV is now in a face.
-      SmFace *pNewBaseFace = pNewFG->GetRail( lRailIdx )->GetOriginalFace();
-      pThisFV->SetPointClass( SM_PC_FACE, pNewBaseFace );
-
-      // Edges are kaput too.
-      for ( ULONG j = 0; j < m_vEdges.GetSize(); j++ )
-        { m_vEdges[j]->SetStatus( SM_FIL_UNPROCESSED ); }
-
-      // Also: there are now two new FilletVertex's, which belong
-      // to this FilletCorner.  Add them to our list, and set
-      // their back-pointer to us.
-      // 'Same' is on the same side as pThisFV, 'Opp' as pOppositeFV.
-      // Also recall that the new FilletVertex's are at the high end
-      // of the original FG -- hence the 2nd arguments:
-
-      SmFilletVertex * pNewFVSame = pOrigFG->GetRailVertex(   lRailIdx, 1 );
-      SmFilletVertex * pNewFVOpp  = pOrigFG->GetRailVertex( 1-lRailIdx, 1 );
-
-      // pNewFVSame should be all set, it's what pThisFV used to be.
-      // But pNewFVOpp is now in a face.
-      SmFace *pOppBaseFace = pOrigFG->GetRail( 1-lRailIdx )->GetOriginalFace();
-      pNewFVOpp->SetPointClass( SM_PC_FACE, pOppBaseFace );
-
-      // We also have to take responsibility for the new edge.
-      SmTArray<SmEdge*> aNewEdges;
-      pNewFVSame->GetCommonEdges( pNewFVOpp, aNewEdges );
-      SM_ASSERT( aNewEdges.GetSize() == 1 );
-      if ( aNewEdges.GetSize() > 0 )
-      {
-          SmFilletEdge *pThisFilEdge = SM_CAST_PTR( SmFilletEdge, aNewEdges[0] );
-          this->m_vEdges.Add( pThisFilEdge );
-          pThisFilEdge->SetFilletCorner( this );
-      }
-
-      // We have to update the fillet surfaces in the fillet geoms here.
-      // A prerequisite to that is recalculating the vertex geom.
-
-      SER( this->CalcCornerVertGeom() );
-
-#ifdef SM_DEBUG_CODE
-      if ( bDebug_FVUs )
-      {
-          pOrigFG->DumpFilletVUs();
-          pNewFG ->DumpFilletVUs();
-      }
-#endif // SM_DEBUG_CODE
-
-
-      // Adjust the uv positions in the TsectPnts in the Fillet Vertexuses for the seams.
-
-      SmFilletSolver * pFS = pOrigFG->GetFilletSolver();
-      SM_ASSERT( pNewFG->GetFilletSolver() == pFS );
-
-      SmOffsetSurface * pSurf1 = pFS->GetSurface(0);
-      SmOffsetSurface * pSurf2 = pFS->GetSurface(1);
-      const SmSurface *pBaseSurf1 = pSurf1->GetBaseSurface();
-      const SmSurface *pBaseSurf2 = pSurf2->GetBaseSurface();
-      SmExtent2d sDomain1 = pSurf1->GetNaturalUVDomain();
-      SmExtent2d sDomain2 = pSurf2->GetNaturalUVDomain();
-
-      // Note, surface closure is relatively expensive to calculate.
-      // If we need it (for seam checking), we'll calculate it once and pass flags.
-      SmSurfParamType eSurfClosure1 = sm_SetSurfaceClosure( pSurf1, sDomain1 );
-      SmSurfParamType eSurfClosure2 = sm_SetSurfaceClosure( pSurf2, sDomain2 );
-
-      // Process pOrig FG.
-      SmTArray<SmTsectPnt*> sTsectPnts(2);
-
-      // Also keep track of which FVUs these come from.
-      SmTArray< SmFilletVertexuse* > sUsedFVUsOrig;
-
-      for ( ULONG ii=0; ii<2; ii++ )
-      {
-          for ( ULONG jj=0; jj<2; jj++ )
-          {
-              SmFilletVertexuse *pFVU = pOrigFG->GetRailVertexuse( ii, jj );
-
-              SM_ASSERT( pFVU != NULL ); // This would be a problem.
-              if ( pFVU == NULL )
-                { continue; }
-
-              SmFilletVertex * pFVertex = (SmFilletVertex*) ( pFVU->GetVertex() );
-              if (pFVertex->GetStatus() == SM_FIL_UNPROCESSED ||
-                  pFVertex->GetFilletVertexType() == SM_FV_MATE ||
-                  pFVertex->GetFilletVertexType() == SM_FV_RAIL_X_EXTENDED_EDGEUSE)
-                    { continue; }
-
-              SmTsectPnt & rTsectPnt = pFVU->GetTsectPnt();
-              sTsectPnts.Add( &rTsectPnt );
-
-              // Also keep track of which FVU this came from.
-              sUsedFVUsOrig.Add( pFVU );
-          }
-      } // end collecting FilletVertexuses
-
-      // There should be two of them.
-      SM_ASSERT( sTsectPnts.GetSize() == 2 );
-
-      // Map any out-of-domain uv points back in, with a periodic shift.
-      for ( ULONG ii=0; ii<sTsectPnts.GetSize(); ii++ )
-      {
-          SmTsectPnt * rTsectPnt = sTsectPnts[ii];
-          SmPoint2d sUV = rTsectPnt->UVPos(0);
-          if ( sm_CheckSeamOut( pBaseSurf1, sUV, m_dThisApproxTol3d , eSurfClosure1 ) )
-          {
-              rTsectPnt->UVPos(0) = sUV;
-          }
-
-          sUV = rTsectPnt->UVPos(1);
-          if ( sm_CheckSeamOut( pBaseSurf2, sUV, m_dThisApproxTol3d , eSurfClosure2 ) )
-          {
-              rTsectPnt->UVPos(1) = sUV;
-          }
-      }
-
-
-      // Now process pNewFG.
-      sTsectPnts.ReSet();
-      SmTArray< SmFilletVertexuse* > sUsedFVUsNew;
-
-      for ( ULONG ii=0; ii<2; ii++ )
-      {
-          for ( ULONG jj=0; jj<2; jj++ )
-          {
-              SmFilletVertexuse *pFVU = pNewFG->GetRailVertexuse( ii, jj );
-              SM_ASSERT( pFVU != NULL ); // This would be a problem.
-              if ( pFVU == NULL )
-                { continue; }
-
-              SmFilletVertex * pFVertex = (SmFilletVertex*) (pFVU->GetVertex());
-              if (pFVertex->GetStatus() == SM_FIL_UNPROCESSED ||
-                  pFVertex->GetFilletVertexType() == SM_FV_MATE ||
-                  pFVertex->GetFilletVertexType() == SM_FV_RAIL_X_EXTENDED_EDGEUSE)
-                    { continue; }
-
-              SmTsectPnt & rTsectPnt = pFVU->GetTsectPnt();
-              sTsectPnts.Add( &rTsectPnt );
-
-              // Also keep track of which FVU this came from.
-              sUsedFVUsNew.Add( pFVU );
-          }
-      } // end collecting FilletVertexuses
-
-      // There should be two of them.
-      SM_ASSERT( sTsectPnts.GetSize() == 2 );
-
-      // Map any out-of-domain uv points back in, with a periodic shift.
-      for ( ULONG ii=0; ii<sTsectPnts.GetSize(); ii++ )
-      {
-          SmTsectPnt * rTsectPnt = sTsectPnts[ii];
-          SmPoint2d sUV = rTsectPnt->UVPos(0);
-          if ( sm_CheckSeamOut( pBaseSurf1, sUV, m_dThisApproxTol3d , eSurfClosure1 ) )
-          {
-              rTsectPnt->UVPos(0) = sUV;
-          }
-          sUV = rTsectPnt->UVPos(1);
-          if ( sm_CheckSeamOut( pBaseSurf2, sUV, m_dThisApproxTol3d, eSurfClosure2 ) )
-          {
-              rTsectPnt->UVPos(1) = sUV;
-          }
-      }
-
-#ifdef SM_DEBUG_CODE
-      if ( bDebug_FVUs )
-      {
-          pOrigFG->DumpFilletVUs();
-          pNewFG ->DumpFilletVUs();
-      }
-#endif // SM_DEBUG_CODE
-
-      // re-Calc Vert Geom with the modified UV values in the FVUs' TsectPnts.
-      // First have to mark the changed ones UnProcessed.
-      for ( ULONG ii=0; ii<sUsedFVUsOrig.GetSize(); ii++ )
-        { ( (SmFilletVertex*)( sUsedFVUsOrig[ii]->GetVertex() ))->SetStatus( SM_FIL_UNPROCESSED ); }
-      for ( ULONG ii=0; ii<sUsedFVUsNew.GetSize(); ii++ )
-        { ( (SmFilletVertex*)( sUsedFVUsNew[ii]->GetVertex() ))->SetStatus( SM_FIL_UNPROCESSED ); }
-
-      SER( this->CalcCornerVertGeom() );
-
-#ifdef SM_DEBUG_CODE
-      if ( bDebug_FVUs )
-      {
-          pOrigFG->DumpFilletVUs();
-          pNewFG ->DumpFilletVUs();
-      }
-#endif // SM_DEBUG_CODE
-
-
-
-      // We need a direction for ReCalcFilletGeom.
-      // We are assuming that the split is very close to the beginning
-      // of the smoothly-closed rail, so just use the start parameter.
-      SmVector3d sPtDer[2];
-      SmExtent1d sRailIvl = pThisRail->GetInterval();
-      SER( pThisRail->GetCurve()->Evaluate( sRailIvl.GetMin(), 1, FALSE, sPtDer ) );
-
-
-      // Possible enhancement: We could avoid one ReCalcFilletGeom call.
-      // The FG piece that's on the original two base faces could
-      // just be trimmed, instead of recalculated.
-      // If lWhichEnd is 1, then we could just trim pOrigFG.
-      // Also, if lWhichEnd is 0, we could move the geometry from
-      // pOrigFG into pNewFG, then just trim pNewFG,
-      // and recalc pOrigFG.
-
-      // Tell FilletSolver to use surfaces in the FilletGeoms.
-      // First back up what's there, if anything, to restore when done.
-      SmFilletGeom *pBackupFG = pFS->GetFilletGeomForSurfaces();
-
-      pFS->SetFilletGeomForSurfaces( pOrigFG );
-      SER( pOrigFG->ReCalcFilletGeom( FALSE, &( sPtDer[1] ) ) );
-
-      // Now the other FG
-      pFS->SetFilletGeomForSurfaces( pNewFG );
-      SER( pNewFG->ReCalcFilletGeom( FALSE, &( sPtDer[1] ) ) );
-
-      pFS->SetFilletGeomForSurfaces( pBackupFG );
-
-  } // end if dT > 0 so have to split.
-
-  return SM_SUCCESS;
-
-} // end SmFilletNx1ClosedCorner::AdjustTangentCorner()
-
-/*******************************************************************//**
-PURPOSE: Adjust a corner for the Nx2 tangent case with N > 3.
-
-NOTES:
-    In that case, both rails are probably rail-int-edgeuse.
-    If everything matches up just right geometrically,
-    then we can mate the two fillet surfaces together,
-    but there's a good chance that things don't meet properly,
-    because the fillets are not rolling on the same face.
-    In that case, we'll have to put another fillet surface
-    between the two.
-
-cbi: Plan: make a new Corner type, SM_FCR_TANGENT, subclass SmFilletTangentCorner.
-     (possibly subtypes 3x2Tangent and Nx2Tangent.)
-     Then this method will be SmFilletTangentCorner::AdjustTopology().
-     Then this method won't have to check whether it's a Nx2 tangent corner;
-     that check will be in Create().
-cbi: try a 5x2 corner?
-***********************************************************************/
-SmStatus SmFilletNx2Corner::AdjustTangentCorner()
-{
-    // First check that this is the appropriate type.
-    // Must be Nx2 tangent corner, and currently N must be 4.
-    if ( m_pSolverEUs == NULL  ||  m_pSolverEUs->GetSize() != 2 ) { return SM_SUCCESS; }
-    if ( m_pAllEUs    == NULL  ||  m_pAllEUs   ->GetSize() != 4 ) { return SM_SUCCESS; }
-
-    // Check that the two filleted edges are tangent at this vertex.
-
-    // Note: using NormalizedEvaluate() assumes that m_pSolverEUs go outward
-    // from the filleted vertex.
-    SmPoint3d sPt;
-    SmVector3d s1stDeriv1, s1stDeriv2;
-    SER( (*m_pSolverEUs)[0]->NormalizedEvaluate( 0.0, FALSE, sPt, &s1stDeriv1 ) );   // TRUE = UV Eval, FALSE = 3d Eval
-    SER( (*m_pSolverEUs)[1]->NormalizedEvaluate( 0.0, FALSE, sPt, &s1stDeriv2 ) );   // TRUE = UV Eval, FALSE = 3d Eval
-
-    double dAngTolDeg = 2.0; //cbi: some places use 5 degrees; sort that all out.
-    if ( !s1stDeriv1.IsParallelTo( s1stDeriv2, dAngTolDeg)  )
-        { return SM_SUCCESS; }
-
-
-    // Ok, we are an Nx2-tangent corner.
-
-    // loop on all of our FilletVertices
-    //   looking for surface points being different.
-
-    SmBoolean bCloseEnough = TRUE;
-
-    // Locals
-    SmTArray<SmFilletGeom*> sGeoms;
-
-#ifdef SM_DEBUG_CODE
-    int iDebugLevel = DebugLevel();
-#endif // SM_DEBUG_CODE
-
-    ULONG ii;
-    for ( ii=0; ii<m_vVertices.GetSize(); ii++ )
-    {
-        SmFilletVertex * pAdjustVert = m_vVertices[ii];
-
-        // Check whether this is the vertex that corresponds to the
-        // rail hitting the side edge, and not the rails hitting
-        // each other in a common face.
-        if ( pAdjustVert->GetFilletVertexType() != SM_FV_RAIL_X_EDGEUSE )
-          { continue; }
-
-#ifdef SM_DEBUG_CODE
-        if ( iDebugLevel > 0 ) {
-            smgfx_SetLook(1,2, 1,0,0); pAdjustVert->Draw(); sm_GraphicsLoop();
-            sm_GraphicsLoop();
-        }
-#endif // SM_DEBUG_CODE
-
-        // Ok, this fillet vertex corresponds to where the
-        // rails from the two fillets hit a side edge.
-        // Check whether those rails intersect the side edge at the same place.
-        // In addition, the other end of this rib will have to coincide
-        // in order for the fillet surfaces to mate here.
-
-        pAdjustVert->GetFilletGeoms(sGeoms);
-        if ( sGeoms.GetSize() != 2 )
-            continue;  // SER( SM_ERR );  maybe already adjusted...
-
-        SmFilletGeom * pFilletGeom1 = sGeoms[0];
-        SmFilletGeom * pFilletGeom2 = sGeoms[1];
-
-        //cbi: fix this in the future
-        // We need the rail curves to work from.
-        // If not there yet, just wait for a later call.
-        if (   pFilletGeom1->GetRail(0)->GetCurve() == NULL
-           ||  pFilletGeom1->GetRail(1)->GetCurve() == NULL
-           ||  pFilletGeom2->GetRail(0)->GetCurve() == NULL
-           ||  pFilletGeom2->GetRail(1)->GetCurve() == NULL )
-        {
-            return SM_SUCCESS;
-        }
-
-        // Get the vertexuses corresponding to the two surfaces,
-        // and their TSectPnts:
-        SmFilletVertexuse * pVU1 = pAdjustVert->GetVUAtRailEnd(pFilletGeom1);
-        SmFilletVertexuse * pVU2 = pAdjustVert->GetVUAtRailEnd(pFilletGeom2, pVU1);
-        SmTsectPnt &rIntPtSrf1 = pVU1->GetTsectPnt();
-        SmTsectPnt &rIntPtSrf2 = pVU2->GetTsectPnt();
-
-        SmSurface *pSrf1A = (SmSurface*)( rIntPtSrf1.m_apUserPointer[0] );
-        SmSurface *pSrf1B = (SmSurface*)( rIntPtSrf1.m_apUserPointer[1] );
-        SmSurface *pSrf2A = (SmSurface*)( rIntPtSrf2.m_apUserPointer[0] );
-        SmSurface *pSrf2B = (SmSurface*)( rIntPtSrf2.m_apUserPointer[1] );
-
-#ifdef SM_DEBUG_CODE
-        if ( iDebugLevel > 0 ) {
-            smgfx_SetLook(2,1, 0,0,1); pSrf1A->DrawUV(4,4,TRUE); sm_GraphicsLoop();
-            smgfx_SetLook(2,1, 0,1,1); pSrf1B->DrawUV(4,4,TRUE); sm_GraphicsLoop();
-            smgfx_SetLook(2,1, 1,0,0); pSrf2A->DrawUV(4,4,TRUE); sm_GraphicsLoop();
-            smgfx_SetLook(2,1, 1,0,1); pSrf2B->DrawUV(4,4,TRUE); sm_GraphicsLoop();
-            sm_GraphicsLoop();
-        }
-#endif // SM_DEBUG_CODE
-        SmBoolean bTmp0 = FALSE, bTmp1 = FALSE, bTmp2 = FALSE, bTmp3 = FALSE ; 
-        SmBSplineSurface * pBSplineSurface0 = SM_CAST_PTR(SmBSplineSurface, pSrf1A) ;
-        SmBSplineSurface * pBSplineSurface1 = SM_CAST_PTR(SmBSplineSurface, pSrf1B) ;
-        SmBSplineSurface * pBSplineSurface2 = SM_CAST_PTR(SmBSplineSurface, pSrf2A) ;
-        SmBSplineSurface * pBSplineSurface3 = SM_CAST_PTR(SmBSplineSurface, pSrf2B) ;
-        SmTemporaryChangeValue<SmBoolean> sClean0(pBSplineSurface0 ? pBSplineSurface0->GetOutOfBoundsEnabled() : bTmp0, TRUE) ;
-        SmTemporaryChangeValue<SmBoolean> sClean1(pBSplineSurface1 ? pBSplineSurface1->GetOutOfBoundsEnabled() : bTmp1, TRUE) ;
-        SmTemporaryChangeValue<SmBoolean> sClean2(pBSplineSurface2 ? pBSplineSurface2->GetOutOfBoundsEnabled() : bTmp2, TRUE) ;
-        SmTemporaryChangeValue<SmBoolean> sClean3(pBSplineSurface3 ? pBSplineSurface3->GetOutOfBoundsEnabled() : bTmp3, TRUE) ;
-
-        SmPoint3d sSrf1Pt, sSrf2Pt;
-        SER( pSrf1A->EvaluatePoint( rIntPtSrf1.UVPos( 0 ), sSrf1Pt ) );
-        SER( pSrf2A->EvaluatePoint( rIntPtSrf2.UVPos( 0 ), sSrf2Pt ) );
-
-#ifdef SM_DEBUG_CODE
-        if ( iDebugLevel > 0 ) {
-            smgfx_SetLook(1,6, 0,0,1);
-            sSrf1Pt.Draw(); sm_GraphicsLoop();
-            sSrf2Pt.Draw(); sm_GraphicsLoop();
-            sm_GraphicsLoop();
-        }
-#endif // SM_DEBUG_CODE
-
-        if ( sSrf1Pt.DistanceBetween( sSrf2Pt ) > m_dThisApproxTol3d )
-        {
-            bCloseEnough = FALSE;
-            break;
-        }
-
-        // The mates must agree as well for 4x2
-        SER( pSrf1B->EvaluatePoint( rIntPtSrf1.UVPos( 1 ), sSrf1Pt ) );
-        SER( pSrf2B->EvaluatePoint( rIntPtSrf2.UVPos( 1 ), sSrf2Pt ) );
-
-#ifdef SM_DEBUG_CODE
-        if ( iDebugLevel > 0 ) {
-            smgfx_SetLook(1,6, 0,1,0);
-            sSrf1Pt.Draw(); sm_GraphicsLoop();
-            sSrf2Pt.Draw(); sm_GraphicsLoop();
-            sm_GraphicsLoop();
-        }
-#endif // SM_DEBUG_CODE
-
-        if ( sSrf1Pt.DistanceBetween( sSrf2Pt ) > m_dThisApproxTol3d )
-        {
-            bCloseEnough = FALSE;
-            break;
-        }
-    
-    } // end of loop on all of our FilletVertices
-      //   looking for surface points being different.
-
-    if ( bCloseEnough )
-    {
-        return SM_SUCCESS;
-    }
-
-
-    // Ok, we have to make a new fillet face in between.
-
-    // Loop over all of our side vertices again, splitting any
-    // fillet geom that the vertex is in the middle of.
-    ULONG lWhichFV, lWhichFilletGeom;
-
-    // When we process a vertex, we don't want to process its mate.
-    // Create a separate list so we can remove what we don't want to process.
-    SmTArray<SmFilletVertex*> apFVsToProcess( m_vVertices );
-
-    for ( lWhichFV = 0; lWhichFV < apFVsToProcess.GetSize(); lWhichFV++ )
-    {
-        SmFilletVertex * pThisFV = apFVsToProcess[lWhichFV];
-
-        // Looking for a vertex where a rail hits a side edge:
-        if ( pThisFV->GetFilletVertexType() != SM_FV_RAIL_X_EDGEUSE )
-            continue;
-
-        pThisFV->GetFilletGeoms( sGeoms );
-        SM_ASSERT( sGeoms.GetSize() == 2 );
-        if ( sGeoms.GetSize() != 2 )
-            { continue; }
-
-        // This Fillet Vertex has two Fillet Vertexuses, one on each FilletGeom.
-        // If either is interior to its FilletGeom, split that fillet geom.
-        SmFilletVertexuse * apVUs[2];
-        apVUs[0] = pThisFV->GetVUAtRailEnd( sGeoms[0] );
-        apVUs[1] = pThisFV->GetVUAtRailEnd( sGeoms[1], apVUs[0] );
-
-        // Drop the vertex position to the corresponding rails in
-        // each FilletGeom.  If it's internal to the rail,
-        // split the FilletGeom.
-
-        SmPoint3d sVertexPos = pThisFV->GetPoint();
-
-        // This is something we'll need after the next loop:
-        SmFilletVertex *pOppositeFV = NULL;
-
-        // Look at both FilletGeoms
-        for ( lWhichFilletGeom = 0; lWhichFilletGeom <2; lWhichFilletGeom++ )
-        {
-            SmFilletGeom *pOrigGeom = sGeoms[ lWhichFilletGeom ];
-
-            SmFilletVertexuse *pThisFVUse = apVUs[ lWhichFilletGeom ];
-
-            // Grap the correct rail
-            ULONG lRailIdx;
-            SER( pOrigGeom->GetRailIndexOfVertex( pThisFV, lRailIdx ) );
-            SmFilletEdge *pThisRail = pOrigGeom->GetRail( lRailIdx );
-
-            SmExtent1d sRailIvl = pThisRail->GetInterval();
-            double *pdGuessParam = NULL; //cbi.
-            SmBoolean bSuccess;
-            double dSplitParam = 0.0;
-            double dDist = 0.0;
-
-            SER( pThisRail->GetCurve()->DropPoint(sRailIvl,         // in : target curve allowed domain
-                                             sVertexPos,       // in : Point to drop to curve
-                                             NULL,             // in : For Snapping, NULL=NoSnap, Vec pointing to CrvInside from desired EndPt for snapping.
-                                                               //      when DropPt is within dDistTol in cpVecToCrvInside dir of EndPt, Snap to Ivl EndPt.
-                                                               //      Vec handles ambiguities and makes sure that curves are not just touching at the ends.
-                                             SM_BIG_DOUBLE,    // in : Used for SnapDist, and SM_SO_INTERSECT sXSectTol3d distance.
-                                                               //      sXSectTol3d = dDistTol ;      SM_SO_INTERSECT 
-                                                               //      sXSectTol3d = SM_BIG_DOUBLE ; SM_SO_MINIMIZE, SM_SO_NORMALIZE
-                                                               //      sSnapTol3d  = dDistTol ;      SM_SO_MINIMIZE, SM_SO_NORMALIZE, SM_SO_INTERSECT    
-                                             pdGuessParam,     // in : If given, call cheap LocalPointSolve() else call expensive GlobalPointSolve()
-                                             bSuccess,         // out: TRUE = found a drop point
-                                             dSplitParam,      // out: found drop curve param
-                                             dDist,            // out: found drop distance
-                                             SM_SO_MINIMIZE)  ); // in : SM_SO_MINIMIZE = allow nonNormal drops near endPoints
-                                                               //      SM_SO_INTERSECT= like Minimize but point must be within dDistTol
-                                                               //      SM_SO_NORMALIZE= exclude nonNormal drops near endPoints
-                                                               //      default:[SM_SO_MINIMIZE] to preserve original behavior
-
-            if ( !bSuccess )
-                { continue; }
-
-            if ( sRailIvl.IsValueOnBoundary( dSplitParam, m_dThisApproxTol3d ) )
-            {
-                continue;
-            }
-
-            // Ok, here we have a fillet geom that needs to be split
-            // at this FilletVertex (pThisFVUse).
-
-            // Which end of the FilletGeom are we at?  0 for start, 1 for end.
-            ULONG lWhichEnd = 0;
-            if ( pOrigGeom->GetRailVertexuse( lRailIdx, 1 ) == pThisFVUse )
-              { lWhichEnd = 1;  }
-
-            // It makes a difference to the split routine whether the original
-            // FG, or the new one, is a tangent-rollover.  The assumptions are:
-            // 1: 'this' FG is the low end, and the new one is the high end; so,
-            // 2: if we're moving from our base surfaces onto the adjacent face,
-            //    then the new FG will be TangentRollover, otherwise the
-            //    original FG is TangentRollover.
-            // So we set the type of pOrigGeom according to what the low-end
-            // part will be.
-            // So, (only) if the low end is being changed, we change
-            // the original FG to TangentRollover.
-            if ( lWhichEnd == 0 )
-                { pOrigGeom->SetFilletGeomType( SM_FG_TANGENT_ROLLOVER ); }
-
-
-            SmFilletGeom *pNewGeom = NULL;
-            SmStatus eStat =
-                pOrigGeom->GetFilletSolver()->SplitFilletGeomAtSideEdge(
-                    pOrigGeom,
-                    pThisFVUse,
-                    lWhichEnd,
-                    &pNewGeom );
-
-            // If failure, the whole fillet could still succeed, so don't SER.
-            if ( eStat != SM_SUCCESS )
-              { continue; }
-
-
-            // After splitting, pOrigGeom is the low end and pNewGeom is the
-            // high end: the newly created fillet vertices are at the high
-            // end of pOrigGeom and the low end of pNewGeom.
-            //
-            // The fillet vertex at which we just split, pThisFV, is left at
-            // either the low end of pOrigGeom (if lWhichEnd == 0) or the
-            // high end of pNewGeom (otherwise).
-            //
-            // One of the new vertices now takes over for pThisFV, being the
-            // intersection of the rail and the (tangent) side edge.
-            // The split routine we just called takes care of that.
-            //
-            // The split fillet vertex, pThisFV, is now just a mate to the
-            // corresponding FV on the other rail.  Deal with that.
-
-            pThisFV->SetFilletVertexType( SM_FV_MATE );
-            pThisFV->SetStatus( SM_FIL_UNPROCESSED );
-
-            // Set it as mate of its opposite fillet vertex.
-            SmFilletVertexuse *pOppositeFVU = NULL;
-
-            if ( lWhichEnd == 0 )
-                pOppositeFVU = pOrigGeom->GetRailVertexuse( 1-lRailIdx, 0 );
-            else
-                pOppositeFVU = pNewGeom->GetRailVertexuse( 1-lRailIdx, 1 );
-
-            pOppositeFV = SM_CAST_PTR( SmFilletVertex, pOppositeFVU->GetVertex() );
-
-            if ( pOppositeFV != NULL )
-            {
-                pThisFV->SetMate( 0, pOppositeFV );
-                pOppositeFV->SetMate( 0, pThisFV );
-
-                // Also tell it that its geometry is kaput
-                // (because pThisFV is on a different base surface).
-                pOppositeFV->SetStatus( SM_FIL_UNPROCESSED );
-            }
-
-            // Also, pThisFV is now in a face.
-            SmFace *pNewBaseFace = pNewGeom->GetRail( lRailIdx )->GetOriginalFace();
-            pThisFV->SetPointClass( SM_PC_FACE, pNewBaseFace );
-
-            // Edges are kaput too.
-            for ( ULONG j = 0; j < m_vEdges.GetSize(); j++ )
-              { m_vEdges[j]->SetStatus( SM_FIL_UNPROCESSED ); }
-
-            // Also: there are now two new FilletVertex's, which belong
-            // to this FilletCorner.  Add them to our list, and set
-            // their back-pointer to us.
-            // 'Same' is on the same side as pThisFV, 'Opp' as pOppositeFV.
-            // Also recall that the new FilletVertex's are at the high end
-            // of the original FG -- hence the 2nd arguments:
-
-            SmFilletVertex * pNewFVSame = pOrigGeom->GetRailVertex(   lRailIdx, 1 );
-            SmFilletVertex * pNewFVOpp  = pOrigGeom->GetRailVertex( 1-lRailIdx, 1 );
-
-            // pNewFVSame should be all set, it's what pThisFV used to be.
-            // But pNewFVOpp is now in a face.
-            SmFace *pOppBaseFace = pOrigGeom->GetRail( 1-lRailIdx )->GetOriginalFace();
-            pNewFVOpp->SetPointClass( SM_PC_FACE, pOppBaseFace );
-
-            // We also have to take responsibility for the new edge.
-            SmTArray<SmEdge*> aNewEdges;
-            pNewFVSame->GetCommonEdges( pNewFVOpp, aNewEdges );
-            SM_ASSERT( aNewEdges.GetSize() == 1 );
-            if ( aNewEdges.GetSize() > 0 )
-            {
-                SmFilletEdge *pThisFilEdge = SM_CAST_PTR( SmFilletEdge, aNewEdges[0] );
-                this->m_vEdges.Add( pThisFilEdge );
-                pThisFilEdge->SetFilletCorner( this );
-            }
-
-            // We have to update the fillet surfaces in the fillet geoms here.
-            // A prerequisite to that is recalculating the vertex geom.
-
-            SER( this->CalcCornerVertGeom() );
-
-
-            // We need a direction for ReCalcFilletGeom.
-            // We already dropped this vertex to the rail being split,
-            // so just evaluate the rail's tangent direction there.
-
-            SmVector3d sPtDer[2]; // point and 1st derivative
-            SER( pThisRail->GetCurve()->Evaluate( dSplitParam, 1, FALSE, sPtDer ) );
-
-
-            // Possible enhancement: We could avoid one ReCalcFilletGeom call.
-            // The FG piece that's on the original two base faces could
-            // just be trimmed, instead of recalculated.
-            // If lWhichEnd is 1, then we could just trim pOrigGeom.
-            // Also, if lWhichEnd is 0, we could move the geometry from
-            // pOrigGeom into pNewGeom, then just trim pNewGeom,
-            // and recalc pOrigGeom.
-
-//cbi: this SetFilletGeomForSurfaces(): do it right in ReCalc?
-            // Tell FilletSolver to use surfaces in the FilletGeoms.
-            // First back up what's there, if anything, to restore when done.
-            SmFilletSolver *pFS = pOrigGeom->GetFilletSolver();
-            SmFilletGeom *pBackupFG = pFS->GetFilletGeomForSurfaces();
-
-            pFS->SetFilletGeomForSurfaces( pOrigGeom );
-            SER( pOrigGeom->ReCalcFilletGeom( FALSE, &( sPtDer[1] ) ) );
-
-            // Now the other FG
-            pFS->SetFilletGeomForSurfaces( pNewGeom );
-            SER( pNewGeom->ReCalcFilletGeom( FALSE, &( sPtDer[1] ) ) );
-
-            pFS->SetFilletGeomForSurfaces( pBackupFG );
-
-
-            // Now, the other FilletGeom, the one that didn't get split,
-            // needs to be trimmed back to the far end of the split FG.
-            SmFilletGeom *pOtherGeom = sGeoms[ 1-lWhichFilletGeom ];
-
-            // Grap the correct rail
-            ULONG lOtherRailIdx;
-            SER( pOtherGeom->GetRailIndexOfVertex( pThisFV, lOtherRailIdx ) );
-            SmFilletEdge *pOtherRail = pOtherGeom->GetRail( lOtherRailIdx );
-
-            // The fillet vertex at which the other FG gets trimmed to
-            // is still pointed to by pThisFV.  (See earlier comments.)
-            SmPoint3d sTrimPt = pThisFV->GetPoint();
-
-            SmExtent1d sOtherRailIvl = pOtherRail->GetInterval();
-
-            double dOtherSplitParam = 0;
-            SER( pOtherRail->GetCurve()->DropPoint(sOtherRailIvl,    // in : target curve allowed domain
-                                              sTrimPt,          // in : Point to drop to curve
-                                              NULL,             // in : For Snapping, NULL=NoSnap, Vec pointing to CrvInside from desired EndPt for snapping.
-                                                                //      when DropPt is within dDistTol in cpVecToCrvInside dir of EndPt, Snap to Ivl EndPt.
-                                                                //      Vec handles ambiguities and makes sure that curves are not just touching at the ends.
-                                              SM_BIG_DOUBLE,    // in : Used for SnapDist, and SM_SO_INTERSECT sXSectTol3d distance.
-                                                                //      sXSectTol3d = dDistTol ;      SM_SO_INTERSECT 
-                                                                //      sXSectTol3d = SM_BIG_DOUBLE ; SM_SO_MINIMIZE, SM_SO_NORMALIZE
-                                                                //      sSnapTol3d  = dDistTol ;      SM_SO_MINIMIZE, SM_SO_NORMALIZE, SM_SO_INTERSECT    
-                                              pdGuessParam,     // in : If given, call cheap LocalPointSolve() else call expensive GlobalPointSolve()
-                                              bSuccess,         // out: TRUE = found a drop point
-                                              dOtherSplitParam, // out: found drop curve param
-                                              dDist,            // out: found drop distance
-                                              SM_SO_MINIMIZE)  ); // in : SM_SO_MINIMIZE = allow nonNormal drops near endPoints
-                                                                //      SM_SO_INTERSECT= like Minimize but point must be within dDistTol
-                                                                //      SM_SO_NORMALIZE= exclude nonNormal drops near endPoints
-                                                                //      default:[SM_SO_MINIMIZE] to preserve original behavior
-
-            if ( !bSuccess )
-                { continue; }
-
-            // Low or high end of other FG?
-            SmFilletVertexuse *pOtherFVUse = apVUs[ 1-lWhichFilletGeom ];
-
-            ULONG lOtherWhichEnd = 0;
-            if ( pOtherGeom->GetRailVertexuse( lRailIdx, 1 ) == pOtherFVUse )
-                lOtherWhichEnd = 1;
-
-            // Trim sOtherRailIvl accordingly
-            if ( lOtherWhichEnd == 0 )
-            {
-                SER( sOtherRailIvl.SetMinMax( dOtherSplitParam, sOtherRailIvl.GetMax() ) );
-            }
-            else
-            {
-                SER( sOtherRailIvl.SetMinMax( sOtherRailIvl.GetMin(), dOtherSplitParam ) );
-            }
-
-            // Finally, do the trim.
-            SER( pOtherGeom->Trim( sOtherRailIvl ) ); // may snap sIvl by tol to existing knots
-
-        }  // end loop over two FilletGeom's of this FilletVert.
-
-        // Remove the opposite-rail FilletVertex from the list to be processed.
-        // so that we don't try to split the other FilletGeom at it.
-        ULONG lIdx;
-        if (    pOppositeFV != NULL
-             && apFVsToProcess.FindElement( pOppositeFV, lIdx ) )
-        {
-            apFVsToProcess.RemoveAt( lIdx );
-            if ( lIdx <= lWhichFV )  // if we removed one before this one,
-                lWhichFV--;          //   slide us back one.
-        }
-    }  // end loop over all FilletVert's.
-
-
-    return SM_SUCCESS;
-} // end SmFilletNx2Corner::AdjustTangentCorner
-
-/*******************************************************************//**
-PURPOSE: Adjust the corner topology for the bevel cases where two fillets
-    of the corner intersect the side edge at different locations.
-    One additional edge will be added to corner to bound the fillet
-    that hits farther away from the filleted vertex.
-
-NOTES:
-***********************************************************************/
-SmStatus SmFilletNx2Corner::AdjustTopology()
-{
-#ifdef SM_DEBUG_CODE
-  if ( DebugLevel() > 0 ) 
-    {
-      smgfx_SetLook(2,4, 0,0,1); this->Draw(); sm_GraphicsLoop();
-      sm_GraphicsLoop();
-    }
-#endif // SM_DEBUG_CODE
-
-  // Can't do it if more than four total edges
-  if(m_pAllEUs->GetSize() > 4)
-    { SER( SM_ERR ) ; }
-
-  // Check for mixed-convexity case: special routine for that.
-  // For the 3x2 mixed-cvxty case, we create a 3-sided face.
-  // We have created the edges and vertices for it,
-  // so this is how we check for that case:
-
-  ULONG lNumVertexEdges = m_vEdges.GetSize();
-  if ( lNumVertexEdges == 3 )
-    {   // Mixed-convexity corners
-      SER( AdjustConcaveCornerTopology() );
-      return SM_SUCCESS;
-    }
-
-  // Note: do this separately:
-  // // Another special case is the Nx2 tangent case, with N > 3.
-  // // In that case we might have to put another fillet surface
-  // // in between the two that are there now.
-  // if ( this->IsBlendingCorner()  &&  m_pAllEUs->GetSize() > 3 )
-  //   {
-  //     SER( AdjustTangentCorner() );
-  //     return SM_SUCCESS;
-  //   }
-
-  // Examine the vertices that have been created for this corner.
-  // Typically there will be two, one where the rails from the two
-  // fillets intersect in the common face (between filleted edges),
-  // and one where the other rail of each fillet intersects the
-  // side edge (the un-filleted edge of this corner).
-  // If there's only one side edge between their RAIL_X_EDGEUSE rails,
-  // and the fillets are the same size, and things are generally square, 
-  // then their rails will hit the side edge at the same point.
-  // But, if these intersections are not the same point, then we have
-  // to split the vertex into two, and insert a new edge to connect them.
-
-  ULONG ii;
-  for(ii=0;ii<m_vVertices.GetSize();ii++)
-    {
-      SmFilletVertex * pAdjustVert = m_vVertices[ii];
-
-#ifdef SM_DEBUG_CODE
-      if ( DebugLevel() > 0 ) 
-        {
-          smgfx_SetLook(1,8, 1,0,0); pAdjustVert->Draw(); sm_GraphicsLoop();
-          sm_GraphicsLoop();
-        }
-#endif // SM_DEBUG_CODE
-
-      // Check whether this is the vertex that corresponds to the
-      // rail hitting the side edge, and not the rails hitting
-      // each other in the common face.
-      if(pAdjustVert->GetFilletVertexType() != SM_FV_RAIL_X_EDGEUSE)
-        { continue ; }
-
-      // Ok, this is the new fillet vertex corresponding to where the
-      // rails from the two fillets are supposed to hit the side edge.
-      // Check whether those rails intersect the side edge at the same place.
-
-      SmTArray<SmFilletGeom*> sGeoms;
-      pAdjustVert->GetFilletGeoms(sGeoms);
-      if(sGeoms.GetSize() != 2)
-        { continue ; }  // SER( SM_ERR );  maybe already adjusted...
-
-      SmFilletGeom      * pFilletGeom1   = sGeoms[0] ;
-      SmFilletGeom      * pFilletGeom2   = sGeoms[1] ;
-      SmEdgeuse         * pSideEU1       = (SmEdgeuse*)pAdjustVert->GetPointClassObject() ;
-      SmFilletVertexuse * pVU1           = pAdjustVert->GetVUAtRailEnd(pFilletGeom1) ;
-      SmFilletVertexuse * pVU2           = pAdjustVert->GetVUAtRailEnd(pFilletGeom2, pVU1) ;
-      double              dEdgeParam1    = pVU1->GetTsectPnt().m_dCurveParameter ;
-      double              dEdgeParam2    = pVU2->GetTsectPnt().m_dCurveParameter ;
-      SmPoint3d           sPnt1, sPnt2 ;  
-      SmCurve           * pSideEdgeCurve = pSideEU1->GetEdge()->GetCurve() ;
-
-      SER( pSideEdgeCurve->EvaluatePoint(dEdgeParam1,sPnt1)  );
-      SER( pSideEdgeCurve->EvaluatePoint(dEdgeParam2,sPnt2)  );
-
-      double dDist = sPnt1.DistanceBetween(sPnt2) ;
-
-      // Check for the big-radius case, where we're rolling a large fillet
-      // on the inside of a smaller-radius edge.
-      // In that case, we'll create a 3x3 corner for the vertex.
-      //
-      // We'll also check for the Nx2 tangent case, with N > 3.
-      if(this->IsBlendingCorner())     // Big-radius doesn't apply if Beveled.
-        {
-          SmBoolean           bConvertedToCorner;
-          SmFilletExecutive * pExec = GetFilletExecutive();
-
-          // This routine in the fillet exec will check for the
-          // large-radius case, and convert the corner if so.
-          SER( pExec->TestAndConvertBigRadFillet(pFilletGeom1, bConvertedToCorner ));
-          if ( !bConvertedToCorner )
-            {
-              SER( pExec->TestAndConvertBigRadFillet( pFilletGeom2,
-                      bConvertedToCorner ));
-            }
-
-          if ( bConvertedToCorner ) 
-            { return SM_SUCCESS ; }
-
-          if(dDist > 500.0 * m_dThisApproxTol3d)
-            { MSG( _T("Big gap found. Will try to fix it later") ) ; }
-
-          continue ;
-
-        }  // End big-radius check.
-
-      SM_ASSERT(m_bBevel == TRUE); // Bevel cases
-
-      // If rails hit side edge at same point, no adjustment is needed.
-      if ( dDist < m_dThisApproxTol3d )
-        { continue ; }
-
-      // Ok, if we're here, we're going to adjust the topology
-      // of this corner.  We're going to make two separate vertices
-      // where the rails from each of the two fillets hit the common
-      // side edge, and a little edge between them.
-
-      m_bTopologyAdjusted = TRUE;
-
-      // Note on naming: these aren't necessarily smaller and larger radii.
-      // For a given radius, the sharper the interior angle of the edge,
-      // the farther away from the vertex the intersection will be.
-      // But these names are descriptive, they make it easy to tell
-      // which we're talking about: pSmallRadGeom means the one that
-      // hits closer to the vertex.
-
-      SmPoint3d      sVertPnt      = m_cpVertex->GetPoint() ;
-      SmFilletGeom * pSmallRadGeom = NULL ;
-      SmFilletGeom * pLargeRadGeom = NULL ;
-      SmVertexuse  * pVUOnSideFace = NULL ;
-      SmFace       * pSideFace     = NULL ;
-      SmPoint3d      sPntOnSideFace ;
-
-      // We'll split this vertex and keep the farther point (along the edge)
-      // as the one SM_FV_RAIL_X_EDGEUSE.  The new vertex will be on
-      // the side face and will be labeled as SM_FV_FILLET_X_FILLET
-      if(sPnt1.DistanceBetween(sVertPnt) < sPnt2.DistanceBetween(sVertPnt))
-        {
-          pAdjustVert->SetPoint( sPnt2 ) ;
-          pAdjustVert->SetOriginalTParam( dEdgeParam2 ) ;
-
-          pSideFace      = pSideEU1->GetFace() ;
-          pVUOnSideFace  = pVU1 ;
-          pSmallRadGeom  = pFilletGeom1 ;
-          pLargeRadGeom  = pFilletGeom2 ;
-          sPntOnSideFace = sPnt1 ;
-        } // end sPnt2 further away from VertPnt branch
-      else // sPnt1 further away from VertPnt branch
-        {
-          pAdjustVert->SetPoint( sPnt1 ) ;
-          pAdjustVert->SetOriginalTParam( dEdgeParam1 ) ;
-
-          pSideFace      = pSideEU1->GetRadial()->GetFace() ;
-          pVUOnSideFace  = pVU2 ;
-          pSmallRadGeom  = pFilletGeom2 ;
-          pLargeRadGeom  = pFilletGeom1 ;
-          sPntOnSideFace = sPnt2 ;
-        } // end sPnt1 further away from VertPnt branch
-
-      // The vert that is farther from the filleted vertex, which is
-      // the one where one rail hits the side edge, is now done.
-      // Label it as 'processed'.
-      pAdjustVert->SetStatus( SM_FIL_PROCESSED );
-
-      SmFilletVertex * pVertOnSideEdge = pAdjustVert;
-
-      // Create new fillet vertex on the 'side' face
-      SmFilletVertex * pVertOnSideFace = new (m_pPseudoBrep) SmFilletVertex(this) ; NER( pVertOnSideFace );
-      SmObjDelete sClean1( pVertOnSideFace );
-
-      pVertOnSideFace->SetPoint( sPntOnSideFace );
-      pVertOnSideFace->SetPointClass( SM_PC_FACE, pSideFace );
-      pVertOnSideFace->SetFilletVertexType( SM_FV_FILLET_X_FILLET );
-
-      SmBoolean        bInsertAfter = TRUE;
-      ULONG            lIndex       = ii+1;
-      SmFilletVertex * pOtherVert   = NULL;
-
-      if(lIndex < m_vVertices.GetSize() )
-        {
-          pOtherVert = m_vVertices[lIndex];
-        }
-      else
-        {
-          // Insert new vertex before i
-          lIndex--;
-          bInsertAfter = FALSE;
-          pOtherVert   = m_vVertices[ lIndex-1 ];
-        }
-
-      m_vVertices.InsertAt( lIndex, pVertOnSideFace );
-
-      // Find the vertexuse of rail which is on the
-      // 'side' face and reconnect it to the newly created vertex.
-      SER( pVertOnSideEdge->Remove( pVUOnSideFace ) );
-      SER(pVertOnSideFace->PostInsert( pVUOnSideFace ));
-
-      // Recreate fillet edges
-      SmFilletEdge * pFilletEdge1 = NULL;
-      if ( bInsertAfter )
-        {
-          SER( SmFilletEdge::MakeFilletEdge( m_pPseudoBrep,   // in : target Brep to receive new topology objects
-                                             pVertOnSideEdge, // in : start of new FilletEdge
-                                             pVertOnSideFace, // in : end   of new FilletEdge
-                                             pFilletEdge1,    // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                             this ));         // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                              //      NULL to ignore, default:[NULL]
-        }
-      else
-        {
-          SER( SmFilletEdge::MakeFilletEdge( m_pPseudoBrep,   // in : target Brep to receive new topology objects
-                                             pVertOnSideFace, // in : start of new FilletEdge
-                                             pVertOnSideEdge, // in : end   of new FilletEdge
-                                             pFilletEdge1,    // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                             this ));         // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                              //      NULL to ignore, default:[NULL]
-        }
-      pFilletEdge1->SetFilletEdgeType( SM_FE_FILLET_X_SIDE_FACE ) ;
-
-      SmFilletEdgeuse * pPrimEU = (SmFilletEdgeuse*)pFilletEdge1->GetPrimaryEdgeuse() ;
-      pPrimEU->SetFilletGeom( pLargeRadGeom );
-      pFilletEdge1->SetOriginalFace( pSideFace );
-
-      SmFilletEdge * pFilletEdge2 = NULL;
-      if ( bInsertAfter )
-        {
-          SER( SmFilletEdge::MakeFilletEdge( m_pPseudoBrep,    // in : target Brep to receive new topology objects
-                                             pVertOnSideFace,  // in : start of new FilletEdge
-                                             pOtherVert,       // in : end   of new FilletEdge
-                                             pFilletEdge2,     // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                             this ));          // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                               //      NULL to ignore, default:[NULL]
-        }
-      else 
-        {
-          SER( SmFilletEdge::MakeFilletEdge( m_pPseudoBrep,    // in : target Brep to receive new topology objects
-                                             pOtherVert,       // in : start of new FilletEdge
-                                             pVertOnSideFace,  // in : end   of new FilletEdge
-                                             pFilletEdge2,     // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                             this ));          // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                               //      NULL to ignore, default:[NULL]
-        }
-      pFilletEdge2->SetFilletEdgeType( SM_FE_FILLET_X_FILLET );
-
-      pPrimEU = (SmFilletEdgeuse*)pFilletEdge2->GetPrimaryEdgeuse();
-      SmFilletEdgeuse * pMateEU = (SmFilletEdgeuse*)pPrimEU->GetMate();
-
-      pPrimEU->SetFilletGeom( pLargeRadGeom );
-      pMateEU->SetFilletGeom( pSmallRadGeom );
-
-      lIndex--;
-      SmFilletEdge * pRemovedEdge = m_vEdges[lIndex];
-      m_vEdges.RemoveAt( lIndex );
-      SM_ASSERT( pRemovedEdge != NULL );
-      if(pRemovedEdge) { delete pRemovedEdge ; pRemovedEdge = NULL; }
-
-      if ( bInsertAfter )
-        {
-          m_vEdges.Add( pFilletEdge1 );
-          m_vEdges.Add( pFilletEdge2 );
-        }
-      else
-        {
-          m_vEdges.Add( pFilletEdge2 );
-          m_vEdges.Add( pFilletEdge1 );
-        }
-      sClean1.Clear();
-      ii++;
-
-    } // end iter ii, every m_vVertices vertex
-
-  // all done
-  return SM_SUCCESS;
-
-} // end SmFilletNx2Corner::AdjustTopology
-
-/*******************************************************************//**
-PURPOSE: Calculate geometry of a Nx2 concave corner patch where two
-    adjacent rails may not meet at a single vertex (with type: SM_FV_RAIL_X_EDGEUSE).
-    In that case, two patches shall be created:
-    (1) a small patch to fill in the tiny gap &
-    (2) a regular 3-sided COONS patch to blend two fillets.
-
-NOTES: This corner should have either 3 or 6 boundary edges
-***********************************************************************/
-SmStatus SmFilletNx2Corner::CreateCornerPatch()
-{
-  ULONG ii, lTotalEdges = m_vEdges.GetSize();
-
-  SmFilletEdge * apData1[3];
-  SmFilletEdge * apData2[3];
-  SmFilletVertex * apData3[2];
-  SmTArray<SmFilletEdge*> sFirstThreeEdges(3,apData1);
-  SmTArray<SmFilletEdge*> sLastThreeEdges(3,apData2);
-  SmTArray<SmFilletVertex*> sLastTwoVerts(2,apData3);
-  SmSurface * pEndPatch =  NULL;
-  if (lTotalEdges > 3) 
-    {
-      for (ii=0; ii<3; ii++) 
-        { sFirstThreeEdges.Add(m_vEdges[ii]) ; }
-
-      for (ii=3; ii<m_vEdges.GetSize(); ii++) 
-        { sLastThreeEdges.Add(m_vEdges[ii]) ; }
-
-      if (lTotalEdges == 6) 
-        {
-          // Use the last 3 edges to create a small patch
-          m_vEdges.ReSet();
-          m_vEdges.Append(sLastThreeEdges);
-          // Create a small corner face
-          SER(SmFilletCorner::CreateEndPatch());
-
-          // Temporarily remove the small patch
-          pEndPatch = m_vSurfaces[0];
-          m_vSurfaces.ReSet();
-        }
-
-      m_vEdges.ReSet();
-      m_vEdges.Append(sFirstThreeEdges);
-
-      // Temporarily remove the last two vertices
-      for(ii=m_vVertices.GetSize()-1; ii>=3; ii--) 
-        {
-          sLastTwoVerts.Add(m_vVertices[ii]) ;
-          m_vVertices.RemoveLast() ;
-        }
-    }
-
-  // Create a 3-sided corner patch
-  SER(SmFilletCorner::CreateCornerPatch());
-
-  // Put the end patch back
-  if (pEndPatch) 
-    { m_vSurfaces.Add(pEndPatch) ; }
-
-  if (sLastThreeEdges.GetSize() > 0) 
-    {
-      m_vEdges.Append(sLastThreeEdges) ;
-      m_vVertices.Append(sLastTwoVerts) ;
-    }
-
-  return SM_SUCCESS;
-
-} // end SmFilletNx2Corner::CreateCornerPatch
 
 /*******************************************************************//**
 PURPOSE: A 4x3 corner represents a corner with 4 adjacent
@@ -8960,198 +5629,6 @@ iDebugLevel = DebugLevel();
     return SM_SUCCESS;
 
 } // end SmFillet4x3Corner::MakeCornerTopology
-
-/*******************************************************************//**
-PURPOSE: Create an open-end corner (i.e. corner with lamina edge) to
-    determine the trimming boundary of fillet at this corner.
-    Typically, this will be needed when we do shell-filleting.
-
-NOTES: For now, it will only handle 3x1 case.
-***********************************************************************/
-SmFilletOpenCorner::SmFilletOpenCorner
-  (const SmContext      & crContext,
-   const SmVertex       * cpVertex,
-   SmTArray<SmEdgeuse*> * pSolverEUs,
-   SmTArray<SmEdgeuse*> * pAllEUs,
-   SmFilletExecutive    * pExec,
-   double                 dApproxTol3d,
-   double                 dTangencyTolRadians)
- : SmFilletNx1Corner(crContext,cpVertex,pSolverEUs,pAllEUs,pExec,
-                     dApproxTol3d,dTangencyTolRadians)
-{
-
-} // end SmFilletOpenCorner::SmFilletOpenCorner constructor
-
-/*******************************************************************//**
-PURPOSE: Make corner topology which consists of an array of
-    SmFilletVertex and an array of SmFilletEdge. Since we are dealing with
-    OPEN end, the corner actually consists of only one fillet edge.
-
-NOTES: For now, it will only handle 3x1 case.
-***********************************************************************/
-SmStatus SmFilletOpenCorner::MakeCornerTopology
-  ()
-{
-    SmTArray<SmEdge*> sEdges;
-    m_cpVertex->GetEdges(sEdges);
-    SmEdgeuse * pFilEdgeuse = (*m_pSolverEUs)[0];
-
-    SmEdgeuse * pEU[2]; // Adjacent edgeuses of filleted edgeuse
-    pEU[0] = pFilEdgeuse->GetCWEdgeuse();
-    pEU[1] = pFilEdgeuse->GetRadial()->GetCCWEdgeuse();
-#ifdef SM_DEBUG_CODE
-    if ( DebugLevel() > 0 ) {
-        smgfx_SetLook(1,2, 1,0,0); pFilEdgeuse->Draw(); sm_GraphicsLoop();
-        smgfx_SetLook(1,2, 1,0,0); pFilEdgeuse->GetRadial()->Draw(); sm_GraphicsLoop();
-        smgfx_SetLook(1,2, 0,0,1); pEU[0]->Draw(); sm_GraphicsLoop();
-        smgfx_SetLook(1,2, 0,0,1); pEU[1]->Draw(); sm_GraphicsLoop();
-        sm_GraphicsLoop();
-    }
-#endif // SM_DEBUG_CODE
-
-    SmFilletSolver * pFilSolver = m_pExecutive->GetFilletSolverOfEdgeuse(pFilEdgeuse);
-    NER(pFilSolver);
-    SmFilletGeom * pFilletGeom = pFilSolver->GetFirstFilletGeom();
-    ULONG ii;
-    for (ii=0; ii<2; ii++) {
-        SmFilletVertex * pFV = new (m_pPseudoBrep) SmFilletVertex(this);
-        pFV->SetPointClass(SM_PC_EDGEUSE, pEU[ii]);
-        pFV->SetFilletVertexType(SM_FV_RAIL_X_EDGEUSE);
-        m_vVertices.Add(pFV);
-        ULONG lRailIndex = pFilSolver->FindIndexOfRailXSideEdgeuse(pEU[ii]);
-        // Create rail-edgeuse using this vertex
-        SmFilletEdgeuse * pNewEdgeuse = NULL;
-        SER(pFilletGeom->MakeRailEdgeuse(m_pPseudoBrep,
-            lRailIndex,pFV,pNewEdgeuse));
-    }
-    SmFilletEdge * pFilletEdge = NULL;
-    SER(SmFilletEdge::MakeFilletEdge(m_pPseudoBrep,  // in : target Brep to receive new topology objects
-                                     m_vVertices[0], // in : start of new FilletEdge
-                                     m_vVertices[1], // in : end   of new FilletEdge
-                                     pFilletEdge,    // out: newly allocated FilletEdge - no Curve or UVTrimCurve data
-                                     this));         // in : NewFilletEdge's filletCorner, gets stored in rpNewFilletEdge->m_cpCorner
-                                                     //      NULL to ignore, default:[NULL]
-    pFilletEdge->SetFilletEdgeType(SM_FE_FILLET_END);
-    SmFilletEdgeuse * pPrimEU = (SmFilletEdgeuse*)pFilletEdge->GetPrimaryEdgeuse();
-    pPrimEU->SetFilletGeom(pFilletGeom);
-    m_vEdges.Add(pFilletEdge);
-
-    return SM_SUCCESS;
-
-} // end SmFilletOpenCorner::MakeCornerTopology
-
-/*******************************************************************//**
-PURPOSE: Create an open-end corner (i.e. corner with lamina edge) to
-    determine the trimming boundary of fillet at this corner.
-    Typically, this will be needed when we do shell-filleting.
-
-NOTES: For now, it will only handle 3x1 case.
-***********************************************************************/
-SmFilletDegenerateCorner::SmFilletDegenerateCorner
-  (const SmContext      & crContext,
-   const SmVertex       * cpVertex,
-   SmTArray<SmEdgeuse*> * pSolverEUs,
-   SmTArray<SmEdgeuse*> * pAllEUs,
-   SmFilletExecutive    * pExec,
-   double                 dApproxTol3d,
-   double                 dTangencyTolRadians)
- : SmFilletCorner(crContext,cpVertex,pSolverEUs,pAllEUs,pExec,
-                  dApproxTol3d,dTangencyTolRadians)
-{
-    m_bDegenerate = TRUE;
-
-} // end SmFilletDegenerateCorner::SmFilletDegenerateCorner constructor
-
-/*******************************************************************//**
-PURPOSE: Make corner topology which consists of an array of
-    SmFilletVertex and an array of SmFilletEdge. Since we are dealing with
-    OPEN end, the corner actually consists of only one fillet edge.
-
-NOTES: For now, it will only handle 3x1 case.
-***********************************************************************/
-SmStatus SmFilletDegenerateCorner::MakeCornerTopology
-  ()
-{
-    SmTArray<SmEdge*> sEdges;
-    m_cpVertex->GetEdges(sEdges);
-    SmEdgeuse * pFilEdgeuse = (*m_pSolverEUs)[0];
-
-    SmEdgeuse * pEU[2]; // Adjacent edgeuses of filleted edgeuse
-    pEU[0] = pFilEdgeuse->GetCWEdgeuse();
-    pEU[1] = pFilEdgeuse->GetRadial()->GetCCWEdgeuse();
-
-    SmFilletSolver * pFilSolver = m_pExecutive->GetFilletSolverOfEdgeuse(pFilEdgeuse);
-    SmFilletVertex * pFV = new (m_pPseudoBrep) SmFilletVertex(this);
-    pFV->SetPointClass(SM_PC_VERTEX, (SmObject*)m_cpVertex);
-    pFV->SetFilletVertexType(SM_FV_ON_VERTEX);
-    SmPoint3d sCornerPnt = m_cpVertex->GetPoint();
-    pFV->SetPoint(sCornerPnt);
-    pFV->SetStatus(SM_FIL_PROCESSED);
-    m_vVertices.Add(pFV);
-
-#ifdef SM_DEBUG_CODE
-    if ( DebugLevel() > 0 ) {
-        smgfx_SetLook(1,2, 1,0,0);
-        if (FALSE) {
-            pFilEdgeuse->Draw(); sm_GraphicsLoop();
-            pFilEdgeuse->GetRadial()->Draw(); sm_GraphicsLoop();
-            sm_GraphicsLoop();
-        }
-        smgfx_SetLook(1,2, 0,1,0);
-        if (FALSE) {
-            pEU[0]->Draw(); sm_GraphicsLoop();
-            pEU[1]->Draw(); sm_GraphicsLoop();
-            sm_GraphicsLoop();
-        }
-        smgfx_SetLook(4,10, 0,1,1); pFV->Draw(); sm_GraphicsLoop();
-        sm_GraphicsLoop();
-    }
-#endif // SM_DEBUG_CODE
-    // Drop sCornerPnt onto 2 surfaces
-    SmPoint2d sUV[2];
-    ULONG ii;
-    for (ii=0; ii<2; ii++) {
-        const SmSurface * pBase = pFilSolver->GetSurface(ii)->GetBaseSurface();
-        SmSolution sSData[16];
-        SmSolutionArray sSolutions(16,sSData);
-#ifdef SM_DEBUG_CODE
-        if ( DebugLevel() > 0 ) {
-            smgfx_SetLook(1,2, 0,0,0); pBase->DrawUV(5,5); sm_GraphicsLoop();
-            sm_GraphicsLoop();
-        }
-#endif // SM_DEBUG_CODE
-        SmSurfaceCache *pSC = smsurf_GetSurfaceCache(pBase); NER(pSC);
-        SmCacheCheckOutIn sCheckIO(pSC);
-        {
-        // Turn off point testing so GlobalPointSolve() will keep all point solutions
-        //   without classifying the solution point against the trim boundaries.
-        SmTemporaryChangeValue<SmBoolean> sChange(pSC->m_bPointTestEnabled,FALSE);
-
-        SER(pBase->GlobalPointSolve(pBase->GetNaturalUVDomain(),SM_SO_INTERSECT,
-            sCornerPnt,m_cpVertex->GetTolerance()*10.0,NULL,SM_SR_SINGLE,sSolutions));
-        }
-        if (sSolutions.GetSize() != 1) SER(SM_ERR);
-        sUV[ii].x = sSolutions[0].m_vStart[0];
-        sUV[ii].y = sSolutions[0].m_vStart[1];
-    }
-
-    SmFilletGeom * pFilletGeom = pFilSolver->GetFirstFilletGeom();
-    for (ii=0; ii<2; ii++) {
-        ULONG lRailIndex = pFilSolver->FindIndexOfRailXSideEdgeuse(pEU[ii]);
-        // Create rail-edgeuse using this vertex
-        SmFilletEdgeuse * pNewEdgeuse = NULL;
-        SER(pFilletGeom->MakeRailEdgeuse(m_pPseudoBrep,
-            lRailIndex,pFV,pNewEdgeuse));
-        SmFilletVertexuse * pVU = (SmFilletVertexuse*)pNewEdgeuse->GetVertexuse();
-        SmTsectPnt & rTsectPnt = pVU->GetTsectPnt();
-        rTsectPnt.UVPos(   lRailIndex ) = sUV[   lRailIndex ];
-        rTsectPnt.UVPos( 1-lRailIndex ) = sUV[ 1-lRailIndex ];
-        rTsectPnt.m_ePointType = SM_IP_TANGENT_POINT;
-    }
-
-    return SM_SUCCESS;
-
-} // end SmFilletDegenerateCorner::MakeCornerTopology
 
 #ifdef SM_DEBUG_CODE
 /****************************************************************

@@ -417,6 +417,8 @@ public:
   // Plane is so simple we don't store a m_SwapUV bit - instead
   //    the Nurb definition is modified so that AnalUVDomain == NaturalUVDomain.
   virtual void     ToggleSwapUVBit();
+  // SolidCraft change: ToggleSwapUVBit has swapped the definition (axes, domain, scales): kept
+  virtual SmStatus SwapUVDefinition() { return SM_SUCCESS; }
 
   virtual SmStatus Transform(const SmAxis2Placement & crRotateNMove,     // in : affine rotate and move transformation      
                              const SmVector3d       * cpOptScale=NULL) ; // in : optional scaling about current origin point before RotateNMove
@@ -425,6 +427,10 @@ public:
 
   // trim plane domain to given TrimDomain
   virtual SmStatus TrimWithDomain( SmExtent2d & crTrimDomain );
+
+  // SolidCraft change: its trim adjusts its STEP domain, not shown to keep the map
+  virtual SmBoolean TrimKeepsParameterization(const SmExtent2d & crTrimDomain) const
+                                   { SM_REF1(crTrimDomain) ; return FALSE; }
 
   virtual SmBoolean IsBounded() const;  // TRUE=finite (FALSE=infinite) parameter range
 

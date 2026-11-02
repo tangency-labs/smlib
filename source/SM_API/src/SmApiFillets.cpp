@@ -59,7 +59,7 @@ SmApiStatus SmApiChamferFillet
 
   // Creates circular cross section fillet
   SmFilletSolver * pFS = NULL;
-  SmLinearCrossSectionFSG sFSGLinear;
+  SmGnSectionFSG sFSGLinear( 0 );
 
   // Define self-intersection handler for edge fillets
   double dStepBackFactor = 1.0;
@@ -141,7 +141,7 @@ SmApiStatus SmApiCircularFillet
   double dTol = pBrep->GetTolerance();
 
   // Creates circular cross section fillet
-  SmCircularCrossSectionFSG sFSGCircular( FALSE, 1.0e-3 );
+  SmGnSectionFSG sFSGCircular( SmArcSection( FALSE, 1.0e-3 ) );
 
   // Define self-intersection handler for edge fillets
   double dStepBackFactor = 1.0;

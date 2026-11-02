@@ -62,7 +62,9 @@ enum SmFilletErrorType
   SM_FILERR_BAD_TRIM,
   SM_FILERR_BAD_MERGE,
   SM_FILERR_NO_ROOM,           // SolidCraft change: a rail leaves the face it rolls on, or the blends take the whole of a face, some meeting it at an angle (the blend is larger than the faces allow)
-  SM_FILERR_NOT_EXACT          // SolidCraft change: a cliff overflow needs a continuation of a face or an edge that cannot be made exactly
+  SM_FILERR_NOT_EXACT,         // SolidCraft change: a cliff overflow needs a continuation of a face or an edge that cannot be made exactly
+  SM_FILERR_CORNER_UNSUPPORTED, // SolidCraft change: a filleted vertex no corner type handles (SmFilletCorner::Create finds none)
+  SM_FILERR_OVERFLOW_FIRST     // SolidCraft change: with SetOverflowFirst, some blends overflow their faces across cliffs and others fit: the overflowing ones go first (GetOverflowEdges)
         // 6 - (Add more as needed)
         // 0 - Unknown
         // 1 - Rail/Rail Intersection
@@ -90,10 +92,10 @@ enum SmFilletCornerType
   SM_FCR_4_x_3,
   SM_FCR_N_x_1_CLOSED,
   SM_FCR_N_x_1,
-  SM_FCR_N_x_2,
   SM_FCR_N_x_N,
   SM_FCR_N_x_N_CONVEX,
-  SM_FCR_N_x_N_CONCAVE
+  SM_FCR_N_x_N_CONCAVE,
+  SM_FCR_BLEND          // SolidCraft change: SmBlendCorner, the corner event's own construction
 };
 
 /*******************************************************************//**
@@ -142,6 +144,8 @@ enum SmFilletVertexType
   SM_FV_RAIL_X_VERTEX,            //
   SM_FV_RAIL_X_EXTENDED_EDGEUSE,  //
   SM_FV_SETBACK,                  //
+  SM_FV_JOIN_SECTION,             // SolidCraft change: a Join's shared section, its end on the first blend's side (SmBlendCornerJoin.cpp)
+  SM_FV_PRECOMPUTED,              // SolidCraft change: placed by its corner's own build (a setback fill's base point)
   SM_FV_UNKNOWN
 };
 
@@ -221,6 +225,7 @@ protected:
   SmFilletVertex       * m_pMate[2];     // When specified, pointing to MATE(s) - matching vertices on other railCurves
   SmFilStatus            m_eStatus;      // Status of vertex computation
   SmFilletCorner       * m_cpCorner;     // If not NULL, will point to its belonging corner
+  SmBoolean              m_bTangentEnd;  // SolidCraft change: a rail's tangent end, where it crosses a tangent seam into the end face
 
 public:
   // constructor
@@ -236,12 +241,13 @@ public:
   virtual SmStatus CalcCornerVertGeom        ();
   SmStatus         CalcFilletIntFillet       ();
   SmStatus         CalcFilletInt2Fillets     ();
-  SmStatus         CalcRailIntEdgeuse        (SmFilletGeom * pOptFG = NULL);
+  SmStatus         CalcRailIntEdgeuse        (SmFilletGeom * pOptFG = NULL, const SmVertex * cpNear = NULL);
   SmStatus         CalcRailIntExtendedEdgeuse();
+  SmStatus         CalcRailIntEndSurface     (); // SmBlendCornerEnd.cpp: an End's rail end on the end face's surface
+  SmStatus         CalcJoinSection           (); // SmBlendCornerJoin.cpp: a Join's shared section, both its ends
   SmStatus         CalcRailIntRail           ();
   SmStatus         CalcSetBackVert           ();
   SmStatus         CalcVertOnVert            ();
-  SmStatus         CalcVertOnCrossSection    (double * pOptEdgeParam = NULL);
   SmStatus         CalcMateGeom              ();
   
   // gwc: I think pSideSurface no longer has to be a BBSplineSurface - replace 1 line
@@ -274,6 +280,7 @@ public:
 
   // predicates                                                      
   SmBoolean IsProcessed() const { return m_eStatus == SM_FIL_PROCESSED; }
+  SmBoolean IsTangentEnd() const { return m_bTangentEnd; }
 
   // simple assignment
   void SetMate            (ULONG lIndex, 
@@ -281,6 +288,7 @@ public:
   void SetStatus          (SmFilStatus eStatus)                  { m_eStatus = eStatus; }
   void SetFilletCorner    (SmFilletCorner * pCorner)             { m_cpCorner = pCorner; }
   void SetFilletVertexType(SmFilletVertexType eType)             { m_eType = eType; }
+  void SetTangentEnd      (SmBoolean bTangentEnd)                { m_bTangentEnd = bTangentEnd; }
   void SetOriginalTParam  (double dT)                            { m_vPointClass.SetTParam(dT); }
   void SetOriginalUV      (const SmPoint2d & crUVParam)          { m_vPointClass.SetUVParam(crUVParam); }
   void SetPointClass      (SmPointClassificationType eType, 
@@ -427,10 +435,10 @@ public:
   // modifiers
   SmStatus         CalcBlendingRail         (const SmContext & crContext);
   virtual SmStatus CalcCornerEdgeGeom       ();
-  SmStatus         AdjustCrossSection       (const SmContext & crContext, SmFilletCorner * pCorner, SmVertex * pFVOfDegenerateCurve);
   SmStatus         CalcCrossSection         (const SmContext & crContext, SmFilletCorner * pOptCorner = NULL);
   SmStatus         CalcEdgeOnEdge           (const SmContext & crContext, SmFilletCorner * pOptCorner = NULL);
   SmStatus         CalcEdgeOnExtendedEdge   (const SmContext & crContext, SmFilletCorner * pOptCorner = NULL);
+  SmStatus         CalcEdgeOnTangentSeam    (const SmContext & crContext, SmFilletCorner * pCorner); // SolidCraft change: a cap edge on a tangent seam
   SmStatus         CalcFilletEnd            (const SmContext & crContext, SmFilletCorner * pOptCorner = NULL);
   SmStatus         CalcFilletIntFillet      (const SmContext & crContext, SmFilletCorner * pOptCorner = NULL);   // NotUsed: in :
   SmStatus         CalcFilletIntSideFace    (const SmContext & crContext, SmFilletCorner * pOptCorner = NULL);
@@ -766,6 +774,13 @@ SmStatus sm_SrfSrfIntersection
                                                            //             resorting to expensive general surf/surf xSect solver
    SmPoint3d       * pOptRefPoint = NULL,                  // in : reference point
    int               iDebugLevel = 0);                     // in : iDebugLevel, 0 = No Debug output
+
+// SolidCraft change: whether an edgeuse's two faces meet tangentially at one of its vertices (a
+// tangent seam: a flat face running smoothly onto a round across the edge), SmFilletCorner.cpp
+SmBoolean sm_CheckTangentialEdgeuseAtVertex
+  (SmEdgeuse      * pEU,                                   // in : edgeuse of the edge
+   const SmVertex * cpVertex,                              // in : vertex of the edge where its faces are compared
+   double           dAngTolDeg);                           // in : angle tolerance between the faces' normals, degrees
 
 #endif // !__SMFILLETGEOM_H__
 

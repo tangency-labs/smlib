@@ -54,6 +54,16 @@ public:
         smos_WStrCpy(pcMyName,lMyNameAllocLen,_T("SmConstantRadiusFS")); }
 
     double GetFilletRadius(ULONG lIndex) { return m_dFilletRadii[lIndex]; }
+    // SolidCraft change: one ball when both radii are equal, of constant radius
+    virtual SmStatus GetBallLaw(const SmTsectPnt & crPnt, SmBoolean & rbBall, SmBoolean & rbOnEdge,
+                                double adR[3], SmVector3d asC[4]);
+    virtual SmBoolean RollsABall(SmBoolean & rbOnEdge) const
+      { rbOnEdge = FALSE;
+        return ( m_dFilletRadii[0] > 0.0 && smos_Fabs( m_dFilletRadii[1] - m_dFilletRadii[0] ) <= SM_EFF_ZERO * ( 1.0 + m_dFilletRadii[0] )) ? TRUE : FALSE; }
+    virtual SmBoolean SetBallRadius(double dRadius)
+      { m_dFilletRadii[0] = m_dFilletRadii[1] = dRadius;
+        GetSurface(0)->SetOffsetDistance(dRadius*m_dOrientations[0]);
+        GetSurface(1)->SetOffsetDistance(dRadius*m_dOrientations[1]); return TRUE; }
 
     virtual SmFilletSolverType GetSolverType() { return SM_FS_CONST_RADIUS; }
 
@@ -284,6 +294,8 @@ public:
         smos_WStrCpy(pcMyName,lMyNameAllocLen,_T("SmCurveBasedFS")); }
 
     const SmCurve * GetOriginalCurve() { return m_pOriginal; }
+    // SolidCraft change: the curve EvaluateBaseCurve evaluates, the extended one where there is one
+    const SmCurve * GetBaseCurve() const { return (m_pExtended != NULL) ? static_cast<const SmCurve *>(m_pExtended) : m_pOriginal; }
 
     virtual void SetOriginalCurve( SmCurve * pNewCurve ) { m_pOriginal = pNewCurve; }
 
@@ -357,6 +369,11 @@ public:
     virtual SmStatus  GetRadiusCornerParameters(SmTArray<double> & rParams);
     virtual SmBoolean IsAtRadiusCorner(const SmTsectPnt & crTsectPnt);
     virtual SmBoolean GetRadiusParameter(const SmTsectPnt & crTsectPnt, double & rdParam);
+    // SolidCraft change: one ball, its radius the law's
+    virtual SmBoolean RollsABall(SmBoolean & rbOnEdge) const { rbOnEdge = TRUE; return m_rLaw != NULL ? TRUE : FALSE; }
+    // SolidCraft change: the law's ball, its centre in the plane square to the edge at C(t)
+    virtual SmStatus GetBallLaw(const SmTsectPnt & crPnt, SmBoolean & rbBall, SmBoolean & rbOnEdge,
+                                double adR[3], SmVector3d asC[4]);
 
     virtual ULONG GetJacobianSize() const;
 

@@ -21,6 +21,7 @@
 #include <SmEdge.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -48,11 +49,11 @@ std::string dir = ".";
         }                                                                                          \
     } while (0)
 
-// Every id: int64 ids 1..35, double ids 101..165.
+// Every id: int64 ids 1..36, double ids 101..166.
 std::vector<int32_t> IntIds()
 {
     std::vector<int32_t> v;
-    for (int32_t id = SMLIB_FLAT_REGION_SHELL_COUNT; id <= SMLIB_FLAT_WIRE_EDGE_NURBS_FORM; ++id)
+    for (int32_t id = SMLIB_FLAT_REGION_SHELL_COUNT; id <= SMLIB_FLAT_FACE_DEFINITION_REAL_COUNT; ++id)
     {
         v.push_back(id);
     }
@@ -62,7 +63,7 @@ std::vector<int32_t> IntIds()
 std::vector<int32_t> RealIds()
 {
     std::vector<int32_t> v;
-    for (int32_t id = SMLIB_FLAT_TOLERANCE; id <= SMLIB_FLAT_VERTEX_TOLERANCE; ++id)
+    for (int32_t id = SMLIB_FLAT_TOLERANCE; id <= SMLIB_FLAT_FACE_DEFINITION_REALS; ++id)
     {
         v.push_back(id);
     }
@@ -211,7 +212,10 @@ const std::map<std::string, std::vector<int64_t>> g_kinds = {
     {"sphere", {0, 0, 1, 0}},    // the seam: an SmCircle half circle
     {"torus", {0, 0, 2, 0}},     // SmCircle seam circles
     {"fillet", {0, 24, 24, 0}},  // the box's trimmed lines, the fillets' SmCircle arcs
-    {"blend", {48, 0, 0, 0}},    // blend-curve fillets: all B-splines
+    // blend-curve (G2) fillets, each corner a Setback filled to G2 (the setback split: six
+    // patches): 6 + 12 + 8 x 6 = 66 faces, 8 x 13 vertices (six section ends, three base points,
+    // three inner-curve middles and the centre a corner), so 104 + 66 - 2 = 168 edges, all B-splines
+    {"blend", {168, 0, 0, 0}},
     {"blend1", {4, 11, 0, 0}},   // the blend face's four B-spline edges, the box's eleven lines
     {"boolean", {0, 13, 2, 0}},  // the hole's rims: SmCircles
     {"incline", {0, 1, 1, 2}},   // SmCircle bottom rim, line seam, two SmEllipse arcs
@@ -521,6 +525,1020 @@ void NestedShellOrder()
     std::printf("nested shells: %d of %d region and shell orders import as a valid body of volume %.12g\n", good, orders, want);
 }
 
+// ---- One-face sheets given without UV trims: the trims SMLib makes on export ----------------
+
+// A NURBS curve in flat form: order, full knots, cartesian control points (`dim` coordinates
+// each) and weights.
+struct Spline
+{
+    int order = 0;
+    std::vector<double> knots, cvs, weights;
+};
+
+// The point at `t` (clamped to the knot range) of a rational B-spline with `dim` coordinates per
+// control point: de Boor's algorithm on the homogeneous points.
+std::vector<double> SplinePoint(const Spline &c, int dim, double t)
+{
+    const size_t p = static_cast<size_t>(c.order - 1), n = c.weights.size(), d1 = static_cast<size_t>(dim) + 1;
+    t = std::min(std::max(t, c.knots[p]), c.knots[n]);
+    size_t k = p;
+    while (k + 1 < n && t >= c.knots[k + 1])
+    {
+        k++;
+    }
+    std::vector<std::vector<double>> d(p + 1, std::vector<double>(d1));
+    for (size_t j = 0; j <= p; ++j)
+    {
+        const size_t i = j + k - p;
+        for (size_t a = 0; a + 1 < d1; ++a)
+        {
+            d[j][a] = c.cvs[i * (d1 - 1) + a] * c.weights[i];
+        }
+        d[j][d1 - 1] = c.weights[i];
+    }
+    for (size_t r = 1; r <= p; ++r)
+    {
+        for (size_t j = p; j >= r; --j)
+        {
+            const double lo = c.knots[j + k - p], hi = c.knots[j + 1 + k - r];
+            const double alpha = hi > lo ? (t - lo) / (hi - lo) : 0.0;
+            for (size_t a = 0; a < d1; ++a)
+            {
+                d[j][a] = (1.0 - alpha) * d[j - 1][a] + alpha * d[j][a];
+            }
+        }
+    }
+    std::vector<double> out(d1 - 1);
+    for (size_t a = 0; a + 1 < d1; ++a)
+    {
+        out[a] = d[p][a] / d[p][d1 - 1];
+    }
+    return out;
+}
+
+// A NURBS surface in flat form: control points U-major (point (i, j) at i * nv + j).
+struct Patch
+{
+    int nu = 0, nv = 0;
+    Spline u, v; // orders and knots only
+    std::vector<double> cvs, weights;
+};
+
+// S(u, v): each U row's homogeneous points evaluated in v, then that column in u.
+std::vector<double> PatchPoint(const Patch &s, double u, double v)
+{
+    Spline column;
+    column.order = s.u.order;
+    column.knots = s.u.knots;
+    for (int i = 0; i < s.nu; ++i)
+    {
+        Spline row;
+        row.order = s.v.order;
+        row.knots = s.v.knots;
+        for (int j = 0; j < s.nv; ++j)
+        {
+            const size_t k = static_cast<size_t>(i * s.nv + j);
+            const double w = s.weights[k];
+            row.cvs.insert(row.cvs.end(), {s.cvs[3 * k] * w, s.cvs[3 * k + 1] * w, s.cvs[3 * k + 2] * w, w});
+            row.weights.push_back(1.0);
+        }
+        const std::vector<double> h = SplinePoint(row, 4, v);
+        column.cvs.insert(column.cvs.end(), {h[0] / h[3], h[1] / h[3], h[2] / h[3]});
+        column.weights.push_back(h[3]);
+    }
+    return SplinePoint(column, 3, u);
+}
+
+double Dist(const std::vector<double> &a, const std::vector<double> &b)
+{
+    return std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+}
+
+// One edge of a sheet: its curve, range, end vertices and tolerance (in flat terms: twice its
+// zone tolerance).
+struct SheetEdge
+{
+    Spline curve;
+    double t0 = 0.0, t1 = 1.0;
+    int64_t from = 0, to = 0;
+    double tolerance = 1e-5;
+};
+
+// The flat arrays of a one-face open sheet: `patch` over its whole domain, bounded by one loop of
+// `edges`, each used along its curve and given without a UV trim (SMLib makes them), written as
+// SMLib's own (SOURCE 1: no healing): how SolidCraft hands SMLib a face whose pcurves it needs.
+Arrays SheetArrays(const Patch &patch, const std::vector<SheetEdge> &edges, const std::vector<double> &vertices,
+                   const std::vector<double> &vertexTolerances)
+{
+    Arrays a;
+    const int64_t n = static_cast<int64_t>(edges.size());
+    a.i[SMLIB_FLAT_REGION_SHELL_COUNT] = {1};
+    a.i[SMLIB_FLAT_REGION_TYPE] = {1};
+    a.i[SMLIB_FLAT_SHELL_FACEUSE_COUNT] = {2};
+    a.i[SMLIB_FLAT_SHELL_WIRE_EDGE_COUNT] = {0};
+    a.i[SMLIB_FLAT_SHELL_POINT_TYPE] = {0};
+    a.i[SMLIB_FLAT_FACEUSE_FACE] = {0, 0};
+    a.i[SMLIB_FLAT_FACEUSE_ORIENTATION] = {1, 0};
+    a.i[SMLIB_FLAT_FACE_LOOP_COUNT] = {1};
+    a.i[SMLIB_FLAT_FACE_SURFACE_TYPE] = {SMLIB_FLAT_SURFACE_NURBS};
+    a.i[SMLIB_FLAT_FACE_TRIM_TYPE] = {0};
+    a.i[SMLIB_FLAT_LOOP_EDGEUSE_COUNT] = {n};
+    a.i[SMLIB_FLAT_LOOP_VERTEX] = {-1};
+    a.i[SMLIB_FLAT_SOURCE] = {1};
+    a.i[SMLIB_FLAT_FACE_NURBS_U_VERTEX_COUNT] = {patch.nu};
+    a.i[SMLIB_FLAT_FACE_NURBS_V_VERTEX_COUNT] = {patch.nv};
+    a.i[SMLIB_FLAT_FACE_NURBS_U_ORDER] = {patch.u.order};
+    a.i[SMLIB_FLAT_FACE_NURBS_V_ORDER] = {patch.v.order};
+    a.f[SMLIB_FLAT_FACE_NURBS_CVS] = patch.cvs;
+    a.f[SMLIB_FLAT_FACE_NURBS_U_KNOTS] = patch.u.knots;
+    a.f[SMLIB_FLAT_FACE_NURBS_V_KNOTS] = patch.v.knots;
+    a.f[SMLIB_FLAT_FACE_NURBS_WEIGHTS] = patch.weights;
+    a.f[SMLIB_FLAT_FACE_RANGE] = {patch.u.knots.front(), patch.v.knots.front(), patch.u.knots.back(), patch.v.knots.back()};
+    double tol = 0.0;
+    for (int64_t k = 0; k < n; ++k)
+    {
+        const SheetEdge &e = edges[static_cast<size_t>(k)];
+        a.i[SMLIB_FLAT_EDGEUSE_EDGE].push_back(k);
+        a.i[SMLIB_FLAT_EDGEUSE_ORIENTATION].push_back(1);
+        a.i[SMLIB_FLAT_EDGEUSE_NEXT_RADIAL].push_back(k);
+        a.i[SMLIB_FLAT_EDGEUSE_RADIAL_ENTRY].push_back(0);
+        a.i[SMLIB_FLAT_EDGEUSE_NURBS_VERTEX_COUNT].push_back(0);
+        a.i[SMLIB_FLAT_EDGEUSE_NURBS_ORDER].push_back(0);
+        a.i[SMLIB_FLAT_EDGE_CURVE_TYPE].push_back(SMLIB_FLAT_CURVE_NURBS);
+        a.i[SMLIB_FLAT_EDGE_VERTICES].insert(a.i[SMLIB_FLAT_EDGE_VERTICES].end(), {e.from, e.to});
+        a.i[SMLIB_FLAT_EDGE_NURBS_VERTEX_COUNT].push_back(static_cast<int64_t>(e.curve.weights.size()));
+        a.i[SMLIB_FLAT_EDGE_NURBS_ORDER].push_back(e.curve.order);
+        std::vector<double> &cvs = a.f[SMLIB_FLAT_EDGE_NURBS_CVS], &knots = a.f[SMLIB_FLAT_EDGE_NURBS_KNOTS],
+                            &weights = a.f[SMLIB_FLAT_EDGE_NURBS_WEIGHTS];
+        cvs.insert(cvs.end(), e.curve.cvs.begin(), e.curve.cvs.end());
+        knots.insert(knots.end(), e.curve.knots.begin(), e.curve.knots.end());
+        weights.insert(weights.end(), e.curve.weights.begin(), e.curve.weights.end());
+        a.f[SMLIB_FLAT_EDGE_RANGE].insert(a.f[SMLIB_FLAT_EDGE_RANGE].end(), {e.t0, e.t1});
+        a.f[SMLIB_FLAT_EDGE_TOLERANCE].push_back(e.tolerance);
+        tol = std::max(tol, e.tolerance);
+    }
+    for (size_t k = 0; k < vertices.size() / 3; ++k)
+    {
+        a.i[SMLIB_FLAT_VERTEX_POINT_TYPE].push_back(1);
+        tol = std::max(tol, vertexTolerances[k]);
+    }
+    a.f[SMLIB_FLAT_VERTEX_POSITION] = vertices;
+    a.f[SMLIB_FLAT_VERTEX_TOLERANCE] = vertexTolerances;
+    a.f[SMLIB_FLAT_TOLERANCE] = {tol};
+    return a;
+}
+
+// How an exported use's UV trim lifts onto its face: the largest distance (over 129 samples)
+// between S(trim) and the edge's point at the same place along the edge; the edge's range and its
+// zone tolerance (half its EDGE_TOLERANCE), as exported.
+struct TrimFit
+{
+    double gap = INFINITY, t0 = 0.0, t1 = 0.0, tolerance = 0.0;
+};
+
+// A block of `n` elements of `per` values from `at` (in elements) of `v`.
+std::vector<double> Block(const std::vector<double> &v, size_t at, size_t n, size_t per = 1)
+{
+    return std::vector<double>(v.begin() + static_cast<ptrdiff_t>(at * per), v.begin() + static_cast<ptrdiff_t>((at + n) * per));
+}
+
+std::vector<TrimFit> TrimFits(const Arrays &x)
+{
+    Patch s;
+    s.nu = static_cast<int>(x.i.at(SMLIB_FLAT_FACE_NURBS_U_VERTEX_COUNT).at(0));
+    s.nv = static_cast<int>(x.i.at(SMLIB_FLAT_FACE_NURBS_V_VERTEX_COUNT).at(0));
+    s.u.order = static_cast<int>(x.i.at(SMLIB_FLAT_FACE_NURBS_U_ORDER).at(0));
+    s.v.order = static_cast<int>(x.i.at(SMLIB_FLAT_FACE_NURBS_V_ORDER).at(0));
+    s.u.knots = x.f.at(SMLIB_FLAT_FACE_NURBS_U_KNOTS);
+    s.v.knots = x.f.at(SMLIB_FLAT_FACE_NURBS_V_KNOTS);
+    s.cvs = x.f.at(SMLIB_FLAT_FACE_NURBS_CVS);
+    s.weights = x.f.at(SMLIB_FLAT_FACE_NURBS_WEIGHTS);
+    // every edge's curve (these sheets have NURBS edges only)
+    std::vector<Spline> curves;
+    {
+        size_t cv = 0, kn = 0;
+        const std::vector<int64_t> &count = x.i.at(SMLIB_FLAT_EDGE_NURBS_VERTEX_COUNT), &order = x.i.at(SMLIB_FLAT_EDGE_NURBS_ORDER);
+        for (size_t e = 0; e < count.size(); ++e)
+        {
+            Spline c;
+            c.order = static_cast<int>(order[e]);
+            const size_t m = static_cast<size_t>(count[e]);
+            c.cvs = Block(x.f.at(SMLIB_FLAT_EDGE_NURBS_CVS), cv, m, 3);
+            c.weights = Block(x.f.at(SMLIB_FLAT_EDGE_NURBS_WEIGHTS), cv, m);
+            c.knots = Block(x.f.at(SMLIB_FLAT_EDGE_NURBS_KNOTS), kn, m + static_cast<size_t>(c.order));
+            cv += m;
+            kn += m + static_cast<size_t>(c.order);
+            curves.push_back(c);
+        }
+    }
+    std::vector<TrimFit> out;
+    const std::vector<int64_t> &useEdge = x.i.at(SMLIB_FLAT_EDGEUSE_EDGE), &same = x.i.at(SMLIB_FLAT_EDGEUSE_ORIENTATION);
+    const std::vector<int64_t> &tc = x.i.at(SMLIB_FLAT_EDGEUSE_NURBS_VERTEX_COUNT), &to = x.i.at(SMLIB_FLAT_EDGEUSE_NURBS_ORDER);
+    size_t cv = 0, kn = 0;
+    for (size_t k = 0; k < useEdge.size(); ++k)
+    {
+        TrimFit fit;
+        const size_t e = static_cast<size_t>(useEdge[k]);
+        fit.t0 = x.f.at(SMLIB_FLAT_EDGE_RANGE).at(2 * e);
+        fit.t1 = x.f.at(SMLIB_FLAT_EDGE_RANGE).at(2 * e + 1);
+        fit.tolerance = 0.5 * x.f.at(SMLIB_FLAT_EDGE_TOLERANCE).at(e);
+        const size_t m = static_cast<size_t>(tc.at(k));
+        if (m == 0 || e >= curves.size())
+        {
+            out.push_back(fit);
+            continue;
+        }
+        Spline trim;
+        trim.order = static_cast<int>(to[k]);
+        trim.cvs = Block(x.f.at(SMLIB_FLAT_EDGEUSE_NURBS_CVS), cv, m, 2);
+        trim.weights = Block(x.f.at(SMLIB_FLAT_EDGEUSE_NURBS_WEIGHTS), cv, m);
+        trim.knots = Block(x.f.at(SMLIB_FLAT_EDGEUSE_NURBS_KNOTS), kn, m + static_cast<size_t>(trim.order));
+        cv += m;
+        kn += m + static_cast<size_t>(trim.order);
+        const double s0 = trim.knots[static_cast<size_t>(trim.order - 1)], s1 = trim.knots[m];
+        fit.gap = 0.0;
+        for (int q = 0; q <= 128; ++q)
+        {
+            const double f = q / 128.0;
+            const std::vector<double> uv = SplinePoint(trim, 2, s0 + f * (s1 - s0));
+            const double t = same[k] != 0 ? fit.t0 + f * (fit.t1 - fit.t0) : fit.t1 - f * (fit.t1 - fit.t0);
+            fit.gap = std::max(fit.gap, Dist(PatchPoint(s, uv[0], uv[1]), SplinePoint(curves[e], 3, t)));
+        }
+        out.push_back(fit);
+    }
+    return out;
+}
+
+// Imports `a` and exports it (SMLib makes every trim it was not given) into `exported`.
+bool ImportExport(const Arrays &a, const char *what, Arrays &exported)
+{
+    smlib_flat *f = FromArrays(a), *x = nullptr;
+    smlib_brep *b = nullptr;
+    const int32_t si = smlib_brep_import(f, &b);
+    const int32_t se = si == SMLIB_OK ? smlib_brep_export(b, &x) : si;
+    if (si != SMLIB_OK || se != SMLIB_OK)
+    {
+        std::fprintf(stderr, "%s: import %d, export %d\n", what, static_cast<int>(si), static_cast<int>(se));
+        failures++;
+    }
+    else
+    {
+        exported = Snapshot(x);
+    }
+    smlib_flat_free(x);
+    smlib_brep_free(b);
+    smlib_flat_free(f);
+    return si == SMLIB_OK && se == SMLIB_OK;
+}
+
+// The patch of the trim tests: 10 x 10 mm, rational bicubic, with a crease (a triple u knot) at
+// u = 0.08. On its v = 0 row (weights 1 there) S(u, 0) = (10u, 0, max(0, u - 0.08)): two lines.
+Patch TrimTestPatch()
+{
+    Patch s;
+    s.nu = 7;
+    s.nv = 4;
+    s.u.order = s.v.order = 4;
+    s.u.knots = {0, 0, 0, 0, 0.08, 0.08, 0.08, 1, 1, 1, 1};
+    s.v.knots = {0, 0, 0, 0, 1, 1, 1, 1};
+    // Greville abscissae, so that x = 10u, y = 10v and the row's z are linear in u on each side
+    const double gv[4] = {0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0};
+    const double z[4] = {0.0, 0.0, 2.0 / 3.0, 2.0}, w[4] = {1.0, 0.8, 0.8, 1.0};
+    for (size_t i = 0; i < 7; ++i)
+    {
+        const double gu = (s.u.knots[i + 1] + s.u.knots[i + 2] + s.u.knots[i + 3]) / 3.0;
+        for (int j = 0; j < 4; ++j)
+        {
+            s.cvs.insert(s.cvs.end(), {10.0 * gu, 10.0 * gv[j], std::max(0.0, gu - 0.08) + z[j]});
+            s.weights.push_back(w[j]);
+        }
+    }
+    return s;
+}
+
+// The patch's row `index` (v fixed) or column `index` (u fixed) as a curve, run backwards when
+// `reversed`.
+Spline PatchIso(const Patch &s, bool row, int index, bool reversed)
+{
+    Spline c;
+    c.order = row ? s.u.order : s.v.order;
+    const int n = row ? s.nu : s.nv;
+    const std::vector<double> &k = row ? s.u.knots : s.v.knots;
+    for (int q = 0; q < n; ++q)
+    {
+        const int p = reversed ? n - 1 - q : q;
+        const size_t at = static_cast<size_t>(row ? p * s.nv + index : index * s.nv + p);
+        c.cvs.insert(c.cvs.end(), {s.cvs[3 * at], s.cvs[3 * at + 1], s.cvs[3 * at + 2]});
+        c.weights.push_back(s.weights[at]);
+    }
+    for (size_t q = 0; q < k.size(); ++q)
+    {
+        c.knots.push_back(reversed ? k.front() + k.back() - k[k.size() - 1 - q] : k[q]);
+    }
+    return c;
+}
+
+// The patch's u = 1 column, v = 1 row and u = 0 column, as the loop's edges 1 to 3 (vertex 1 to
+// vertex 2, 2 to 3, 3 to 0).
+void PatchSides(const Patch &s, std::vector<SheetEdge> &edges)
+{
+    SheetEdge e1, e2, e3;
+    e1.curve = PatchIso(s, false, s.nu - 1, false);
+    e1.from = 1;
+    e1.to = 2;
+    e2.curve = PatchIso(s, true, s.nv - 1, true);
+    e2.from = 2;
+    e2.to = 3;
+    e3.curve = PatchIso(s, false, 0, true);
+    e3.from = 3;
+    e3.to = 0;
+    edges.insert(edges.end(), {e1, e2, e3});
+}
+
+// solidcore#1383: an edge along the patch's v = 0 row, creased with it at u = 0.08 (a triple knot),
+// parameterised unlike the surface's u (its control points at s^0.8 of the way along each line
+// for their Greville values s), that starts 0.05 mm past the patch's u = 0 side, on the row's
+// extension, its vertex taking no more tolerance than the file gave it. At the edge's tolerance
+// SMLib's drop does not take that start, and comes back as the pieces on the patch, split at the
+// crease; the longer one covers 96% of the edge and was stretched onto the whole edge: the trim
+// ran at the wrong pace, 0.8 mm off the edge at its start. The trim lifts onto the edge everywhere
+// within the edge's tolerance (as SMLib sizes it); the edge stays whole.
+void BoundaryRowTrimPace()
+{
+    const Patch s = TrimTestPatch();
+    SheetEdge e0;
+    e0.curve.order = 4;
+    e0.curve.knots = {0, 0, 0, 0, 0.04, 0.04, 0.04, 0.3, 0.6, 1, 1, 1, 1};
+    const double start[3] = {-0.05, 0, 0}, crease[3] = {0.8, 0, 0}, end[3] = {10, 0, 0.92};
+    for (size_t i = 0; i + 4 < e0.curve.knots.size(); ++i)
+    {
+        const double g = (e0.curve.knots[i + 1] + e0.curve.knots[i + 2] + e0.curve.knots[i + 3]) / 3.0;
+        const bool first = g <= 0.04;
+        const double *a = first ? start : crease, *b = first ? crease : end;
+        const double f = std::pow(first ? g / 0.04 : (g - 0.04) / 0.96, 0.8);
+        e0.curve.cvs.insert(e0.curve.cvs.end(), {a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1]), a[2] + f * (b[2] - a[2])});
+        e0.curve.weights.push_back(1.0);
+    }
+    e0.from = 0;
+    e0.to = 1;
+    e0.tolerance = 1e-4;
+    std::vector<SheetEdge> edges = {e0};
+    PatchSides(s, edges);
+    const std::vector<double> vertices = {-0.05, 0, 0, 10, 0, 0.92, 10, 10, 2.92, 0, 10, 2};
+    Arrays x;
+    if (!ImportExport(SheetArrays(s, edges, vertices, {1e-5, 1e-5, 1e-5, 1e-5}), "boundary row trim pace", x))
+    {
+        return;
+    }
+    const std::vector<TrimFit> fits = TrimFits(x);
+    CHECK(fits.size() == 4);
+    for (size_t k = 0; k < fits.size(); ++k)
+    {
+        const TrimFit &f = fits[k];
+        std::printf("boundary row trim pace: edge %zu range [%.9g, %.9g], its trim %.3g mm off it, tolerance %.3g mm\n", k, f.t0, f.t1, f.gap,
+                    f.tolerance);
+        CHECK(f.t0 == 0.0 && f.t1 == 1.0);
+        CHECK(f.gap <= f.tolerance);
+    }
+}
+
+// An edge along the patch's v = 0 row whose curve runs 2.5 um past its end vertex (the patch's
+// corner) and the patch's u = 1 side, on the row's extension, with a tolerance of 0.5 um (as
+// Poppy's Congé19 has them). Making its trim, SMLib trims the edge back to the patch, to its
+// vertex: the edge does not lie within its tolerance of the face. smlib_brep_edge_face_distance
+// measures the 2.5 um; given that as its tolerance, the edge keeps its interval, its trim within it.
+void EdgePastPatch()
+{
+    const Patch s = TrimTestPatch();
+    const double past = 2.5e-3; // mm
+    SheetEdge e0;
+    e0.curve.order = 4;
+    e0.curve.knots = {0, 0, 0, 0, 0.04, 0.04, 0.04, 0.3, 0.6, 1, 1, 1, 1};
+    // the row's two lines, the second one carried on past u = 1
+    const double start[3] = {0, 0, 0}, crease[3] = {0.8, 0, 0}, end[3] = {10 + past, 0, 0.92 + 0.1 * past};
+    for (size_t i = 0; i + 4 < e0.curve.knots.size(); ++i)
+    {
+        const double g = (e0.curve.knots[i + 1] + e0.curve.knots[i + 2] + e0.curve.knots[i + 3]) / 3.0;
+        const bool first = g <= 0.04;
+        const double *a = first ? start : crease, *b = first ? crease : end;
+        const double f = first ? g / 0.04 : (g - 0.04) / 0.96;
+        e0.curve.cvs.insert(e0.curve.cvs.end(), {a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1]), a[2] + f * (b[2] - a[2])});
+        e0.curve.weights.push_back(1.0);
+    }
+    e0.from = 0;
+    e0.to = 1;
+    e0.tolerance = 1e-3;
+    std::vector<SheetEdge> edges = {e0};
+    PatchSides(s, edges);
+    const std::vector<double> vertices = {0, 0, 0, 10, 0, 0.92, 10, 10, 2.92, 0, 10, 2};
+    const Arrays given = SheetArrays(s, edges, vertices, {1e-5, 1e-5, 1e-5, 1e-5});
+
+    // how far each edge lies from the face's surface
+    double d[4] = {-1.0, -1.0, -1.0, -1.0};
+    {
+        smlib_flat *f = FromArrays(given);
+        smlib_brep *b = nullptr;
+        CHECK(smlib_brep_import(f, &b) == SMLIB_OK);
+        for (int64_t k = 0; b != nullptr && k < 4; ++k)
+        {
+            CHECK(smlib_brep_edge_face_distance(b, k, 0, &d[k]) == SMLIB_OK);
+        }
+        double x = 0.0;
+        CHECK(smlib_brep_edge_face_distance(b, 4, 0, &x) == SMLIB_ERR_ARG);
+        CHECK(smlib_brep_edge_face_distance(b, 0, 1, &x) == SMLIB_ERR_ARG);
+        CHECK(smlib_brep_edge_face_distance(b, -1, 0, &x) == SMLIB_ERR_ARG);
+        CHECK(smlib_brep_edge_face_distance(b, 0, 0, nullptr) == SMLIB_ERR_ARG);
+        CHECK(smlib_brep_edge_face_distance(nullptr, 0, 0, &x) == SMLIB_ERR_ARG);
+        smlib_brep_free(b);
+        smlib_flat_free(f);
+    }
+    std::printf("edge past its patch: edges %.3g, %.3g, %.3g, %.3g mm from the face's surface\n", d[0], d[1], d[2], d[3]);
+    // the edge's end, 2.5 um along the row's extension: sqrt(1 + 0.1^2) * 2.5 um from the patch's corner
+    CHECK(std::fabs(d[0] - past * std::sqrt(1.01)) <= 1e-9);
+    CHECK(d[1] >= 0.0 && d[1] <= 1e-9 && d[2] >= 0.0 && d[2] <= 1e-9 && d[3] >= 0.0 && d[3] <= 1e-9);
+
+    Arrays x;
+    if (ImportExport(given, "edge past its patch", x))
+    {
+        const TrimFit f = TrimFits(x).at(0);
+        std::printf("edge past its patch, at 0.5 um: range [%.9g, %.9g], its trim %.3g mm off it, tolerance %.3g mm\n", f.t0, f.t1, f.gap, f.tolerance);
+        // trimmed back to the patch, its end to its vertex
+        CHECK(f.t0 == 0.0 && f.t1 < 1.0 && f.t1 > 0.999);
+    }
+    Arrays measured = given;
+    measured.f[SMLIB_FLAT_EDGE_TOLERANCE][0] = 2.0 * d[0] * (1.0 + 1e-6);
+    measured.f[SMLIB_FLAT_TOLERANCE][0] = std::max(measured.f[SMLIB_FLAT_TOLERANCE][0], measured.f[SMLIB_FLAT_EDGE_TOLERANCE][0]);
+    if (ImportExport(measured, "edge past its patch, measured", x))
+    {
+        const TrimFit f = TrimFits(x).at(0);
+        std::printf("edge past its patch, at its distance: range [%.9g, %.9g], its trim %.3g mm off it, tolerance %.3g mm\n", f.t0, f.t1, f.gap,
+                    f.tolerance);
+        CHECK(f.t0 == 0.0 && f.t1 == 1.0);
+        CHECK(f.gap <= f.tolerance);
+    }
+}
+
+// ---- A torus face given as its label, then as SMLib's export of it --------------------------
+
+// A face given as its label, imported and exported (SMLib gives it its NURBS form), then that
+// export imported and exported twice more: the form comes back as it went in, to the bit; the
+// label's reference direction (`refId`) is SMLib's, from the form (the direction to the NURBS's
+// start about the axis `axisId`: IsNurbSurfaceTorus and IsNurbSurfaceSphere find the frame in the
+// form), a unit vector square to the same axis; everything else is the same, and so is the next
+// export.
+void FormRoundTrip(const Arrays &given, const char *kind, const char *name, int32_t axisId, int32_t refId)
+{
+    Arrays first, second, third;
+    if (!(ImportExport(given, name, first) && ImportExport(first, name, second) && ImportExport(second, name, third)))
+    {
+        std::printf("%s %s: its export does not import again\n", kind, name);
+        return;
+    }
+    bool sameForm = true;
+    for (int32_t id : {SMLIB_FLAT_FACE_NURBS_CVS, SMLIB_FLAT_FACE_NURBS_U_KNOTS, SMLIB_FLAT_FACE_NURBS_V_KNOTS, SMLIB_FLAT_FACE_NURBS_WEIGHTS})
+    {
+        sameForm = sameForm && first.f.at(id) == second.f.at(id);
+    }
+    const std::vector<double> &axis = second.f.at(axisId), &xr = second.f.at(refId);
+    const double square = std::fabs(axis[0] * xr[0] + axis[1] * xr[1] + axis[2] * xr[2]);
+    const double unit = std::fabs(std::sqrt(xr[0] * xr[0] + xr[1] * xr[1] + xr[2] * xr[2]) - 1.0);
+    Arrays firstInFrame = first;
+    firstInFrame.f[refId] = xr;
+    const double d = Compare(firstInFrame, second, name), fixed = Compare(second, third, name);
+    std::printf("%s %s: its export imports again, form %s, then the same but the reference direction (worst %.3g), then a fixed point "
+                "(worst %.3g)\n",
+                kind, name, sameForm ? "kept" : "changed", d, fixed);
+    CHECK(sameForm && square <= 1e-12 && unit <= 1e-12 && d <= 1e-9 && fixed <= 1e-12);
+}
+
+// A one-face torus sheet as a STEP reader hands it to SMLib: the torus label (frame o, z, x,
+// radii R, r) over the STEP angles [u0, u1] x [v0, v1] (radians), no NURBS form, bounded by its
+// four iso circles (circle edges, no UV trims). The torus is
+// S(u, v) = o + (R + r cos v)(cos u x + sin u y) + r sin v z, with y = z cross x.
+Arrays TorusSheet(const double o[3], const double z[3], const double x[3], double R, double r, double u0, double u1, double v0, double v1)
+{
+    const double y[3] = {z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]};
+    const auto radial = [&](double u, int k) { return std::cos(u) * x[k] + std::sin(u) * y[k]; };
+    const auto point = [&](double u, double v, int k) { return o[k] + (R + r * std::cos(v)) * radial(u, k) + r * std::sin(v) * z[k]; };
+    Arrays a;
+    a.i[SMLIB_FLAT_REGION_SHELL_COUNT] = {1};
+    a.i[SMLIB_FLAT_REGION_TYPE] = {1};
+    a.i[SMLIB_FLAT_SHELL_FACEUSE_COUNT] = {2};
+    a.i[SMLIB_FLAT_SHELL_WIRE_EDGE_COUNT] = {0};
+    a.i[SMLIB_FLAT_SHELL_POINT_TYPE] = {0};
+    a.i[SMLIB_FLAT_FACEUSE_FACE] = {0, 0};
+    a.i[SMLIB_FLAT_FACEUSE_ORIENTATION] = {1, 0};
+    a.i[SMLIB_FLAT_FACE_LOOP_COUNT] = {1};
+    a.i[SMLIB_FLAT_FACE_SURFACE_TYPE] = {SMLIB_FLAT_SURFACE_TORUS};
+    a.i[SMLIB_FLAT_FACE_TRIM_TYPE] = {0};
+    a.i[SMLIB_FLAT_LOOP_EDGEUSE_COUNT] = {4};
+    a.i[SMLIB_FLAT_LOOP_VERTEX] = {-1};
+    a.i[SMLIB_FLAT_SOURCE] = {1};
+    a.f[SMLIB_FLAT_FACE_TORUS_ORIGIN] = {o[0], o[1], o[2]};
+    a.f[SMLIB_FLAT_FACE_TORUS_AXIS] = {z[0], z[1], z[2]};
+    a.f[SMLIB_FLAT_FACE_TORUS_REF_DIRECTION] = {x[0], x[1], x[2]};
+    a.f[SMLIB_FLAT_FACE_TORUS_MAJOR_RADIUS] = {R};
+    a.f[SMLIB_FLAT_FACE_TORUS_MINOR_RADIUS] = {r};
+    a.f[SMLIB_FLAT_FACE_RANGE] = {u0, v0, u1, v1};
+    // Vertices 0 to 3 at (u0, v0), (u1, v0), (u1, v1), (u0, v1). Edges: the major circles at v0
+    // and v1 (u0 to u1), the minor circles at u1 and u0 (v0 to v1); the loop runs counter-
+    // clockwise in (u, v), along edges 0 and 1, against 2 and 3.
+    const double corner[4][2] = {{u0, v0}, {u1, v0}, {u1, v1}, {u0, v1}};
+    for (const auto &c : corner)
+    {
+        for (int k = 0; k < 3; ++k)
+        {
+            a.f[SMLIB_FLAT_VERTEX_POSITION].push_back(point(c[0], c[1], k));
+        }
+        a.i[SMLIB_FLAT_VERTEX_POINT_TYPE].push_back(1);
+        a.f[SMLIB_FLAT_VERTEX_TOLERANCE].push_back(1e-5);
+    }
+    const auto majorCircle = [&](double v)
+    {
+        for (int k = 0; k < 3; ++k)
+        {
+            a.f[SMLIB_FLAT_EDGE_CIRCLE_CENTER].push_back(o[k] + r * std::sin(v) * z[k]);
+            a.f[SMLIB_FLAT_EDGE_CIRCLE_AXIS].push_back(z[k]);
+            a.f[SMLIB_FLAT_EDGE_CIRCLE_REF_DIRECTION].push_back(x[k]);
+        }
+        a.f[SMLIB_FLAT_EDGE_CIRCLE_RADIUS].push_back(R + r * std::cos(v));
+        a.f[SMLIB_FLAT_EDGE_RANGE].insert(a.f[SMLIB_FLAT_EDGE_RANGE].end(), {u0, u1});
+    };
+    // The minor circle at u: centre o + R radial(u), reference direction radial(u), axis
+    // radial(u) cross z, so that its y axis is z and its angle is v.
+    const auto minorCircle = [&](double u)
+    {
+        const double t[3] = {radial(u, 0), radial(u, 1), radial(u, 2)};
+        const double n[3] = {t[1] * z[2] - t[2] * z[1], t[2] * z[0] - t[0] * z[2], t[0] * z[1] - t[1] * z[0]};
+        for (int k = 0; k < 3; ++k)
+        {
+            a.f[SMLIB_FLAT_EDGE_CIRCLE_CENTER].push_back(o[k] + R * t[k]);
+            a.f[SMLIB_FLAT_EDGE_CIRCLE_AXIS].push_back(n[k]);
+            a.f[SMLIB_FLAT_EDGE_CIRCLE_REF_DIRECTION].push_back(t[k]);
+        }
+        a.f[SMLIB_FLAT_EDGE_CIRCLE_RADIUS].push_back(r);
+        a.f[SMLIB_FLAT_EDGE_RANGE].insert(a.f[SMLIB_FLAT_EDGE_RANGE].end(), {v0, v1});
+    };
+    majorCircle(v0);
+    minorCircle(u1);
+    majorCircle(v1);
+    minorCircle(u0);
+    a.i[SMLIB_FLAT_EDGE_VERTICES] = {0, 1, 1, 2, 3, 2, 0, 3};
+    for (int64_t k = 0; k < 4; ++k)
+    {
+        a.i[SMLIB_FLAT_EDGE_CURVE_TYPE].push_back(SMLIB_FLAT_CURVE_CIRCLE);
+        a.f[SMLIB_FLAT_EDGE_TOLERANCE].push_back(2e-5);
+        a.i[SMLIB_FLAT_EDGEUSE_EDGE].push_back(k);
+        a.i[SMLIB_FLAT_EDGEUSE_ORIENTATION].push_back(k < 2 ? 1 : 0);
+        a.i[SMLIB_FLAT_EDGEUSE_NEXT_RADIAL].push_back(k);
+        a.i[SMLIB_FLAT_EDGEUSE_RADIAL_ENTRY].push_back(0);
+    }
+    a.f[SMLIB_FLAT_TOLERANCE] = {4e-5};
+    return a;
+}
+
+// A torus face SMLib made from its label (SmTorus::CreateCanonical over the face's angles) comes
+// back from export as that label and its NURBS form; the form imported again must be kept, to the
+// bit (the face's trims are in its parameters), and export -> import must be the identity but for
+// the label's reference direction. The torus SMLib rebuilt from the circles it fits to the form
+// was ~1e-11 off it on a small torus far out, and the import refused it. These are the faces a
+// STEP file has, parts of a torus: a quarter, one off the seam and across the minor angle 0, the
+// inner side, a half about the seam, the off-seam one about an axis turned over (its minor
+// circles running the other way in space), and a small one far from the origin.
+void TorusFormRoundTrip()
+{
+    const double pi = 3.14159265358979323846, deg = pi / 180.0;
+    const double o[3] = {1, 2, 3}, up[3] = {0, 0, 1}, down[3] = {0, 0, -1}, ref[3] = {1, 0, 0};
+    // Poppy's Stock-head has a fillet torus R 2.85, r 0.2 about the y axis, 90 mm out: SMLib's
+    // torus rebuilt from the circles it fits to that NURBS had weights 7e-12 off it.
+    const double far[3] = {0, 88.18, -14.75}, side[3] = {0, 1, 0}, across[3] = {-1, 0, 0};
+    struct Case
+    {
+        const char *name;
+        const double *o, *z, *x;
+        double R, r, u0, u1, v0, v1;
+    };
+    const Case cases[] = {
+        {"quarter", o, up, ref, 10.0, 3.0, 0.0, 90.0, 0.0, 90.0},
+        {"off the seam", o, up, ref, 10.0, 3.0, 30.0, 100.0, -50.0, 70.0},
+        {"inner side", o, up, ref, 10.0, 3.0, 17.0, 115.0, 100.0, 260.0},
+        {"half about the seam", o, up, ref, 10.0, 3.0, -90.0, 90.0, -40.0, 40.0},
+        {"axis turned over", o, down, ref, 10.0, 3.0, 30.0, 100.0, -50.0, 70.0},
+        {"small, far out", far, side, across, 2.85, 0.2, 0.0, 90.0, 90.0, 180.0},
+    };
+    // The form SMLib exported for that Stock-head face (its control points are themselves 1e-12
+    // off a plane square to the axis), given as SMLib writes it: the torus label (passed over on
+    // import) and the form, bounded by the form's iso curves, no UV trims. Its first import was
+    // refused; now it is kept to the bit.
+    {
+        Patch f;
+        f.nu = f.nv = 3;
+        f.u.order = f.v.order = 3;
+        f.u.knots = {3, 3, 3, 4, 4, 4};
+        f.v.knots = {4, 4, 4, 5, 5, 5};
+        f.weights = {1, 0.70710678118654757, 1, 0.70710678118654813, 0.50000000000000044, 0.70710678118654813, 1, 0.70710678118654757, 1};
+        f.cvs = {-2.8500000000000139,     91.036626133921814, -14.772670798218494, -2.8500000000000139,     91.024416426014824, -14.573043838534121,
+                 -2.6500000000000137,     91.024416426014838, -14.573043838534121, -2.8500000000011951,     88.191941958423001, -14.946659135892627,
+                 -2.85000000000118,       88.179732250516011, -14.747032176208254, -2.650000000001195,      88.379359210200406, -14.734822468301282,
+                 -4.7201503979908935e-12, 88.191941958421822, -14.946659135892693, -4.7064028649897626e-12, 88.179732250514846, -14.74703217620832,
+                 -4.7202196957604515e-12, 88.379359210199226, -14.734822468301347};
+        std::vector<SheetEdge> edges(1);
+        edges[0].curve = PatchIso(f, true, 0, false);
+        edges[0].from = 0;
+        edges[0].to = 1;
+        PatchSides(f, edges);
+        for (SheetEdge &e : edges)
+        {
+            e.t0 = e.curve.knots.front();
+            e.t1 = e.curve.knots.back();
+        }
+        const std::vector<double> vertices = {f.cvs[0], f.cvs[1], f.cvs[2], f.cvs[18], f.cvs[19], f.cvs[20],
+                                              f.cvs[24], f.cvs[25], f.cvs[26], f.cvs[6], f.cvs[7], f.cvs[8]};
+        Arrays given = SheetArrays(f, edges, vertices, {1e-5, 1e-5, 1e-5, 1e-5});
+        // The label: the sweep's centre and axis from its first row's control triangle.
+        const double c[3] = {f.cvs[0] + f.cvs[18] - f.cvs[9], f.cvs[1] + f.cvs[19] - f.cvs[10], f.cvs[2] + f.cvs[20] - f.cvs[11]};
+        const double p[3] = {f.cvs[0] - c[0], f.cvs[1] - c[1], f.cvs[2] - c[2]}, q[3] = {f.cvs[18] - c[0], f.cvs[19] - c[1], f.cvs[20] - c[2]};
+        double n[3] = {p[1] * q[2] - p[2] * q[1], p[2] * q[0] - p[0] * q[2], p[0] * q[1] - p[1] * q[0]}, x[3] = {p[0], p[1], p[2]};
+        const double nl = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]), R = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+        for (int k = 0; k < 3; ++k)
+        {
+            n[k] /= nl;
+            x[k] /= R;
+        }
+        given.i[SMLIB_FLAT_FACE_SURFACE_TYPE] = {SMLIB_FLAT_SURFACE_TORUS};
+        given.i[SMLIB_FLAT_FACE_NURBS_FORM] = {1};
+        given.f[SMLIB_FLAT_FACE_TORUS_ORIGIN] = {c[0], c[1], c[2]};
+        given.f[SMLIB_FLAT_FACE_TORUS_AXIS] = {n[0], n[1], n[2]};
+        given.f[SMLIB_FLAT_FACE_TORUS_REF_DIRECTION] = {x[0], x[1], x[2]};
+        given.f[SMLIB_FLAT_FACE_TORUS_MAJOR_RADIUS] = {R};
+        given.f[SMLIB_FLAT_FACE_TORUS_MINOR_RADIUS] = {0.2};
+        Arrays first, second;
+        const bool ok = ImportExport(given, "Stock-head torus form", first) && ImportExport(first, "Stock-head torus form", second);
+        bool kept = ok;
+        for (int32_t id : {SMLIB_FLAT_FACE_NURBS_CVS, SMLIB_FLAT_FACE_NURBS_U_KNOTS, SMLIB_FLAT_FACE_NURBS_V_KNOTS, SMLIB_FLAT_FACE_NURBS_WEIGHTS})
+        {
+            kept = kept && given.f.at(id) == first.f.at(id) && first.f.at(id) == second.f.at(id);
+        }
+        const double fixed = ok ? Compare(first, second, "Stock-head torus form") : INFINITY;
+        std::printf("torus face given as Stock-head's form: imports %s, form %s, then a fixed point (worst %.3g)\n", ok ? "ok" : "refused",
+                    kept ? "kept" : "changed", fixed);
+        CHECK(ok && kept && fixed <= 1e-12);
+    }
+    // A torus face given with a form that runs once round the tube from its bottom (tube angle
+    // -90 degrees: SolidCraft forms a face covering most of its tube so), the face half of it, 80 mm
+    // from the origin (an alternator's fillet, R 13.1934, r 1.25). Recognising the torus in the
+    // form reads the tube's ends from the form's first and last points, each to the rounding of
+    // its coordinates (8e-13 degrees here): the whole turn was taken for a sliver 2e-12 degrees
+    // long, and the face refused.
+    {
+        const double R = 13.1934, r = 1.25, h = std::sqrt(0.5);
+        const double c[3] = {-28.640080455029999, 39.419688939149999, -63.4255};
+        const double z[3] = {-0.58778525229251344, 0.80901699437491859, 0}, x[3] = {0, 0, -1};
+        // The sweep: a quarter turn from x to y = z cross x. The tube: a whole turn from -90
+        // degrees, in four quarters. The control points are the alternator's, to the bit (the
+        // ends' rounding decides): c + rho (x or y, or x + y in the middle) + height z, with rho
+        // and height R, -r; R + r, -r; R + r, 0; ... about the tube's centre circle.
+        Patch f;
+        f.nu = 3;
+        f.nv = 9;
+        f.u.order = f.v.order = 3;
+        f.u.knots = {3, 3, 3, 4, 4, 4};
+        f.v.knots = {-1, -1, -1, 0, 0, 1, 1, 2, 2, 3, 3, 3};
+        f.cvs = {-27.905348889664353, 38.408417696181353, -76.618899999999996, -27.905348889664353, 38.408417696181353, -77.868899999999996,
+                 -28.640080455029995, 39.419688939149999, -77.868899999999996, -29.374812020395638, 40.430960182118646, -77.868899999999996,
+                 -29.374812020395638, 40.430960182118646, -76.618899999999996, -29.374812020395641, 40.430960182118646, -75.368899999999996,
+                 -28.640080455029999, 39.419688939149999, -75.368899999999996, -27.905348889664356, 38.408417696181353, -75.368899999999996,
+                 -27.905348889664353, 38.408417696181353, -76.618899999999996, -38.579033703250403, 30.653531748585308, -76.618899999999996,
+                 -39.590304946219049, 29.918800183219666, -77.868899999999996, -40.325036511584692, 30.930071426188313, -77.868899999999996,
+                 -41.059768076950334, 31.94134266915696, -77.868899999999996, -40.048496833981687, 32.676074234522602, -76.618899999999996,
+                 -39.037225591013041, 33.410805799888244, -75.368899999999996, -38.302494025647398, 32.399534556919598, -75.368899999999996,
+                 -37.567762460281756, 31.388263313950951, -75.368899999999996, -38.579033703250403, 30.653531748585308, -76.618899999999996,
+                 -38.579033703250403, 30.653531748585308, -63.4255, -39.590304946219057, 29.918800183219666, -63.4255,
+                 -40.325036511584699, 30.930071426188313, -63.4255, -41.059768076950341, 31.941342669156956, -63.4255,
+                 -40.048496833981687, 32.676074234522602, -63.4255, -39.037225591013041, 33.410805799888244, -63.4255,
+                 -38.302494025647398, 32.399534556919598, -63.4255, -37.567762460281756, 31.388263313950951, -63.4255,
+                 -38.579033703250403, 30.653531748585308, -63.4255};
+        for (double ws : {1.0, h, 1.0})
+        {
+            for (int j = 0; j < 9; ++j)
+            {
+                f.weights.push_back(ws * (j % 2 == 0 ? 1.0 : h));
+            }
+        }
+        // Bounded by the tube circles at the sweep's ends (v 0 to 2: the tube from its outer
+        // equator over the top to its inner one) and the sweep arcs on those equators (control
+        // rows 2 and 6).
+        std::vector<SheetEdge> edges(4);
+        edges[0].curve = PatchIso(f, true, 2, false);
+        edges[0].from = 0;
+        edges[0].to = 1;
+        edges[1].curve = PatchIso(f, false, f.nu - 1, false);
+        edges[1].from = 1;
+        edges[1].to = 2;
+        edges[2].curve = PatchIso(f, true, 6, true);
+        edges[2].from = 2;
+        edges[2].to = 3;
+        edges[3].curve = PatchIso(f, false, 0, true);
+        edges[3].from = 3;
+        edges[3].to = 0;
+        for (SheetEdge &e : edges)
+        {
+            const bool tubeCircle = e.curve.knots.size() == f.v.knots.size();
+            e.t0 = tubeCircle ? 0.0 : e.curve.knots.front();
+            e.t1 = tubeCircle ? 2.0 : e.curve.knots.back();
+        }
+        std::vector<double> vertices;
+        for (const auto &uv : {std::array<double, 2>{3, 0}, {4, 0}, {4, 2}, {3, 2}})
+        {
+            const std::vector<double> p = PatchPoint(f, uv[0], uv[1]);
+            vertices.insert(vertices.end(), p.begin(), p.end());
+        }
+        Arrays given = SheetArrays(f, edges, vertices, {1e-5, 1e-5, 1e-5, 1e-5});
+        given.f[SMLIB_FLAT_FACE_RANGE] = {3, 0, 4, 2};
+        given.i[SMLIB_FLAT_FACE_SURFACE_TYPE] = {SMLIB_FLAT_SURFACE_TORUS};
+        given.i[SMLIB_FLAT_FACE_NURBS_FORM] = {1};
+        given.f[SMLIB_FLAT_FACE_TORUS_ORIGIN] = {c[0], c[1], c[2]};
+        given.f[SMLIB_FLAT_FACE_TORUS_AXIS] = {z[0], z[1], z[2]};
+        given.f[SMLIB_FLAT_FACE_TORUS_REF_DIRECTION] = {x[0], x[1], x[2]};
+        given.f[SMLIB_FLAT_FACE_TORUS_MAJOR_RADIUS] = {R};
+        given.f[SMLIB_FLAT_FACE_TORUS_MINOR_RADIUS] = {r};
+        Arrays first;
+        const bool ok = ImportExport(given, "whole-tube torus form", first);
+        bool kept = ok;
+        for (int32_t id : {SMLIB_FLAT_FACE_NURBS_CVS, SMLIB_FLAT_FACE_NURBS_U_KNOTS, SMLIB_FLAT_FACE_NURBS_V_KNOTS, SMLIB_FLAT_FACE_NURBS_WEIGHTS})
+        {
+            kept = kept && given.f.at(id) == first.f.at(id);
+        }
+        const double dR = ok ? std::fabs(first.f.at(SMLIB_FLAT_FACE_TORUS_MAJOR_RADIUS).at(0) - R) : INFINITY;
+        const double dr = ok ? std::fabs(first.f.at(SMLIB_FLAT_FACE_TORUS_MINOR_RADIUS).at(0) - r) : INFINITY;
+        std::printf("torus face on a form once round its tube from the bottom, 80 mm out: imports %s, form %s, radii off by %.3g and %.3g\n",
+                    ok ? "ok" : "refused", kept ? "kept" : "changed", dR, dr);
+        CHECK(ok && kept && dR <= 1e-9 && dr <= 1e-9);
+    }
+    for (const Case &c : cases)
+    {
+        FormRoundTrip(TorusSheet(c.o, c.z, c.x, c.R, c.r, c.u0 * deg, c.u1 * deg, c.v0 * deg, c.v1 * deg), "torus face", c.name,
+                      SMLIB_FLAT_FACE_TORUS_AXIS, SMLIB_FLAT_FACE_TORUS_REF_DIRECTION);
+    }
+}
+
+// A one-face sphere sheet as a STEP reader hands it to SMLib: the sphere label (centre o, frame
+// z, x, radius r) over the longitudes [u0, u1] (radians) from pole to pole, no NURBS form,
+// bounded by its two meridians (circle edges from the south pole to the north one, no UV trims),
+// its other two sides collapsed at the poles. S(u, v) = o + r cos v (cos u x + sin u y) + r sin v z.
+Arrays SphereLune(const double o[3], const double z[3], const double x[3], double r, double u0, double u1)
+{
+    const double pi = 3.14159265358979323846;
+    const double y[3] = {z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]};
+    Arrays a;
+    a.i[SMLIB_FLAT_REGION_SHELL_COUNT] = {1};
+    a.i[SMLIB_FLAT_REGION_TYPE] = {1};
+    a.i[SMLIB_FLAT_SHELL_FACEUSE_COUNT] = {2};
+    a.i[SMLIB_FLAT_SHELL_WIRE_EDGE_COUNT] = {0};
+    a.i[SMLIB_FLAT_SHELL_POINT_TYPE] = {0};
+    a.i[SMLIB_FLAT_FACEUSE_FACE] = {0, 0};
+    a.i[SMLIB_FLAT_FACEUSE_ORIENTATION] = {1, 0};
+    a.i[SMLIB_FLAT_FACE_LOOP_COUNT] = {1};
+    a.i[SMLIB_FLAT_FACE_SURFACE_TYPE] = {SMLIB_FLAT_SURFACE_SPHERE};
+    a.i[SMLIB_FLAT_FACE_TRIM_TYPE] = {0};
+    a.i[SMLIB_FLAT_LOOP_EDGEUSE_COUNT] = {2};
+    a.i[SMLIB_FLAT_LOOP_VERTEX] = {-1};
+    a.i[SMLIB_FLAT_SOURCE] = {1};
+    a.f[SMLIB_FLAT_FACE_SPHERE_CENTER] = {o[0], o[1], o[2]};
+    a.f[SMLIB_FLAT_FACE_SPHERE_AXIS] = {z[0], z[1], z[2]};
+    a.f[SMLIB_FLAT_FACE_SPHERE_REF_DIRECTION] = {x[0], x[1], x[2]};
+    a.f[SMLIB_FLAT_FACE_SPHERE_RADIUS] = {r};
+    a.f[SMLIB_FLAT_FACE_RANGE] = {u0, -0.5 * pi, u1, 0.5 * pi};
+    // Vertices: the south pole, the north pole.
+    for (double side : {-1.0, 1.0})
+    {
+        for (int k = 0; k < 3; ++k)
+        {
+            a.f[SMLIB_FLAT_VERTEX_POSITION].push_back(o[k] + side * r * z[k]);
+        }
+        a.i[SMLIB_FLAT_VERTEX_POINT_TYPE].push_back(1);
+        a.f[SMLIB_FLAT_VERTEX_TOLERANCE].push_back(1e-5);
+    }
+    // The meridian at u: reference direction radial(u), axis radial(u) cross z (its y axis is z),
+    // angle v. The loop runs counter-clockwise in (u, v): north along the meridian at u1, south
+    // along (against) the one at u0.
+    for (double u : {u1, u0})
+    {
+        const double t[3] = {std::cos(u) * x[0] + std::sin(u) * y[0], std::cos(u) * x[1] + std::sin(u) * y[1], std::cos(u) * x[2] + std::sin(u) * y[2]};
+        const double n[3] = {t[1] * z[2] - t[2] * z[1], t[2] * z[0] - t[0] * z[2], t[0] * z[1] - t[1] * z[0]};
+        for (int k = 0; k < 3; ++k)
+        {
+            a.f[SMLIB_FLAT_EDGE_CIRCLE_CENTER].push_back(o[k]);
+            a.f[SMLIB_FLAT_EDGE_CIRCLE_AXIS].push_back(n[k]);
+            a.f[SMLIB_FLAT_EDGE_CIRCLE_REF_DIRECTION].push_back(t[k]);
+        }
+        a.f[SMLIB_FLAT_EDGE_CIRCLE_RADIUS].push_back(r);
+        a.f[SMLIB_FLAT_EDGE_RANGE].insert(a.f[SMLIB_FLAT_EDGE_RANGE].end(), {-0.5 * pi, 0.5 * pi});
+    }
+    a.i[SMLIB_FLAT_EDGE_VERTICES] = {0, 1, 0, 1};
+    for (int64_t k = 0; k < 2; ++k)
+    {
+        a.i[SMLIB_FLAT_EDGE_CURVE_TYPE].push_back(SMLIB_FLAT_CURVE_CIRCLE);
+        a.f[SMLIB_FLAT_EDGE_TOLERANCE].push_back(2e-5);
+        a.i[SMLIB_FLAT_EDGEUSE_EDGE].push_back(k);
+        a.i[SMLIB_FLAT_EDGEUSE_ORIENTATION].push_back(k == 0 ? 1 : 0);
+        a.i[SMLIB_FLAT_EDGEUSE_NEXT_RADIAL].push_back(k);
+        a.i[SMLIB_FLAT_EDGEUSE_RADIAL_ENTRY].push_back(0);
+    }
+    a.f[SMLIB_FLAT_TOLERANCE] = {4e-5};
+    return a;
+}
+
+// The same for a sphere face from pole to pole: SmSphere::IsNurbSurfaceSphere took a half meridian
+// it measured in the form at 180.0000000000024 degrees (a lune of a radius 2 sphere 500 mm out, on
+// an engine's valve cover) for more than a half circle and said no, and the import refused it.
+void SphereFormRoundTrip()
+{
+    const double pi = 3.14159265358979323846, deg = pi / 180.0;
+    const double o[3] = {1, 2, 3}, far[3] = {107.214217174, 350.149503622, -367.5}, up[3] = {0, 0, 1}, ref[3] = {1, 0, 0};
+    FormRoundTrip(SphereLune(o, up, ref, 10.0, 0.0, 90.0 * deg), "sphere face", "quarter lune", SMLIB_FLAT_FACE_SPHERE_AXIS,
+                  SMLIB_FLAT_FACE_SPHERE_REF_DIRECTION);
+    FormRoundTrip(SphereLune(o, up, ref, 10.0, 30.0 * deg, 150.0 * deg), "sphere face", "lune off the seam", SMLIB_FLAT_FACE_SPHERE_AXIS,
+                  SMLIB_FLAT_FACE_SPHERE_REF_DIRECTION);
+    FormRoundTrip(SphereLune(far, up, ref, 2.0, 0.0, 90.0 * deg), "sphere face", "small lune, far out", SMLIB_FLAT_FACE_SPHERE_AXIS,
+                  SMLIB_FLAT_FACE_SPHERE_REF_DIRECTION);
+}
+
+// A cylinder mirrored in a plane (r 5 x 30 on (20, 20, -5) up z, mirrored in x = 30): its NURBS
+// sweeps clockwise about its linear direction, so the cylinder is inside out, its STEP origin on
+// the NURBS's top circle (40, 20, 25) and its STEP z axis -z. Its export imports again as the same
+// cylinder: SmCylinder::IsNurbSurfaceCylinder put the origin on the bottom circle with z along the
+// linear direction, a cylinder sweeping clockwise about its own z whose generator ran 30 mm off
+// the NURBS, and SMLib's check refused it.
+void MirroredCylinderRoundTrip()
+{
+    const double pi = 3.14159265358979323846;
+    const double o[3] = {20, 20, -5};
+    const double mirror[4][4] = {{-1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {60, 0, 0, 1}};
+    smlib_brep *cyl = nullptr, *mirrored = nullptr, *again = nullptr;
+    smlib_flat *x = nullptr, *y = nullptr;
+    CHECK(smlib_make_cylinder(o, 5, 30, &cyl) == SMLIB_OK);
+    CHECK(smlib_brep_transform(cyl, mirror, &mirrored) == SMLIB_OK);
+    const int32_t sx = smlib_brep_export(mirrored, &x);
+    // SMLib's primitive side is a cone of semi-angle 0; it goes back labelled a cylinder, as
+    // SolidCraft's records and STEP name it.
+    Arrays first = sx == SMLIB_OK ? Snapshot(x) : Arrays{};
+    for (int64_t &t : first.i[SMLIB_FLAT_FACE_SURFACE_TYPE])
+    {
+        t = t == SMLIB_FLAT_SURFACE_CONE ? SMLIB_FLAT_SURFACE_CYLINDER : t;
+    }
+    for (const auto &[cone, cylinder] : {std::pair{SMLIB_FLAT_FACE_CONE_ORIGIN, SMLIB_FLAT_FACE_CYLINDER_ORIGIN},
+                                         std::pair{SMLIB_FLAT_FACE_CONE_AXIS, SMLIB_FLAT_FACE_CYLINDER_AXIS},
+                                         std::pair{SMLIB_FLAT_FACE_CONE_REF_DIRECTION, SMLIB_FLAT_FACE_CYLINDER_REF_DIRECTION},
+                                         std::pair{SMLIB_FLAT_FACE_CONE_RADIUS, SMLIB_FLAT_FACE_CYLINDER_RADIUS}})
+    {
+        first.f[cylinder] = first.f[cone];
+        first.f[cone].clear();
+    }
+    first.f[SMLIB_FLAT_FACE_CONE_SEMI_ANGLE].clear();
+    smlib_flat *given = FromArrays(first);
+    const int32_t sa = sx == SMLIB_OK ? smlib_brep_import(given, &again) : sx;
+    const int32_t sy = sa == SMLIB_OK ? smlib_brep_export(again, &y) : sa;
+    char buf[4096] = {0};
+    int64_t len = 0, bad = -1;
+    double v = 0.0;
+    if (sy == SMLIB_OK)
+    {
+        CHECK(smlib_brep_check(again, 2, buf, sizeof buf, &len, &bad) == SMLIB_OK);
+        CHECK(smlib_brep_volume(again, 1e-8, &v) == SMLIB_OK);
+    }
+    const Arrays second = sy == SMLIB_OK ? Snapshot(y) : Arrays{};
+    const std::vector<double> want_origin = {40, 20, 25}, want_axis = {0, 0, -1};
+    double frame = sy == SMLIB_OK ? 0.0 : INFINITY;
+    for (const Arrays *a : {static_cast<const Arrays *>(&first), &second})
+    {
+        for (const auto &[id, want] : {std::pair{SMLIB_FLAT_FACE_CYLINDER_ORIGIN, want_origin}, std::pair{SMLIB_FLAT_FACE_CYLINDER_AXIS, want_axis}})
+        {
+            // Every face of the cylinder's side, each its own entry.
+            const auto at = a->f.find(id);
+            const bool some = at != a->f.end() && !at->second.empty() && at->second.size() % 3 == 0;
+            frame = some ? frame : INFINITY;
+            for (size_t k = 0; some && k < at->second.size(); ++k)
+            {
+                frame = std::max(frame, std::fabs(at->second[k] - want[k % 3]));
+            }
+        }
+    }
+    const double want = pi * 25.0 * 30.0;
+    std::printf("mirrored cylinder: export %d, imported again %d, exported again %d, failed checks %lld %s, volume %.12g (want %.12g), "
+                "STEP frame off by %.3g\n",
+                static_cast<int>(sx), static_cast<int>(sa), static_cast<int>(sy), static_cast<long long>(bad), buf, v, want, frame);
+    CHECK(sy == SMLIB_OK && bad == 0 && std::fabs(v - want) <= 1e-8 * want && frame <= 1e-12);
+    smlib_flat_free(y);
+    smlib_flat_free(given);
+    smlib_flat_free(x);
+    for (smlib_brep *b : {cyl, mirrored, again})
+    {
+        smlib_brep_free(b);
+    }
+}
+
+// An edge's own tolerance through smlib_brep_transform: a box (10 x 20 x 30 at (1, 2, 3)) whose
+// first edge and its vertices are given 1e-3 mm, far above the box's own. Mirrored in x = 30 and
+// turned a quarter about z the edge keeps 1e-3 mm, and scaled by 2 it has 2e-3 mm. SmBrep::Transform
+// set every tolerance to the Brep's whenever it was given a scale, a unit one included (a 4x4
+// always is), so a mirrored blend's intersection edge came out narrower than its own gap.
+void TransformKeepsEdgeTolerance()
+{
+    const double o[3] = {1, 2, 3}, size[3] = {10, 20, 30}, wide = 1e-3;
+    smlib_brep *box = nullptr, *given = nullptr;
+    smlib_flat *x = nullptr;
+    CHECK(smlib_make_box(o, size, &box) == SMLIB_OK);
+    CHECK(smlib_brep_export(box, &x) == SMLIB_OK);
+    Arrays a = Snapshot(x);
+    a.f[SMLIB_FLAT_EDGE_TOLERANCE].at(0) = wide;
+    for (size_t end : {0, 1})
+    {
+        a.f[SMLIB_FLAT_VERTEX_TOLERANCE].at(static_cast<size_t>(a.i[SMLIB_FLAT_EDGE_VERTICES].at(end))) = wide;
+    }
+    smlib_flat *f = FromArrays(a);
+    CHECK(smlib_brep_import(f, &given) == SMLIB_OK);
+    struct Move
+    {
+        const char *name;
+        double m[4][4];
+        double scale;
+    };
+    const Move moves[] = {
+        {"as given", {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}}, 1.0},
+        {"mirrored", {{-1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {60, 0, 0, 1}}, 1.0},
+        {"turned", {{0, 1, 0, 0}, {-1, 0, 0, 0}, {0, 0, 1, 0}, {5, 6, 7, 1}}, 1.0},
+        {"scaled", {{2, 0, 0, 0}, {0, 2, 0, 0}, {0, 0, 2, 0}, {0, 0, 0, 1}}, 2.0},
+    };
+    for (const Move &mv : moves)
+    {
+        smlib_brep *t = nullptr;
+        smlib_flat *y = nullptr;
+        const int32_t st = given != nullptr ? smlib_brep_transform(given, mv.m, &t) : SMLIB_ERR_ARG;
+        const int32_t sy = st == SMLIB_OK ? smlib_brep_export(t, &y) : st;
+        double widest = 0.0;
+        if (sy == SMLIB_OK)
+        {
+            const Arrays out = Snapshot(y);
+            for (double e : out.f.at(SMLIB_FLAT_EDGE_TOLERANCE))
+            {
+                widest = std::max(widest, e);
+            }
+        }
+        std::printf("box edge of tolerance %g, %s: transform %d, export %d, widest edge tolerance %.17g (want %g)\n", wide, mv.name,
+                    static_cast<int>(st), static_cast<int>(sy), widest, wide * mv.scale);
+        CHECK(sy == SMLIB_OK && std::fabs(widest - wide * mv.scale) <= 1e-15 * mv.scale);
+        smlib_flat_free(y);
+        smlib_brep_free(t);
+    }
+    smlib_brep_free(given);
+    smlib_flat_free(f);
+    smlib_flat_free(x);
+    smlib_brep_free(box);
+}
+
+// A body with no vertices scaled: a lone torus (R 6, r 2 about (10, 5, 3)) scaled by 2 and by 0.5,
+// then a ball of radius 1.5 (scaled alike) cut out of its tube, inside it. SmBrep::Transform took
+// the model size from the box of the vertices, empty here, and set the Brep tolerance to zero:
+// the cut failed (SMLIB_ERR 1001). The size is now the Brep's box: the cut leaves the torus less
+// the ball, k^3 (2 pi^2 R r^2 - 4/3 pi 1.5^3), and the tolerance is at least that of the same
+// torus made at the scaled size.
+void ScaledBodyWithoutVertices()
+{
+    const double pi = 3.14159265358979323846, c[3] = {10, 5, 3};
+    for (double k : {2.0, 0.5})
+    {
+        const double m[4][4] = {{k, 0, 0, 0}, {0, k, 0, 0}, {0, 0, k, 0}, {0, 0, 0, 1}};
+        const double ck[3] = {c[0] * k, c[1] * k, c[2] * k}, inTube[3] = {ck[0] + 6 * k, ck[1], ck[2]};
+        smlib_brep *torus = nullptr, *made = nullptr, *scaled = nullptr, *ball = nullptr, *cut = nullptr;
+        smlib_flat *x = nullptr, *y = nullptr;
+        CHECK(smlib_make_torus(c, 6, 2, &torus) == SMLIB_OK);
+        CHECK(smlib_make_torus(ck, 6 * k, 2 * k, &made) == SMLIB_OK);
+        CHECK(smlib_make_sphere(inTube, 1.5 * k, &ball) == SMLIB_OK);
+        const int32_t st = torus != nullptr ? smlib_brep_transform(torus, m, &scaled) : SMLIB_ERR_ARG;
+        const int32_t sx = st == SMLIB_OK ? smlib_brep_export(scaled, &x) : st;
+        const int32_t sy = made != nullptr ? smlib_brep_export(made, &y) : SMLIB_ERR_ARG;
+        const int32_t sc = st == SMLIB_OK ? smlib_boolean(scaled, ball, SMLIB_BOOLEAN_SUBTRACT, &cut) : st;
+        double v = 0.0;
+        if (sc == SMLIB_OK)
+        {
+            CHECK(smlib_brep_volume(cut, 1e-8, &v) == SMLIB_OK);
+        }
+        const double tol = sx == SMLIB_OK ? Snapshot(x).f.at(SMLIB_FLAT_TOLERANCE).at(0) : 0.0;
+        const double own = sy == SMLIB_OK ? Snapshot(y).f.at(SMLIB_FLAT_TOLERANCE).at(0) : INFINITY;
+        const double want = k * k * k * (2 * pi * pi * 6 * 4 - 4.0 / 3.0 * pi * 1.5 * 1.5 * 1.5);
+        std::printf("lone torus scaled by %g: transform %d, tolerance %g (made at that size %g), ball cut out %d, volume %.12g (want %.12g)\n", k,
+                    static_cast<int>(st), tol, own, static_cast<int>(sc), v, want);
+        CHECK(sx == SMLIB_OK && tol >= own && sc == SMLIB_OK && std::fabs(v - want) <= 1e-7 * want);
+        smlib_flat_free(y);
+        smlib_flat_free(x);
+        for (smlib_brep *b : {torus, made, scaled, ball, cut})
+        {
+            smlib_brep_free(b);
+        }
+    }
+}
+
 // Imports `a`; expects a failure status (and no crash). Returns the status.
 int32_t ExpectReject(const Arrays &a, const char *what)
 {
@@ -722,7 +1740,7 @@ int main(int argc, char **argv)
     {
         dir = argv[1];
     }
-    CHECK(smlib_abi_version() == SMLIB_ABI_VERSION && SMLIB_ABI_VERSION == 4);
+    CHECK(smlib_abi_version() == SMLIB_ABI_VERSION && SMLIB_ABI_VERSION == 6);
     CHECK(smlib_init() == SMLIB_OK);
 
     // The solids. With SMLIB_FLAT_SOLIDS set to a directory of <name>.smb files from an earlier
@@ -784,7 +1802,7 @@ int main(int argc, char **argv)
         SmApiCreateBox(SmVector3d(0, 0, 0), 10, 10, 10, b);
         SmTArray<SmEdge *> edges;
         SmApiGetEdges(b, edges);
-        SmApiStatus s = SmApiFilletEdges(b, edges, 1.0, 2, 2, 1.0);
+        SmApiStatus s = SmApiFilletEdges(b, edges, 1.0, 2, 2, SM_GN_DEFAULT_THUMBWEIGHT);
         if (s != SM_SUCCESS)
         {
             std::fprintf(stderr, "blend: SmApiFilletEdges -> %d\n", (int)s);
@@ -800,7 +1818,7 @@ int main(int argc, char **argv)
         SmTArray<SmEdge *> edges, one;
         SmApiGetEdges(b, edges);
         one.Add(edges[0]);
-        SmApiStatus s = SmApiFilletEdges(b, one, 2.0, 2, 2, 1.0);
+        SmApiStatus s = SmApiFilletEdges(b, one, 2.0, 2, 2, SM_GN_DEFAULT_THUMBWEIGHT);
         if (s != SM_SUCCESS)
         {
             std::fprintf(stderr, "blend1: SmApiFilletEdges -> %d\n", (int)s);
@@ -931,12 +1949,29 @@ int main(int argc, char **argv)
             std::printf("torus, canonical, %s range a turn on: import %d, volume %.12g (want %.12g), failed checks %lld %s\n",
                         shift == 0 ? "no" : shift == 1 ? "major" : shift == 2 ? "minor" : "both", static_cast<int>(s), v, want, static_cast<long long>(bad), buf);
             CHECK(s == SMLIB_OK && std::fabs(v - want) <= 1e-7 * want && bad == 0);
+            // Its export (the label and its NURBS form) imports again.
+            smlib_flat *x = nullptr;
+            smlib_brep *again = nullptr;
+            const int32_t sx = s == SMLIB_OK ? smlib_brep_export(b, &x) : s;
+            const int32_t sa = sx == SMLIB_OK ? smlib_brep_import(x, &again) : sx;
+            std::printf("torus, canonical, %s range a turn on: export %d, imported again %d\n",
+                        shift == 0 ? "no" : shift == 1 ? "major" : shift == 2 ? "minor" : "both", static_cast<int>(sx), static_cast<int>(sa));
+            CHECK(sa == SMLIB_OK);
+            smlib_brep_free(again);
+            smlib_flat_free(x);
             smlib_brep_free(b);
             smlib_flat_free(f);
         }
     }
 
     NestedShellOrder();
+    BoundaryRowTrimPace();
+    EdgePastPatch();
+    TorusFormRoundTrip();
+    SphereFormRoundTrip();
+    MirroredCylinderRoundTrip();
+    TransformKeepsEdgeTolerance();
+    ScaledBodyWithoutVertices();
 
     // The accessors' argument checks.
     {
@@ -946,7 +1981,7 @@ int main(int argc, char **argv)
         int64_t n = 0;
         const int64_t one = 1;
         const double half = 0.5;
-        for (int32_t id : {0, 36, 100, 166, -1, 1000})
+        for (int32_t id : {0, 37, 100, 167, -1, 1000})
         {
             CHECK(smlib_flat_get_i64(f, id, &pi, &n) == SMLIB_ERR_ARG);
             CHECK(smlib_flat_get_f64(f, id, &pf, &n) == SMLIB_ERR_ARG);

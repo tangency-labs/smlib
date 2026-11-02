@@ -47,6 +47,7 @@
 
 #include <nurbs.h>
 
+#include <cmath>
 #include <vector>
 
 #ifdef SM_DEBUG_CODE
@@ -1693,6 +1694,92 @@ SmStatus SmTrimmingTools::FixTrimLoopOrder
    Utility functions for CreatePlanarFaceWith3DCurves
 ***********************************************************************/
 
+// SolidCraft: the curve end a loop goes on from at a vertex where several curve ends meet.
+// lArrive is the end the loop arrives by (2i the start of curve i, 2i + 1 its end), lClose the
+// start of the loop's first curve, rlFound the nearest end to lArrive. The ends at that vertex
+// (within d3DTol of rlFound) that the loop can go on from are those of curves it has not used,
+// and lClose. Each leaves the vertex along a ray, its tangent as the loop would run it; of
+// them the loop takes the next round the vertex from the ray it arrives along, counterclockwise
+// about crTurnNormal (unit, one for all the vertices of a call; zero where the curves lie on one
+// line), curves leaving tangent to each other in the order they bend. Any two rays next to each
+// other bound one sector, so the loop never crosses itself there: it goes round one loop, or
+// through the vertex into the other and back, but it never runs into a hole turned the wrong
+// way round (which counts the hole as material) nor ends on a curve it used.
+static SmStatus sm_NextRoundTheVertex(const SmTArray<SmCurve *> & crCurves,
+                                      const SmTArray<SmPoint3d> & crEnds,
+                                      const SmTArray<SmBoolean> & crSeen,
+                                      const SmVector3d & crTurnNormal,
+                                      ULONG lArrive, ULONG lClose, double d3DTol, ULONG & rlFound)
+{
+  // the ends there the loop can go on from
+  std::vector<ULONG> sCandidates;
+  for (ULONG ii = 0; ii < crEnds.GetSize(); ii++)
+    {
+      if (ii == lArrive || crEnds[ii].DistanceBetween(crEnds[rlFound]) > d3DTol)
+        { continue; }
+      if (crSeen[ii / 2] && ii != lClose)
+        { continue; }
+      sCandidates.push_back(ii);
+    }
+  if (sCandidates.size() < 2)
+    {
+      if (sCandidates.size() == 1) { rlFound = sCandidates[0]; }
+      return SM_SUCCESS;
+    }
+
+  // a curve end's tangent and second derivative as the loop runs it away from the vertex (the
+  // arriving curve's too, run backwards from the vertex)
+  auto Leaving = [&](ULONG lEnd, SmVector3d & rT, SmVector3d & rA) -> SmStatus
+    {
+      const SmCurve * pC = crCurves[lEnd / 2];
+      NER(pC);
+      SmExtent1d sIvl(pC->GetNaturalInterval());
+      SmVector3d sD[3];
+      SER(pC->Evaluate(lEnd % 2 == 0 ? sIvl.GetMin() : sIvl.GetMax(), 2, lEnd % 2 == 0, sD));
+      rT = lEnd % 2 == 0 ? sD[1] : -1.0 * sD[1];
+      rA = sD[2];
+      return SM_SUCCESS;
+    };
+  SmVector3d sBack, sBackA;
+  SER(Leaving(lArrive, sBack, sBackA));
+  if (sBack.Length() <= 0.0) { SER(SM_ERR); }
+  sBack /= sBack.Length();
+
+  std::vector<SmVector3d> sRay(sCandidates.size()), sAcc(sCandidates.size());
+  for (size_t ii = 0; ii < sCandidates.size(); ii++)
+    {
+      SER(Leaving(sCandidates[ii], sRay[ii], sAcc[ii]));
+      if (sRay[ii].Length() <= 0.0) { SER(SM_ERR); }
+    }
+
+  if (crTurnNormal.Length() <= 0.0)
+    { return SM_SUCCESS; } // every curve on one line: they cannot touch from two sides
+  const SmVector3d & sNormal = crTurnNormal;
+
+  // each ray's angle round the vertex from the arriving one, (0, 2 pi], and for rays leaving
+  // along one line, its bending towards larger angles (curvature about the normal)
+  const double dTwoPi = 2.0 * SM_PI;
+  size_t lBest = 0;
+  double dBestAngle = 0.0, dBestBend = 0.0;
+  for (size_t ii = 0; ii < sRay.size(); ii++)
+    {
+      SmVector3d sR = sRay[ii] / sRay[ii].Length();
+      double dAngle = std::atan2(sNormal.Dot(sBack * sR), sBack.Dot(sR));
+      if (dAngle <= 0.0) { dAngle += dTwoPi; }
+      double dSpeed = sRay[ii].Length();
+      double dBend  = sNormal.Dot(sRay[ii] * sAcc[ii]) / (dSpeed * dSpeed * dSpeed);
+      if (ii == 0 || dAngle < dBestAngle - SM_EFF_ZERO_SQRT
+          || (dAngle < dBestAngle + SM_EFF_ZERO_SQRT && dBend < dBestBend))
+        {
+          lBest      = ii;
+          dBestAngle = dAngle;
+          dBestBend  = dBend;
+        }
+    }
+  rlFound = sCandidates[lBest];
+  return SM_SUCCESS;
+}
+
 /*******************************************************************//**
 PURPOSE: Given a set of curves, order them so they represent
             the valid SMLib loop structure.
@@ -1844,6 +1931,49 @@ SmBoolean bDebugMe = FALSE;
   rsCurveBBox.ComputeSphereBound(sFaceCenter, dFaceRadius);
   double dFeatureSize = dFaceRadius/1000.0;
 
+  // SolidCraft: the normal the loops turn about where several curve ends meet (see
+  // sm_NextRoundTheVertex), one for the whole call, so the way a loop goes on there does not
+  // depend on the order of the ends in the list. Each curve's samples p_k about the curves'
+  // centre c add (p_k - c) x (p_k+1 - c): over closed loops that is twice the sum of their area
+  // vectors, as their curves run, whatever their order in the list. Every term is square to the
+  // curves' plane, so where the loops' areas cancel the terms each taken the way of the largest
+  // still give the plane. A loop turns clockwise about the loops' area normal (to its left, as it
+  // runs counterclockwise): it keeps round the region its curves bound as given, so loops that
+  // touch at a vertex from outside each other close apart.
+  SmVector3d sTurnNormal(0.0, 0.0, 0.0);
+  {
+    std::vector<SmVector3d> sTerms;
+    SmVector3d sArea(0.0, 0.0, 0.0), sLargest(0.0, 0.0, 0.0);
+    for (ii = 0; ii < nCurves; ii++)
+      {
+        const SmCurve* pC = crCurves[ii];
+        if (pC == NULL)
+          { continue; }
+        SmExtent1d sIV( pC->GetNaturalInterval() );
+        SmPoint3d sPrev, sPt;
+        SER(pC->EvaluatePoint( sIV.GetMin(), sPrev ));
+        for (jj = 1; jj <= 4; jj++)
+          {
+            SER(pC->EvaluatePoint( sIV.Evaluate(0.25 * jj), sPt ));
+            SmVector3d sTerm = (sPrev - sFaceCenter) * (sPt - sFaceCenter);
+            sTerms.push_back(sTerm);
+            sArea += sTerm;
+            if (sTerm.Length() > sLargest.Length()) { sLargest = sTerm; }
+            sPrev = sPt;
+          }
+      }
+    SmVector3d sPlane(0.0, 0.0, 0.0);
+    for (size_t kk = 0; kk < sTerms.size(); kk++)
+      { sPlane += (sTerms[kk].Dot(sLargest) < 0.0) ? -1.0 * sTerms[kk] : sTerms[kk]; }
+    double dPlane = sPlane.Length();
+    if (dPlane > 0.0)
+      {
+        sTurnNormal = sPlane / dPlane;
+        if (sArea.Dot(sTurnNormal) > SM_EFF_ZERO_SQRT * dPlane)
+          { sTurnNormal = -1.0 * sTurnNormal; }
+      }
+  }
+
   // locals
   ULONG nPlaneBaseComponentCount = 0;
   SmStatus sRet = SM_SUCCESS;
@@ -1975,6 +2105,13 @@ SmBoolean bDebugMe = FALSE;
               // back into the start-next-loop block
               break ;                 
             }                       
+
+          // SolidCraft: where more curve ends meet at this vertex (loops touching there), the
+          // loop goes on along the curve next round the vertex from the one it arrives by, so it
+          // never crosses itself, whatever order the curves were given in.
+          SER(sm_NextRoundTheVertex(crCurves, sVertexPoints, aSeenFlags, sTurnNormal,
+                                    (eCurveOrient == SM_OT_SAME) ? 2*nCurveIndex+1 : 2*nCurveIndex,
+                                    2*nFirstCurveIndex, d3DTol, nFoundIndex));
           
           // Matching Curve index and seen status
           ULONG     nNextCurveIndex =   (nFoundIndex % 2 == 0) 

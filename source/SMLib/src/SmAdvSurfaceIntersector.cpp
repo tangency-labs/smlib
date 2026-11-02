@@ -1159,6 +1159,13 @@ SmBoolean bDebugMe = FALSE;
               if ( lNumInside > 0) 
                 {
                   // Find the singDirection closest to Prev->3DCurve_Direction.
+                  // SolidCraft change: starting from the first inside direction, whose angle
+                  // dAngleMin is: the output was left at aSingDirections[0], so where the first
+                  // inside direction was the closest (or the only one), the curve started along
+                  // aSingDirections[0], a direction that need not point inside either domain
+                  // (SolidCraft's issue 851 part: a round's end on the front round at the top
+                  // face, traced square to the given direction, came out a point).
+                  rTsectPnt.CrvDeriv() = aSingDirections[lInsideIndex[0]] ;
                   double dAngleMin = 0.0, dAngleTest = 0.0;
                   SER(pPrev->CrvDeriv().AngleBetween(aSingDirections[lInsideIndex[0]], dAngleMin)) ;
                   for(ii=1;ii<lNumInside;ii++)

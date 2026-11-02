@@ -27,7 +27,10 @@
 #include <SmFace.h>
 #include <SmLine.h>
 #include <SmPrimitiveCreation.h>
+#include <SmTol.h>
 
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <vector>
 
@@ -367,6 +370,194 @@ bool one_loop(const Curves &c, double tol)
     return !c.v.empty() && prev.DistanceBetween(first) <= tol;
 }
 
+// An arc of a curve list (include/smlib.h) as numbers: its frame, radius and angles.
+struct FlatArc
+{
+    SmPoint3d centre;
+    SmVector3d axis, ref;
+    double radius, start, sweep;
+
+    // The point at angle `t` (radians from `ref`, counter-clockwise about `axis`).
+    SmPoint3d at(double t) const
+    {
+        SmVector3d y = axis * ref;
+        return centre + ref * (radius * std::cos(t)) + y * (radius * std::sin(t));
+    }
+};
+
+FlatArc flat_arc(const double *r)
+{
+    FlatArc a;
+    a.centre = SmPoint3d(r[0], r[1], r[2]);
+    a.axis = SmVector3d(r[3], r[4], r[5]);
+    a.ref = SmVector3d(r[6], r[7], r[8]);
+    (void)a.axis.Unitize();
+    (void)a.ref.Unitize();
+    a.radius = r[9];
+    a.start = r[10];
+    a.sweep = r[11] - r[10];
+    return a;
+}
+
+// Whether arcs `a` and `b` lie on one circle to `tol`: centres and radii within it, and the
+// axes alike (the same way round) to within it at the rim.
+bool one_circle(const FlatArc &a, const FlatArc &b, double tol)
+{
+    return a.centre.DistanceBetween(b.centre) <= tol && std::fabs(a.radius - b.radius) <= tol && a.axis.Dot(b.axis) > 0.0 &&
+           (a.axis * b.axis).Length() * std::max(a.radius, b.radius) <= tol;
+}
+
+// The angle of `p` on the circle of `a`, in `a`'s frame (radians, in [0, 2 pi)).
+double angle_on(const FlatArc &a, const SmPoint3d &p)
+{
+    SmVector3d d = p - a.centre;
+    SmVector3d y = a.axis * a.ref;
+    double t = std::atan2(d.Dot(y), d.Dot(a.ref));
+    return t < 0.0 ? t + TWO_PI : t;
+}
+
+// The profile `in` (parsed from the curve list kinds/reals) with each run of consecutive arcs on
+// one circle within a loop made one arc, so that the run's wall is one face as a single arc's
+// is: a circle drawn in pieces (split where another sketch curve ends on it) sweeps the one
+// cylinder it lies on, not a face per piece meeting the next along a line that is no edge of
+// the shape. A run that is its whole loop is the full circle, swept as a plain circle is: one
+// periodic face, its seam the one edge it uses twice. The seam goes where a plain circle has it:
+// when the arcs are pieces of one drawn circle (they share its frame, the reference direction
+// their angles are measured from), at that circle's own start, angle 0 of that frame, as an
+// unsplit circle would be swept; otherwise at the middle of the run's longest arc (the first of
+// equal ones, in profile order). Where it lands does not decide whether faces merge later: a
+// face that straddles it is taken in with the seam run on through it (CoverCoincidentSurface,
+// SmMerge::BooleanPostProcess). The curves `in` moves into `out` or frees; `tol` is the model's
+// zone tolerance, within which consecutive curves already meet.
+int32_t one_wall_per_circle(const int64_t *kinds, int64_t n_kinds, const double *reals, Curves &in, double tol, Curves &out)
+{
+    const SmContext &ctx = *SmApiGetOrCreateContext();
+    size_t n = in.v.size();
+    // Each curve's kind and where its numbers start (parse() has checked the list).
+    std::vector<int64_t> kind(n), at(n);
+    for (int64_t i = 0, k = 0, r = 0; k < static_cast<int64_t>(n) && i < n_kinds; ++k)
+    {
+        kind[k] = kinds[i++];
+        int64_t degree = 0, count = 0;
+        if (kind[k] == SMLIB_CURVE_NURBS)
+        {
+            degree = kinds[i++];
+            count = kinds[i++];
+        }
+        at[k] = r;
+        r += reals_of(kind[k], degree, count);
+    }
+    std::vector<SmPoint3d> head(n), tail(n);
+    for (size_t i = 0; i < n; ++i)
+    {
+        in.v[i]->GetEnds(head[i], tail[i]);
+    }
+    auto arc_of = [&](size_t i) { return flat_arc(reals + at[i]); };
+    auto joins = [&](size_t i, size_t j) // arc j goes on from arc i, on its circle
+    { return kind[i] == SMLIB_CURVE_ARC && kind[j] == SMLIB_CURVE_ARC && tail[i].DistanceBetween(head[j]) <= tol && one_circle(arc_of(i), arc_of(j), tol); };
+
+    size_t first = 0;
+    while (first < n)
+    {
+        // The loop from `first`: its curves run end to end until one ends at its start.
+        size_t last = first;
+        while (last + 1 < n && tail[last].DistanceBetween(head[first]) > tol && tail[last].DistanceBetween(head[last + 1]) <= tol)
+        {
+            ++last;
+        }
+        size_t len = last - first + 1;
+        bool closed = tail[last].DistanceBetween(head[first]) <= tol;
+        bool any = false; // whether two of the loop's arcs go on on one circle
+        for (size_t j = 0; j + 1 < len || (closed && len > 1 && j < len); ++j)
+        {
+            any = any || joins(first + j, first + (j + 1) % len);
+        }
+        if (!any)
+        {
+            for (size_t i = first; i <= last; ++i)
+            {
+                out.v.push_back(in.v[i]);
+                in.v[i] = nullptr;
+            }
+            first = last + 1;
+            continue;
+        }
+        // A run starts where its curve does not go on from the one before it round the loop.
+        size_t begin = 0;
+        if (closed)
+        {
+            while (begin < len && joins(first + (begin + len - 1) % len, first + begin))
+            {
+                ++begin;
+            }
+        }
+        if (begin == len)
+        {
+            // The whole loop is arcs of one circle: the full circle, its seam at the drawn
+            // circle's start when the arcs share its frame, else at the middle of the longest arc.
+            FlatArc a = arc_of(first);
+            bool one_frame = true;
+            size_t longest = first;
+            for (size_t i = first; i <= last; ++i)
+            {
+                one_frame = one_frame && (arc_of(i).ref - a.ref).Length() * a.radius <= tol;
+                if (arc_of(i).sweep > arc_of(longest).sweep)
+                {
+                    longest = i;
+                }
+            }
+            FlatArc l = arc_of(longest);
+            double seam = one_frame ? 0.0 : angle_on(a, l.at(l.start + 0.5 * l.sweep));
+            double r[12] = {a.centre.x, a.centre.y, a.centre.z, a.axis.x, a.axis.y, a.axis.z, a.ref.x, a.ref.y, a.ref.z, a.radius, seam, seam + TWO_PI};
+            SmCurve *c = nullptr;
+            int32_t s = arc(ctx, r, c);
+            if (s != SMLIB_OK)
+            {
+                return s;
+            }
+            out.v.push_back(c);
+        }
+        else
+        {
+            for (size_t k = 0; k < len;)
+            {
+                size_t i = first + (begin + k) % len;
+                size_t m = 1; // the arcs i, i + 1, ... round the loop that go on on its circle
+                while (k + m < len && joins(first + (begin + k + m - 1) % len, first + (begin + k + m) % len))
+                {
+                    ++m;
+                }
+                if (m == 1)
+                {
+                    out.v.push_back(in.v[i]);
+                    in.v[i] = nullptr;
+                }
+                else
+                {
+                    FlatArc a = arc_of(i);
+                    double sweep = 0.0;
+                    for (size_t j = 0; j < m; ++j)
+                    {
+                        sweep += arc_of(first + (begin + k + j) % len).sweep;
+                    }
+                    double start = angle_on(a, head[i]);
+                    double r[12] = {a.centre.x, a.centre.y, a.centre.z, a.axis.x, a.axis.y, a.axis.z, a.ref.x, a.ref.y, a.ref.z, a.radius, start, start + sweep};
+                    SmCurve *c = nullptr;
+                    int32_t s = arc(ctx, r, c);
+                    if (s != SMLIB_OK)
+                    {
+                        return s;
+                    }
+                    out.v.push_back(c);
+                }
+                k += m;
+            }
+        }
+        first = last + 1;
+    }
+    return SMLIB_OK;
+}
+
 // Whether the path is lines end to end along one direction: then `dir` is that unit direction
 // and `distance` the path's length.
 bool straight(const Curves &path, SmVector3d &dir, double &distance)
@@ -511,7 +702,13 @@ extern "C" int32_t smlib_extrude(const int64_t *kinds, int64_t n_kinds, const do
             SmBrep *r = nullptr;
             if (draft == 0.0)
             {
-                s = status(SmApiCreateLinearSweep(profile.array(), dir, distance, cap ? TRUE : FALSE, r));
+                Curves walls;
+                s = one_wall_per_circle(kinds, n_kinds, reals, profile, SmTol::GetZoneTol3d(SmApiGetOrCreateContext()), walls);
+                if (s != SMLIB_OK)
+                {
+                    return s;
+                }
+                s = status(SmApiCreateLinearSweep(walls.array(), dir, distance, cap ? TRUE : FALSE, r));
             }
             else
             {
@@ -633,6 +830,242 @@ SmVector3d turned(const SmVector3d &v, const SmVector3d &k, double angle)
     return v * std::cos(angle) + (k * v) * std::sin(angle) + k * (k.Dot(v) * (1.0 - std::cos(angle)));
 }
 
+// A rigid motion p -> R p + t, R by its columns.
+struct Rigid
+{
+    SmVector3d x{1, 0, 0}, y{0, 1, 0}, z{0, 0, 1};
+    SmVector3d t{0, 0, 0};
+
+    // This motion, then a turn of `angle` right-handed about the unit `k` through `c`.
+    Rigid turned_by(const SmVector3d &c, const SmVector3d &k, double angle) const
+    {
+        Rigid r;
+        r.x = turned(x, k, angle);
+        r.y = turned(y, k, angle);
+        r.z = turned(z, k, angle);
+        r.t = c + turned(t - c, k, angle);
+        return r;
+    }
+    // This motion, then a move by `d`.
+    Rigid moved_by(const SmVector3d &d) const
+    {
+        Rigid r = *this;
+        r.t = t + d;
+        return r;
+    }
+    // As the placement SmCurve::Transform takes: the world frame's image.
+    SmAxis2Placement placement() const
+    {
+        return SmAxis2Placement(SmPoint3d(t.x, t.y, t.z), x, y);
+    }
+};
+
+// One segment of a path of lines and arcs: a line from `a` along the unit `dir` for `length`, or
+// an arc turning `angle` (radians) right-handed about the unit `k` through `c`, `length` along.
+struct Segment
+{
+    bool arc = false;
+    SmVector3d a, dir;
+    SmVector3d c, k;
+    double angle = 0.0;
+    double length = 0.0;
+
+    // The motion `m` carried `s` of the way along (0 <= s <= length).
+    Rigid carry(const Rigid &m, double s) const
+    {
+        return arc ? m.turned_by(c, k, angle * s / length) : m.moved_by(dir * s);
+    }
+};
+
+// Whether `path` (parsed from its curve list) is two or more lines and arcs end to end, each
+// leaving in the direction the one before arrives in, and not closed: then `out` its segments.
+bool segmented(const Curves &path, const int64_t *kinds, int64_t n_kinds, const double *reals, std::vector<Segment> &out)
+{
+    out.clear();
+    if (kinds == nullptr || reals == nullptr || n_kinds != static_cast<int64_t>(path.v.size()) || n_kinds < 2)
+    {
+        return false;
+    }
+    int64_t at = 0;
+    SmVector3d before; // the direction the path arrives in at the end of the segment before
+    SmPoint3d first, prev;
+    for (int64_t i = 0; i < n_kinds; ++i)
+    {
+        Segment g;
+        SmPoint3d a, b;
+        path.v[static_cast<size_t>(i)]->GetEnds(a, b);
+        const SmVector3d va(a.x, a.y, a.z), vb(b.x, b.y, b.z);
+        SmVector3d leaving, arriving;
+        if (kinds[i] == SMLIB_CURVE_LINE)
+        {
+            g.a = va;
+            g.length = (vb - va).Length();
+            if (!(g.length > 1e-12))
+            {
+                return false;
+            }
+            g.dir = (vb - va) / g.length;
+            leaving = g.dir;
+            arriving = g.dir;
+            at += 6;
+        }
+        else if (kinds[i] == SMLIB_CURVE_ARC)
+        {
+            const double *r = reals + at;
+            g.arc = true;
+            g.c = SmVector3d(r[0], r[1], r[2]);
+            g.k = SmVector3d(r[3], r[4], r[5]);
+            g.k = g.k / g.k.Length();
+            g.angle = r[11] - r[10];
+            g.length = r[9] * g.angle;
+            leaving = g.k * (va - g.c);
+            arriving = g.k * (vb - g.c);
+            leaving = leaving / leaving.Length();
+            arriving = arriving / arriving.Length();
+            at += 12;
+        }
+        else
+        {
+            return false;
+        }
+        if (i == 0)
+        {
+            first = a;
+        }
+        else if (a.DistanceBetween(prev) > 1e-9 || leaving.Dot(before) < 1.0 - 1e-12)
+        {
+            return false;
+        }
+        prev = b;
+        before = arriving;
+        out.push_back(g);
+    }
+    if (first.DistanceBetween(prev) <= 1e-6)
+    {
+        out.clear();
+        return false;
+    }
+    return true;
+}
+
+// The profile's curves carried by `m`, as copies.
+int32_t carried(const SmContext &ctx, const Curves &profile, const Rigid &m, Curves &out)
+{
+    for (SmCurve *src : profile.v)
+    {
+        SmCurve *copy = nullptr;
+        if (src->Copy(ctx, copy) != SM_SUCCESS || copy == nullptr)
+        {
+            delete copy;
+            return static_cast<int32_t>(SM_ERR);
+        }
+        out.v.push_back(copy);
+        if (copy->Transform(m.placement()) != SM_SUCCESS)
+        {
+            return static_cast<int32_t>(SM_ERR);
+        }
+    }
+    return SMLIB_OK;
+}
+
+// The profile swept along a path of lines and arcs, turning with it: each segment swept on its
+// own, exactly (a line by SM_API's linear sweep, an arc by its rotational sweep: planes,
+// cylinders, cones, tori, ...), the profile carried from each to the next, and the walls sewn
+// along the sections they share. Along a line the profile only moves and round an arc it turns
+// about the arc's axis, so no turn about the path is added: the motion the curve sweep
+// approximates with fitted walls.
+int32_t piecewise(const Curves &profile, const std::vector<Segment> &segs, bool cap, smlib_brep **out, double *placed)
+{
+    const SmContext &ctx = *SmApiGetOrCreateContext();
+    std::unique_ptr<SmBrep> brep(new (ctx) SmBrep());
+    Rigid m;
+    std::vector<Rigid> starts;
+    double total = 0.0;
+    for (const Segment &g : segs)
+    {
+        starts.push_back(m);
+        total += g.length;
+        Curves section;
+        int32_t s = carried(ctx, profile, m, section);
+        if (s != SMLIB_OK)
+        {
+            return s;
+        }
+        SmBrep *piece = nullptr;
+        if (g.arc)
+        {
+            s = status(SmApiCreateRotationalSweep(section.array(), SmPoint3d(g.c.x, g.c.y, g.c.z), g.k, g.angle * 180.0 / SM_PI, FALSE, piece));
+        }
+        else
+        {
+            s = status(SmApiCreateLinearSweep(section.array(), g.dir, g.length, FALSE, piece));
+        }
+        std::unique_ptr<SmBrep> owned(piece);
+        if (s != SMLIB_OK)
+        {
+            return s;
+        }
+        if (piece == nullptr)
+        {
+            return SMLIB_ERR_EMPTY;
+        }
+        SmTArray<SmFace *> faces;
+        piece->GetFaces(faces);
+        s = status(piece->CopyFaces(faces, brep.get(), nullptr, FALSE));
+        if (s != SMLIB_OK)
+        {
+            return s;
+        }
+        m = g.carry(m, g.length);
+    }
+    if (cap)
+    {
+        // The caps: the profile where the path starts and where it ends.
+        for (const Rigid &at : {starts.front(), m})
+        {
+            Curves section;
+            int32_t s = carried(ctx, profile, at, section);
+            if (s != SMLIB_OK)
+            {
+                return s;
+            }
+            SmTArray<SmFace *> faces;
+            s = status(brep->CreatePlanarFacesWith3DCurves(brep->GetInfiniteRegion(), section.array(), brep->GetTolerance(), faces));
+            if (s != SMLIB_OK)
+            {
+                return s;
+            }
+            section.v.clear(); // the faces took the curves over
+        }
+    }
+    int32_t s = status(brep->StitchAndOrient());
+    if (s != SMLIB_OK)
+    {
+        return s;
+    }
+    if (placed != nullptr)
+    {
+        // The motions to the first section, the one half-way along and the last.
+        double half = 0.5 * total;
+        Rigid middle = m;
+        for (size_t i = 0; i < segs.size(); ++i)
+        {
+            if (half <= segs[i].length || i + 1 == segs.size())
+            {
+                middle = segs[i].carry(starts[i], std::min(half, segs[i].length));
+                break;
+            }
+            half -= segs[i].length;
+        }
+        const Rigid motions[3] = {starts.front(), middle, m};
+        for (int k = 0; k < 3; ++k)
+        {
+            put_motion(placed, k, motions[k].x, motions[k].y, motions[k].z, SmPoint3d(motions[k].t.x, motions[k].t.y, motions[k].t.z));
+        }
+    }
+    return finish(brep.release(), cap, out);
+}
+
 } // namespace
 
 extern "C" int32_t smlib_sweep(const int64_t *kinds, int64_t n_kinds, const double *reals, int64_t n_reals, const int64_t *path_kinds,
@@ -725,6 +1158,12 @@ extern "C" int32_t smlib_sweep_placed(const int64_t *kinds, int64_t n_kinds, con
                     }
                 }
                 return finish(r, cap != 0, out);
+            }
+            // Along lines and arcs, turning with the path, the sweep is exact piece by piece.
+            std::vector<Segment> segs;
+            if (frame == SMLIB_SWEEP_FOLLOW && segmented(path, path_kinds, n_path_kinds, path_reals, segs))
+            {
+                return piecewise(profile, segs, cap != 0, out, placed);
             }
             std::unique_ptr<SmBSplineCurve> along;
             s = joined(path, along);

@@ -80,7 +80,7 @@ enum SmTaperCornerRefusal {
     SM_TCR_NONE,       // the corner was closed
     SM_TCR_APART,      // the continued curves do not meet
     SM_TCR_NOT_EXACT,  // a curve there is neither a line nor an arc: its wall has no exact continuation
-    SM_TCR_WALL_CLOSES // a wall closes before the far end: its neighbours meet across it, or its arc shrinks to its centre
+    SM_TCR_WALL_CLOSES // a wall closes at the far end, the whole section closes, or an arc shrinks to its centre
 };
 
 /*******************************************************************//**

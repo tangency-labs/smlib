@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // smlib_surface_* and smlib_ssi on cases from the SSI corpus (plane x cylinder ellipse, plane x
-// sphere circle, two NURBS paraboloids, a sphere touching a plane) and on cases of their own (a
-// pair that partly coincides and touches along a line elsewhere, a sphere crossing a cone just
-// beyond its end), checking curve counts, types and that each curve, evaluated from its exact
-// B-spline, lies on both surfaces; then hostile inputs, which must be rejected.
+// sphere circle, two NURBS paraboloids, a sphere touching a plane, a cylinder sunk a hair into a
+// plane) and on cases of their own (a pair that partly coincides and touches along a line
+// elsewhere, a sphere crossing a cone just beyond its end), checking curve counts, types and that
+// each curve, evaluated from its exact B-spline, lies on both surfaces; then hostile inputs, which
+// must be rejected.
 
 #include "smlib.h"
 
@@ -443,6 +444,58 @@ static void sphere_cone_top_circle()
     smlib_surface_free(cone);
 }
 
+// c7_sunk_cyl_*: a unit cylinder along -x over x in [-2, 2], its axis at z = cos a, sunk
+// 1 - cos a (5e-7 for a = 1e-3, 5e-13 for 1e-6) into the plane z = 0, which it crosses at the
+// angle a in the two lines y = +-sin a. At approximation tolerance 1e-6 both lines come out, each
+// where it is: one line in the middle would be off them by sin a, up to a thousand times the
+// tolerance. (Bare surfaces bound no face, so no zone tolerance makes the plane tangent.)
+static void sunk_cylinder()
+{
+    const double u[2] = {-3, 3}, angle[2] = {0, 360}, height[2] = {0, 4}, Z[3] = {0, 0, 1};
+    for (double a : {1e-3, 1e-4, 1e-5, 1e-6})
+    {
+        const double axis[3] = {2.0, 0.0, std::cos(a)}, half = std::sin(a);
+        smlib_surface *plane = nullptr, *cyl = nullptr;
+        CHECK(smlib_surface_plane(O, X, Y, u, u, &plane) == SMLIB_OK);
+        CHECK(smlib_surface_cylinder(axis, Z, Y, 1.0, angle, height, &cyl) == SMLIB_OK);
+        smlib_ssi_result *r = nullptr;
+        CHECK(smlib_ssi(plane, cyl, SMLIB_SSI_GLOBAL, 1e-6, &r) == SMLIB_OK);
+        if (r != nullptr)
+        {
+            // A line along x from -2 to 2 at z = 0 on each side, within a tenth of sin a of y = +-sin a.
+            int sides[2] = {0, 0};
+            for (int32_t i = 0; i < count(r); ++i)
+            {
+                Samples s = curve(r, i);
+                double xlo = 1e300, xhi = -1e300, ylo = 1e300, yhi = -1e300, zoff = 0.0;
+                for (int32_t k = 0; k < s.n; ++k)
+                {
+                    const double *p = &s.xyz[3 * k];
+                    xlo = std::min(xlo, p[0]);
+                    xhi = std::max(xhi, p[0]);
+                    ylo = std::min(ylo, p[1]);
+                    yhi = std::max(yhi, p[1]);
+                    zoff = std::max(zoff, std::fabs(p[2]));
+                }
+                const bool whole = xlo < -2.0 + 1e-6 && xhi > 2.0 - 1e-6 && zoff < 1e-9;
+                for (int side = 0; side < 2; ++side)
+                {
+                    const double y = side == 0 ? -half : half;
+                    sides[side] += whole && std::fabs(ylo - y) < 0.1 * half && std::fabs(yhi - y) < 0.1 * half;
+                }
+            }
+            if (count(r) != 2 || sides[0] != 1 || sides[1] != 1)
+            {
+                std::fprintf(stderr, "sunk_cylinder(a=%g): %d curve(s), %d at y = -sin a, %d at y = +sin a\n", a, count(r), sides[0], sides[1]);
+            }
+            CHECK(count(r) == 2 && sides[0] == 1 && sides[1] == 1);
+            smlib_ssi_result_free(r);
+        }
+        smlib_surface_free(plane);
+        smlib_surface_free(cyl);
+    }
+}
+
 static void hostile()
 {
     smlib_surface *s = nullptr;
@@ -520,6 +573,7 @@ int main()
     partly_coincident_with_tangent_line(false);
     partly_coincident_with_tangent_line(true);
     sphere_cone_top_circle();
+    sunk_cylinder();
     hostile();
     if (failures != 0)
     {

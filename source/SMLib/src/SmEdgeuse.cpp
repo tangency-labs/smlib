@@ -1160,6 +1160,115 @@ static SmBoolean sm_AreSeamCurves
 } // end sm_AreSeamCurves
 
 /*******************************************************************//**
+PURPOSE: ShellSort order for drop pieces: by the start of the edge
+   interval each piece was dropped from.
+***********************************************************************/
+static SmBoolean sm_PieceStartsBefore(SmBSplineCurve *pA, SmBSplineCurve *pB, void *)
+{
+  return pA->GetNaturalInterval().GetMin() < pB->GetNaturalInterval().GetMin() ;
+}
+
+/*******************************************************************//**
+PURPOSE: CreateUVTrimCurve helper for a drop that came back in pieces
+   (DropAndTrimCurve() splits it where the curve leaves the face's
+   domain or crosses a seam): the longest run of pieces that meet end
+   to end, as one UVTrimCurve.
+
+NOTES:
+   Each piece is the drop of its own interval of the edge curve, so a
+   piece's parameter is the edge's.  Two pieces form one run only when
+   the second starts at the edge parameter where the first ends and at
+   the same (u, v), to within the drop's UV tolerances (pieces on the two
+   sides of a seam meet in 3D but not in (u, v)).  A run of several pieces
+   is joined exactly (SmBSplineCurve::CreateByJoining keeps their
+   parameterizations); no piece is reparameterized.
+
+   On return rUVCurves holds the one run (the longest in edge parameter);
+   every other piece is deleted.
+***********************************************************************/
+static SmStatus sm_LongestDropRun
+ ( const SmContext              & crContext,   // in : context for the joined curve
+   const SmSurface              & crSurface,   // in : the face's surface
+   SmApproxTol3d                  sTol3d,      // in : the drop's 3d tolerance
+   SmTArray<SmBSplineCurve*>    & rUVCurves)   // i/o: the pieces; out: the longest run
+{
+  ULONG lNum = rUVCurves.GetSize() ;
+  if(lNum < 2)
+    { return SM_SUCCESS ; }
+
+  // UV tolerances proportional to the surface's 3d/UV mapping, as DropCurve's
+  SmVector2d sSpeeds = crSurface.ApproxDerivativeLengths(crSurface.GetNaturalUVDomain()) ;
+  double     dUTol   = sTol3d / (sSpeeds.x + 1.0) ;
+  double     dVTol   = sTol3d / (sSpeeds.y + 1.0) ;
+
+  rUVCurves.ShellSort(sm_PieceStartsBefore) ;
+
+  SmBSplineCurve *pBest    = NULL ;
+  double          dBestLen = -1.0 ;
+  ULONG           lFirst   = 0 ;
+  while(lFirst < lNum)
+    {
+      // extend the run from lFirst through every piece that meets the previous one
+      ULONG lLast = lFirst ;
+      while(lLast + 1 < lNum)
+        {
+          SmBSplineCurve *pPrev = rUVCurves[lLast] ;
+          SmBSplineCurve *pNext = rUVCurves[lLast + 1] ;
+          SmPoint3d sPrevStart, sPrevEnd, sNextStart, sNextEnd ;
+          pPrev->GetEnds(sPrevStart, sPrevEnd) ;
+          pNext->GetEnds(sNextStart, sNextEnd) ;
+          if(   !SM_ARE_SAME(pPrev->GetNaturalInterval().GetMax(), pNext->GetNaturalInterval().GetMin())
+             || smos_Fabs(sPrevEnd.x - sNextStart.x) > dUTol
+             || smos_Fabs(sPrevEnd.y - sNextStart.y) > dVTol)
+            { break ; }
+          lLast++ ;
+        }
+
+      // the run as one curve
+      SmBSplineCurve *pRun = NULL ;
+      if(lLast == lFirst)
+        {
+          pRun = rUVCurves[lFirst] ;
+          rUVCurves[lFirst] = NULL ;
+        }
+      else
+        {
+          SmBSplineCurve *pData[16] ;
+          SmTArray<SmBSplineCurve*> sRun(16, pData) ;
+          for(ULONG kk = lFirst; kk <= lLast; kk++)
+            { sRun.Add(rUVCurves[kk]) ; }
+          SmStatus eJoin = SmBSplineCurve::CreateByJoining(crContext, sRun, NULL, pRun) ;
+          if(eJoin != SM_SUCCESS)
+            {
+              delete pRun ;
+              delete pBest ;
+              SER(eJoin) ;
+            }
+          for(ULONG kk = lFirst; kk <= lLast; kk++)
+            { delete rUVCurves[kk] ; rUVCurves[kk] = NULL ; }
+        }
+
+      // keep the longest run
+      double dLen = pRun->GetNaturalInterval().GetLength() ;
+      if(dLen > dBestLen)
+        {
+          delete pBest ;
+          pBest    = pRun ;
+          dBestLen = dLen ;
+        }
+      else
+        { delete pRun ; }
+
+      lFirst = lLast + 1 ;
+    } // end iter every run of pieces
+
+  rUVCurves.ReSet() ;
+  rUVCurves.Add(pBest) ;
+  return SM_SUCCESS ;
+
+} // end sm_LongestDropRun
+
+/*******************************************************************//**
 PURPOSE: Create (but do not attach) a UVTrimCurve corresponding to this edgeuse.
    Ignore any UVTrimCurve that may be attached to this edgeuse.
 
@@ -2168,57 +2277,18 @@ SmValidityCheckType eCheckFailed ;
           continue;
         }
 
-      // If we have more than one then we may have split them because they
-      // cross the boundary.  Try to find one that is within 10% of the size
-      // of the original one and use it.
-      //   GWC: this is not a good idea - this creates gaps between the Edge and the UVTrimCurve.
-      //                                  But it's not the worst idea either, it does not create
-      //                                  gaps between the Edge and its vertices - leave this healing in this method for now.
+      // If we have more than one then we split them because the curve
+      // crosses the boundary (or a seam).  Keep the longest run of pieces that
+      // meet end to end, joined, on the edge parameters it was dropped from:
+      // stretching a piece onto the whole edge interval would put every trim
+      // point off its edge point (solidcore#1383).  A run shorter than the
+      // edge is then kept only as any shorter trim below: when its ends are
+      // within tolerance of the edge's vertices.
       if ( sUVCurves.GetSize() > 1 )
         {
-          double dParamSize = sEdgeDomain.GetLength();
-
-          // for every found UVTrimCurve
-          ULONG jjj, kkk;
-          for ( kkk=0; kkk<sUVCurves.GetSize(); kkk++ )
-            {
-              SmBSplineCurve *pUVBSC = sUVCurves[kkk];
-              double dUVParamSize = pUVBSC->GetNaturalInterval().GetLength();
-
-              // if this UVTrimCurve param range is at least 90% of orig param range
-              if ( smos_Fabs( dUVParamSize - dParamSize ) < 0.1 * dParamSize )
-                {
-                  // remove all the other curves
-                  for ( jjj=0; jjj<sUVCurves.GetSize(); jjj++ )
-                    {
-                      if ( jjj != kkk )
-                        { SM_ASSERT(sUVCurves[jjj] != NULL) ; delete sUVCurves[jjj]; sUVCurves[jjj] = NULL ; }
-                      pDropCurveFail->m_eCreatePathType = SM_CTC_10PERCENT_SEAMCROSS_RECOVERY ;
-                      pDropCurveFail->m_pBrep = GetBrep() ;
-                    }
-
-                  // set remaining UVcurve's param range to equal original curve
-                  SmExtent1d sIvlUV = sEdgeDomain;
-                  SER( pUVBSC->EditParameterization( sIvlUV ));
-
-                  // set sUVCurves = this UVTrimCurve
-                  sUVCurves.ReSet();
-                  sUVCurves.Add( pUVBSC );
-                  break;
-                }
-            } // end iter every UVTrimCurve
-
-          // if we don't have 1 UVTrimCurve - try again with a different tolerance
-          if ( sUVCurves.GetSize() != 1 )
-            {
-              sCleanArr.Clear();
-              for ( jj=0; jj<sUVCurves.GetSize(); jj++ )
-                { delete( sUVCurves[jj] ); sUVCurves[jj] = NULL; }
-
-              sUVCurves.ReSet();
-
-              continue;
-            }
+          SER( sm_LongestDropRun( *pContext, *pSurface, (SmApproxTol3d)sZoneTol3d, sUVCurves ));
+          pDropCurveFail->m_eCreatePathType = SM_CTC_10PERCENT_SEAMCROSS_RECOVERY ;
+          pDropCurveFail->m_pBrep = GetBrep() ;
         } // end more than 1 UVTrimCurve due to splitting (not seams) check
 
       // State: sUVCurves.GetSize() == 1

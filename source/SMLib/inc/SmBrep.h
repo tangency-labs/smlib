@@ -35,6 +35,7 @@ class SmGfxArraySet ;
 class SmDropCurveFail ;
 class SmBrepData ;
 class SmMerge;
+class SmStitchCallback;
 
 // First failure per input GetFaces() index.
 enum SmTessellationStage
@@ -324,6 +325,15 @@ public:
                                        SmTArray<ULONG>         * pTestRequests = NULL,    // in : when eTestLevel == SM_LEVEL_GIVEN, run these tests in this order 
                                        SmBoolean                 bFindAll = FALSE)        // in : TRUE=find all Coincident geometry, FALSE=find first coincident pair and quit 
                                       const ;
+
+  // SolidCraft change: a vertex where the body touches itself (its edgeuses form several fans,
+  // each a cone of faces round the vertex that shares no edge with the others) split into one
+  // vertex per fan, all at its point; rNewVertices gets the new ones (none when it has one fan)
+  SmStatus SplitVertexByFans(SmVertex * pVertex, SmTArray<SmVertex*> & rNewVertices) ;
+
+  // SolidCraft change: the inverse: pOther's vertexuses moved onto pSurvivingVertex (two
+  // vertices at one point that share no edge), pOther deleted
+  SmStatus JoinVertexFans(SmVertex * pSurvivingVertex, SmVertex * pOther) ;
 
   // combine two coincident vertices updating topology graph as needed
   SmStatus CombineCoincidentVertices(SmVertex * pSurvivingVertex,  // in : Pointer to a vertex to combine 
@@ -1009,7 +1019,8 @@ public:
                               SmShell                         *& rpNewShell,                  // out: New shell if any.  Trimmed surfaces always create a new shell.                                 
                               SmFace                          *& rpNewFace,                   // out: the new face                                                                                   
                               const SmBoolean                  * pbOptCrvOnSurf = NULL ) ;    // in : Optional flag to utilize CrvOnSurf for face construction from UV curves. NULL
-                                                                                               //      to ignore. Default is NULL.
+                                                                                               //      to ignore. Default is NULL. With 3D curves given,
+                                                                                               //      TRUE = the edgeuses keep the UV curves as their trim curves.
 
   SmStatus MakeFaceWithCurvesFast(SmRegion                         * pRegion,                 // in : Topological region in which the new face is to be constructed.                 
                                                                                               //    : NULL for infinite region.                                                      
@@ -1405,12 +1416,14 @@ public:
                        double             & rdMaxEdgeGap,                // out: max gap found between coincident edges    considered for glueing     
                        SmTArray<SmFace *> * pOptFaces = NULL,            // in : only stitch topology connected to these faces, NULL=all faces           
                                                                          //    : default:[NULL]                                                       
-                       SmBoolean            bAllowSpineEdges = FALSE) ;  // in : if true this allows formation of spine edges. See c below.           
+                       SmBoolean            bAllowSpineEdges = FALSE,    // in : if true this allows formation of spine edges. See c below.           
                                                                          //    : default:[FALSE]                                                      
                                                                          //    : NOTE: some coincident vertex and edge pairs do not get glued due to  
                                                                          //    : a. gaps exceeding tolerances                                         
                                                                          //    : b. a failure within the glue edge function                           
                                                                          //    : c. not being lamina when m_bMakingManifoldSolid == TRUE
+                       SmStitchCallback   * pOptCallback = NULL) ;      // in : SolidCraft change: picks which of two coincident vertices or edges
+                                                                         //      to keep, NULL = SmStitchCallback's own choice. default:[NULL]
            
 
   SmStatus StitchAndOrient(double dStitchTol3d = -0.1,                   // in : dXSectTol3d =  (dStitchTol3d < 0.0) ? 2.0 * ZoneTol3d,

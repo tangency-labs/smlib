@@ -49,6 +49,9 @@
 #include <SmGap.h>
 #include <SmProtoTopology.h>
 #include <SmAssertArray.h>
+#include <SmBoxSearch.h>
+#include <SmWorkCounters.h>
+#include <cmath>
 #include <vector>
 
 // #define SM_VALIDATE_TOPOLOGY 1
@@ -1744,15 +1747,62 @@ TCHAR     sDebugBuff[SM_TBLOCK_SIZE] ;
       });
 #endif // SM_USE_TBB
 
+  // Each face's bounding box, for skipping the pairs below that lie apart. The surface checks
+  // there see whole surfaces, not faces: Boolean2D grows every plane to cover the whole sheet,
+  // so every pair of a sheet's faces passed the coincidence check and classified its edges on
+  // the other face, n^2 work for a sheet of n holes. A box that cannot be computed, or holds
+  // nothing (a face with no edges on a surface linear in one direction), rules nothing out.
+  SmTArray< SmExtent3d > sFaceBoxes1, sFaceBoxes2;
+  for(ii=0;ii<lNumFaces1+lNumFaces2;ii++)
+    {
+      SmFace     * pF   = ii < lNumFaces1 ? sFaces1[ii] : sFaces2[ii-lNumFaces1];
+      SmExtent3d   sBox;
+      if ( pF->CalculateBoundingBox( sBox ) != SM_SUCCESS || sBox.HasNegativeVolume() )
+        { sBox.SetUnbounded(); }
+      if ( ii < lNumFaces1 ) { sFaceBoxes1.Add( sBox ); }
+      else                   { sFaceBoxes2.Add( sBox ); }
+    }
+
+  // The m_pOther faces each m_pBrep face is paired with: those whose box may lie within the
+  // intersection tolerance of its own (SmBoxSearch: a superset, in ascending order), so the
+  // pairs the box test below skips are never visited, and a join of two bodies of n faces does
+  // not visit all n^2 pairs to skip them. The pairs kept are the same, in the same order. Every
+  // pair is visited when a pair may be skipped for another reason first (a registered
+  // intersection table) or when the tolerance depends on the pair.
+  SmBoolean bSearchPairs = ( m_pIntersectionTable == NULL );
+#ifdef SM_USE_NEWTOL
+  bSearchPairs = FALSE;
+  const double dPairPad = 0.0;
+#else // SM_USE_OLDTOL
+  const double dPairPad = this->GetThisApproxTol3d();
+  if ( !std::isfinite( dPairPad ) ) { bSearchPairs = FALSE; }
+#endif // SM_USE_OLDTOL
+  SmBoxSearch sPairSearch;
+  if ( bSearchPairs )
+    {
+      std::vector< SmExtent3d > sBoxes2( lNumFaces2 );
+      for ( jj=0; jj<lNumFaces2; jj++ ) { sBoxes2[jj] = sFaceBoxes2[jj]; }
+      sPairSearch.Build( sBoxes2, std::vector< bool >( lNumFaces2, true ) );
+    }
+  std::vector< ULONG > sPairs2;
+
   // for every m_pBrep/m_pOther face pair - find and store coincidences and XSections
   for(ii=0;ii<lNumFaces1;ii++)
     {
       SmFace *pF1 = sFaces1[ii];
 
-      // for every m_pBrep/m_pOther face pair - find and store coincidences and XSections
-      for ( jj=0; jj<lNumFaces2; jj++ )
+      if ( !bSearchPairs || !sPairSearch.Query( sFaceBoxes1[ii], dPairPad, sPairs2 ) )
         {
+          sPairs2.resize( lNumFaces2 );
+          for ( jj=0; jj<lNumFaces2; jj++ ) { sPairs2[jj] = jj; }
+        }
+
+      // for every m_pBrep/m_pOther face pair - find and store coincidences and XSections
+      for ( ULONG lPair=0; lPair<sPairs2.size(); lPair++ )
+        {
+          jj = sPairs2[lPair];
           SmFace *pF2 = sFaces2[jj];
+          SmWorkCounters::Add(SmWorkCounters::eFacePairs); // SolidCraft fork: work count
 
 #ifdef SM_DEBUG_CODE
           if ( bDebugMe ) 
@@ -1811,9 +1861,13 @@ TCHAR     sDebugBuff[SM_TBLOCK_SIZE] ;
           SM_OLDTOL_LINE double dTol = this->GetThisApproxTol3d();
 #endif // SM_USE_OLDTOL
 
+          // no work - faces farther apart than the intersection tolerance cannot meet
+          if ( sFaceBoxes1[ii].AreDisjoint( sFaceBoxes2[jj], dTol ) )
+            { continue; }
+
           // For coincident surfaces, all we have to do is Relate() them,
           // the rest is already done.  Create a ProtoFace.
-          
+
           // Check for coincident surfaces -- partial coincidence is ok.
           // Tol: sum of Faces' tols (or default min).
           bAreCoincident = FALSE;
@@ -6237,7 +6291,14 @@ SmBoolean bDebugMe = FALSE;
                   SER(pBE->GetPrimaryEdgeuse()->NormalizedEvaluate(0.5,FALSE,sMidPnt));  // TRUE = UV Eval, FALSE = 3d Eval
 
                   // drop midPoint to sole other m_pOther Brep edge connected to mated vertex
+                  // SolidCraft change: the closest point must lie within the edges' tolerance (the
+                  // closest-point drop always succeeds, and its success alone was taken): two
+                  // different edges between the same pair of vertices, such as a circle's long
+                  // arc and another solid's arc that only shares its ends, were related as one.
                   SmEdge *pOEdge = sOCommonEdges[0];
+                  const double dBETol = pBE->GetTolerance();
+                  const double dOETol = pOEdge->GetTolerance();
+                  const double dOnTol = smos_Max(dMaxDist*2.0, smos_Max(dBETol, dOETol));
                   SmBoolean bSuccess;
                   double dParam = 0.0, dDistToCurve = 0.0;
                   SER(pOEdge->GetCurve()->DropPoint
@@ -6260,7 +6321,7 @@ SmBoolean bDebugMe = FALSE;
                                                        //      default:[SM_SO_MINIMIZE] to preserve original behavior
 
                   // when point dropped to curve within tolerance
-                  if (bSuccess)
+                  if (bSuccess && dDistToCurve <= dOnTol)
                     {
                       // add the edge pair to the list of mated object
                       // thus filling a potential intersection loop gap

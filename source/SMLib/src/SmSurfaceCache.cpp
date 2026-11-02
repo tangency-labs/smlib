@@ -10,6 +10,9 @@
 
 #include <SmBSplineSurface.h>
 #include <SmSurfaceCache.h>
+#include <SmProceduralBlend.h>
+#include <SmBlendNetScope.h>
+
 #include <nurbs.h>
 #include <SmNurbsSrf.h>
 #include <SmNurbsCrv.h>       
@@ -40,7 +43,16 @@
 #include <SmPlane.h>
 
 
+
 #endif
+
+// SolidCraft change: how far a surface may be off its net: a blend by its definition's certified
+// bound, 0 for any other surface (its net is it)
+static double sm_DefinitionBound(const SmSurface * cpSurface)
+{
+  const SmProceduralBlend * pBlend = (cpSurface != NULL) ? SM_CAST_PTR(SmProceduralBlend, cpSurface) : NULL;
+  return (pBlend != NULL) ? pBlend->GetBound() : 0.0;
+}
 
 #if 0
 /********************************************************************
@@ -1059,6 +1071,7 @@ SmStatus SmSurfaceCache::GetCorners
    SmPoint3d        & rU0V1Point,     // out: Surface(u0, v1) corner 3d point
    SmExtent2d       & rDomain)        // out: surface domain for 4 corner points
 {
+  SmBlendNetScope sNetScope; // SolidCraft change: the cache is built on blends' nets (SmBlendNetScope.h)
   if (pSurface) 
     {
       gw_CPOINT    ** Pw     = pSurface->net->Pw ; NER(Pw) ;
@@ -2430,6 +2443,7 @@ SmStatus SmSurfaceCache::SubdivideNode
    SmMemBlockMgr  *pBezierBlock)           // in : scratch memory to hold Bezier patches during construction
 
 {
+  SmBlendNetScope sNetScope; // SolidCraft change: the cache is built on blends' nets (SmBlendNetScope.h)
   // check state - node is from a surface subdivision tree and is not yet a parent
   SM_ASSERT(   pNode->m_eAuxDataType == SM_AD_BEZIER_SURFACE
             || pNode->m_eAuxDataType == SM_AD_AUX_DATA);
@@ -2692,6 +2706,9 @@ SmBoolean bDebugMe = FALSE;
           // set pNode Bounding boxes
           SER( pLeftBSS->CalculateBoundingBox(pAux1->m_sUVDomain, &pNode1->m_sBBox, NULL, NULL, NULL, NULL) );
           SER( pRightBSS->CalculateBoundingBox(pAux2->m_sUVDomain, &pNode2->m_sBBox, NULL, NULL, NULL, NULL) );
+          // SolidCraft change: a blend by its definition lies within its net's bound of the net
+          pNode1->m_sBBox.ExpandAbsolute(sm_DefinitionBound(m_cpSurface));
+          pNode2->m_sBBox.ExpandAbsolute(sm_DefinitionBound(m_cpSurface));
 
           SM_ASSERT_MSG(pNode1->m_sBBox.IsContainedBy(pNode->m_sBBox, SM_EFF_ZERO_SQRT),_T("pChild1 BBox not contained in pParent BBox")) ;
           SM_ASSERT_MSG(pNode2->m_sBBox.IsContainedBy(pNode->m_sBBox, SM_EFF_ZERO_SQRT),_T("pChild2 BBox not contained in pParent BBox")) ;
@@ -2818,6 +2835,9 @@ SmBoolean bDebugMe = FALSE;
                                                 &pNode2->m_sBBox, NULL, 
                                                 NULL, NULL, 
                                                 NULL));
+          // SolidCraft change: a blend by its definition lies within its net's bound of the net
+          pNode1->m_sBBox.ExpandAbsolute(sm_DefinitionBound(m_cpSurface));
+          pNode2->m_sBBox.ExpandAbsolute(sm_DefinitionBound(m_cpSurface));
 
 #ifdef SM_DEBUG_CODE
           if(!pNode1->m_sBBox.IsContainedBy(pNode->m_sBBox, SM_EFF_ZERO_SQRT))
@@ -4034,6 +4054,7 @@ NOTES:
 SmStatus SmSurfaceCache::SubdivideByBlock(SmTree* pTree, // in : Tree under construction
                                           SmTreeNode* pNode) // in : target node
 {
+  SmBlendNetScope sNetScope; // SolidCraft change: the cache is built on blends' nets (SmBlendNetScope.h)
     // check state
     SM_ASSERT(pNode->m_eAuxDataType == SM_AD_AUX_DATA);
 
@@ -4508,6 +4529,7 @@ SmStatus SmSurfaceCache::SubdivideToTolerances
                                   //            SM_AD_AUX_OBJECT     (m_pData = (SmBezierAux2d *))
    ULONG         lRecursionDepth) // (for debugging)
 {
+  SmBlendNetScope sNetScope; // SolidCraft change: the cache is built on blends' nets (SmBlendNetScope.h)
 #ifdef SM_DEBUG_CODE
 static ULONG     slMaxDepth = 0;
 SmBoolean bDebugMe2  = FALSE;
@@ -5006,6 +5028,7 @@ SmStatus SmSurfaceCache::BuildTreeBase
    ULONG                 & rl1stGenerationVCount,  // out: number of V entries in rNodes
    SmMemBlockMgr         * pBezierBlock)           // in : Bezier Surface Patch memory
 {
+  SmBlendNetScope sNetScope; // SolidCraft change: the cache is built on blends' nets (SmBlendNetScope.h)
   // locals
   SmSurfaceCache * pSurfaceCache = this;
   SM_ASSERT(pSurfaceCache != NULL);
@@ -5327,6 +5350,7 @@ SmStatus SmSurfaceCache::BuildTree
                                       //        do set SmBezierPatch::mBA_pSurface values.
                                       //      default:[NULL]
 {
+  SmBlendNetScope sNetScope; // SolidCraft change: the cache is built on blends' nets (SmBlendNetScope.h)
   //std::lock_guard<std::recursive_mutex> lock((GetSurface().mCacheMutex));
 
   // locals
@@ -5497,6 +5521,7 @@ SmStatus SmSurfaceCache::BuildTreeTop
    ULONG &rl1stGenerationUCount,        // in : number of U entries in rNodes
    ULONG &rl1stGenerationVCount)        // in : number of V entries in rNodes
 {
+  SmBlendNetScope sNetScope; // SolidCraft change: the cache is built on blends' nets (SmBlendNetScope.h)
   // locals
   SmSurfaceCache * pSurfaceCache = this;
   SmTree         * pTree         = pSurfaceCache->m_pTree;

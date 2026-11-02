@@ -886,7 +886,10 @@ SmStatus SmTorus::CreateIsoParametricCurve
           SmPoint3d sNurbMidPoint ;
           SER( pIsoCurve->EvaluatePoint(sNurbIvl.Evaluate(.5), sNurbMidPoint)  );
           SmVector3d sNurbMidVec = sNurbMidPoint - rTorusOrigin ;
-          sXAxis = sTorusZAxis * sNurbMinVec * sTorusZAxis ;
+          // SolidCraft change: the direction is the midpoint's (upstream took the start point's
+          // again, the one found on the axis): a horn torus's minor circle starting at the
+          // centre, where it touches the axis, got no direction and no analytic domain.
+          sXAxis = sTorusZAxis * (sNurbMidVec * sTorusZAxis) ;
           dLength = sXAxis.Length() ;
         }
       SM_ASSERT(sXAxis.Length() > SM_EFF_ZERO_SQRT) ;
@@ -1174,17 +1177,10 @@ static ULONG lDebugCount = 0 ;
       sCommonVec   = sCommonVecV ;   // from frame where all circle planes intersect on a common line
     }
 
-  // get torus orientation and size
-  SmVector3d       sMajorVec          = pOtherFrame->GetOriginRef() - pRefFrame->GetOriginRef() ;
-  double           dMajRad            = sMajorVec.Length() ;
+  // get torus orientation
   const SmPoint3d &crTorusXAxis       = pRefFrame->GetXAxisRef() ; // the frame where all circles are parallel
   const SmPoint3d &crTorusYAxis       = pRefFrame->GetYAxisRef() ;
   SmVector3d       sTorusZAxis        = pRefFrame->GetZAxis() ;
-
-  // torus must have positive radii
-  if(   dMinRad <= SM_EFF_ZERO
-     || dMajRad <= SM_EFF_ZERO)
-    { return(FALSE) ; }
 
   // get torus origin = MinorCircleCenter projected onto common line
   //   a MinorCircleCenter is stored in pOtherFrame->GetOriginRef()
@@ -1193,6 +1189,21 @@ static ULONG lDebugCount = 0 ;
   SmPoint3d sTorusOrigin =   sCommonPoint
                            + sCommonVec.Dot(pOtherFrame->GetOriginRef() - sCommonPoint)
                            * sCommonVec ;
+
+  // get torus size: the major radius runs from the torus origin to a minor circle's centre.
+  // SolidCraft: upstream measured it from pRefFrame's origin, the centre of the NURB's first
+  // sweep circle, which is the torus origin only when that circle lies on the equator. One at
+  // tube angle v is r sin(v) along the axis from it, so the radius came out sqrt(R^2 + (r sin v)^2)
+  // (13.2525 for R 13.1934, r 1.25 and a NURB starting at the bottom of the tube) and the tube
+  // angles measured with it were off (-92.7 degrees for -90). RebuildSTEPFromNURBParameters
+  // installs the origin in pRefFrame first [B328].
+  SmVector3d sMajorVec = pOtherFrame->GetOriginRef() - sTorusOrigin ;
+  double     dMajRad   = sMajorVec.Length() ;
+
+  // torus must have positive radii
+  if(   dMinRad <= SM_EFF_ZERO
+     || dMajRad <= SM_EFF_ZERO)
+    { return(FALSE) ; }
 
   // Check GenCurve minor circle rotation direction, its y axis is either +/- sweepCircle z
   // assumes: OterhFrame is valid for 1st Nurb isoparameter GenCurve
@@ -1219,9 +1230,15 @@ static ULONG lDebugCount = 0 ;
   SmVector3d sVecMax = sNurbMaxPoint - sMaxOrigin ; 
 
   // get GenCurve min and max angles measured from each GenCurve's origin and start vector
+  // SolidCraft: to SMLib's zero for angles in degrees, as RebuildSTEPFromNURBParameters measures
+  // them (SetFromGwNurb below rebuilds this torus from the same NURB). Upstream passed
+  // SM_EFF_ZERO, 1e-12 degrees: each angle is read from a point of the NURB, which carries the
+  // rounding of its coordinates, |P| eps / r radians (8e-13 degrees for a tube of r 1.25 80 mm
+  // out), so a tube closing on itself had ends -90.0000000000008 and -89.9999999999991 apart and
+  // was taken for a sliver 2e-12 degrees long instead of a whole turn.
   double dGenAngleMin, dGenAngleMax;
   if (sm_TorusGenCurveInterval(sStartForMinAngle, sVecMin, sStartForMaxAngle, sVecMax, sTorusZAxis, bInsideOut,
-                               SM_EFF_ZERO, dGenAngleMin, dGenAngleMax) != SM_SUCCESS)
+                               SM_EFF_ZERO_DEG, dGenAngleMin, dGenAngleMax) != SM_SUCCESS)
     { return FALSE ; }
 
   // define Torus domain
@@ -1269,6 +1286,16 @@ static ULONG lDebugCount = 0 ;
   // reparameterize the NURB so that AnalyticSurface->NurbDomain == InputSurface->NurbDomain
   // SolidCraft change: a torus it cannot reparameterize onto the input domain is not the input
   if (rpTorus->Reparameterize(pTestSurface->GetNaturalUVDomain()) != SM_SUCCESS)
+    { delete rpTorus; rpTorus = NULL;
+      return FALSE;
+    }
+
+  // SolidCraft change: the torus keeps the NURBS tested, as SmCylinder::IsNurbSurfaceCylinder
+  // does. The one built above comes from the circles fitted to it, whose centres and radii carry
+  // the fit's rounding: its weights and control points differ from the tested ones by ~1e-11,
+  // and a face trimmed in the tested NURBS's parameters is the tested surface. SetFromGwNurb
+  // rebuilds the analytic data (frame, radii, domain, GenCurve, polar converter) from it.
+  if (rpTorus->SetFromGwNurb(0, pTestSurface->GetGwNurbPointer()) != SM_SUCCESS)
     { delete rpTorus; rpTorus = NULL;
       return FALSE;
     }
@@ -1441,6 +1468,14 @@ SmStatus SmTorus::RebuildSTEPFromNURBParameters()
   SmVector3d sMajorVec = pOtherFrame->GetOriginRef() - pRefFrame->GetOriginRef() ;
   double     dMajRad   = sMajorVec.Length() ;
 
+  // SolidCraft change: a torus whose generator circles reach the axis is a horn torus (major
+  // radius = minor radius), as a revolved circle that reaches the axis is
+  // (SmRotationalSweepGeometry::AnalyticSurface). The two radii, fitted to different iso-circles,
+  // differ in their last bits, and a spindle torus's tube would cross the axis there, through
+  // its apex (test 5).
+  if ( smos_Fabs( dMajRad - dMinRad ) <= dScaledZero )
+    { dMajRad = dMinRad ; }
+
   // Check GenCurve minor circle rotation direction, its y axis is either +/- sweepCircle z
   // assumes: OtherFrame is valid for 1st Nurb isoparameter GenCurve
   SmVector3d sTorusZAxis       = pRefFrame->GetZAxis() ;
@@ -1454,14 +1489,34 @@ SmStatus SmTorus::RebuildSTEPFromNURBParameters()
                          : FALSE ;
 
   // Get GenCurve angles from each genCurves center point coordinate system
-  // project Nurb Min/Max Point to Torus XY plane to get vec to Center of each GenCurve
-  SmVector3d sMinPlanePoint, sMaxPlanePoint ;
-  SER( smgu_PointProjectToPlane(sNurbMinPoint, sTorusOrigin, sTorusZAxis, sMinPlanePoint)  );
-  SER( smgu_PointProjectToPlane(sNurbMaxPoint, sTorusOrigin, sTorusZAxis, sMaxPlanePoint)  );
-  SmVector3d sStartForMinAngle = sMinPlanePoint - sTorusOrigin ; 
-  SmVector3d sStartForMaxAngle = sMaxPlanePoint - sTorusOrigin ;
-  (void)sStartForMinAngle.Unitize() ; // SolidCraft: a zero vector stays zero
-  (void)sStartForMaxAngle.Unitize() ; // SolidCraft: a zero vector stays zero
+  // SolidCraft change: the vec to the Center of the GenCurve at the Nurb Min/Max sweep parameter
+  // is the vec to that GenCurve's own center, the circle through three of its points. It was the
+  // Nurb Min/Max Point projected to the Torus XY plane, which on a horn torus whose domain ends
+  // where its generators touch the axis is the axis itself: no direction (a zero vector), the
+  // GenCurve angles measured from nothing, and the rebuilt torus's parameterization not its NURB's
+  // (tests 2, and the faces' edges off it).
+  SmVector3d sStartForAngle[2] ;
+  for (ULONG lEnd=0; lEnd<2; lEnd++)
+    {
+      const double dSweep = bSwapUV ? sNurbUVDomain.Evaluate(0.0, lEnd).y : sNurbUVDomain.Evaluate(lEnd, 0.0).x ;
+      SmPoint3d sOnGen[3] ;
+      for (ULONG lAt=0; lAt<3; lAt++)
+        {
+          const double dGen = bSwapUV ? sNurbUVDomain.Evaluate(lAt / 3.0, 0.0).x : sNurbUVDomain.Evaluate(0.0, lAt / 3.0).y ;
+          SER( EvaluatePoint( bSwapUV ? SmPoint2d(dGen, dSweep) : SmPoint2d(dSweep, dGen), sOnGen[lAt] ));
+        }
+      SmPoint3d  sGenCenter ;
+      SmVector3d sGenX, sGenY ;
+      SmExtent1d sGenDomain ;
+      double     dGenRadius = 0.0 ;
+      SER( smgu_CircleFrom3Points( sOnGen[0], sOnGen[1], sOnGen[2], sGenCenter, sGenX, sGenY, sGenDomain, dGenRadius ));
+      SmVector3d sGenPlanePoint ;
+      SER( smgu_PointProjectToPlane(sGenCenter, sTorusOrigin, sTorusZAxis, sGenPlanePoint)  );
+      sStartForAngle[lEnd] = sGenPlanePoint - sTorusOrigin ;
+      SER( sStartForAngle[lEnd].Unitize() ) ; // a GenCurve's center is never on the axis
+    }
+  SmVector3d sStartForMinAngle = sStartForAngle[0] ;
+  SmVector3d sStartForMaxAngle = sStartForAngle[1] ;
   SmVector3d sMinOrigin = sTorusOrigin + dMajRad * sStartForMinAngle ; 
   SmVector3d sMaxOrigin = sTorusOrigin + dMajRad * sStartForMaxAngle ; 
 

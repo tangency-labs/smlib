@@ -157,6 +157,10 @@ public:
     SmSurface* &           rOffsetSurface           ///< [out]: Offset Surf Approx, may be more than 1 when offsets have self-intersections     <br>
   ) const;
 
+  // SolidCraft change: a generatrix that is one circular arc shrinks onto its centre where the
+  // offset runs towards that centre by its radius or more (SmSurface::OffsetCollapses)
+  virtual SmBoolean OffsetCollapses(double dSignedOffsetDistance, double dTol) const;
+
   virtual SmStatus CreateApproxSurface
   (
     const SmContext     & crContext,                 ///< [in ]: context for new object construction                                        <br>
@@ -437,6 +441,9 @@ public:
 
   // gwc: can use SmBSplineSurface version:  virtual SmStatus SwapUV();
   virtual void      ToggleSwapUVBit()  { m_bSwapUV = m_bSwapUV ? FALSE : TRUE ; }
+  // SolidCraft change: SwapUV leaves the definition (frame, generator, domains) as made, the swap
+  // bit toggled; only the polar converter is made again on the transposed net
+  virtual SmStatus  SwapUVDefinition() { return RebuildPolarConverter(); }
   virtual SmBoolean GetSwapUVBit()     { return m_bSwapUV ; }
 
   virtual SmStatus Reparameterize(const SmExtent2d & crNewDomain);
@@ -481,6 +488,10 @@ public:
                                                                          //      other geom types only support isoptropic scaling
 
   virtual SmStatus TrimWithDomain(SmExtent2d & crTrimDomain) ;
+
+  // SolidCraft change: TRUE where the trim leaves the rotation's range as it is and the generator
+  // is a line (or is not trimmed); see the definition
+  virtual SmBoolean TrimKeepsParameterization(const SmExtent2d & crTrimDomain) const ;
 
   virtual SmStatus UpdateAnalyticalDomain( const SmExtent2d & crNewNurbsDomain ) ;
 

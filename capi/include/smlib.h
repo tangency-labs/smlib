@@ -25,7 +25,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a declaration in this header changes. */
-#define SMLIB_ABI_VERSION 4
+#define SMLIB_ABI_VERSION 6
 
 #define SMLIB_OK 0
 /* A C++ exception escaped SMLib (out of memory, most likely). */
@@ -65,6 +65,18 @@ int32_t smlib_set_dump_dir(const char *dir);
  * `cap - 1` bytes, NUL-terminated) into `buf` and returns its length, 0 when no call is running.
  * Takes no lock and allocates nothing, so a crash handler may call it. */
 int64_t smlib_current_call(char *buf, int64_t cap);
+
+/* Work counters, for tests and profiling: process-wide counts of the work done by three steps of
+ * a boolean whose cost once grew with the square of the body's size, so a test can check how the
+ * work grows with the body on any machine. `out` gets, since the last reset (or the start):
+ *   [0] faceuses visited by the closure test of each new face (SmBrep::TestClosureSplitRegion);
+ *   [1] pairs of faces of the two bodies examined for intersection
+ *       (SmTopologyIntersector::IntersectTopology);
+ *   [2] faceuses moved between shells as new edges join them (SmBrep::MakeEdgeTopology).
+ * The counts are shared by every thread and every call, not kept per thread or per call. Neither
+ * function takes the lock. `smlib_work_counters` is SMLIB_ERR_ARG for a NULL `out`. */
+int32_t smlib_work_counters_reset(void);
+int32_t smlib_work_counters(int64_t out[3]);
 
 /* ---- Native files (for replaying dumps) --------------------------------------------------- */
 
@@ -158,8 +170,9 @@ int32_t smlib_history_read(const smlib_brep *result, int64_t *buf, int64_t cap, 
  * pointers are sound, AssertValid over the whole topology graph (SM_WALK). Both run at test
  * `level`: 0 the fewest tests, 1 adds the geometry checks, 2 every test (the slow ones too).
  *
- * The number of failed tests goes to *out_failures, 0 meaning SMLib finds the body valid. The
- * report, one line per failed test, is written NUL-terminated to `buf` and its length (without
+ * The number of failed tests goes to *out_failures, 0 meaning SMLib finds the body valid; SMLib's
+ * warning (SmBrep test 21, several faces with one shell each) is no failed test. The report, one
+ * line per failed test, is written NUL-terminated to `buf` and its length (without
  * the NUL) to *out_len. A failing check is still SMLIB_OK; the status only says the check ran.
  * When `cap` is too small, nothing goes to `buf` or *out_failures: the call returns
  * SMLIB_ERR_BUFFER with the needed length in *out_len (`buf` may be NULL with `cap` 0). */
@@ -182,7 +195,8 @@ int32_t smlib_brep_check(const smlib_brep *brep, int32_t level, char *buf, int64
  *           relative to it. The inertia tensor's off-diagonal terms are their negatives.
  * For a density rho, the mass is rho * volume and the inertia scales by rho. The measure is the
  * sum over the body's material (non-void) regions, so several lumps, or lumps touching along
- * edges or at points, are measured too; the area is that of the faces between material and void.
+ * edges or at points, are measured too; the area is that of the faces between material and void
+ * plus every sheet face (material on neither side, as a sheet stitched onto a solid), each once.
  * A body with no material region (a sheet, an open shell) has volume 0 and no inertia: its area
  * is every face's, counted once, and its centroid is the area's. Material of no positive total
  * volume (turned inside out), a non-finite result, or an SM_AI_MASS_PROPERTIES attribute on a
@@ -201,8 +215,36 @@ int32_t smlib_brep_area(const smlib_brep *brep, double relative_accuracy, double
  * geometry (an empty box) is SM_ERR_INVALID_INPUT. */
 int32_t smlib_brep_bounds(const smlib_brep *brep, double lo[3], double hi[3]);
 
+/* How far edge `edge` (its curve over its interval) lies from the surface of face `face`, over that
+ * surface's own parameter domain and not beyond it, into *out in mm: the largest of SMLib's
+ * edge/face gap samples (the exact distance from the edge's point to its nearest surface point,
+ * at both ends of the edge and the ends and middle of each of its knot spans), the gap SMLib sizes
+ * an edge's tolerance by. An edge given past its face's surface (its end a few um beyond the
+ * patch) measures how far it goes. When SMLib makes a UV trim for such an edge it trims the edge
+ * back to the surface (its end moves within its vertex's tolerance) unless the edge's own
+ * tolerance covers the gap: an edge that must keep its interval is given at least this distance
+ * as its zone tolerance (EDGE_TOLERANCE twice it). Indices are positions in the body's edge and
+ * face order (SmBrep::GetEdges and GetFaces, the order smlib_brep_export writes them in); an
+ * index out of range is SMLIB_ERR_ARG. */
+int32_t smlib_brep_edge_face_distance(const smlib_brep *brep, int64_t edge, int64_t face, double *out);
+
 /* SMLib's own check that `brep` is one closed, manifold solid: *out = 1 if so, else 0. */
 int32_t smlib_brep_is_manifold_solid(const smlib_brep *brep, int32_t *out);
+
+/* Where a point lies against a body (smlib_brep_classify_point). */
+#define SMLIB_POINT_OUTSIDE 0
+#define SMLIB_POINT_INSIDE 1
+#define SMLIB_POINT_ON_BOUNDARY 2
+
+/* Classifies the point (x, y, z), in mm, against `brep` exactly, on its curves and surfaces (no
+ * tessellation), with SmBrep::Point3DClassify at the body's own zone tolerance
+ * (SmTol::GetZoneTol3d of the body). *out is SMLIB_POINT_ON_BOUNDARY when the point is within
+ * that tolerance of a face, an edge or a vertex (sheet faces and edges included), else
+ * SMLIB_POINT_INSIDE when it lies in one of the body's material (non-void) regions and
+ * SMLIB_POINT_OUTSIDE when it lies in a void region. A body with no material region (a sheet, an
+ * open shell) has nothing inside. A non-finite coordinate is SMLIB_ERR_ARG; SMLib failing to
+ * decide the region (every ray it fires fails) is its status, SM_ERR. */
+int32_t smlib_brep_classify_point(const smlib_brep *brep, double x, double y, double z, int32_t *out);
 
 /* ---- Flat B-rep arrays -------------------------------------------------------------------
  *
@@ -339,6 +381,11 @@ typedef struct smlib_flat smlib_flat;
  * clockwise about its axis, or the circle made has another NURBS. */
 #define SMLIB_FLAT_EDGE_NURBS_FORM 34
 #define SMLIB_FLAT_WIRE_EDGE_NURBS_FORM 35
+/* Per face whose kind carries a definition (SMLIB_FLAT_SURFACE_BALL_PATCH; later kinds of a
+ * surface defined beyond its net will too), in face order: how many reals of
+ * FACE_DEFINITION_REALS are its definition (a ball patch: 4). Length n_definition_faces, or 0
+ * (no such face). */
+#define SMLIB_FLAT_FACE_DEFINITION_REAL_COUNT 36
 
 /* --- double arrays --- */
 /* The B-rep's intersection tolerance (twice its largest face/edge/vertex tolerance). Length 1. */
@@ -440,6 +487,9 @@ typedef struct smlib_flat smlib_flat;
  * only it then carries more. */
 #define SMLIB_FLAT_EDGE_TOLERANCE 164
 #define SMLIB_FLAT_VERTEX_TOLERANCE 165
+/* The definitions of the faces counted in FACE_DEFINITION_REAL_COUNT, packed in face order
+ * (sum(FACE_DEFINITION_REAL_COUNT)). A ball patch: its sphere's center x, y, z and radius. */
+#define SMLIB_FLAT_FACE_DEFINITION_REALS 166
 
 /* FACE_SURFACE_TYPE values. */
 #define SMLIB_FLAT_SURFACE_NURBS 0
@@ -448,6 +498,14 @@ typedef struct smlib_flat smlib_flat;
 #define SMLIB_FLAT_SURFACE_CONE 3
 #define SMLIB_FLAT_SURFACE_SPHERE 4
 #define SMLIB_FLAT_SURFACE_TORUS 5
+/* A rational patch on a sphere, given by its net and its sphere (SMLib's SmBallPatch, the corner
+ * of three equal rounds): its NURBS block, range and UV trims as a NURBS face's (a reader that
+ * does not know the kind may take it as one); its definition (FACE_DEFINITION_REAL_COUNT 4,
+ * FACE_DEFINITION_REALS the sphere's center and radius) keeps the sphere, whose offsets are exact
+ * and collapse when they pass its center. Import makes the face that patch only when every point
+ * of its net is on that sphere (SmBallPatch::IsOnSphere, decided on the net to rounding), and
+ * refuses the B-rep (status 1007, SM_ERR_INVALID_INPUT) otherwise. */
+#define SMLIB_FLAT_SURFACE_BALL_PATCH 6
 
 /* EDGE_CURVE_TYPE and WIRE_EDGE_CURVE_TYPE values. Export writes LINE, CIRCLE and ELLIPSE for
  * SMLib's SmLine, SmCircle and SmEllipse curves and NURBS for everything else. */
@@ -595,20 +653,27 @@ int32_t smlib_fillet(const smlib_brep *brep, const double *points, int64_t n_poi
  * equal-distance chamfer, `distance` (> 0) back from the edge along each face, with
  * bevelled corners. The setback is measured at each edge's midpoint; SMLib keeps the chord
  * across the chamfer constant along an edge, so on an edge whose dihedral angle varies the
- * setback varies with it. */
+ * setback varies with it. At a cusp (a knife edge: faces tangent at the edge and folded back on
+ * each other) no point lies `distance` back along both; the chamfer there is the chord between
+ * the contacts of the ball of radius `distance`. */
 int32_t smlib_chamfer(const smlib_brep *brep, const double *points, int64_t n_points, double tolerance, double distance,
                       smlib_brep **out, int64_t *out_failed_point);
 
 /* An operation SMLib cannot build exactly yet; the call's log line says which. */
 #define SMLIB_ERR_UNSUPPORTED (-1105)
 
+/* A blend whose edges meet at a vertex of a kind no blend corner handles yet (the edges, the
+ * blended ones among them and their convexity there): smlib_fillet, smlib_chamfer, smlib_blend
+ * and the other blends refuse it with this status, the vertex in the call's log line. */
+#define SMLIB_ERR_CORNER_UNSUPPORTED (-1111)
+
 /* What smlib_blend makes of each selected edge. */
 /* Rounded by a circular cross-section at constant radius (as smlib_fillet). */
 #define SMLIB_BLEND_ROUND 0
-/* Rounded by a curvature-continuous (G2) blend-curve cross-section between the contact lines
- * the round of that radius has: the quintic whose first and last three control points lie on
- * the contacts' tangent lines, the inner ones a third and two thirds of the way from each
- * contact to where the two tangent lines meet (on planar faces, zero curvature at the contacts). */
+/* Rounded by a curvature-continuous (G2) cross-section between the contact lines the round of
+ * that radius has: smlib_blend_order's section of order 2 at SMLIB_BLEND_THUMBWEIGHT, which
+ * meets each face with the face's own curvature across its contact line (between two planes,
+ * its third derivative too). */
 #define SMLIB_BLEND_CURVATURE 1
 /* Rounded by a circular cross-section whose width from contact line to contact line (the
  * chord) is constant: the size is that width. */
@@ -616,12 +681,111 @@ int32_t smlib_chamfer(const smlib_brep *brep, const double *points, int64_t n_po
 /* Cut by an equal-distance chamfer (as smlib_chamfer): the size is the setback. */
 #define SMLIB_BLEND_CHAMFER 3
 
+/* The highest section order smlib_blend_order builds. */
+#define SMLIB_BLEND_ORDER_MAX 4
+/* The thumbweight of SMLIB_BLEND_CURVATURE's sections, and smlib_blend_order's default: equal
+ * area. Each blend's section then takes off, on the same contact lines, the area the ball's
+ * circle does (between two planes at the angle alpha, r^2 (cot(alpha/2) - (pi - alpha)/2)), so a
+ * curvature round of a radius takes off what the round of that radius does: the thumbweight is
+ * resolved per blend from the angle of the faces at the middle of its path. A value of 1 or
+ * more, outside the thumbweights (w < 1). */
+#define SMLIB_BLEND_THUMBWEIGHT (2.0)
+
+/* A new body: `brep` with the selected edges blended by a cross-section of contact order `order`
+ * with each face, between the lines where the rolling ball of the point's size touches the two
+ * faces (its contact lines):
+ *   0  the chord between the contact lines (a chamfer, as SMLIB_BLEND_CHAMFER);
+ *   1  the ball's circle (a round, as SMLIB_BLEND_ROUND);
+ *   2 to SMLIB_BLEND_ORDER_MAX  the G^n section of order n = `order`, which meets each face with
+ *      the face's own derivatives across the contact line up to order n (order 2: the face's
+ *      curvature). In the plane square to the ball's path, with the edge's point at distance 0
+ *      and the contact at distance r (the size), let F_i(d) be the foot on face i of the point at
+ *      distance d from both faces, and T_i(u) the order-n Taylor polynomial of F_i(u r) at u = 1.
+ *      The section is S(t) = f(t) T1(1 - p1(t)) + (1 - f(t)) T2(p2(t)), t from 0 to 1, with
+ *      f(t) = (1-t)^(n+1) / ((1-t)^(n+1) + t^(n+1)), p1(t) = t / (1 - w + w t) and
+ *      p2(t) = t (1 - w) / (1 - w t), w the `thumbweight` (w < 1, or
+ *      SMLIB_BLEND_THUMBWEIGHT for the equal area one; raising it pulls the section towards the
+ *      edge, lowering it towards the chord). `thumbweight` shapes only these sections.
+ * Selection, sizes and the rest as for smlib_blend. */
+int32_t smlib_blend_order(const smlib_brep *brep, int32_t order, double thumbweight, const double *points, const double *sizes,
+                          int64_t n_points, double tolerance, smlib_brep **out, int64_t *out_failed_point);
+
 /* A new body: `brep` with the selected edges blended as `kind` (SMLIB_BLEND_*), each at its
  * point's size (`sizes`, one per point, each > 0): exactly those edges, as for smlib_fillet; an
  * edge reached from several points takes the first point's size.
  * smlib_fillet and smlib_chamfer are this call with one size for every point. */
 int32_t smlib_blend(const smlib_brep *brep, int32_t kind, const double *points, const double *sizes, int64_t n_points,
                     double tolerance, smlib_brep **out, int64_t *out_failed_point);
+
+/* How a chain of rounds turns where two of them meet at a vertex whose third edge (the side
+ * edge) is not blended: a pocket's floor or rim at its corner, a boss's base round its corner. */
+/* Each round runs on to where it meets the other and is cut there: a crease (G0) between them. */
+#define SMLIB_TURN_MITRE 0
+/* The rounds' section is revolved about the side edge through the corner's turn (between planes
+ * at a straight side edge, a torus segment), meeting each round tangentially (G1) where it ends
+ * on its section straight across from where its contact lines meet the side edge. A ball cannot
+ * pass a sharp concave side edge: such a corner is SMLIB_ERR_NO_ROOM, smlib_blend_reason naming
+ * the radius that edge must be rounded at first (the round's). */
+#define SMLIB_TURN_SWEPT 1
+
+/* Why the last blend call (smlib_blend and its variants, smlib_fillet_variable, the chamfers) in
+ * this process failed, in SMLib's words, e.g. a round whose balls fold over one another or a
+ * swept turn at a sharp concave side edge, each naming the radius: written to `out` (`size`
+ * bytes, NUL-terminated, cut short to fit), its full length in `out_length` (0 when that call
+ * built, or failed without a reason). `size` 0 and `out` NULL ask the length only. */
+int32_t smlib_blend_reason(char *out, int64_t size, int64_t *out_length);
+
+/* What smlib_blend_fit_size's size is: the blend's own size (a round's radius, a chamfer's
+ * distance), the largest setback of a set-back corner that fits (one too long), a chamfer pair's
+ * scale, or the smallest setback that builds the corner (one too short). */
+#define SMLIB_FIT_SIZE 0
+#define SMLIB_FIT_SETBACK 1
+/* A chamfer of two distances: the factor (< 1) both its distances are scaled by, along their ratio. */
+#define SMLIB_FIT_SCALE 2
+/* A setback too short: the smallest that builds (a corner whose G1 fill is certified convex only
+ * from that setback on). */
+#define SMLIB_FIT_SETBACK_AT_LEAST 3
+
+/* The largest size that builds, for the last blend call in this process that SMLib refused as
+ * too large (SMLIB_ERR_NO_ROOM), or the smallest, for a setback refused as too short: written to
+ * `out_size` (0 when no size builds), what it sizes to `out_what` (SMLIB_FIT_SIZE,
+ * SMLIB_FIT_SETBACK, SMLIB_FIT_SCALE or SMLIB_FIT_SETBACK_AT_LEAST; NULL to ignore). A
+ * chord-width blend's size is its width. It comes from the refusal's
+ * cause in closed form or by solving that cause's own geometry, never by building again; where
+ * the cause's bound is open (a size at it would leave a face or an edge of no extent), it is the
+ * bound less a thousand of the blended edge's tolerances (0.01 mm at 1e-5: a sliver SMLib builds). smlib_blend_reason names it too. SMLIB_ERR_EMPTY when
+ * the last call built, failed otherwise, or was refused with no single size (a round on a radius
+ * law: smlib_blend_reason says so) or for a cause not sized yet. */
+int32_t smlib_blend_fit_size(double *out_size, int32_t *out_what);
+
+/* As smlib_blend, the corners where a chain of its rounds turns at a side edge turned as `turn`
+ * (SMLIB_TURN_*; smlib_blend turns them SMLIB_TURN_MITRE). SMLIB_TURN_SWEPT is for rounds
+ * (SMLIB_BLEND_ROUND); with another kind it is SMLIB_ERR_UNSUPPORTED. */
+int32_t smlib_blend_turn(const smlib_brep *brep, int32_t kind, int32_t turn, const double *points, const double *sizes, int64_t n_points,
+                         double tolerance, smlib_brep **out, int64_t *out_failed_point);
+
+/* As smlib_blend, with keep features on (`keep_features` 1, smlib_blend's default) or off (0).
+ * A feature here is a boss or a cut whose footprint is an inner loop of a face a round rolls
+ * on. With keep features on, where the round's band (the strip of face it takes, from the edge
+ * to its contact line) reaches the feature's footprint, the feature stays: the round is built
+ * along its whole edge, and the feature's walls are carried down (a boss) or up (a cut) to the
+ * round's surface and trimmed by it. Off, the round takes such a feature as if it were not
+ * there. A feature the band does not reach stands as it was either way. The round is trimmed in
+ * place along its creases with the walls (exact off a planar wall; otherwise fitted, certified
+ * within a tenth of the fillet's tolerance), its face split round the footprint. A kept boss's
+ * walls must be upright to a planar face it stands on, else SMLIB_ERR_NOT_EXACT for now. Any
+ * other value of `keep_features` is SMLIB_ERR_ARG. */
+int32_t smlib_blend_features(const smlib_brep *brep, int32_t kind, int32_t keep_features, const double *points, const double *sizes,
+                             int64_t n_points, double tolerance, smlib_brep **out, int64_t *out_failed_point);
+
+/* smlib_blend, and where some rounds overflow their faces across cliffs and others fit, the
+ * overflowing ones go first: they are built, and the others then round what is left of their
+ * edges. An edge such an overflow removes whole is gone and not rounded: `out_dropped` (one
+ * flag per point, cleared first) is 1 for each point that picked one. An edge it cuts keeps the
+ * rest of its length, rounded at its size. Rounds mitred at a face's concave corner go first
+ * together, whichever overflows. smlib_blend does the same, without the flags. */
+int32_t smlib_blend_dropping(const smlib_brep *brep, int32_t kind, const double *points, const double *sizes, int64_t n_points,
+                             double tolerance, smlib_brep **out, int64_t *out_failed_point, int64_t *out_dropped);
 
 /* As smlib_blend, with corner setbacks: each of the `n_corners` (>= 1) points in `corners` picks
  * the vertex nearest it (within `tolerance`, as a point picks an edge; a vertex picked twice
@@ -633,15 +797,15 @@ int32_t smlib_blend(const smlib_brep *brep, int32_t kind, const double *points, 
  * per edge. A point that picks no vertex or several is SMLIB_ERR_PICK_NONE or
  * SMLIB_ERR_PICK_AMBIGUOUS (its index in `out_failed_corner`, if not NULL); a vertex where no
  * blended edge meets is SMLIB_ERR_ARG; a corner where some edge is not blended, or whose edges are
- * not all convex or all concave (SMLib builds a setback only where all are blended, of one
- * convexity), is SMLIB_ERR_UNSUPPORTED with the index of the first point that picked it in
+ * not all convex or all concave, or that is not one SMLib sets back (every face there a plane,
+ * every edge straight, constant rounds or curvature-continuous sections, no two edges tangent), is
+ * SMLIB_ERR_UNSUPPORTED with the index of the first point that picked it in
  * `out_failed_corner` (if not NULL), as is any setback on a chamfer (its corners are bevelled; no
  * index is written). A setback as long as an edge at its corner, or two on the ends of one
  * edge that together are, is SMLIB_ERR_NO_ROOM. The setback must reach past where the corner's
  * blends meet without one (on a corner of rounds of radius r between faces square to each other,
  * past r), else SMLib fails (its status): the patch does not join contact lines that already
- * cross. Known limit: on that corner a setback beyond about 2 r gives a patch that bulges past
- * the faces it meets (by 0.002 at 2.2 r, 0.25 at 3 r). */
+ * cross. The corner's fill stays within the faces it meets (certified). */
 int32_t smlib_blend_setback(const smlib_brep *brep, int32_t kind, const double *points, const double *sizes, int64_t n_points,
                             const double *corners, const double *setbacks, int64_t n_corners, double tolerance, smlib_brep **out,
                             int64_t *out_failed_point, int64_t *out_failed_corner);
@@ -663,6 +827,41 @@ int32_t smlib_blend_setback(const smlib_brep *brep, int32_t kind, const double *
 int32_t smlib_blend_setback_open(const smlib_brep *brep, int32_t kind, const double *points, const double *sizes, int64_t n_points,
                                  const double *corners, const double *setbacks, int64_t n_corners, double tolerance, smlib_brep **out,
                                  int64_t *holes, int64_t cap, int64_t *out_len, int64_t *out_failed_point, int64_t *out_failed_corner);
+
+/* As smlib_blend_setback, each corner with an ease before its setback: `eases[j]` (>= 0, mm,
+ * one per point in `corners`, as `setbacks`) is the length along each edge, ending at the
+ * setback, over which each round's cross-section changes from its own to the curvature-continuous
+ * one between the same contact lines (SMLIB_BLEND_CURVATURE's section), by the law
+ * w = 10 s^3 - 15 s^4 + 6 s^5 (s running 0 to 1 over the ease, the section (1 - w) the round's
+ * plus w the curvature-continuous one), which is flat to second order at both ends: the round is curvature-
+ * continuous across where the ease starts, and at the setback its section meets planar faces
+ * with zero curvature across the contact lines. The curve where the corner's patch meets each
+ * face then meets the two contact lines curvature-continuously (on a planar face, a straight
+ * contact line, with zero curvature at its ends). An ease of 0 is the call without one, the
+ * same body as smlib_blend_setback gives. The round's surface and the curvature-continuous
+ * section's (both B-splines on the same contact lines) are blended by the law's Bernstein form,
+ * so the round keeps its own surface up to where its ease starts. A round whose section is
+ * curvature-continuous already (SMLIB_BLEND_CURVATURE) keeps it; its face curves still meet the contact
+ * lines curvature-continuously. A setback and its ease together as long as an edge at their
+ * corner, or two on the ends of one edge that together are, is SMLIB_ERR_NO_ROOM; an ease that
+ * is negative, not finite or above 1e6, or `eases` NULL, is SMLIB_ERR_ARG; anything else as
+ * for smlib_blend_setback. */
+int32_t smlib_blend_setback_eased(const smlib_brep *brep, int32_t kind, const double *points, const double *sizes, int64_t n_points,
+                                  const double *corners, const double *setbacks, const double *eases, int64_t n_corners,
+                                  double tolerance, smlib_brep **out, int64_t *out_failed_point, int64_t *out_failed_corner);
+
+/* As smlib_blend_setback_open, each corner with an ease before its setback, as for
+ * smlib_blend_setback_eased: the hole's sections are the curvature-continuous ones (zero cross
+ * curvature where they meet planar faces) and its face curves meet the contact lines
+ * curvature-continuously, so a fill that is curvature-continuous with the rounds and the faces
+ * can meet both at the hole's corners. Each face curve is split at its middle, and each half is
+ * the face curve itself on half its interval: on a planar face one polynomial span of degree 5,
+ * curvature-continuous to its contact line and to the other half. An ease of 0 gives the sheet
+ * and holes smlib_blend_setback_open gives. */
+int32_t smlib_blend_setback_open_eased(const smlib_brep *brep, int32_t kind, const double *points, const double *sizes, int64_t n_points,
+                                       const double *corners, const double *setbacks, const double *eases, int64_t n_corners,
+                                       double tolerance, smlib_brep **out, int64_t *holes, int64_t cap, int64_t *out_len,
+                                       int64_t *out_failed_point, int64_t *out_failed_corner);
 
 /* A new body: `brep` with the one edge `point` selects rounded by a circular
  * cross-section whose radius varies along it: a clamped B-spline of `degree` (1 to 3) over the
@@ -692,7 +891,9 @@ int32_t smlib_chamfer_sides(const smlib_brep *brep, const double *points, int64_
  * the solid (no point of it farther than the wall from every face but the open ones, by a
  * margin of 0.1% of the wall or ten times the body's tolerance) is SMLIB_ERR_NO_ROOM. A wall whose
  * offsets touch without crossing anywhere (a hole exactly twice the wall from a side) is
- * SMLIB_ERR_WALLS_TOUCH. */
+ * SMLIB_ERR_WALLS_TOUCH. One that would move a vertex along an edge past the edge's other end,
+ * turning a face inside out (a wall thicker than a step beside the open face), is
+ * SMLIB_ERR_UNSUPPORTED. */
 int32_t smlib_shell(const smlib_brep *brep, const double *points, int64_t n_points, double tolerance, double thickness,
                     smlib_brep **out, int64_t *out_failed_point);
 
@@ -713,7 +914,11 @@ int32_t smlib_shell(const smlib_brep *brep, const double *points, int64_t n_poin
  * take off (its rail in pieces, ends at corners it cannot take apart) is SMLIB_ERR_UNSUPPORTED;
  * one whose removal would need a surface other than a plane, or a curved edge, continued past
  * its end is SMLIB_ERR_NOT_EXACT. A tangent neighbour that is no blend (a piece of the same
- * surface) gives a step, a wall between the two. */
+ * surface) gives a step, a wall between the two. A neighbour the move closes to nothing (a
+ * step's wall, the low top moved onto the high top's plane: its edges along the sides close to
+ * points) goes, and the faces on either side of it, which meet on one surface, are one face (the
+ * tops); an edge that closes to a point with no face closing with it (a face turned inside out
+ * past it) is SMLIB_ERR_UNSUPPORTED. */
 int32_t smlib_offset_faces(const smlib_brep *brep, const double *points, int64_t n_points, double tolerance, double distance,
                            smlib_brep **out, int64_t *out_failed_point);
 
@@ -721,8 +926,12 @@ int32_t smlib_offset_faces(const smlib_brep *brep, const double *points, int64_t
  * about the line where each meets the neutral plane (`neutral_origin`, `neutral_normal`), so
  * that a positive angle leans them in going along `pull`; the faces around them extended or
  * trimmed to meet them (SMLib's local operation, as smlib_offset_faces). Each face must be flat
- * and parallel to `pull`: SMLIB_ERR_UNSUPPORTED otherwise. The hinge is where a line along
- * `pull` from a point inside the face meets the neutral plane. */
+ * and parallel to `pull`, or a cylinder or cone whose axis runs along `pull`, which becomes the
+ * cone through its circle on the neutral plane, its generators turned by `angle` (a pin
+ * narrowing along the pull, a hole widening): SMLIB_ERR_UNSUPPORTED otherwise, or for a cone
+ * that would close within the face. The hinge
+ * of a flat face is where a line along `pull` from a point inside the face meets the neutral
+ * plane. */
 int32_t smlib_draft(const smlib_brep *brep, const double *points, int64_t n_points, double tolerance, const double neutral_origin[3],
                     const double neutral_normal[3], const double pull[3], double angle, smlib_brep **out, int64_t *out_failed_point);
 
@@ -898,7 +1107,7 @@ int32_t smlib_ssi_point(const smlib_ssi_result *r, int32_t i, double xyz[3], dou
 #define SMLIB_CURVE_LINE 1
 #define SMLIB_CURVE_ARC 2
 #define SMLIB_CURVE_NURBS 3
-#define SMLIB_CURVE_MAX_CURVES 4096
+#define SMLIB_CURVE_MAX_CURVES 16384
 #define SMLIB_CURVE_MAX_DEGREE 25
 #define SMLIB_CURVE_MAX_POINTS 100000
 
@@ -918,8 +1127,9 @@ int32_t smlib_ssi_point(const smlib_ssi_result *r, int32_t i, double xyz[3], dou
 /* SMLIB_DRAFT_CORNER_CURVATURE could not close a corner: the continued curves do not meet there
  * (two parallel lines, two circles that part). */
 #define SMLIB_ERR_CORNER_APART (-1108)
-/* SMLIB_DRAFT_CORNER_CURVATURE: a wall closes before the far end, its neighbours meeting across it
- * (or its arc shrinking to its centre). */
+/* SMLIB_DRAFT_CORNER_CURVATURE: a wall closes in a way the draft cannot build: at the far end
+ * (pinching it), so that the whole section closes, or as an arc shrinking to its centre. A wall that
+ * closes partway up, its neighbours meeting across it from there, builds. */
 #define SMLIB_ERR_WALL_CLOSES (-1109)
 
 /* The planar profile extruded `distance` (> 0) along the unit `direction`, square to the
@@ -932,8 +1142,9 @@ int32_t smlib_ssi_point(const smlib_ssi_result *r, int32_t i, double xyz[3], dou
  * curve's start); SMLIB_DRAFT_CORNER_TANGENT continues lines' and arcs' walls as their tangent
  * planes (two lines meet at a corner edge) and other curves' walls as approximate offsets; a corner it cannot close is
  * SMLIB_ERR_CORNER_APART or SMLIB_ERR_WALL_CLOSES, or SMLIB_ERR_NOT_EXACT, and when `out_corner`
- * is not NULL that corner's point on the profile is written there (for SMLIB_ERR_WALL_CLOSES of an
- * arc that shrinks to its centre, the arc's middle). */
+ * is not NULL that corner's point on the profile is written there (for a seam that starts above
+ * the profile, where a wall closed, its start moved down into the profile's plane; for
+ * SMLIB_ERR_WALL_CLOSES of an arc that shrinks to its centre, the arc's middle). */
 int32_t smlib_extrude(const int64_t *kinds, int64_t n_kinds, const double *reals, int64_t n_reals, const double direction[3],
                       double distance, double draft, int32_t corner, int32_t cap, smlib_brep **out, double out_corner[3]);
 
@@ -1112,6 +1323,15 @@ int32_t smlib_split_faces(const smlib_brep *body, const int64_t *faces, int64_t 
  * empty is SMLIB_ERR_NO_CUT; a body that is no manifold solid SMLIB_ERR_NOT_SOLID. */
 int32_t smlib_split_body(const smlib_brep *body, const smlib_surface *tool, smlib_brep **back, smlib_brep **front);
 
+/* `body` cut in two as smlib_split_body cuts it, by the sheet `sheet` as it is (a surface body of
+ * one or more faces joined edge to edge, which must cross the body to cut it): its faces' surfaces
+ * turned to agree with face `face`'s (in its face order; SmBrep::OrientSheetSurfaces), `back` the
+ * part on the side that normal points away from, `front` the part it points into, each closed by
+ * the sheet's piece inside the body. A sheet that does not divide the body (one that ends inside
+ * it, only nicking it, leaves a part that is no manifold solid) is SMLIB_ERR_NO_CUT. A `sheet`
+ * that is no sheet, or a `face` out of range, is SMLIB_ERR_ARG; the inputs are left unchanged. */
+int32_t smlib_split_body_by_sheet(const smlib_brep *body, const smlib_brep *sheet, int64_t face, smlib_brep **back, smlib_brep **front);
+
 /* A point inside each face of `body`, in its face order, into `out` (3 * `n_faces` numbers):
  * on the face's surface and inside its trims (SmFace::CalculateAnInternalPoint). `n_faces` must
  * be the body's face count, else SMLIB_ERR_ARG. */
@@ -1136,7 +1356,8 @@ int32_t smlib_face_points(const smlib_brep *body, double *out, int64_t n_faces);
  * `mode` says: SMLib's extension of the surface (CreateExtendedSurface; analytic surfaces are
  * B-splines in SMLib, extended the same way and given back their analytic kind where the result
  * is one). The face keeps its orientation; it and its sides keep the attributes of those they
- * continue. A face that is not its surface's whole box is SMLIB_ERR_UNSUPPORTED. */
+ * continue. A face that is not its surface's whole box is SMLIB_ERR_UNSUPPORTED; an extension
+ * that cannot be made `distance` long across the side (within 1e-9 of it) is SMLIB_ERR_NOT_EXACT. */
 int32_t smlib_extend_sheet(const smlib_brep *sheet, const double point[3], double tol, double distance, int32_t mode, smlib_brep **out);
 
 /* ---- Untrim (src/smlib_untrim.cpp) -------------------------------------------------------- */
@@ -1158,16 +1379,23 @@ int32_t smlib_untrim_face(const smlib_brep *body, const double point[3], double 
 /* ---- Sheets (src/smlib_sheets.cpp) -------------------------------------------------------- */
 
 /* A new body: `brep`'s faces sewn along the vertices and edges that coincide within `tolerance`
- * (> 0, at most 1e3 mm), glued once at that tolerance (SmBrep::StitchFaces), then oriented
+ * (> 0, at most 1e3 mm), glued once at that tolerance (SmBrep::StitchFaces); edges left with one
+ * face are then glued to the edges they lie on whatever uses those (a sheet laid on a solid's
+ * edges), a space the faces so close becoming material and a face left between two material
+ * regions removed (the cut top of a box under a cover sewn over it), when that leaves no edge with
+ * more than two faces (a sheet that closes nothing, one hung on a solid's edge, stays beside the
+ * solid as the first gluing left it; a sheet that cannot be placed
+ * between the faces around those edges, as one running on along the solid's faces from them or
+ * overlapping them, is SMLIB_ERR_UNSUPPORTED), then oriented
  * (SmBrep::OrientTrimmedSurfaces): outward where every edge is glued and the faces close, else
  * turned only to agree with their neighbours across the edges they share. `*out_closed` is 1 when
  * the result is a closed manifold solid, 0 for a sheet. Tags (smlib_history_tag) travel with the
  * faces, and a glued edge stands for both edges it was glued from. */
 int32_t smlib_stitch(const smlib_brep *brep, double tolerance, int32_t *out_closed, smlib_brep **out);
 
-/* A new sheet: the sheet `sheet` (not a closed solid: SMLIB_ERR_ARG) with every face moved onto
- * its surface's offset by `distance` (non-zero, |distance| <= 1e6) along its normal (negative:
- * against it), by SM_API's offset (SmApiOffsetBrepFull, extended at convex edges, with
+/* A new sheet: the sheet `sheet` (open or closed: a ball's face taken off it as a sheet) with every
+ * face moved onto its surface's offset by `distance` (non-zero, |distance| <= 1e6) along its normal
+ * (negative: against it); faces that close into a solid (a sphere's one face) give the offset solid, by SM_API's offset (SmApiOffsetBrepFull, extended at convex edges, with
  * self-intersections handled). Tags travel to each face's offset. */
 int32_t smlib_offset_sheet(const smlib_brep *sheet, double distance, smlib_brep **out);
 

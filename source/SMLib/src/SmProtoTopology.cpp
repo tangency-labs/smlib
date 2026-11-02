@@ -21,6 +21,15 @@
 #include <SmAssertArray.h>
 
 #include <SmProtoTopology.h>
+#include <SmTools.h>
+#include <SmCircle.h>
+#include <SmEllipse.h>
+#include <SmLine.h>
+
+#include <cmath>
+
+#include <algorithm>
+#include <vector>
 
 /* Tolerance considerations:
 - tol stored in SmTopologySolver: I'm pretty sure it adds that tol to the
@@ -1467,6 +1476,98 @@ SmBoolean SmEdgeDefinition::IsInteriorPoint(
 
 
 /*******************************************************************//**
+PURPOSE: static helper: the continued NURB of an analytic curve made that
+         analytic curve again.
+
+USAGE NOTES---- SolidCraft fork, for sm_CreateExactlyExtendedCurve. A line, a
+  circle and an ellipse are SmBSplineCurve subclasses that carry their NURB;
+  continuing that NURB leaves it on the same line or conic, so the continued
+  curve is the same kind: a circle or ellipse keeps its frame, radii and
+  inside-out sense, its angular domain carried on to the new end; a line runs
+  between the continued ends over the same parameter interval. The new curve
+  takes crNurb as its NURB, so its parameter is the continued one, which the
+  edge's interval and UV curves share; it must evaluate as crNurb does at its
+  ends and inside, or this fails (rpNew NULL), as it does for any other
+  analytic kind (a parabola, a hyperbola) and an inside-out line.
+***********************************************************************/
+static SmStatus sm_AnalyticOfContinuedNurb
+ (const SmContext      &crContext, // in : context for the new curve
+  const SmCurve        *cpCurve,   // in : the analytic curve that was continued
+  SmBoolean             bAtEnd,    // in : TRUE = its end was continued, FALSE = its start
+  const SmBSplineCurve &crNurb,    // in : its continued NURB
+  SmCurve             *&rpNew)     // out: the analytic curve over crNurb, owned by the caller
+{
+  rpNew = NULL;
+  SmExtent1d sNat = crNurb.GetNaturalInterval();
+  SmPoint3d  sStart, sEnd;
+  SER( crNurb.EvaluatePoint( sNat.GetMin(), sStart)) ;
+  SER( crNurb.EvaluatePoint( sNat.GetMax(), sEnd)) ;
+
+  SmCurve *pKind = NULL;
+  if(cpCurve->IsKindOf( SmEllipse_TYPE) )
+    {
+      const SmEllipse        *pE   = static_cast<const SmEllipse *>( cpCurve) ;
+      const SmAxis2Placement &rPos = pE->GetPosition();
+      SmBoolean  bInsideOut = pE->GetInsideOut();
+      SmExtent1d sDom       = pE->GetSTEPInterval();
+      // The angular end the continued NURB end is: the max when the NURB runs the angle's way.
+      SmBoolean  bMax = ( bAtEnd != bInsideOut ) ;
+      SmVector3d sD   = ( bAtEnd ? sEnd : sStart ) - rPos.GetOriginRef();
+      double dAng   = SM_DEGREES( std::atan2( sD.Dot( rPos.GetYAxisRef()) / pE->GetYRadius(), sD.Dot( rPos.GetXAxisRef()) / pE->GetXRadius())) ;
+      double dOld   = bMax ? sDom.GetMax() : sDom.GetMin();
+      double dDelta = std::remainder( dAng - dOld, 360.0) ;
+      if(bMax ? !(dDelta > 0.0) : !(dDelta < 0.0) )
+        { return SM_ERR; }
+      SmExtent1d sNewDom = sDom;
+      if(bMax ) { SER( sNewDom.SetMax( dOld + dDelta)) ; }
+      else      { SER( sNewDom.SetMin( dOld + dDelta)) ; }
+      SmExtent1d sMaxDom = pE->GetMaxAnalyticDomain();
+      if(   !(sNewDom.GetLength() <= 360.0)
+         || !(sNewDom.GetMin() >= sMaxDom.GetMin()) || !(sNewDom.GetMax() <= sMaxDom.GetMax()) )
+        { return SM_ERR; }
+      if(cpCurve->IsKindOf( SmCircle_TYPE) )
+        {
+          pKind = new (crContext) SmCircle( rPos.GetOriginRef(), rPos.GetXAxisRef(), rPos.GetYAxisRef(), sNewDom,
+                                            pE->GetXRadius(), cpCurve->GetDim(), &crContext, &crNurb, bInsideOut) ;
+        }
+      else
+        {
+          pKind = new (crContext) SmEllipse( rPos.GetOriginRef(), rPos.GetXAxisRef(), rPos.GetYAxisRef(), sNewDom,
+                                             pE->GetXRadius(), pE->GetYRadius(), cpCurve->GetDim(), &crContext, &crNurb, bInsideOut) ;
+        }
+    }
+  else if(cpCurve->IsKindOf( SmLine_TYPE) && !static_cast<const SmLine *>( cpCurve)->GetInsideOut() )
+    {
+      SmLine *pLine = NULL;
+      SER( SmLine::CreateLineSegment( crContext, cpCurve->GetDim(), sStart, sEnd, pLine, &sNat)) ;
+      pKind = pLine;
+    }
+  else
+    { return SM_ERR; }
+  NER( pKind) ;
+  SmObjDelete sCleanKind( pKind) ;
+
+  // The same curve over the same parameter, to round-off.
+  SmExtent1d sKindNat = pKind->GetNaturalInterval();
+  if(!SM_ARE_SAME( sKindNat.GetMin(), sNat.GetMin()) || !SM_ARE_SAME( sKindNat.GetMax(), sNat.GetMax()) )
+    { return SM_ERR; }
+  double dZero = ANALYTIC_TOL_SCALE * SM_EFF_ZERO * (1.0 + smos_Max( sStart.GetMaxDimension(), sEnd.GetMaxDimension())) ;
+  for(int ii=0; ii<=8; ii++)
+    {
+      double    dT = sNat.Evaluate( ii / 8.0) ;
+      SmPoint3d sOnNurb, sOnKind;
+      SER( crNurb.EvaluatePoint( dT, sOnNurb)) ;
+      SER( pKind->EvaluatePoint( dT, sOnKind)) ;
+      if(!(sOnNurb.DistanceBetween( sOnKind) <= dZero) )
+        { return SM_ERR; }
+    }
+  sCleanKind.Clear();
+  rpNew = pKind;
+  return SM_SUCCESS;
+
+} // end static sm_AnalyticOfContinuedNurb
+
+/*******************************************************************//**
 PURPOSE: static helper: a copy of a clamped B-spline curve whose end span is
          continued exactly, its polynomial unchanged, to a new end parameter.
 
@@ -1477,7 +1578,8 @@ USAGE NOTES---- SolidCraft fork. The end span is made a Bezier segment (its
   rational curve keeps its shape too). Nothing else changes: the curve is the
   same over its old interval and only that one span grows. Fails (leaving
   rpNew NULL) for any other curve kind, an unclamped or trimmed B-spline, or a
-  new end that is not outside the old one.
+  new end that is not outside the old one. A line, circle or ellipse comes
+  back as that kind over the continued NURB (sm_AnalyticOfContinuedNurb).
 ***********************************************************************/
 static SmStatus sm_CreateExactlyExtendedCurve
  (const SmContext &crContext, // in : context for the new curve
@@ -1573,6 +1675,16 @@ static SmStatus sm_CreateExactlyExtendedCurve
   SER( SmBSplineCurve::CreateCanonical( crContext, pCopy->GetDim(), lDeg, sPts, SM_CF_UNSPECIFIED, sMults, sKnots,
                                         SM_KT_UNSPECIFIED, bRational ? &sWts : NULL, NULL, pNew )) ;
   NER( pNew) ;
+  SmObjDelete sCleanNew( pNew) ;
+  // An analytic curve (a line, circle or ellipse) continued is that curve still: the same kind
+  // over the continued NURB (sm_AnalyticOfContinuedNurb), not a plain B-spline in its place.
+  if(pCrv->GetType() != SmBSplineCurve_TYPE )
+    {
+      SER( sm_AnalyticOfContinuedNurb( crContext, pCrv, bAtEnd, *pNew, rpNew)) ;
+      NER( rpNew) ;
+      return SM_SUCCESS;
+    }
+  sCleanNew.Clear();
   rpNew = pNew;
   return SM_SUCCESS;
 
@@ -1937,7 +2049,32 @@ static int iDebugMe2=0;
   SmFace *pNewF2 = NULL;
   SmFace *pOldF2 = NULL;
 
-  if(eType2 == SM_PC_FACE )
+  // SolidCraft change: in Brep2 the Face may already have an Edge between this Edge's two
+  // Vertices that lies along the curve within tolerance (the intersection curve runs along the
+  // Face's own boundary there: a tube's end circle within tolerance of another tube's wall over
+  // a short stretch). That Edge is this Edge in Brep2. Imprinted again, the Face had two
+  // coincident Edges, and merging Brep2's boundary Edge, which nothing related to Brep1, put a
+  // second copy beside this one in Brep1 (SmFace tests 33 and 34).
+  SmEdge *pAlongEdge2 = NULL;
+  if(eType2 == SM_PC_FACE && pStartVtx2 != pEndVtx2 && m_pXSectCurve3d != NULL )
+  {
+      SmFace *pFace2 = SM_CAST_PTR( SmFace, GetSrcTopo(2)) ; NER( pFace2) ;
+      SmTArray<SmEdge*> sFaceEdges;
+      pFace2->GetEdges( sFaceEdges) ;
+      SmBoolean bFound = FALSE, bSame = FALSE;
+      ULONG     lFound = 0;
+      double    dDev   = SM_BIG_DOUBLE;
+      double    dAlongTol = smos_Max( (double)pFace2->GetTolerance(), this->m_dTol) ;
+      SER( SmTools::FindCoincidentEdge( pStartVtx2, pEndVtx2, m_pXSectCurve3d, m_pXSectInterval, dAlongTol,
+                                        sFaceEdges, bFound, bSame, lFound, dDev) );
+      if( bFound && dDev <= dAlongTol && lFound < sFaceEdges.GetSize() )
+        { pAlongEdge2 = sFaceEdges[lFound]; }
+  }
+  if(pAlongEdge2 != NULL )
+  {
+      m_pFinalEdge2 = pAlongEdge2;
+  }
+  else if(eType2 == SM_PC_FACE )
   {
       // m_pXSectCurve3d went into Brep1.  Make a copy for the other Brep.
       SmCurve *pCopyCurve = NULL;
@@ -3945,6 +4082,48 @@ SmStatus SmProtoEdge::Resolve()
             }
           m_sEdgeDefs.ReSet();
         }
+      else if ( pVD0 != m_pStartPV->GetClosestVertexDefinition( sPt1) )
+        {
+          // SolidCraft change: the curve joins two of the ProtoVertex's VertexDefinitions, which
+          // become two Vertices. Another of its VertexDefinitions, further than its tolerance
+          // from both ends, is a third Vertex: where it lies on the curve (within the curve's
+          // and its own tolerance), the curve runs through that Vertex and is split there, as a
+          // Vertex on an Edge splits it. Kept whole, the Edge ran past a Vertex of its own Face
+          // (a crossing point of two near-tangent circles that also run within tolerance of each
+          // other, the ProtoVertex's capture ball holding all three points).
+          std::vector<double> sSplits;
+          SmTArray<SmVertexDefinition*> & rVDs = m_pStartPV->GetVertexDefinitions();
+          for(ii=0;ii<rVDs.GetSize();ii++)
+            {
+              SmVertexDefinition *pVD = rVDs[ii];
+              if (   pVD == NULL
+                  || pVD == pVD0
+                  || pVD == m_pStartPV->GetClosestVertexDefinition( sPt1) )
+                { continue; }
+              const SmPoint3d & rPos = pVD->GetPosition();
+              const double dOnTol = smos_Max( (double)m_dTol, (double)pVD->GetTolerance() );
+              if (   rPos.DistanceBetween( sPt0 ) <= 2*dOnTol
+                  || rPos.DistanceBetween( sPt1 ) <= 2*dOnTol )
+                { continue; }
+              SmBoolean bOn = FALSE;
+              double dT = 0.0, dDist = 0.0;
+              SER( pIntCurve->DropPoint( m_pXSectInterval, rPos, NULL, dOnTol, NULL, bOn, dT, dDist ) );
+              if ( bOn && dDist <= dOnTol && m_pXSectInterval.ContainsValue( dT, -SM_EFF_ZERO ) )
+                { sSplits.push_back( dT ); }
+            }
+          // Split from the far end back, so that this ProtoEdge stays the piece from the start.
+          std::sort( sSplits.begin(), sSplits.end() );
+          for(jj=static_cast<ULONG>(sSplits.size());jj>0;jj--)
+            {
+              SmProtoVertex *pSplitPV = NULL;
+              SmProtoEdge   *pUpperPE = NULL;
+              SER( this->Split( sSplits[jj-1], pSplitPV, pUpperPE ) );
+            }
+          // Each split left a VertexDefinition of its own at the Vertex's point: combined with
+          // the Vertex's there.
+          if ( !sSplits.empty() )
+            { SER( m_pStartPV->Resolve() ); }
+        }
       else
         {
           // Our IntCurve is longer than tolerance.  Is it closed?
@@ -5815,6 +5994,42 @@ static constexpr SmBoolean cbiDoSplit = FALSE;
       // no work - pVD->Edge is not Tgt SplitEdge
       if(pEdge != pOldEdge)
         { continue ; }
+
+      // SolidCraft change: a coincident EdgeDefinition that runs across the split point (an edge
+      // along the whole of an arc that another edge's ends split twice in its middle) is split
+      // there too, with its ProtoEdge (SmProtoEdge::Split, which finds the calling ProtoVertex
+      // at that point), so each part lies on one of the two pieces of the edge. Re-pointed whole
+      // to the piece under its midpoint, its ends were not that piece's vertices, and Imprint
+      // found no vertex for them (SM_ERR_NULL_POINTER). The upper part, a new EdgeDefinition
+      // still on pOldEdge, is classified below in its turn.
+      {
+        SmVertex    * pSplitVtx = pCallingVD->GetFinalVertex( iWhichBrep) ;
+        SmXSectTol3d  sTol3d    = SmTol::GetXSectTol3d( pOldEdge, pSplitVtx) ;
+        SmExtent1d    sEDIvl    = pED->GetXSectInterval() ;
+        SmPoint3d     sEDStart, sEDEnd ;
+        SER( pED->GetEndPosition( TRUE,  sEDStart) );
+        SER( pED->GetEndPosition( FALSE, sEDEnd) );
+        double    dGuess = sEDIvl.GetMid(), dAt = dGuess, dDropDist = SM_BIG_DOUBLE ;
+        SmBoolean bDropped = FALSE ;
+        if(   sSplitPt.DistanceBetween( sEDStart) > sTol3d
+           && sSplitPt.DistanceBetween( sEDEnd)   > sTol3d
+           && pED->GetXSectCurve3d()->DropPoint( sEDIvl, sSplitPt, NULL, sTol3d, &dGuess, bDropped, dAt, dDropDist, SM_SO_MINIMIZE) == SM_SUCCESS
+           && bDropped
+           && dDropDist <= sTol3d
+           && sEDIvl.ContainsValue( dAt, -SM_EFF_ZERO) )
+          {
+            ULONG lFound = 0 ;
+            SmProtoVertex * pNewPV = NULL ;
+            SmProtoEdge   * pNewPE = NULL ;
+            SER( pThisPE->Split( dAt, pNewPV, pNewPE) );
+            if( pNewPE != NULL )
+              {
+                SmTArray<SmEdgeDefinition*> & rUpper = pNewPE->GetEdgeDefinitions() ;
+                for(ULONG jj=0; jj<rUpper.GetSize(); jj++)
+                  { if( sEdgeDefs.FindElement( rUpper[jj], lFound) == FALSE ) { sEdgeDefs.Add( rUpper[jj] ) ; } }
+              }
+          }
+      }
 
       // Found a ProtoEdge on the edge that was split.
       // (Must be a coincident case.)

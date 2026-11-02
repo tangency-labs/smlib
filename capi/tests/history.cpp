@@ -386,6 +386,72 @@ void apart_boxes_union()
     drop(ops);
 }
 
+void draft_moves_the_neighbours_edges()
+{
+    // The cube's side x = 10 tilted 5 degrees about its line on z = 0, leaning in going up: the
+    // side tilts, and the top and the two faces beside it lose a wedge along their moved edges
+    // (each edge still tagged, the face's boundary its own edges: trimmed differently all the
+    // same). The bottom, where the hinge lies, and the opposite side are untouched.
+    smlib_brep *a = box(0, 0, 0, 10, 10, 10), *t = nullptr, *r = nullptr;
+    CHECK(smlib_history_tag(a, 0, &t) == SMLIB_OK);
+    const double side[3] = {10, 5, 5}, origin[3] = {0, 0, 0}, up[3] = {0, 0, 1};
+    CHECK(smlib_draft(t, side, 1, 0.1, origin, up, up, 5.0 * 3.14159265358979323846 / 180.0, &r, nullptr) == SMLIB_OK);
+    if (r != nullptr)
+    {
+        History h = read(r);
+        CHECK(h.faces.size() == 6);
+        CHECK(h.count(SMLIB_CHANGE_KEPT) == 2);
+        CHECK(h.count(SMLIB_CHANGE_MODIFIED) == 4);
+        smlib_brep_free(r);
+    }
+    smlib_brep_free(a);
+    smlib_brep_free(t);
+}
+
+void split_face_keeps_its_neighbours()
+{
+    // The top of a 40 x 30 x 20 block split by the plane x = 10: two pieces of the top. The faces
+    // y = 0 and y = 30 have their top edge cut by the split's vertex there, and nothing else: each
+    // is still all of itself, its boundary where it was, so all five faces but the top are Kept.
+    smlib_brep *a = box(0, 0, 0, 40, 30, 20), *t = nullptr, *r = nullptr;
+    CHECK(smlib_history_tag(a, 0, &t) == SMLIB_OK);
+    auto ops = keep({t});
+    double at[18];
+    CHECK(smlib_face_points(t, at, 6) == SMLIB_OK);
+    int64_t top = -1;
+    for (int64_t i = 0; i < 6; ++i)
+    {
+        top = std::fabs(at[3 * i + 2] - 20.0) < 1e-9 ? i : top;
+    }
+    CHECK(top >= 0);
+    const double origin[3] = {10, 0, 0}, x[3] = {0, 1, 0}, y[3] = {0, 0, 1}, u[2] = {-10, 40}, v[2] = {-10, 30};
+    smlib_surface *plane = nullptr;
+    CHECK(smlib_surface_plane(origin, x, y, u, v, &plane) == SMLIB_OK);
+    int64_t made = 0;
+    const smlib_surface *tools[1] = {plane};
+    CHECK(smlib_split_faces(t, &top, 1, tools, 1, &r, &made) == SMLIB_OK && made == 1);
+    if (r != nullptr)
+    {
+        History h = read(r);
+        consistent(h, r, ops);
+        CHECK(h.faces.size() == 7);
+        CHECK(h.count(SMLIB_CHANGE_KEPT) == 5);
+        CHECK(h.count(SMLIB_CHANGE_MODIFIED) == 0);
+        CHECK(h.count(SMLIB_CHANGE_SPLIT) == 2);
+        for (const Face &f : h.faces)
+        {
+            CHECK(f.origins.size() == 1 && (f.change == SMLIB_CHANGE_SPLIT) == (f.origins[0].second == top));
+        }
+        // The split line runs between the top's pieces: the one edge from nothing.
+        CHECK(h.meets() == 1);
+        smlib_brep_free(r);
+    }
+    smlib_surface_free(plane);
+    smlib_brep_free(a);
+    smlib_brep_free(t);
+    drop(ops);
+}
+
 void retag_and_hostile_arguments()
 {
     smlib_brep *a = box(0, 0, 0, 1, 1, 1), *t = nullptr, *tt = nullptr;
@@ -426,6 +492,8 @@ int main()
     pocket();
     slot_splits_box();
     apart_boxes_union();
+    draft_moves_the_neighbours_edges();
+    split_face_keeps_its_neighbours();
     retag_and_hostile_arguments();
     if (g_failed != 0)
     {

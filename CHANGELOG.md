@@ -1,5 +1,30 @@
 # Changelog
 
+## [Unreleased]
+### Added
+- `smlib_blend` and `smlib_fillet` blend a convex and a concave edge that continue each other tangentially at a vertex across a tangent seam, such as a bar's front top edge and the concave arc where its top runs into a cylinder, or the same part with drafted walls. The corner is two faces tangent to both blends and to the walls, smooth inside; it used to fold or fail. ([smlib #82](https://github.com/tangency-labs/smlib/issues/82))
+
+### Changed
+- `smlib_fillet` ends a round selected on part of a tangent chain at the smooth vertex where its edge runs on into an edge that is not rounded, on the plane square to its edge there, instead of failing.
+- `smlib_fillet` refuses a round whose contact line runs past its side edge, or passes over the side edge of the other convexity where a concave round ends on a face, with `SMLIB_ERR_NO_ROOM`, and `smlib_blend_fit_size` names the largest radius whose contact line still ends on that edge. It used to fail with a corner error.
+- `smlib_fillet` no longer depends on where a cylinder's seam meets a side edge: the round's contact line is followed across the seam's vertex onto the next edge of the same two faces. A boss tilted 40 degrees into a plate now rounds; it used to be refused with a size that came from the seam's position.
+- `smlib_fillet` rounds a vertex of four or more planes whose edges are all rounded alike as an exact sphere patch where one ball touches every face, and with a setback elsewhere. It used to build a fitted patch that was not tangent to the rounds and stood past the faces.
+- `smlib_blend_setback_open` and `smlib_blend_setback_open_eased` leave the setback corner's hole with no fill surface: for a G1 setback its edges are the exact spring curves on the faces, and the hole has nine edges. The sheet's faces round the hole keep their side of the body for concave rounds too.
+- `smlib_blend_setback` and its open variants refuse a setback asked at a corner that cannot be set back with `SMLIB_ERR_UNSUPPORTED`, naming the corner, instead of building another corner there.
+
+### Fixed
+- The C API's flat B-rep arrays (`smlib_brep_export` / `smlib_brep_import`) carry a Ball corner's
+  `SmBallPatch` as itself. It used to be written as a bare NURBS and read back as an
+  `SmBSplineSurface`, losing its sphere, so a box rounded all round and then shelled failed after a
+  round trip (status 1034). Such a face is now surface kind `SMLIB_FLAT_SURFACE_BALL_PATCH` (6), with
+  its NURBS block as before and its sphere's centre and radius in the new arrays
+  `SMLIB_FLAT_FACE_DEFINITION_REAL_COUNT` (36) and `SMLIB_FLAT_FACE_DEFINITION_REALS` (166). Import
+  makes it an `SmBallPatch` only after certifying that the net lies on that sphere (`IsOnSphere`), and
+  refuses the B-rep otherwise. A reader that doesn't know kind 6 can take it as NURBS, but must write
+  arrays 36 and 166 back unchanged. ([smlib #102](https://github.com/tangency-labs/smlib/issues/102))
+- A round whose corner at one end is not blended now runs to its edge's end before it is extended, so the larger mixed corners (round radius 5 or 7 on the test peg) build instead of failing with a vertex computation failure. ([smlib #82](https://github.com/tangency-labs/smlib/issues/82))
+- An elliptic arc trimmed just short of its seam no longer has its angular domain moved to the seam, which made it fail SMLib's own validity check by 1.45e-8. ([smlib #82](https://github.com/tangency-labs/smlib/issues/82))
+
 ## [1.0.1] - 2026-10-21
 ### Added
 - `SmApiUsdGeometryValidate.h`: run `SmBrep::AssertValid` on one BrepArray prim without changing the stage; `brep_geometry_validator` uses it.

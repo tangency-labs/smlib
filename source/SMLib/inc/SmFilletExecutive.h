@@ -179,6 +179,9 @@ class SM_EXPORT SmFilletExecutive : public SmMerge
   friend class SmFilletSolver;
   friend class SmFilletCorner;
 protected:
+  // the operation's scope, first: the thread's equal area thumbweights solved for another
+  // operation are not read in this one (SmGnSectionFSG::OperationScope)
+  SmGnSectionFSG::OperationScope m_sGnScope;
   const SmContext &         m_crContext;            // Context for all temporary and permanent object allocation.
 
   SmBrep *                  m_pTargetBrep;          // Brep to be filleted (can be NULL). Set in SmFilletExecutive constructor.
@@ -228,17 +231,52 @@ protected:
 
   SmTArray<SmSurface*>      m_vRadiusCornerSurfaces; // SolidCraft change: copies of the fillet surfaces that turn where their radius
                                                      // has a corner, owned; their faces are split there after the merge
+  SmTArray<SmLawCornerPieces*> m_vRadiusCornerPieces; // SolidCraft change: per noted surface, its exact pieces where a law
+                                                     // corner is a dip or a peak (owned), else NULL
 
   SmBoolean                 m_bCliffOverflow;       // SolidCraft change: TRUE = a convex blend's rail leaves its face across a cliff;
-                                                    //   the blend is built on its faces' continuations and the material it
-                                                    //   removes is subtracted from m_pTargetBrep (SubtractRemovalRegion)
+                                                    //   the blend is built on its faces' continuations and trimmed along its
+                                                    //   creases with the faces beyond (TrimAtCreases)
   struct SmFilletOpenEnd                            // SolidCraft change: an end of a fillet the Nx1 corner there left uncut,
     {                                               //   its rails missing its side edges, in m_bCliffOverflow:
       SmFilletSolver * m_pSolver;                   //   the solver of the filleted edge,
       SmVertex       * m_pVertex;                   //   the edge's vertex at that end,
-      SmFace         * m_pEndFace;                  //   the face whose surface's continuation cuts the fillet off there
+      SmFace         * m_pEndFace;                  //   the face whose surface, continued, cuts the fillet off there
     };
   std::vector<SmFilletOpenEnd> m_vOpenEnds;         // SolidCraft change: the fillet's ends left uncut, in m_bCliffOverflow
+  std::vector<SmPoint3d>       m_vFanSplitPoints;   // SolidCraft change: where a blended edge's vertex the body touches itself at
+                                                    //   was split into one vertex per fan (SplitBlendedVertexFans)
+  SmBoolean                 m_bOverflowFirst;       // SolidCraft change: TRUE = when blends of several edges overflow across cliffs, stop
+                                                    //   before building anything (SM_FILERR_OVERFLOW_FIRST): the caller blends the
+                                                    //   edges that overflow on their own first, then what is left of the others
+  SmBoolean                 m_bSweptTurns;          // SolidCraft change: TRUE = where a chain of two rounds turns at a sharp side edge
+                                                    //   (an N x 2 corner), the section is revolved about that edge (Swept);
+                                                    //   FALSE = the rounds are mitred there (Mitre, the default)
+  SmTArray<const SmVertex*> m_vSetBackVertices;     // SolidCraft change: the vertices the caller sets back (SmFilletCorner::SetSetBackDist,
+                                                    //   after CreateFilletCorners): no Ball corner there (SmBlendCorner::ClassifyBall)
+  // SolidCraft change: corners asked to be set back, before the corners are made (SetSetBackFill):
+  // each vertex with its setback along every edge there, the ease before it, and whether it is
+  // left open (for the caller to fill).
+  struct SetBackFill { const SmVertex * m_cpVertex; double m_dSetBack; double m_dEase; SmBoolean m_bOpen; };
+  std::vector<SetBackFill>  m_vSetBackFills;
+  SmBoolean                 m_bClassifyOnly;        // SolidCraft change: TRUE = stop after classifying the rails (SM_FILERR_OVERFLOW_FIRST),
+                                                    //   building nothing, m_vOverflowEdges the edges whose blends overflow
+  SmTArray<SmEdge*>         m_vOverflowEdges;       // SolidCraft change: the edges of the blends that overflow, when stopped so
+  SmTArray<SmEdge*>         m_vMitredEdges;         // SolidCraft change: when stopped so, the edges of each two blends mitred at a
+                                                    //   face's concave corner (SmBlendCorner::IsMitre), two by two
+  SmBoolean                 m_bKeepFeatures;        // SolidCraft change: TRUE = a feature (a boss, a cut) whose footprint is an inner
+                                                    //   loop of a face a round rolls on, and which the round's band reaches, stays: the
+                                                    //   round is trimmed by its walls, carried to the round (SmFilletKeepFeatures.cpp);
+                                                    //   FALSE = the round takes it (the merge drops it, as SMLib did)
+  double                    m_dFitRadius = -1.0;    // SolidCraft change: with a refusal as too large (SM_FILERR_NO_ROOM), the largest
+                                                    //   radius (the solver's, of a constant ball) that builds: > 0, 0 = none does, < 0
+                                                    //   = not known (a radius law, unequal offsets, a cause with no size)
+  SmEdge                  * m_pFitEdge = NULL;      // SolidCraft change: the blended edge m_dFitRadius is for
+  ULONG                     m_lFitKind = 0;         // SolidCraft change: what m_dFitRadius sizes: SM_FIT_RADIUS (a constant ball's
+                                                    //   radius), SM_FIT_SCALE (the factor on two unequal offsets), SM_FIT_CHORD (a width)
+  double                    m_dFitSetBack = -1.0;   // SolidCraft change: with a setback corner refused as too short for a convex
+                                                    //   fill (SM_FILERR_NO_ROOM), the least setback that builds one: > 0, 0 = none
+                                                    //   does, < 0 = not that cause
 
   // gwc: Only one of m_bDoPiecewiseMerge, m_bDoTopologyInsertion, and m_bDoGlobalMerge should be TRUE in any SmFilletExecutive.
   //      They are 3 different ways to do the same thing; move m_pFilletBrep Topology and Geometry into m_pTargetBrep. 
@@ -254,11 +292,6 @@ protected:
                                                     //        to insert m_pFilletBrep into the original m_pTargetBrep.  
                                                     //        This catches large radius cases where original Brep pieces get cut away.
                                                     // FALSE= use faster local operations that might miss some large radius cases.
-
-  SmBoolean                 m_bBlendCurveAtThirds;  // TRUE = blend-curve sections place their inner control points a third
-                                                    //        and two thirds of the way from each contact to where the two
-                                                    //        contacts' tangent lines meet (SmBlendCurveCrossSectionFSG).
-                                                    // FALSE= the fairest equally spaced Hermite scaled by the thumbweight.
 
   SmBoolean                 m_bMarkCornerPatches;   // SolidCraft change: TRUE = each face of a set-back corner's patch carries an
                                                     //        SM_AI_FILLET_CORNER_FACE SmTagAttribute whose primary ID is the corner's
@@ -310,9 +343,9 @@ public:
     double                        dAngTolDeg,                     ///< [in] : default (if <= 0): 20 degrees                       <br>
     double                        dTanTolDeg,                     ///< [in] : default (if <= 0): 10 degrees                       <br>
     double                        dXSectTol,                      ///< [in] : default (if <= 0): 0.05                             <br>
-    ULONG                         lContinuity=1,                  ///< [in] : 1, 2, or 3 for G1, G2, or G3                        <br>
+    ULONG                         lContinuity=2,                  ///< [in] : n of a G^n section, 2 to SM_GN_MAX_ORDER                     <br>
                                                                   ///< [in] : Used only when eXSectType == SM_FSG_BLEND_CURVE     <br>
-    double                        dThumbweight=1.0                ///< [in] : Used only when eXSectType == SM_FSG_BLEND_CURVE     <br>
+    double                        dThumbweight=SM_GN_DEFAULT_THUMBWEIGHT ///< [in] : its thumbweight, below 1; used only when eXSectType == SM_FSG_BLEND_CURVE     <br>
   ); 
 
   // Different parameters on each edge.
@@ -328,9 +361,9 @@ public:
     double                                     dAngTolDeg,        ///< [in] : default (if <= 0): 20 degrees                        <br>
     double                                     dTanTolDeg,        ///< [in] : default (if <= 0): 10 degrees                        <br>
     double                                     dXSectTol,         ///< [in] : default (if <= 0): 0.05                              <br>
-    ULONG                                      lContinuity=1,     ///< [in] : 1, 2, or 3 for G1, G2, or G3                         <br>
+    ULONG                                      lContinuity=2,     ///< [in] : n of a G^n section, 2 to SM_GN_MAX_ORDER                      <br>
                                                                   ///< [in] : Used only when eXSectType == SM_FSG_BLEND_CURVE      <br>
-    double                                     dThumbweight=1.0,  ///< [in] : Used only when eXSectType == SM_FSG_BLEND_CURVE      <br>
+    double                                     dThumbweight=SM_GN_DEFAULT_THUMBWEIGHT, ///< [in] : its thumbweight, below 1; used only when eXSectType == SM_FSG_BLEND_CURVE      <br>
     SmTArray< double >                       * pOptSecondRadii=NULL ///< [in] : SM_FS_CONST_RADIUS only: per edge, the offset of   <br>
                                                                   ///<        the second edgeuse's surface (unequal chamfers)     <br>
   );  
@@ -348,9 +381,9 @@ public:
     double                       dAngTolDeg,                      ///< [in] : default (if <= 0): 20 degrees                         <br>
     double                       dTanTolDeg,                      ///< [in] : default (if <= 0): 10 degrees                         <br>
     double                       dXSectTol,                       ///< [in] : default (if <= 0): 0.05                               <br>
-    ULONG                        lContinuity=1,                   ///< [in] : 1, 2, or 3 for G1, G2, or G3                          <br>
+    ULONG                        lContinuity=2,                   ///< [in] : n of a G^n section, 2 to SM_GN_MAX_ORDER                       <br>
                                                                   ///< [in] : Used only when eXSectType == SM_FSG_BLEND_CURVE       <br>
-    double                       dThumbweight=1.0                 ///< [in] : Used only when eXSectType == SM_FSG_BLEND_CURVE       <br>
+    double                       dThumbweight=SM_GN_DEFAULT_THUMBWEIGHT ///< [in] : its thumbweight, below 1; used only when eXSectType == SM_FSG_BLEND_CURVE       <br>
   );     
 
   // Different parameters on each edge, taking edge numbers instead of pointers.
@@ -366,9 +399,9 @@ public:
     double                                     dAngTolDeg,        ///< [in] : default (if <= 0): 20 degrees                         <br>
     double                                     dTanTolDeg,        ///< [in] : default (if <= 0): 10 degrees                         <br>
     double                                     dXSectTol,         ///< [in] : default (if <= 0): 0.05                               <br>
-    ULONG                                      lContinuity=1,     ///< [in] : 1, 2, or 3 for G1, G2, or G3                          <br>
+    ULONG                                      lContinuity=2,     ///< [in] : n of a G^n section, 2 to SM_GN_MAX_ORDER                       <br>
                                                                   ///< [in] : Used only when eXSectType == SM_FSG_BLEND_CURVE       <br>
-    double                                     dThumbweight=1.0   ///< [in] : Used only when eXSectType == SM_FSG_BLEND_CURVE       <br>
+    double                                     dThumbweight=SM_GN_DEFAULT_THUMBWEIGHT ///< [in] : its thumbweight, below 1; used only when eXSectType == SM_FSG_BLEND_CURVE       <br>
   ); 
 
 private:
@@ -418,20 +451,71 @@ public:
   SmStatus CreateFilletBrep          (SmFilletErrorInfo * pOptFilletErrorInfo = NULL);
   SmStatus CreateFilletCorners       (SmFilletErrorInfo * pOptFilletErrorInfo = NULL);
   SmStatus DoFilleting               (SmFilletErrorInfo * pOptFilletErrorInfo = NULL); // note: increments unlocked mark value
+  SmStatus DoFilletingSteps          (SmFilletErrorInfo * pOptFilletErrorInfo); // SolidCraft change: DoFilleting between the fan split and join
+  SmStatus SplitBlendedVertexFans    (SmBrep * pBrep, const SmTArray< SmEdge* > & rEdgePtrs); // SolidCraft change: one vertex per fan at each blended edge's vertex
+  SmStatus JoinBlendedVertexFans     (); // SolidCraft change: the vertices still at a split point joined again
   SmStatus DoSurfaceFilleting        (SmFilletErrorInfo * pOptFilletErrorInfo = NULL); // note: increments unlocked mark value
   SmStatus DoPiecewiseMerge          ();                                               // note: increments unlocked mark value
   SmStatus LoadFilletSolver          (SmFilletSolver * pFS);
   SmStatus FacesOutlastTheirBlends(SmBoolean & rbOutlast); // SolidCraft change: whether every face the blends roll on keeps some of itself, or is closed by blends tangent to it
-  // SolidCraft change: the cliff overflow (SmFilletCliffOverflow.cpp)
+  SmStatus BandsClearOtherRails(SmBoolean & rbClear); // SolidCraft change: whether no blend's rail runs inside the band another takes off a face they share, away from a corner
+  // SolidCraft change: the cliff overflow (SmFilletOverflow.cpp)
   SmBoolean GetCliffOverflow() const { return m_bCliffOverflow; }
+  void      SetOverflowFirst(SmBoolean bFirst) { m_bOverflowFirst = bFirst; }
+  void      SetClassifyOnly(SmBoolean bOnly) { m_bClassifyOnly = bOnly; }
+  void      SetSweptTurns(SmBoolean bSwept) { m_bSweptTurns = bSwept; }
+  void      SetKeepFeatures(SmBoolean bKeep) { m_bKeepFeatures = bKeep; } // SolidCraft change: keep features (SmFilletKeepFeatures.cpp)
+  // SolidCraft change: a refusal's largest radius that builds (m_dFitRadius), for the blend of pEdge
+  void      NoteFitRadius(double dRadius, SmEdge * pEdge, ULONG lKind = 0) { m_dFitRadius = dRadius; m_pFitEdge = pEdge; m_lFitKind = lKind; }
+  ULONG     GetFitKind() const { return m_lFitKind; }
+  // SolidCraft change: a cause's open bound dLimit (rbFound) on pSolver's blend, of kind lKind,
+  // noted less the fit margin (for a factor on two offsets, the margin over the larger), where it
+  // is the least so far
+  SmStatus  NoteOpenFit(SmBoolean bFound, double dLimit, ULONG lKind, SmFilletSolver & rSolver);
+  // SolidCraft change: the fit of a refusal for a rail running past pFace's boundary
+  SmStatus  NoteFitOnFace(const SmFace * pFace);
+  // SolidCraft change: the fit of blends taking the whole of a planar face bounded by straight blended edges
+  SmStatus  NoteFitOfPolygonsTakenWhole();
+  double    GetFitRadius() const { return m_dFitRadius; }
+  // SolidCraft change: a setback corner's refusal: the setback that builds (m_dFitSetBack)
+  void      NoteFitSetBack(double dSetBack) { m_dFitSetBack = dSetBack; }
+  double    GetFitSetBack() const { return m_dFitSetBack; }
+  // SolidCraft change: how far under an open bound (a size at which the blend leaves a face, an
+  // edge or a part's bridge of no extent) the largest size that builds lies: a thousand of the
+  // blended edge's tolerances (0.01 mm at 1e-5), so that the sliver the size leaves (a strip of
+  // face, a length of edge, a bridge) is one SMLib builds. Closer it does not always: a tolerance
+  // under the bridged block's bound its remainder merges away, ten fail in the merge, and a
+  // hundred under the bossed can's bound fail to build its 0.001 wide annulus of top.
+  static double FitMargin(const SmEdge & crEdge) { return 1000.0 * crEdge.GetTolerance().val; }
+  SmEdge  * GetFitEdge() const { return m_pFitEdge; }
+  SmStatus  KeepFeaturesInBands(SmBoolean & rbKept); // SolidCraft change: trim the rounds in place round the features their bands reach, sew them in
+  SmBoolean GetSweptTurns() const { return m_bSweptTurns; }
+  void      AddSetBackVertex(const SmVertex * cpVertex) { m_vSetBackVertices.Add( cpVertex ); } // SolidCraft change: before CreateFilletCorners
+  SmBoolean IsSetBackVertex(const SmVertex * cpVertex) const { return m_vSetBackVertices.IsIn( cpVertex ); }
+  // SolidCraft change: the corner at cpVertex set back dSetBack along each of its edges, with an
+  // ease dEase before it (0: none): asked before CreateFilletCorners, which then makes that corner
+  // the blend corner's Setback (SmBlendCorner), filled by the setback split, where it can; unless
+  // it is left open (bOpen), when it stays the corner patch the caller removes (SetSetBackDist).
+  void      SetSetBackFill(const SmVertex * cpVertex, double dSetBack, double dEase, SmBoolean bOpen) { SetBackFill s = { cpVertex, dSetBack, dEase, bOpen }; m_vSetBackFills.push_back(s); }
+  SmBoolean GetSetBackFill(const SmVertex * cpVertex, double & rdSetBack, double & rdEase, SmBoolean & rbOpen) const
+  {
+    for (size_t i=0; i<m_vSetBackFills.size(); i++)
+      if (m_vSetBackFills[i].m_cpVertex == cpVertex)
+        { rdSetBack = m_vSetBackFills[i].m_dSetBack; rdEase = m_vSetBackFills[i].m_dEase; rbOpen = m_vSetBackFills[i].m_bOpen; return TRUE; }
+    return FALSE;
+  }
+  const SmTArray<SmEdge*> & GetOverflowEdges() const { return m_vOverflowEdges; }
+  const SmTArray<SmEdge*> & GetMitredEdges() const { return m_vMitredEdges; }
   SmStatus  NoteOpenEnd(SmFilletSolver * pSolver, SmVertex * pVertex, SmFace * pEndFace); // an end the Nx1 corner left uncut
-  SmStatus  SubtractRemovalRegion();          // close m_pFilletBrep into the region the blends remove, subtract it from m_pTargetBrep
+  SmStatus  TrimAtCreases();                  // trim m_pFilletBrep along its creases with the faces past the cliffs, sew it in (SmFilletOverflow.cpp)
+  SmBoolean HasOpenSetBack() const;            // SolidCraft change: a corner is an open G1 setback (SmBlendCorner::IsSetBackOpen)
 private:
   SmStatus  CutFilletAtOpenEnd(const SmFilletOpenEnd & crEnd); // cut the fillet off by the end face's surface continued
-  SmStatus  CloseRemovalRegion();             // add the faces on the target's surfaces that close m_pFilletBrep
 public:
+  SmStatus EaseSetBackSections();             // SolidCraft change: ease rounds into curvature-continuous sections before eased setbacks (SmFilletCorner::m_dEaseDist)
   SmStatus NoteRadiusCornerSurfaces();        // SolidCraft change: copy fillet surfaces that turn where the radius has a corner
   SmStatus SplitFilletFacesAtRadiusCorners(); // SolidCraft change: split those fillet faces where the radius turns
+  SmStatus BuildLawCorners(const SmTArray<SmFace*> & crFaces, const SmLawCornerPieces & crKept); // SolidCraft change: the exact round at a law's dips and peaks
   SmStatus RemoveTopoEdges           ();
   void     RemoveFromTopoEdges( SmFilletEdge * pTopoEdge )
   {
@@ -441,8 +525,6 @@ public:
       m_vTopoEdges.RemoveAt( lIndex );
     }
   }
-
-  SmStatus TestAndConvertBigRadFillet( SmFilletGeom * pFG, SmBoolean    & rbConvertedToCorner );
 
   SmStatus UpdateTopologyChanges( SmAttribute  *pFaceAttr, SmFace *pOrigFace );
 
@@ -454,7 +536,6 @@ public:
 
   SmBoolean                   GetDoClassification()   { return m_bDoClassification; }
   SmBoolean                   GetDoGlobalMerge()      { return m_bDoGlobalMerge; }
-  SmBoolean                   GetBlendCurveAtThirds() { return m_bBlendCurveAtThirds; }
 
   SmTArray<SmFilletCorner*> & GetFilletCorners()      { return m_vFilletCorners; }
   SmTArray<SmFilletSolver*> & GetFilletSolvers()      { return m_vFilletSolvers; }
@@ -482,7 +563,6 @@ public:
   void     SetDoTopologyInsertion    (SmBoolean bDoInsert)         { m_bDoTopologyInsertion = bDoInsert; }
   void     SetDoGlobalMerge          (SmBoolean bDoGlobalMerge)    { m_bDoGlobalMerge       = bDoGlobalMerge; }
   // Before SetFilletParameters, which creates the section generators with it.
-  void     SetBlendCurveAtThirds     (SmBoolean bAtThirds)         { m_bBlendCurveAtThirds  = bAtThirds; }
   // SolidCraft change: before DoFilleting; the caller removes the marks (SM_AI_FILLET_CORNER_FACE) once read.
   void     SetMarkCornerPatches      (SmBoolean bMark)             { m_bMarkCornerPatches   = bMark; }
   void     SetDoTrimming             (SmBoolean bDoTrim)           { m_bDoTrimming          = bDoTrim; }

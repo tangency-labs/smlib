@@ -1190,11 +1190,12 @@ gw_FLAG  sm_CrvRationalBasisDerivs
   // locals
   gw_FLAG        error = NL_NO;
   gw_INDEX       i, j, k, nsp;
-  gw_REAL        ND_STACK[GW_MAX_DERIV][GW_MAX_DEGREE];
-  gw_REAL        *ND[GW_MAX_DERIV];
+  // SolidCraft change: rows 0 to der, and der may be GW_MAX_DERIV (sm_CrvDerivs' bound)
+  gw_REAL        ND_STACK[GW_MAX_DERIV+1][GW_MAX_DEGREE];
+  gw_REAL        *ND[GW_MAX_DERIV+1];
   gw_REAL        d[GW_MAX_DEGREE];
-  long     tri_STACK[GW_MAX_DERIV][GW_MAX_DERIV];
-  long     *tri[GW_MAX_DERIV];
+  long     tri_STACK[GW_MAX_DERIV+1][GW_MAX_DERIV+1];
+  long     *tri[GW_MAX_DERIV+1];
   gw_REAL        v, w;
   gw_DEGREE      p;
   gw_KNOTVECTOR  *knt;
@@ -1278,8 +1279,10 @@ gw_FLAG  sm_CrvDerivs
   gw_FLAG        error = NL_NO;
   gw_INDEX       i, k, spn;
   gw_DEGREE      p;
-  gw_REAL        BD_STACK[GW_MAX_DERIV][GW_MAX_DEGREE];
-  gw_REAL        *BD[GW_MAX_DERIV];
+  // SolidCraft change: rows 0 to der, der up to GW_MAX_DERIV (they held one row fewer: the last
+  // derivative wrote past them)
+  gw_REAL        BD_STACK[GW_MAX_DERIV+1][GW_MAX_DEGREE];
+  gw_REAL        *BD[GW_MAX_DERIV+1];
   gw_KNOTVECTOR  *knt;
   NL_EPOLYGON    ppl;
   NL_POINT       *P;

@@ -68,19 +68,37 @@ else()
   set(SMLIB_WARNINGS -w)
 endif()
 
+# The warnings the USD build (premake, FatalCompileWarnings) turns into errors, here on GCC:
+# CI builds with this so SMLib stays clean for that build too.
+option(SMLIB_STRICT_WARNINGS "Compile SMLib with the USD build's warnings as errors (GCC)" OFF)
+if(SMLIB_STRICT_WARNINGS AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  set(SMLIB_WARNINGS -Wall -Wshadow=local -Wunused-parameter -Werror)
+endif()
+
 # SMLib files in which no status is dropped any more: each call's status is passed on or
 # written (void) with its reason. On clang a new dropped status in them fails the build.
 set(SMLIB_STATUS_CLEAN
   ${SRC}/SMLib/src/SmFilletExecutive.cpp
-  ${SRC}/SMLib/src/SmFilletCliffOverflow.cpp
+  ${SRC}/SMLib/src/SmFilletKeepFeatures.cpp
+  ${SRC}/SMLib/src/SmFilletOverflow.cpp
   ${SRC}/SMLib/src/SmFilletGeom.cpp
   ${SRC}/SMLib/src/SmFilletSolver.cpp
+  ${SRC}/SMLib/src/SmFilletExact.cpp
+  ${SRC}/SMLib/src/SmFilletSection.cpp
   ${SRC}/SMLib/src/SmFilletCorner.cpp
+  ${SRC}/SMLib/src/SmBlendCorner.cpp
+  ${SRC}/SMLib/src/SmBlendCornerBall.cpp
+  ${SRC}/SMLib/src/SmBlendCornerMixed.cpp
+  ${SRC}/SMLib/src/SmBallPatch.cpp
+  ${SRC}/SMLib/src/SmBlendCornerEnd.cpp
+  ${SRC}/SMLib/src/SmBlendCornerJoin.cpp
+  ${SRC}/SMLib/src/SmBlendCornerSetback.cpp
   ${SRC}/SMLib/src/SmFilletStandardSolver.cpp
   ${SRC}/SMLib/src/SmFilletCustomSolver.cpp
   ${SRC}/SMLib/src/SmFilletIntersector.cpp
   ${SRC}/SMLib/src/SmCurveFilletExecutive.cpp
   ${SRC}/SMLib/src/SmBlendSurface.cpp
+  ${SRC}/SMLib/src/SmBlendSetback.cpp
   ${SRC}/SM_API/src/SmApiFillets.cpp
   ${SRC}/SMLib/src/SmMerge.cpp
   ${SRC}/SMLib/src/SmStitch.cpp
@@ -215,6 +233,25 @@ if(SMLIB_CAPI_TESTS)
     target_compile_definitions(smlib_test_${name} PRIVATE ${SMLIB_DEFINES} SMLIB_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
     add_test(NAME smlib_test_${name} COMMAND smlib_test_${name})
   endforeach()
+  # The tangent-end blends that fail today (tests/ops_kernel.cpp, TANGENT_END_CASES): fails if
+  # one of them passes, so a fix drops its reason there.
+  add_test(NAME smlib_test_ops_kernel_tangent_ends_known_failing COMMAND smlib_test_ops_kernel --tangent-ends-known-failing)
+  # The exact-class rounds that fail today (tests/ops_kernel.cpp, EXACT_CLASS_CASES), held the same way.
+  add_test(NAME smlib_test_ops_kernel_exact_classes_known_failing COMMAND smlib_test_ops_kernel --exact-classes-known-failing)
+  # The section-order blends that fail today (tests/ops_kernel.cpp, SECTION_CASES), held the same way.
+  add_test(NAME smlib_test_ops_kernel_section_orders_known_failing COMMAND smlib_test_ops_kernel --section-orders-known-failing)
+  # The turns at a sharp side edge that fail today (tests/ops_kernel.cpp, TURN_CASES), held the same way.
+  add_test(NAME smlib_test_ops_kernel_turns_known_failing COMMAND smlib_test_ops_kernel --turns-known-failing)
+  # The faces shrunk to their trims that fail today (tests/ops_kernel.cpp, SHRINK_CASES), held the same way.
+  add_test(NAME smlib_test_ops_kernel_shrinks_known_failing COMMAND smlib_test_ops_kernel --shrinks-known-failing)
+  # The Ball corners that fail today (tests/ops_kernel.cpp, BALL_CASES), held the same way.
+  add_test(NAME smlib_test_ops_kernel_balls_known_failing COMMAND smlib_test_ops_kernel --balls-known-failing)
+  # The blend scenarios that fail today (tests/ops_kernel.cpp, SCENARIO_CASES), held the same way.
+  add_test(NAME smlib_test_ops_kernel_scenarios_known_failing COMMAND smlib_test_ops_kernel --scenarios-known-failing)
+  # The setback corner's fills that fail today (tests/ops_kernel.cpp, SETBACK_CASES), held the same way.
+  add_test(NAME smlib_test_ops_kernel_setbacks_known_failing COMMAND smlib_test_ops_kernel --setbacks-known-failing)
+  # The mixed-convexity corners that fail today (tests/ops_kernel.cpp, MIXED_CORNER_CASES), held the same way.
+  add_test(NAME smlib_test_ops_kernel_mixed_corners_known_failing COMMAND smlib_test_ops_kernel --mixed-corners-known-failing)
 
   # Flat arrays: SmBrep -> arrays -> SmBrep round trips, and hostile arrays. The test builds its
   # solids with SM_API directly and hands them to the C API as native files.
