@@ -399,7 +399,7 @@ solidcore issue named.
 | issue | topic | where |
 |---|---|---|
 | [#81](https://github.com/tangency-labs/smlib/issues/81) | a round ending at the smooth vertex of a partly selected tangent chain | landing in SMLib |
-| [#82](https://github.com/tangency-labs/smlib/issues/82) | mixed convexity: convex and concave blends at one vertex (the test peg) | landing in SMLib |
+| [#82](https://github.com/tangency-labs/smlib/issues/82) | mixed convexity: convex and concave blends at one vertex (the test peg) | merged |
 | [#83](https://github.com/tangency-labs/smlib/issues/83) | delete the old corner hierarchy | phase 1 merged (#113); the setback paths go with #86 |
 | [#84](https://github.com/tangency-labs/smlib/issues/84) | several concave rounds at one vertex, unequal or N ≥ 4 | solidcore #2361 |
 | [#85](https://github.com/tangency-labs/smlib/issues/85) | a ball or setback corner with a curved face | Ball merged (#110); Setback: solidcore #2343 |

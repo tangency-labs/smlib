@@ -1322,3 +1322,23 @@ This fork changes upstream SMLib (NVIDIA usd-brep, Apache-2.0) as follows:
   `MakeEdgeTopology`): process-wide atomic counts of the faceuses a new face's closure test
   visits, the face pairs examined for intersection and the faceuses moved between shells, read by
   `smlib_work_counters`. They change no result.
+- **A convex and a concave blend meeting across a tangent seam** (new `SmBlendCornerMixed.cpp`,
+  `SM_BCE_MIXED` in `SmBlendCorner.h`; routed from `SmFilletCorner::Create`): two blends of opposite
+  convexity whose edges continue each other G1 at a vertex, the third edge a tangent seam between
+  their other faces, their common face a plane (a bar's front top edge and the concave arc where its
+  top meets a cylinder it runs tangent into). The old corner met both blends on their end sections
+  at the rails' crossing, where no smooth patch is tangent to both, and folded or failed. Each blend
+  is now trimmed along the other's rail continued, and the corner is two four-sided faces either
+  side of an inflection curve in the plane, G1 to every neighbour and G1 inside, with their ribbons
+  along the rounds' own cross partials (exact Möbius reparametrization at a torus's knots), and
+  along the wall's line at the vertex (a drafted wall). `smlib_blend` and `smlib_fillet` build it.
+- **A round's trace runs to its edge's end** (`SmFilletSolver.cpp`, `CalcFilletGeom`;
+  `sm_FindFilletTsectPnt`): at an end whose corner does not blend, a trace that stops short of the
+  edge's end makes the edge's section there a through point, solved over the trace's extended
+  surfaces, before it is extended. A round's extension had been measured from where the trace
+  stopped, which left the mixed corner's rails short of the seam.
+- **An open elliptic arc ending near its seam keeps its end angle** (`SmEllipse.cpp`,
+  `SmPolarConversion::SetUpPolarConversion`): its end angles came from `STEPInversion` over a
+  temporary full circle, whose closed-curve rule turned an open arc ending 1.17e-6 degrees short of
+  360 into 360, its analytic domain then 1.45e-8 off its NURB (SmEllipse test 1). Only a closed NURB
+  takes that rule now.
