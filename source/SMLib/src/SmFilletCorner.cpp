@@ -1176,9 +1176,10 @@ static int iDebugLevel = 0; // Note: Can't call DebugLevel() from a static metho
                                                                     dTangencyTolRadians,
                                                                     SM_BCE_END,
                                                                     SM_BT_MITRE);
-                pEnd->SetEnd(   SmBlendCorner::EndRunsOut( cpVertex, pEU0 ) ? SM_BEND_RUNS_OUT
-                              : bIsOpenEndCorner                          ? SM_BEND_OPEN
-                              :                                             SM_BEND_ON_END_FACE );
+                pEnd->SetEnd(   SmBlendCorner::EndRunsOut( cpVertex, pEU0 )                           ? SM_BEND_RUNS_OUT
+                              : bIsOpenEndCorner                                                    ? SM_BEND_OPEN
+                              : SmBlendCorner::EndAtSmoothVertex( cpVertex, pEU0, *pAllEUs, dTanTolDeg ) ? SM_BEND_AT_SMOOTH
+                              :                                                                       SM_BEND_ON_END_FACE );
                 pNewCorner = pEnd;
               }
           }
