@@ -2966,6 +2966,7 @@ namespace
 // the angle u between the ball's radii (EqualAreaThumbweight): the root of I(w) = target(u).
 SmStatus sm_GnEqualAreaW(ULONG lOrder, double dU, double & rdW)
 {
+  SmProceduralBlend::CountAreaRoot();
   rdW = 0.0;
   if (lOrder < 2 || lOrder > SM_GN_MAX_ORDER || !(dU > 0.0 && dU < 0.5 * SM_PI))
     { SER(SM_ERR_INVALID_INPUT); }

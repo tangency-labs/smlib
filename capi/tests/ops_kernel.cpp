@@ -4626,6 +4626,7 @@ struct SectionGrade
     unsigned long long most_newton_steps = 2;     // and the Newton steps any one solve may take (seeded within the bound)
     unsigned long long most_pieces = 0;           // the pieces its certificate may enclose (0: not graded)
     unsigned long long most_area_sums = 0;        // the equal area sums I(w) its certificate may sum outside its cells (0: not graded)
+    unsigned long long most_area_roots = 0;       // the equal area thumbweights the operation may solve for (0: not graded)
 };
 
 // Builds a blend by `build` and grades it by `g`: status, SMLib's check, volume, every point of
@@ -4656,6 +4657,7 @@ void section_blend(const std::function<int32_t(smlib_brep **)> &build, const Sec
         std::printf("  certificate: %llu equal area sums outside its cells\n", counts.lAreaSums);
         CHECK(g.most_area_sums == 0 || counts.lAreaSums <= g.most_area_sums);
     }
+
     CHECK(s == SMLIB_OK && b != nullptr);
     if (b == nullptr)
     {
@@ -4828,6 +4830,13 @@ void section_blend(const std::function<int32_t(smlib_brep **)> &build, const Sec
         }
     }
     CHECK(blends > 0 && seams >= 2);
+    // the equal area thumbweights solved for over the whole case: the blend, its volume and its grading
+    const unsigned long long roots = SmProceduralBlend::GetCounts().lAreaRoots;
+    if (roots > 0 || g.most_area_roots > 0)
+    {
+        std::printf("  equal area thumbweights solved for: %llu\n", roots);
+        CHECK(g.most_area_roots == 0 || roots <= g.most_area_roots);
+    }
     done(b);
 }
 
@@ -4854,6 +4863,14 @@ SectionGrade pieced(SectionGrade g, unsigned long long pieces)
 SectionGrade summed(SectionGrade g, unsigned long long sums)
 {
     g.most_area_sums = sums;
+    return g;
+}
+
+// g with the equal area thumbweights the operation may solve for (each a bisection of I(w) =
+// target(u), at the stations and the definition's points; a count, not a time)
+SectionGrade rooted(SectionGrade g, unsigned long long roots)
+{
+    g.most_area_roots = roots;
     return g;
 }
 
@@ -4970,7 +4987,7 @@ void section_box_edge_g2_equal_area()
     // whose truncation grows with ((1 - w) / r)^k: 1.3e-5 at this w (1e-5 is G3's bar), 7.5e-7 at
     // half the step (a cubic term would not halve), where round-off takes over at other stations.
     // So the grade asks G2 at least and G3 at most, the measure's limit here, not the section's.
-    SectionGrade g = summed(pieced(counted(box_edge_grade(2, w, 1.0 - PI / 4), 14200, 3180), 3), 2);
+    SectionGrade g = rooted(summed(pieced(counted(box_edge_grade(2, w, 1.0 - PI / 4), 14200, 3180), 3), 2), 4720);
     g.order = 2;
     g.order_max = 3;
     section_blend(by_order(box(0, 0, 0, 40, 30, 20), {20, 30, 20}, 2, SMLIB_BLEND_THUMBWEIGHT, 3.0), g);
@@ -5076,7 +5093,7 @@ void section_twisted_wedge_g2_equal_area()
     g.spans = 274;
     // its definition carries the equal area rule and resolves w at every point from its own
     // station's wedge, as the net's stations did: the net within its certified bound of it
-    g = summed(pieced(counted(g, 34700, 12850), 6530), 6760);
+    g = rooted(summed(pieced(counted(g, 34700, 12850), 6530), 6760), 23834);
     g.definition = true;
     int stations = 0;
     g.also = [&stations](const SmSurface *srf)
@@ -5310,7 +5327,7 @@ void section_boss_root_g2_equal_area()
 {
     // (w to about 1e-11: the definition is graded to 1e-9 against the exact section at w)
     const double w = square_corner_equal_area_w(200000);
-    SectionGrade g = summed(pieced(counted(boss_root_grade(2, 26056.152954783724, w), 9280, 4480), 4410), 680);
+    SectionGrade g = rooted(summed(pieced(counted(boss_root_grade(2, 26056.152954783724, w), 9280, 4480), 4410), 680), 14215);
     g.definition_tol = 1e-9;
     section_blend(by_order(boss_on_plate(), {30 + 4 * std::sqrt(2.0), 20 + 4 * std::sqrt(2.0), 10}, 2, SMLIB_BLEND_THUMBWEIGHT, 2.0), g);
 }
