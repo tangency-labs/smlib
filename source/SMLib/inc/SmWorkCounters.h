@@ -16,14 +16,17 @@
 #include <cstdint>
 
 /*******************************************************************//**
-PURPOSE: Three counters, each added to where its work is done:
+PURPOSE: Four counters, each added to where its work is done:
          - eClosureFaceuses: faceuses a new face's closure test visits
            (SmBrep::TestClosureSplitRegion, through
            SmTopologyTraverser::ClosureTraversalFromBothSides);
          - eFacePairs: pairs of faces of the two bodies examined for
            intersection (SmTopologyIntersector::IntersectTopology);
          - eShellFaceusesMoved: faceuses moved from one shell to another when
-           a new edge joins two shells (SmBrep::MakeEdgeTopology).
+           a new edge joins two shells (SmBrep::MakeEdgeTopology);
+         - eLoopsClassified: a face's inner loops classified against the new
+           face a closed loop imprinted in it makes
+           (SmBrep::MakeEdgeInFaceWithVU).
 
 NOTES: Process-wide, not per thread or per Brep. Atomic and relaxed, so
        concurrent calls never race, but the counts of concurrent calls mix.
@@ -36,7 +39,8 @@ public:
     eClosureFaceuses    = 0,
     eFacePairs          = 1,
     eShellFaceusesMoved = 2,
-    eNumCounters        = 3
+    eLoopsClassified    = 3,
+    eNumCounters        = 4
   };
 
   static void Add(Counter eCounter, int64_t lCount = 1)
