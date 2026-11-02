@@ -5619,6 +5619,65 @@ void section_sharp_wedge_g2_equal_area()
     smlib_brep_free(prism);
 }
 
+// A 40 x 30 x 20 box, its top back edge chamfered 5 (V0 = 24000 - 12.5 x 40 = 23500), then two
+// edges in ONE call of the order-2 section at the equal area thumbweight, size 2: A, the chamfer's
+// top edge through (20, 25, 20) (a 135 degree wedge), and B, the bottom front edge through
+// (20, 0, 0) (90 degrees). Each edge's section takes off its own wedge's ball's circle's area,
+// r^2 (cot(alpha/2) - (pi - alpha)/2), per unit length: A 0.0860579227, B 0.8584073464 (each
+// edge runs 40 between faces square to it). SMLib resolves the thumbweight at each station from its
+// own wedge (SmGnSectionFSG::ThumbweightAt), so neither edge takes the other's and the order of the
+// picks changes nothing. A generator that resolved it once and kept it would give both edges the
+// first one's (reported against a port, solidcore#2250); this case guards against that here.
+void section_two_wedges_one_call_g2_equal_area()
+{
+    smlib_brep *b = box(0, 0, 0, 40, 30, 20), *cut = nullptr;
+    const double back[3] = {20, 30, 20};
+    CHECK(b != nullptr && smlib_chamfer(b, back, 1, 0.1, 5.0, &cut, nullptr) == SMLIB_OK);
+    if (cut == nullptr)
+    {
+        smlib_brep_free(b);
+        return;
+    }
+    CHECK(near(volume_of(cut), 23500.0, 1e-9));
+    const double a = 4.0 * (1.0 / std::tan(0.375 * PI) - PI / 8.0), bb = 4.0 * (1.0 - PI / 4.0);
+    const double ab[6] = {20, 25, 20, 20, 0, 0}, ba[6] = {20, 0, 0, 20, 25, 20}, sizes[2] = {2.0, 2.0};
+    double removed[2] = {0, 0};
+    for (int k = 0; k < 2; k++)
+    {
+        smlib_brep *r = nullptr;
+        CHECK(smlib_blend_order(cut, 2, SMLIB_BLEND_THUMBWEIGHT, k == 0 ? ab : ba, sizes, 2, 0.1, &r, nullptr) == SMLIB_OK);
+        if (r != nullptr)
+        {
+            removed[k] = 23500.0 - volume_of(r);
+            CHECK(sound(r));
+            smlib_brep_free(r);
+        }
+    }
+    double alone[2] = {0, 0};
+    for (int k = 0; k < 2; k++)
+    {
+        smlib_brep *r = nullptr;
+        CHECK(smlib_blend_order(cut, 2, SMLIB_BLEND_THUMBWEIGHT, ab + 3 * k, sizes, 1, 0.1, &r, nullptr) == SMLIB_OK);
+        if (r != nullptr)
+        {
+            alone[k] = (23500.0 - volume_of(r)) / 40.0;
+            smlib_brep_free(r);
+        }
+    }
+    std::printf("  two wedges in one call: removed %.9f [A, B], %.9f [B, A], want %.9f; alone per mm A %.10f (want %.10f), B %.10f (want %.10f)\n",
+                removed[0], removed[1], 40.0 * (a + bb), alone[0], a, alone[1], bb);
+    // the order of the picks changes nothing: the same body
+    CHECK(removed[0] == removed[1]);
+    // to volume_of's accuracy (1e-7 of the box's 23500, on each of the two volumes subtracted):
+    // 4.7e-3 in all, 1.2e-4 per mm. One thumbweight for both edges would miss A's by 17% and
+    // B's by 21% (0.015 and 0.18 per mm), over a hundred times that.
+    const double acc = 2.0 * 1e-7 * 23500.0;
+    CHECK(std::fabs(removed[0] - 40.0 * (a + bb)) <= acc);
+    CHECK(std::fabs(alone[0] - a) <= acc / 40.0 && std::fabs(alone[1] - bb) <= acc / 40.0);
+    smlib_brep_free(cut);
+    smlib_brep_free(b);
+}
+
 // A block 60 x 30 x 50 cut by the surface z = 25 + a(x) y, a a cubic spline in x on the knots -4,
 // 0, 4, ..., 64 (end knots four times) whose control values are -tan 30 (the first seven), 0 (the
 // next six) and tan 30 (the last seven), each at its knots' Greville abscissa, so that the surface
@@ -7372,6 +7431,7 @@ const TangentEndCase SECTION_CASES[] = {
     {"pipe_on_plate_g2", section_pipe_on_plate_g2, nullptr},
     {"pipe_on_plate_g2_thumbweight_half", section_pipe_on_plate_g2_thumbweight_half, nullptr},
     {"sharp_wedge_g2_equal_area", section_sharp_wedge_g2_equal_area, nullptr},
+    {"two_wedges_one_call_g2_equal_area", section_two_wedges_one_call_g2_equal_area, nullptr},
     {"twisted_wedge_g2_equal_area", section_twisted_wedge_g2_equal_area, nullptr},
     {"twisted_wedge_g2_equal_area_net_on_definition", section_twisted_wedge_g2_equal_area_net_on_definition, nullptr},
     {"round_on_a_c2_face_is_its_definition", round_on_a_c2_face_is_its_definition, nullptr},
