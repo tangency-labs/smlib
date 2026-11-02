@@ -38,6 +38,7 @@
 #include <SmRegion.h>
 #include <SmShell.h>
 #include <SmSphere.h>
+#include <SmBallPatch.h>
 #include <SmSurface.h>
 #include <SmTol.h>
 #include <SmTorus.h>
@@ -97,6 +98,7 @@ enum : int64_t
     kSurfaceCone = SMLIB_FLAT_SURFACE_CONE,
     kSurfaceSphere = SMLIB_FLAT_SURFACE_SPHERE,
     kSurfaceTorus = SMLIB_FLAT_SURFACE_TORUS,
+    kSurfaceBallPatch = SMLIB_FLAT_SURFACE_BALL_PATCH,
     kCurveNurbs = SMLIB_FLAT_CURVE_NURBS,
     kCurveLine = SMLIB_FLAT_CURVE_LINE,
     kCurveCircle = SMLIB_FLAT_CURVE_CIRCLE,
@@ -112,7 +114,19 @@ bool EdgeHasForm(const std::vector<int64_t> &form, size_t iEdge)
 
 bool FaceHasNurbs(const FlatBrep &F, size_t iFace)
 {
-    return F.face_surface_type[iFace] == kSurfaceNurbs || (!F.face_nurbs_form.empty() && F.face_nurbs_form[iFace] == 1);
+    return F.face_surface_type[iFace] == kSurfaceNurbs || F.face_surface_type[iFace] == kSurfaceBallPatch ||
+           (!F.face_nurbs_form.empty() && F.face_nurbs_form[iFace] == 1);
+}
+
+// The kinds that carry a definition (FACE_DEFINITION_REAL_COUNT, FACE_DEFINITION_REALS), and how
+// many reals each has: a ball patch its sphere's center and radius.
+// A ball patch's net is on its sphere when |X - C W|^2 - R^2 W^2 is zero to this much of the
+// patch's size squared (SmBallPatch::IsOnSphere): rounding at the part's scale.
+const double kBallPatchRelTol = 1e-12;
+
+int64_t DefinitionReals(int64_t tKind)
+{
+    return tKind == kSurfaceBallPatch ? 4 : 0;
 }
 
 // USD writes USDBREP_NO_OBJECT_INDEX (9999999) for "no vertex"; the flat arrays use -1.
@@ -1531,6 +1545,10 @@ SmStatus FlatFromBrep(const SmBrep &crBrep, FlatBrep &F)
         {
             tFaceSurfaceType = kSurfaceSphere;
         }
+        else if (pFace->GetSurface()->IsKindOf(SmBallPatch_TYPE))
+        {
+            tFaceSurfaceType = kSurfaceBallPatch;
+        }
         else if (pFace->GetSurface()->IsKindOf(SmPlane_TYPE))
         {
             tFaceSurfaceType = kSurfacePlane;
@@ -1551,7 +1569,9 @@ SmStatus FlatFromBrep(const SmBrep &crBrep, FlatBrep &F)
         // A curved analytic face is also given with its NURBS form (FACE_NURBS_FORM), the NURBS
         // SMLib works on: its range and UV trims are in that NURBS's parameters, as SMLib holds
         // them. A plane's are in its own (u, v), which carries no trims.
-        const bool bNurbsForm = tFaceSurfaceType != kSurfaceNurbs && tFaceSurfaceType != kSurfacePlane;
+        const bool bNurbsForm = tFaceSurfaceType != kSurfaceNurbs && tFaceSurfaceType != kSurfacePlane && tFaceSurfaceType != kSurfaceBallPatch;
+        // A ball patch's NURBS block is its own, as a NURBS face's.
+        const bool bOwnNurbs = tFaceSurfaceType == kSurfaceNurbs || tFaceSurfaceType == kSurfaceBallPatch;
         // A plane's trims are in its NURBS (u, v); the arrays' plane (u, v) are distances along
         // its unit axes (its STEP parameters scaled by GetUVScale), an affine image of them.
         std::array<double, 6> sPlaneMap{};
@@ -1578,7 +1598,7 @@ SmStatus FlatFromBrep(const SmBrep &crBrep, FlatBrep &F)
             {
                 return SM_ERR; // "face loop index is out of bounds"
             }
-            sLoopExportsUVCurves[lLoopIndex] = tFaceSurfaceType == kSurfaceNurbs || bNurbsForm || bPlaneMap;
+            sLoopExportsUVCurves[lLoopIndex] = bOwnNurbs || bNurbsForm || bPlaneMap;
             sLoopPlaneMap[lLoopIndex] = sPlaneMap;
             sLoopHasPlaneMap[lLoopIndex] = bPlaneMap;
         }
@@ -1597,7 +1617,7 @@ SmStatus FlatFromBrep(const SmBrep &crBrep, FlatBrep &F)
         const SmExtent2d &sFaceRangeDomain = rFaceData.m_vUVDomain;
         double sFaceUVMin[2] = {sFaceRangeDomain.GetUMin(), sFaceRangeDomain.GetVMin()};
         double sFaceUVMax[2] = {sFaceRangeDomain.GetUMax(), sFaceRangeDomain.GetVMax()};
-        if (tFaceSurfaceType != kSurfaceNurbs && !bNurbsForm)
+        if (!bOwnNurbs && !bNurbsForm)
         {
             SmExtent2d sStepDom = pFace->GetSurface()->GetSTEPUVDomain();
             double dUMin = sStepDom.GetUMin();
@@ -1751,6 +1771,19 @@ SmStatus FlatFromBrep(const SmBrep &crBrep, FlatBrep &F)
             {
                 return s;
             }
+        }
+        else if (tFaceSurfaceType == kSurfaceBallPatch)
+        {
+            // its net, then its definition: the sphere it is on
+            const SmBallPatch *pBall = static_cast<const SmBallPatch *>(pSurface);
+            SmStatus s = smu_AddSmBSplineSurface(*pBall, F);
+            if (s != SM_SUCCESS)
+            {
+                return s;
+            }
+            const SmPoint3d &sCenter = pBall->GetCentre();
+            F.face_definition_real_count.push_back(DefinitionReals(kSurfaceBallPatch));
+            F.face_definition_reals.insert(F.face_definition_reals.end(), {sCenter.x, sCenter.y, sCenter.z, pBall->GetRadius()});
         }
         else if (tFaceSurfaceType == kSurfaceNurbs)
         {
@@ -2313,7 +2346,7 @@ bool Validate(const FlatBrep &F, Shape &S)
 
     // Faces
     if (F.face_loop_count.size() != S.faces || F.face_surface_type.size() != S.faces || F.face_trim_type.size() != S.faces ||
-        F.face_range.size() != 4 * S.faces || !Bits(F.face_trim_type) || !InRange(F.face_surface_type, kSurfaceNurbs, kSurfaceTorus) ||
+        F.face_range.size() != 4 * S.faces || !Bits(F.face_trim_type) || !InRange(F.face_surface_type, kSurfaceNurbs, kSurfaceBallPatch) ||
         !InRange(F.face_loop_count, 1, kMaxTopology))
     {
         return false;
@@ -2326,7 +2359,8 @@ bool Validate(const FlatBrep &F, Shape &S)
         }
         for (size_t i = 0; i < S.faces; ++i)
         {
-            if (F.face_nurbs_form[i] == 1 && (F.face_surface_type[i] == kSurfaceNurbs || F.face_surface_type[i] == kSurfacePlane))
+            if (F.face_nurbs_form[i] == 1 &&
+                (F.face_surface_type[i] == kSurfaceNurbs || F.face_surface_type[i] == kSurfacePlane || F.face_surface_type[i] == kSurfaceBallPatch))
             {
                 return false;
             }
@@ -2529,7 +2563,7 @@ bool Validate(const FlatBrep &F, Shape &S)
     }
 
     // Surfaces
-    size_t nT[6] = {0, 0, 0, 0, 0, 0};
+    size_t nT[7] = {0, 0, 0, 0, 0, 0, 0};
     for (int64_t t : F.face_surface_type)
     {
         nT[static_cast<size_t>(t)]++;
@@ -2541,6 +2575,41 @@ bool Validate(const FlatBrep &F, Shape &S)
     }
     const size_t nP = nT[kSurfacePlane], nCy = nT[kSurfaceCylinder], nCo = nT[kSurfaceCone], nS = nT[kSurfaceSphere],
                  nTo = nT[kSurfaceTorus];
+    // Definitions: one count per face whose kind carries one, its kind's; then its reals, finite
+    // (a ball patch's radius > 0).
+    {
+        size_t nD = 0, at = 0;
+        for (size_t i = 0; i < S.faces; ++i)
+        {
+            const int64_t want = DefinitionReals(F.face_surface_type[i]);
+            if (want == 0)
+            {
+                continue;
+            }
+            if (nD >= F.face_definition_real_count.size() || F.face_definition_real_count[nD] != want ||
+                at + static_cast<size_t>(want) > F.face_definition_reals.size())
+            {
+                return false;
+            }
+            for (int64_t k = 0; k < want; ++k)
+            {
+                if (!std::isfinite(F.face_definition_reals[at + static_cast<size_t>(k)]))
+                {
+                    return false;
+                }
+            }
+            if (F.face_surface_type[i] == kSurfaceBallPatch && !(F.face_definition_reals[at + 3] > 0.0))
+            {
+                return false;
+            }
+            nD++;
+            at += static_cast<size_t>(want);
+        }
+        if (F.face_definition_real_count.size() != nD || F.face_definition_reals.size() != at)
+        {
+            return false;
+        }
+    }
     if (F.face_nurbs_u_vertex_count.size() != nN || F.face_nurbs_v_vertex_count.size() != nN || F.face_nurbs_u_order.size() != nN ||
         F.face_nurbs_v_order.size() != nN)
     {
@@ -3083,13 +3152,13 @@ SmStatus FlatToBrepData(const FlatBrep &F, const Shape &S, const SmContext &crSm
     pData->m_vFaces.SetSize(static_cast<ULONG>(S.faces));
     ULONG lLoopIndex = 0;
     Cursor sNurbsSurfaces;
-    size_t iSphere = 0, iPlane = 0, iCylinder = 0, iCone = 0, iTorus = 0;
+    size_t iSphere = 0, iPlane = 0, iCylinder = 0, iCone = 0, iTorus = 0, iBallPatch = 0;
     for (ULONG iLocal = 0; iLocal < S.faces; iLocal++)
     {
         SmFaceData &rFaceData = pData->m_vFaces[iLocal];
         rFaceData.ReSet();
         const int64_t tSurfaceType = F.face_surface_type[iLocal];
-        const bool bNurbsForm = tSurfaceType != kSurfaceNurbs && FaceHasNurbs(F, iLocal);
+        const bool bNurbsForm = tSurfaceType != kSurfaceNurbs && tSurfaceType != kSurfaceBallPatch && FaceHasNurbs(F, iLocal);
 
         // Mapping face:trimType -> SMLib m_bRectangularTrim (tri-state):
         //   "rectangular" -> TRUE   (definitively naturally/rectangularly trimmed)
@@ -3277,6 +3346,24 @@ SmStatus FlatToBrepData(const FlatBrep &F, const Shape &S, const SmContext &crSm
             stat = SmTorus::CreateCanonical(ctx, sPlacement, F.face_torus_major_radius[i], F.face_torus_minor_radius[i], pTorus);
             pNewSurface = pTorus;
         }
+        else if (tSurfaceType == kSurfaceBallPatch)
+        {
+            // its net, taken as the patch on its definition's sphere only when the net is on it
+            const size_t at = 4 * iBallPatch++;
+            const SmPoint3d sCenter(F.face_definition_reals[at], F.face_definition_reals[at + 1], F.face_definition_reals[at + 2]);
+            const double dRadius = F.face_definition_reals[at + 3];
+            SmBSplineSurface *pNet = smu_CreateSmBSplineSurface3d(ctx, F, sNurbsSurfaces);
+            SmObjDelete sNetCleanup(pNet);
+            SmBoolean bOn = FALSE;
+            SmBallPatch *pBall = NULL;
+            stat = SM_ERR_INVALID_INPUT;
+            if (pNet != NULL && SmBallPatch::IsOnSphere(*pNet, sCenter, dRadius, kBallPatchRelTol, bOn) == SM_SUCCESS && bOn == TRUE &&
+                SmBallPatch::Create(ctx, *pNet, sCenter, dRadius, pBall) == SM_SUCCESS)
+            {
+                stat = SM_SUCCESS;
+            }
+            pNewSurface = pBall;
+        }
         else // NURBS
         {
             pNewSurface = smu_CreateSmBSplineSurface3d(ctx, F, sNurbsSurfaces);
@@ -3290,7 +3377,7 @@ SmStatus FlatToBrepData(const FlatBrep &F, const Shape &S, const SmContext &crSm
             return stat != SM_SUCCESS ? stat : SM_ERR;
         }
 
-        const bool bAnalyticSurface = tSurfaceType != kSurfaceNurbs && !bNurbsForm;
+        const bool bAnalyticSurface = tSurfaceType != kSurfaceNurbs && tSurfaceType != kSurfaceBallPatch && !bNurbsForm;
         if (bAnalyticSurface && sDomain.IsBounded())
         {
             SmStatus adjStat = pNewSurface->AdjustSTEPUVDomain(sDomain);

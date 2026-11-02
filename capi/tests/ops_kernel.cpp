@@ -1620,6 +1620,30 @@ static void shelled_ball_box_open_at_the_front(bool round_trip)
         }
         std::printf("box rounded all round r %g, through the flat arrays: %d corners on their balls' spheres\n", r, balls);
         CHECK(balls == 8);
+        // a corner's net with a knot inserted in each direction (two pieces each way) is still on its
+        // sphere, and on no sphere 1e-9 larger
+        if (round != nullptr)
+        {
+            SmTArray<SmFace *> faces;
+            round->p->GetFaces(faces);
+            const SmBallPatch *ball = nullptr;
+            for (ULONG i = 0; i < faces.GetSize() && ball == nullptr; i++)
+            {
+                ball = SM_CAST_PTR(SmBallPatch, faces[i]->GetSurface());
+            }
+            if (ball != nullptr)
+            {
+                SmBSplineSurface cut(*ball);
+                const SmExtent2d dom = cut.GetNaturalUVDomain();
+                SmTArray<double> ku, kv;
+                ku.Add(dom.GetUInterval().Evaluate(0.3));
+                kv.Add(dom.GetVInterval().Evaluate(0.6));
+                CHECK(cut.InsertKnots(SM_SP_U, ku) == SM_SUCCESS && cut.InsertKnots(SM_SP_V, kv) == SM_SUCCESS);
+                SmBoolean on = FALSE, off = TRUE;
+                CHECK(SmBallPatch::IsOnSphere(cut, ball->GetCentre(), ball->GetRadius(), 1e-12, on) == SM_SUCCESS && on == TRUE);
+                CHECK(SmBallPatch::IsOnSphere(cut, ball->GetCentre(), ball->GetRadius() * (1.0 + 1e-9), 1e-12, off) == SM_SUCCESS && off == FALSE);
+            }
+        }
     }
     const double front[3] = {dx / 2, 0, dz / 2};
     const double a = dx - 2 * r, bb = dy - 2 * r, c = dz - 2 * r;
@@ -7806,8 +7830,7 @@ const TangentEndCase BALL_CASES[] = {
     {"cone_frustum_volume", ball_cone_frustum_volume,
      "smlib#103: the flat's trim curves along the flat-cone rounds' hyperbolas are fitted, not exact (SmPlane::DropCurve clamps the rational rail's control points to the plane's domain and falls to the general drop), and the cone's along its rails too: 2.5e-6 off Steiner's (the sharp part alone 5e-9)"},
     {"knife_edge_arc_corner", ball_knife_edge_arc_corner, nullptr},
-    {"box_shelled_after_a_round_trip", ball_box_shelled_after_a_round_trip,
-     "status 1034 (smlib#102): the flat arrays write the Ball's SmBallPatch as a bare NURBS (no SMLIB_FLAT_SURFACE_BALL_PATCH face, no definition) and read it back as an SmBSplineSurface, its sphere lost; its offset 2 in no longer collapses (OffsetCollapses), the rounds' beside it do, and the shell cannot mate across them (SmOffsetExecutive, unbridged)"},
+    {"box_shelled_after_a_round_trip", ball_box_shelled_after_a_round_trip, nullptr},
 };
 
 int ball_cases(bool known_failing, const char *only)
