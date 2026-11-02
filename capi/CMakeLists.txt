@@ -81,6 +81,7 @@ set(SMLIB_STATUS_CLEAN
   ${SRC}/SMLib/src/SmFilletCorner.cpp
   ${SRC}/SMLib/src/SmBlendCorner.cpp
   ${SRC}/SMLib/src/SmBlendCornerBall.cpp
+  ${SRC}/SMLib/src/SmBlendCornerMixed.cpp
   ${SRC}/SMLib/src/SmBallPatch.cpp
   ${SRC}/SMLib/src/SmBlendCornerEnd.cpp
   ${SRC}/SMLib/src/SmBlendCornerJoin.cpp
