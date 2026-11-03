@@ -1614,18 +1614,27 @@ int32_t open_holes(SmBrep *b, const std::vector<SmPoint3d> &at, const std::vecto
         SmTArray<SmEdgeuse *> uses;
         if (fu == nullptr || edges[k]->GetEdgeuses(uses) != SM_SUCCESS)
         {
+            g_blend_reason = "the open setback's hole could not be read off the sheet: a free edge's face has no outer side";
             return SMLIB_ERR_UNSUPPORTED;
         }
         SmEdgeuse *use = nullptr;
+        int on_fu = 0;
         for (ULONG i = 0; i < uses.GetSize(); ++i)
         {
             if (uses[i]->GetFaceuse() == fu)
             {
                 use = uses[i];
+                ++on_fu;
             }
+        }
+        // A closed face's seam (its own edge, run twice by it) bounds no hole.
+        if (on_fu == 2)
+        {
+            continue;
         }
         if (use == nullptr)
         {
+            g_blend_reason = "the open setback's hole could not be read off the sheet: a free edge is not on its face's outer side";
             return SMLIB_ERR_UNSUPPORTED;
         }
         rim.push_back({edges[k], beside[0], use->GetOrientation() == SM_OT_SAME});
@@ -1650,6 +1659,7 @@ int32_t open_holes(SmBrep *b, const std::vector<SmPoint3d> &at, const std::vecto
                 {
                     if (next != rim.size())
                     {
+                        g_blend_reason = "the open setback's hole could not be read off the sheet: its rim branches at a vertex";
                         return SMLIB_ERR_UNSUPPORTED;
                     }
                     next = i;
@@ -1657,6 +1667,7 @@ int32_t open_holes(SmBrep *b, const std::vector<SmPoint3d> &at, const std::vecto
             }
             if (next == rim.size())
             {
+                g_blend_reason = "the open setback's hole could not be read off the sheet: its rim does not close";
                 return SMLIB_ERR_UNSUPPORTED;
             }
             used[next] = true;
@@ -1680,6 +1691,7 @@ int32_t open_holes(SmBrep *b, const std::vector<SmPoint3d> &at, const std::vecto
         }
         if (which == at.size() || !holes[which].empty())
         {
+            g_blend_reason = "the open setback's hole could not be read off the sheet: a hole lies at no open corner, or two at one";
             return SMLIB_ERR_UNSUPPORTED;
         }
         holes[which] = std::move(loop);
@@ -1688,6 +1700,7 @@ int32_t open_holes(SmBrep *b, const std::vector<SmPoint3d> &at, const std::vecto
     {
         if (open[k] && holes[k].empty())
         {
+            g_blend_reason = "the open setback's hole could not be read off the sheet: an open corner left no hole";
             return SMLIB_ERR_UNSUPPORTED;
         }
     }

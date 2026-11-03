@@ -12802,8 +12802,7 @@ const TangentEndCase SETBACK_CASES[] = {
     {"open_concave_notch_hole", setback_open_concave_notch_hole, nullptr},
     {"asked_where_no_setback_corner_refused", setback_asked_where_no_setback_corner_refused, nullptr},
     {"open_g1_box_corner_hole", setback_open_g1_box_corner_hole, nullptr},
-    {"open_hole_on_a_body_with_a_closed_face", setback_open_hole_on_a_body_with_a_closed_face,
-     "SMLIB_ERR_UNSUPPORTED with no reason: the closed cylinder's seam, one face's own edge, is taken for a free edge of the hole"},
+    {"open_hole_on_a_body_with_a_closed_face", setback_open_hole_on_a_body_with_a_closed_face, nullptr},
 };
 
 int setback_cases(bool known_failing, const char *only)
