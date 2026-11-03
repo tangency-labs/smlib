@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-alpha.1]
+### Fixed
+- `smlib_fillet` no longer ends a round with a smooth-vertex End and a plane cap where its edge runs on into an edge whose faces meet tangentially (a flat side running onto a round end), which has no convexity and is no edge of a tangent chain. The round ends on the end face past the vertex, as before 1.1.0-alpha; such a round no longer gains two cap faces on the walls it ends on.
+- When some rounds of a blend overflow their faces and are built first, a round built after them that runs on tangentially into one of their end arcs now meets them as the corner of one blend. 1.1.0-alpha capped it there with a smooth-vertex End, leaving a shoulder of r x r of the side face at that corner (for example 0.95 mm^3 on a plate rounded r 2 at its own thickness, 121.6 mm^3 on a notched block's R8 outline).
+- `smlib_blend_setback_open` (and its eased variant) no longer refuses a corner on a body with a closed face (a cylinder's face with its seam) with `SMLIB_ERR_UNSUPPORTED`: the seam, one face's own edge, is no free edge of the hole. Every refusal while reading the hole off the sheet now sets `smlib_blend_reason`.
+- A boolean's clean-up drops each edge and vertex it deletes from its working lists and sets as it deletes it, and every edge, vertex and face the boolean destroys leaves its mate maps; a new edge or vertex made at a freed address no longer reads as a deleted one, or as mated. The two thread grooves of a both-handed M10 thread now join into the same body every time.
+
 ## [Unreleased]
 ### Added
 - `smlib_blend` and `smlib_fillet` blend a convex and a concave edge that continue each other tangentially at a vertex across a tangent seam, such as a bar's front top edge and the concave arc where its top runs into a cylinder, or the same part with drafted walls. The corner is two faces tangent to both blends and to the walls, smooth inside; it used to fold or fail. ([smlib #82](https://github.com/tangency-labs/smlib/issues/82))
