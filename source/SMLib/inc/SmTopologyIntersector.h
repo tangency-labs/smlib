@@ -406,6 +406,10 @@ public:
       SmTopology * pOtherEntity
     );
 
+    // An entity of either brep that is being deleted leaves the mate maps as a key: a new object
+    // made at its address has no mate.
+    void ForgetEntity(const SmObject * cpEntity);
+
     SmStatus ReIntersectAtVertex
     (                                                     ///< [in ]:          <br>
       SmVertex  * pBrepVertex,                            ///< [in ]:          <br>

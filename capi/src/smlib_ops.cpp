@@ -630,7 +630,7 @@ int32_t round_edges(SmBrep *b, const std::vector<SmEdge *> &edges, const std::ve
                     const std::vector<SmFilletLaw *> &laws, const std::vector<SetBack> &setbacks = {},
                     std::vector<std::vector<SmFace *>> *patches = nullptr, int64_t *refused = nullptr,
                     std::vector<SmEdge *> *overflow_first = nullptr, bool classify_only = false,
-                    std::vector<SmEdge *> *mitred = nullptr)
+                    std::vector<SmEdge *> *mitred = nullptr, const std::vector<SmFace *> &earlier_pass = {})
 {
     SmTArray<SmEdge *> es;
     SmTArray<double> values;
@@ -688,6 +688,12 @@ int32_t round_edges(SmBrep *b, const std::vector<SmEdge *> &edges, const std::ve
     exec.SetSweptTurns(section.turn == SMLIB_TURN_SWEPT ? TRUE : FALSE);
     // A feature (a boss, a cut) standing inside a round's band stays, or the round takes it.
     exec.SetKeepFeatures(section.keep_features ? TRUE : FALSE);
+    // The faces the rounds that went first made (overflow_first): a round running on into one of
+    // their edges meets them as one blend, ending at no smooth vertex there.
+    for (SmFace *f : earlier_pass)
+    {
+        exec.AddEarlierPassFace(f);
+    }
     // A corner set back is classified as one: never the Ball. A setback corner closed by SMLib is
     // the blend corner's Setback, its hole filled by the setback split (G2 with an ease or
     // curvature-continuous sections, else G1) where it builds one (every face there a plane, every
@@ -1608,18 +1614,27 @@ int32_t open_holes(SmBrep *b, const std::vector<SmPoint3d> &at, const std::vecto
         SmTArray<SmEdgeuse *> uses;
         if (fu == nullptr || edges[k]->GetEdgeuses(uses) != SM_SUCCESS)
         {
+            g_blend_reason = "the open setback's hole could not be read off the sheet: a free edge's face has no outer side";
             return SMLIB_ERR_UNSUPPORTED;
         }
         SmEdgeuse *use = nullptr;
+        int on_fu = 0;
         for (ULONG i = 0; i < uses.GetSize(); ++i)
         {
             if (uses[i]->GetFaceuse() == fu)
             {
                 use = uses[i];
+                ++on_fu;
             }
+        }
+        // A closed face's seam (its own edge, run twice by it) bounds no hole.
+        if (on_fu == 2)
+        {
+            continue;
         }
         if (use == nullptr)
         {
+            g_blend_reason = "the open setback's hole could not be read off the sheet: a free edge is not on its face's outer side";
             return SMLIB_ERR_UNSUPPORTED;
         }
         rim.push_back({edges[k], beside[0], use->GetOrientation() == SM_OT_SAME});
@@ -1644,6 +1659,7 @@ int32_t open_holes(SmBrep *b, const std::vector<SmPoint3d> &at, const std::vecto
                 {
                     if (next != rim.size())
                     {
+                        g_blend_reason = "the open setback's hole could not be read off the sheet: its rim branches at a vertex";
                         return SMLIB_ERR_UNSUPPORTED;
                     }
                     next = i;
@@ -1651,6 +1667,7 @@ int32_t open_holes(SmBrep *b, const std::vector<SmPoint3d> &at, const std::vecto
             }
             if (next == rim.size())
             {
+                g_blend_reason = "the open setback's hole could not be read off the sheet: its rim does not close";
                 return SMLIB_ERR_UNSUPPORTED;
             }
             used[next] = true;
@@ -1674,6 +1691,7 @@ int32_t open_holes(SmBrep *b, const std::vector<SmPoint3d> &at, const std::vecto
         }
         if (which == at.size() || !holes[which].empty())
         {
+            g_blend_reason = "the open setback's hole could not be read off the sheet: a hole lies at no open corner, or two at one";
             return SMLIB_ERR_UNSUPPORTED;
         }
         holes[which] = std::move(loop);
@@ -1682,6 +1700,7 @@ int32_t open_holes(SmBrep *b, const std::vector<SmPoint3d> &at, const std::vecto
     {
         if (open[k] && holes[k].empty())
         {
+            g_blend_reason = "the open setback's hole could not be read off the sheet: an open corner left no hole";
             return SMLIB_ERR_UNSUPPORTED;
         }
     }
@@ -1901,10 +1920,26 @@ int32_t overflow_first(const smlib_brep *brep, const double *points, int64_t n_p
         }
         return s;
     }
+    SmTArray<SmFace *> before_lead;
+    fresh->GetFaces(before_lead);
     s = round_edges(fresh.get(), lead, lead_sizes, section, {});
     if (s != SMLIB_OK)
     {
         return s;
+    }
+    // the faces the lead made: those not there before it
+    std::vector<SmFace *> lead_faces;
+    {
+        SmTArray<SmFace *> after_lead;
+        fresh->GetFaces(after_lead);
+        ULONG at = 0;
+        for (ULONG i = 0; i < after_lead.GetSize(); ++i)
+        {
+            if (!before_lead.FindElement(after_lead[i], at))
+            {
+                lead_faces.push_back(after_lead[i]);
+            }
+        }
     }
     SmTArray<SmEdge *> edges;
     fresh->GetEdges(edges);
@@ -1938,7 +1973,7 @@ int32_t overflow_first(const smlib_brep *brep, const double *points, int64_t n_p
     }
     if (!rest_edges.empty())
     {
-        s = round_edges(fresh.get(), rest_edges, rest_sizes, section, {});
+        s = round_edges(fresh.get(), rest_edges, rest_sizes, section, {}, {}, nullptr, nullptr, nullptr, false, nullptr, lead_faces);
         if (s != SMLIB_OK)
         {
             return s;

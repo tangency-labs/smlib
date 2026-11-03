@@ -8302,3 +8302,17 @@ void SmBSplineFilletLaw::Dump() const
   return;
 
 } // end SmBSplineFilletLaw::Dump
+
+/*******************************************************************//**
+PURPOSE: Whether cpFace is one an earlier pass of the same blend made
+   (AddEarlierPassFace).
+***********************************************************************/
+SmBoolean SmFilletExecutive::IsEarlierPassFace(const SmFace * cpFace) const
+{
+  for (ULONG ii=0; ii<m_vEarlierPassFaces.GetSize(); ii++)
+    {
+      if ( m_vEarlierPassFaces[ii] == cpFace )
+        { return TRUE; }
+    }
+  return FALSE;
+} // end SmFilletExecutive::IsEarlierPassFace

@@ -274,8 +274,10 @@ public:
   static SmBoolean EndRunsOut( const SmVertex * pCornerVert, SmEdgeuse * pFilEdgeuse );
   // whether the blended edge runs on at cpCornerVert, tangentially, into an edge of its convexity
   // that is not blended (crAllEUs: the edgeuses round the vertex)
+  // (cpExec: an edge of a face an earlier pass of the blend made is no such edge)
   static SmBoolean EndAtSmoothVertex( const SmVertex * cpCornerVert, SmEdgeuse * pFilEdgeuse,
-                                      const SmTArray<SmEdgeuse*> & crAllEUs, double dTanTolDeg );
+                                      const SmTArray<SmEdgeuse*> & crAllEUs, double dTanTolDeg,
+                                      const SmFilletExecutive * cpExec );
   virtual SmSurface * GetEndCapSurface() const { return m_pEndCap; }
   // an End on its end face, before it is built: the least radius at which a rail reaches its
   // side edge's far end, where the rail runs past it (the refusal's reason: DescribeEndPastSideEdge)

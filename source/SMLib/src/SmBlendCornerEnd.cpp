@@ -1243,21 +1243,32 @@ NOTES: With tangent propagation off, only the selected edges are rounded;
    between other faces, the seam of two other blends, is the end of the
    side faces: the End on the end faces past it takes it.) A tangent edge of the other convexity (a
    boss's base running on as the rim of an overhang past a wall) is no such
-   continuation: the End on the end face past it takes it.
+   continuation: the End on the end face past it takes it. Nor is an edge whose
+   faces meet tangentially (it has no convexity).
 ***********************************************************************/
 SmBoolean SmBlendCorner::EndAtSmoothVertex
   (const SmVertex             * cpCornerVert,
    SmEdgeuse                  * pFilEdgeuse,
    const SmTArray<SmEdgeuse*> & crAllEUs,
-   double                       dTanTolDeg)
+   double                       dTanTolDeg,
+   const SmFilletExecutive    * cpExec)
 {
   for (ULONG ii=0; ii<crAllEUs.GetSize(); ii++)
     {
       SmEdgeuse * pEU = crAllEUs[ii];
       if ( pEU == NULL || pEU->GetEdge() == pFilEdgeuse->GetEdge() )
         { continue; }
+      // an edge whose faces meet tangentially (a flat side running onto a round end) has no
+      // convexity: it is no edge of a tangent chain, and the End on the end face takes the vertex
+      if ( sm_CheckTangentialEdgeuseAtVertex( pEU, cpCornerVert, dTanTolDeg ) )
+        { continue; }
       // the edge running on along one of the blended edge's faces
       SmFace * pFaces[2] = { pEU->GetFace(), pEU->GetRadial()->GetFace() };
+      // an edge of a round an earlier pass of this blend made (the rounds that overflow go first)
+      // is the other round of one blend: the two meet as the corner of both, as when they go
+      // together, never with an End and its cap between them
+      if ( cpExec != NULL && ( cpExec->IsEarlierPassFace( pFaces[0] ) || cpExec->IsEarlierPassFace( pFaces[1] )))
+        { continue; }
       SmBoolean bAlongItsFace = FALSE;
       for (ULONG ff=0; ff<2; ff++)
         {

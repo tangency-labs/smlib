@@ -9871,6 +9871,145 @@ void scenario_chamfers_taking_a_square_top_refused()
     smlib_brep_free(cube);
 }
 
+// SolidCraft's ladder 06-threads/018: the two modelled M10 grooves, right- and left-handed screw
+// sweeps (tests/data/thread-grooves-m10-*.smb, as SolidCraft hands them over), joined into one
+// tool. The union merges coincident faces across the cylinders' seams, splitting the merged faces
+// at the seam as it goes; the edges, vertices and faces it deletes there must leave none of its
+// lists or mate maps, or a new edge or vertex made at a freed address reads as one it has already
+// seen, or as mated. The same inputs, read
+// afresh each time (so their objects sit at other addresses), must give the same body every time.
+void scenario_thread_grooves_union_the_same_every_time()
+{
+    int64_t first[3] = {-1, -1, -1};
+    double first_volume = -1.0;
+    int differ = 0;
+    const int runs = 20;
+    for (int k = 0; k < runs; ++k)
+    {
+        smlib_brep *a = nullptr, *b = nullptr, *u = nullptr;
+        CHECK(smlib_brep_read(SMLIB_TEST_DATA "/thread-grooves-m10-first.smb", 0, &a) == SMLIB_OK);
+        CHECK(smlib_brep_read(SMLIB_TEST_DATA "/thread-grooves-m10-second.smb", 0, &b) == SMLIB_OK);
+        const smlib_brep *in[2] = {a, b};
+        CHECK(a != nullptr && b != nullptr && smlib_boolean_union_all(in, 2, &u) == SMLIB_OK && u != nullptr);
+        int64_t c[3] = {-1, -1, -1};
+        double v = -1.0;
+        if (u != nullptr)
+        {
+            CHECK(smlib_brep_counts(u, c) == SMLIB_OK);
+            v = volume_of(u);
+        }
+        if (k == 0)
+        {
+            std::copy(c, c + 3, first);
+            first_volume = v;
+            CHECK(u != nullptr && sound(u));
+        }
+        else if (c[0] != first[0] || c[1] != first[1] || c[2] != first[2] || std::fabs(v - first_volume) > 1e-9 * first_volume)
+        {
+            std::printf("  run %d: [%lld, %lld, %lld] %.9f against [%lld, %lld, %lld] %.9f\n", k, (long long)c[0], (long long)c[1],
+                        (long long)c[2], v, (long long)first[0], (long long)first[1], (long long)first[2], first_volume);
+            differ++;
+        }
+        for (smlib_brep *x : {a, b, u})
+        {
+            smlib_brep_free(x);
+        }
+    }
+    std::printf("  %d runs: [%lld, %lld, %lld], volume %.9f; %d differ\n", runs, (long long)first[0], (long long)first[1], (long long)first[2],
+                first_volume, differ);
+    CHECK(differ == 0);
+}
+
+// SolidCraft's fillets/5158: a 30 x 31 plate 2 thick, two holes 6.35 through, its two top edges at
+// the corner (-15, 15.5) rounded r 2, the plate's thickness. The round at x = -15 reaches the hole
+// at (-10.8, 8.2) and goes first; the other then rounds what is left of its edge, which ends at
+// (-13, 15.5, 2) running on tangentially into the first round's end arc. That vertex is no end of a
+// partial tangent chain: the two rounds are one blend, and they meet as the corner of both:
+// V = 1860 - 2 pi 3.175^2 2 - [(1 - pi/4) 4 (30 + 31) - int_0^2 (2 - sqrt(4 - z^2))^2 dz - C],
+// the overlap of the two rounds at the corner 40/3 - 4 pi, C = 0.176513535 the part of the first
+// round's band the hole already took (Gauss-Legendre): 1681.903758348. Capped at x = -13 instead,
+// it keeps a 2 x 2 shoulder of the side face, 2 pi - 16/3 = 0.949852 more.
+void scenario_plate_edge_rounds_as_thick_as_the_plate()
+{
+    smlib_brep *plate = box(-15, -15.5, 0, 30, 31, 2);
+    smlib_brep *h1 = cylinder(-10.8, 8.2, -1, 3.175, 4), *h2 = cylinder(3.2, 6.4, -1, 3.175, 4);
+    smlib_brep *p1 = nullptr, *p2 = nullptr, *r = nullptr;
+    CHECK(smlib_boolean(plate, h1, SMLIB_BOOLEAN_SUBTRACT, &p1) == SMLIB_OK && p1 != nullptr);
+    CHECK(p1 != nullptr && smlib_boolean(p1, h2, SMLIB_BOOLEAN_SUBTRACT, &p2) == SMLIB_OK && p2 != nullptr);
+    const double points[6] = {0, 15.5, 2, -15, 0, 2};
+    const double sizes[2] = {2, 2};
+    CHECK(p2 != nullptr && smlib_blend(p2, SMLIB_BLEND_ROUND, points, sizes, 2, 0.01, &r, nullptr) == SMLIB_OK && r != nullptr);
+    const double want = 1681.903758348;
+    if (r != nullptr)
+    {
+        CHECK(sound(r));
+        std::printf("  volume %.9f, expected %.9f\n", volume_of(r), want);
+        CHECK(near(volume_of(r), want, 1e-8));
+    }
+    for (smlib_brep *b : {plate, h1, h2, p1, p2, r})
+    {
+        smlib_brep_free(b);
+    }
+}
+
+// SolidCraft's fillets/1080 (notched block): a 40 x 30 x 10 block less a 5 x 5 x 3 notch at a bottom
+// corner, its top outline rounded R8, which runs past the 7 mm wall over the notch into it. The two
+// rounds into the notch go first; the others round what is left of their edges, each ending where
+// it runs on into a first round's end arc, and meet them in the outline's mitres as when all four go
+// together: V = 11925 - (1 - pi/4) r^2 (140 - 8 c) + N, c = r (10 - 3 pi) / (3 (4 - pi)) (the prisms
+// ending on the 45 degree mitres), N = 0.208039 the rounds' part inside the notch, not material:
+// 10198.718039. Capped instead, two 8 x 8 shoulders stay, 2 r^3 (pi/4 - 2/3) = 121.581 more.
+void scenario_notched_block_outline_rounds_meet_in_mitres()
+{
+    smlib_brep *block = box(0, 0, 0, 40, 30, 10), *notch = box(35, -1, -1, 6, 6, 4), *b = nullptr, *r = nullptr;
+    CHECK(smlib_boolean(block, notch, SMLIB_BOOLEAN_SUBTRACT, &b) == SMLIB_OK && b != nullptr);
+    const double points[12] = {20, 0, 10, 40, 15, 10, 20, 30, 10, 0, 15, 10};
+    const double sizes[4] = {8, 8, 8, 8};
+    CHECK(b != nullptr && smlib_blend(b, SMLIB_BLEND_ROUND, points, sizes, 4, 0.01, &r, nullptr) == SMLIB_OK && r != nullptr);
+    const double want = 10198.718038816;
+    if (r != nullptr)
+    {
+        CHECK(sound(r));
+        std::printf("  volume %.9f, expected %.9f\n", volume_of(r), want);
+        // the mitres' prisms are exact; the rounds' bands in the notch are fits (2e-8 of the volume)
+        CHECK(near(volume_of(r), want, 1e-7));
+    }
+    for (smlib_brep *x : {block, notch, b, r})
+    {
+        smlib_brep_free(x);
+    }
+}
+
+// SolidCraft's fillets/3369: a bar of stadium section (25 x 19 and two R9.5 ends) 14 long, a slot
+// x 3.5..9.5 cutting away half of one round end; the slot's top edge (the flat top against the
+// slot's wall y = 0) rounded R2. At its ends the edge runs on into the seam where the flat top
+// meets the round end tangentially: a seam whose faces meet tangentially has no convexity and is
+// no edge of a tangent chain, so the round ends on the slot's walls, as on any end face, and makes
+// one face: V = 14 (475 + 90.25 pi) - 3 (90.25 pi) - 24 (1 - pi/4) = 9763.665662773.
+void scenario_round_ending_where_its_edge_runs_on_into_a_tangent_seam()
+{
+    // the slotted bar as SolidCraft hands it over (tests/data/slot-bar-tangent-seam.smb), with
+    // the pick tolerance it sends
+    smlib_brep *b = nullptr, *r = nullptr;
+    CHECK(smlib_brep_read(SMLIB_TEST_DATA "/slot-bar-tangent-seam.smb", 0, &b) == SMLIB_OK && b != nullptr);
+    const double point[3] = {6.5, 0, 9.5}, size = 2.0;
+    CHECK(b != nullptr && smlib_blend(b, SMLIB_BLEND_ROUND, point, &size, 1, 2.4974975465639857, &r, nullptr) == SMLIB_OK && r != nullptr);
+    const double want = 14.0 * (475.0 + 90.25 * PI) - 3.0 * 90.25 * PI - 24.0 * (1.0 - PI / 4.0);
+    if (r != nullptr)
+    {
+        int64_t before[3] = {0, 0, 0}, after[3] = {0, 0, 0};
+        CHECK(smlib_brep_counts(b, before) == SMLIB_OK && smlib_brep_counts(r, after) == SMLIB_OK);
+        CHECK(sound(r));
+        std::printf("  faces %lld -> %lld, volume %.9f, expected %.9f\n", (long long)before[0], (long long)after[0], volume_of(r), want);
+        CHECK(after[0] == before[0] + 1);
+        CHECK(near(volume_of(r), want, 1e-9));
+    }
+    for (smlib_brep *x : {b, r})
+    {
+        smlib_brep_free(x);
+    }
+}
+
 // The scenario cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--scenarios-known-failing` runs the failing ones and fails if one passes.
 // An ellipse arc ending at its seam (313.53 to 360 degrees, radii 0.5 and 0.7071: a round's End on a
@@ -10404,6 +10543,10 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"unequal_rounds_at_a_concave_turn", scenario_unequal_rounds_at_a_concave_turn, nullptr},
     {"unequal_rounds_at_a_convex_turn", scenario_unequal_rounds_at_a_convex_turn, nullptr},
     {"variable_round_from_zero_at_a_corner", scenario_variable_round_from_zero_at_a_corner, nullptr},
+    {"thread_grooves_union_the_same_every_time", scenario_thread_grooves_union_the_same_every_time, nullptr},
+    {"plate_edge_rounds_as_thick_as_the_plate", scenario_plate_edge_rounds_as_thick_as_the_plate, nullptr},
+    {"notched_block_outline_rounds_meet_in_mitres", scenario_notched_block_outline_rounds_meet_in_mitres, nullptr},
+    {"round_ending_where_its_edge_runs_on_into_a_tangent_seam", scenario_round_ending_where_its_edge_runs_on_into_a_tangent_seam, nullptr},
 };
 
 int scenario_cases(bool known_failing, const char *only)
@@ -12604,6 +12747,32 @@ void setback_g1_base_points_on_the_spring_conics()
     }
 }
 
+// SolidCraft's fillets report-fillet-g2-corner-of-bar-running-into-cylinder: a D-ended bar 40 x 16 x
+// 10 joined to an R8 x 20 cylinder over its round end, the bar's corner (0, 0, 10) rounded r2 on its
+// three edges and set back 3, left open. The cylinder's face is closed: its seam is its own edge,
+// run twice by that one face, which bounds no hole. The hole is the corner's nine edges.
+void setback_open_hole_on_a_body_with_a_closed_face()
+{
+    smlib_brep *bar = box(0, 0, 0, 40, 16, 10), *post = cylinder(40, 8, 0, 8, 20), *part = nullptr;
+    CHECK(smlib_boolean(bar, post, SMLIB_BOOLEAN_UNION, &part) == SMLIB_OK && part != nullptr);
+    const double edges[9] = {0, 0, 5, 20, 0, 10, 0, 8, 10};
+    const double radii[3] = {2, 2, 2};
+    const double corner[3] = {0, 0, 10};
+    const double setback = 3.0;
+    smlib_brep *r = nullptr;
+    int64_t holes[64], len = -1;
+    const int32_t st = part == nullptr ? SMLIB_ERR_ARG
+                                       : smlib_blend_setback_open(part, SMLIB_BLEND_ROUND, edges, radii, 3, corner, &setback, 1, 0.1, &r, holes, 64,
+                                                                  &len, nullptr, nullptr);
+    std::printf("  status %d, hole of %lld edge(s)%s%s\n", static_cast<int>(st), static_cast<long long>(len > 0 ? holes[0] : -1), st == SMLIB_OK ? "" : ": ",
+                st == SMLIB_OK ? "" : last_blend_reason().c_str());
+    CHECK(st == SMLIB_OK && r != nullptr && len == 1 + 3 * 9 && holes[0] == 9);
+    for (smlib_brep *x : {bar, post, part, r})
+    {
+        smlib_brep_free(x);
+    }
+}
+
 // The setback corner's cases, and why each that fails today fails (null: it passes). As
 // TANGENT_END_CASES: `--setbacks-known-failing` runs the failing ones and fails if one passes.
 const TangentEndCase SETBACK_CASES[] = {
@@ -12633,6 +12802,7 @@ const TangentEndCase SETBACK_CASES[] = {
     {"open_concave_notch_hole", setback_open_concave_notch_hole, nullptr},
     {"asked_where_no_setback_corner_refused", setback_asked_where_no_setback_corner_refused, nullptr},
     {"open_g1_box_corner_hole", setback_open_g1_box_corner_hole, nullptr},
+    {"open_hole_on_a_body_with_a_closed_face", setback_open_hole_on_a_body_with_a_closed_face, nullptr},
 };
 
 int setback_cases(bool known_failing, const char *only)
