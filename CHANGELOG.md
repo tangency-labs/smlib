@@ -31,6 +31,7 @@
   arrays 36 and 166 back unchanged. ([smlib #102](https://github.com/tangency-labs/smlib/issues/102))
 - A round whose corner at one end is not blended now runs to its edge's end before it is extended, so the larger mixed corners (round radius 5 or 7 on the test peg) build instead of failing with a vertex computation failure. ([smlib #82](https://github.com/tangency-labs/smlib/issues/82))
 - An elliptic arc trimmed just short of its seam no longer has its angular domain moved to the seam, which made it fail SMLib's own validity check by 1.45e-8. ([smlib #82](https://github.com/tangency-labs/smlib/issues/82))
+- `smlib_extrude` and the other linear sweeps no longer make the wall of a curve that is straight to the body's tolerance a cylinder. A spline 7e-7 off its 0.89 mm chord had a cylinder wall of radius 217 m, which `smlib_brep_import` did not rebuild within SMLib's own check (SmSurfOfRevolution test #10 off by 5.2e-4), so SolidCraft, which keeps bodies as flat arrays, refused every boolean with it. Such a curve is now swept as itself. ([SolidCraft #11394](https://github.com/tangency-labs/solidcraft/issues/11394))
 
 ## [1.0.1] - 2026-10-21
 ### Added
