@@ -9874,8 +9874,9 @@ void scenario_chamfers_taking_a_square_top_refused()
 // SolidCraft's ladder 06-threads/018: the two modelled M10 grooves, right- and left-handed screw
 // sweeps (tests/data/thread-grooves-m10-*.smb, as SolidCraft hands them over), joined into one
 // tool. The union merges coincident faces across the cylinders' seams, splitting the merged faces
-// at the seam as it goes; the edges and vertices it deletes there must leave none of its lists, or
-// a new edge made at a freed address reads as one it has already seen. The same inputs, read
+// at the seam as it goes; the edges, vertices and faces it deletes there must leave none of its
+// lists or mate maps, or a new edge or vertex made at a freed address reads as one it has already
+// seen, or as mated. The same inputs, read
 // afresh each time (so their objects sit at other addresses), must give the same body every time.
 void scenario_thread_grooves_union_the_same_every_time()
 {
@@ -10542,8 +10543,7 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"unequal_rounds_at_a_concave_turn", scenario_unequal_rounds_at_a_concave_turn, nullptr},
     {"unequal_rounds_at_a_convex_turn", scenario_unequal_rounds_at_a_convex_turn, nullptr},
     {"variable_round_from_zero_at_a_corner", scenario_variable_round_from_zero_at_a_corner, nullptr},
-    {"thread_grooves_union_the_same_every_time", scenario_thread_grooves_union_the_same_every_time,
-     "the union's merge keeps deleted edges and vertices in its lists and mate maps; a new edge or vertex at a freed address reads as an old one, so the body depends on where its objects sit"},
+    {"thread_grooves_union_the_same_every_time", scenario_thread_grooves_union_the_same_every_time, nullptr},
     {"plate_edge_rounds_as_thick_as_the_plate", scenario_plate_edge_rounds_as_thick_as_the_plate, nullptr},
     {"notched_block_outline_rounds_meet_in_mitres", scenario_notched_block_outline_rounds_meet_in_mitres, nullptr},
     {"round_ending_where_its_edge_runs_on_into_a_tangent_seam", scenario_round_ending_where_its_edge_runs_on_into_a_tangent_seam, nullptr},

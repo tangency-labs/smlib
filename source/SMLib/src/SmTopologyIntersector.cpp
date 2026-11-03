@@ -822,6 +822,23 @@ SmStatus SmTopologyIntersector::RemoveRelationship(SmTopology * pBrepEntity,
 
 } // end SmTopologyIntersector::RemoveRelationship
 
+/*******************************************************************//**
+PURPOSE: Drop an entity being deleted from the mate maps as a key.
+
+NOTES: Called while the entity is being deleted: its address is only a key, and a
+   new object made at that address must find no mate. Its mate's entry stays: that
+   entity still came out of the intersection (BooleanPostProcess reads only whether
+   it has a mate, never the mate).
+***********************************************************************/
+void SmTopologyIntersector::ForgetEntity(const SmObject * cpEntity)
+{
+  SmObject * pEntity = const_cast<SmObject *>(cpEntity);
+  if (m_pBToO && m_pBToO->At(pEntity) != NULL)
+    { m_pBToO->Remove(pEntity); }
+  if (m_pOToB && m_pOToB->At(pEntity) != NULL)
+    { m_pOToB->Remove(pEntity); }
+} // end SmTopologyIntersector::ForgetEntity
+
 
 /*******************************************************************//**
 PURPOSE: Get the Other Brep entity mated to this Brep topology entity.

@@ -18,6 +18,7 @@
 #include <SmPrimitiveCreation.h>
 #include <SmTrimmingTools.h>
 #include <SmTopologyTraverser.h>
+#include <memory>
 #include <SmCurveClass.h>
 #include <SmFace.h>
 
@@ -797,6 +798,133 @@ ULONG lCount      = 1 ; lCount++ ;
 
 } // end SmMerge::PiecewiseMerge
 
+// The intersector's mate maps are keyed by raw pointers: a topology entity of either brep that is
+// destroyed while a boolean runs leaves them, so that an object made later at its address (as
+// SmFace::SplitAtSeam makes vertices where faces merged) has no mate. Destruction, not removal
+// from the brep: an edge is also "removed" when it only takes a new curve (SmEdge::SetCurve).
+static SmBoolean sm_GoesOutOfTheMateMaps(SmNotifyOperation eAction, SmObject *pData1)
+{
+  return eAction == SM_NO_DESTRUCTION && pData1 != NULL && pData1->IsKindOf(SmTopology_TYPE);
+}
+
+// BooleanPostProcess's lists, sets and the intersector's mate maps hold raw edge and vertex
+// pointers while the post-process deletes edges and vertices and (merging faces across a seam,
+// SmFace::SplitAtSeam) makes new ones, which may take a freed address. Every edge and vertex
+// deleted while it runs leaves all of them as it goes: removed from the sets and maps, its entries
+// in the lists set to NULL (the loops skip those; the members are compacted at the end).
+class sm_PostProcessForgets : public SmNotifyCallback
+{
+ public:
+  sm_PostProcessForgets(SmContext                   * pContext,
+                        SmTopologyIntersector       & rTI,
+                        std::unordered_set<SmEdge*> & rQueued,
+                        std::unordered_set<SmEdge*> & rLeftInsideFace,
+                        SmTArray<SmEdge*>           & rEdges,
+                        SmTArray<SmVertex*>         & rEdgeVertices,
+                        SmTArray<SmVertex*>         & rVertices,
+                        SmTArray<SmEdge*>           & rIntersectionEdges,
+                        SmTArray<SmVertex*>         & rIntersectionVertices)
+    : m_pContext(pContext), m_rTI(rTI), m_rQueued(rQueued), m_rLeftInsideFace(rLeftInsideFace), m_rEdges(rEdges),
+      m_rEdgeVertices(rEdgeVertices), m_rVertices(rVertices), m_rIntersectionEdges(rIntersectionEdges),
+      m_rIntersectionVertices(rIntersectionVertices)
+  {
+    // chained: a tracker already listening (the healer's) hears every event as before
+    m_pPrevious = m_pContext != NULL ? m_pContext->GetSysNotifyCallback() : NULL;
+    if (m_pContext != NULL)
+      {
+        m_pContext->SetSysNotifyCallback(NULL);
+        m_pContext->SetSysNotifyCallback(this);
+      }
+  }
+  ~sm_PostProcessForgets() override
+  {
+    if (m_pContext != NULL)
+      {
+        m_pContext->SetSysNotifyCallback(NULL);
+        m_pContext->SetSysNotifyCallback(m_pPrevious);
+      }
+    // the members outlive the post-process: no NULL entries left in them
+    SmTArray<SmEdge*>   sEdges;
+    SmTArray<SmVertex*> sVertices;
+    for (ULONG ii=0; ii<m_rIntersectionEdges.GetSize(); ii++)
+      { if (m_rIntersectionEdges[ii] != NULL) { sEdges.Add(m_rIntersectionEdges[ii]); } }
+    for (ULONG ii=0; ii<m_rIntersectionVertices.GetSize(); ii++)
+      { if (m_rIntersectionVertices[ii] != NULL) { sVertices.Add(m_rIntersectionVertices[ii]); } }
+    m_rIntersectionEdges    = sEdges;
+    m_rIntersectionVertices = sVertices;
+  }
+
+  SmStatus Execute(SmNotifyOperation eAction, SmObject *pObj, SmObject *pData1, SmObject *pData2, SmObject *pData3) override
+  {
+    if ((eAction == SM_NO_DESTRUCTION || eAction == SM_NO_RM_FROM_BREP) && pData1 != NULL)
+      {
+        if (pData1->IsKindOf(SmEdge_TYPE))
+          {
+            SmEdge *pEdge = (SmEdge*)pData1;
+            m_rQueued.erase(pEdge);
+            m_rLeftInsideFace.erase(pEdge);
+            forget(m_rEdges, pEdge);
+            forget(m_rIntersectionEdges, pEdge);
+          }
+        else if (pData1->IsKindOf(SmVertex_TYPE))
+          {
+            SmVertex *pVertex = (SmVertex*)pData1;
+            forget(m_rEdgeVertices, pVertex);
+            forget(m_rVertices, pVertex);
+            forget(m_rIntersectionVertices, pVertex);
+          }
+      }
+    if (sm_GoesOutOfTheMateMaps(eAction, pData1))
+      { m_rTI.ForgetEntity(pData1); }
+    return m_pPrevious != NULL ? m_pPrevious->Execute(eAction, pObj, pData1, pData2, pData3) : SM_SUCCESS;
+  }
+
+ private:
+  template <class T> static void forget(SmTArray<T*> &rList, const T *cpGone)
+  {
+    for (ULONG ii=0; ii<rList.GetSize(); ii++)
+      { if (rList[ii] == cpGone) { rList[ii] = NULL; } }
+  }
+
+  SmContext                   * m_pContext;
+  SmNotifyCallback            * m_pPrevious;
+  SmTopologyIntersector       & m_rTI;
+  std::unordered_set<SmEdge*> & m_rQueued;
+  std::unordered_set<SmEdge*> & m_rLeftInsideFace;
+  SmTArray<SmEdge*>           & m_rEdges;
+  SmTArray<SmVertex*>         & m_rEdgeVertices;
+  SmTArray<SmVertex*>         & m_rVertices;
+  SmTArray<SmEdge*>           & m_rIntersectionEdges;
+  SmTArray<SmVertex*>         & m_rIntersectionVertices;
+};
+
+// Keeps the intersector's mate maps free of destroyed entities while a boolean runs (above).
+class sm_MatesForget : public SmNotifyCallback
+{
+ public:
+  sm_MatesForget(SmContext *pContext, SmTopologyIntersector &rTI) : m_pContext(pContext), m_rTI(rTI)
+  {
+    m_pPrevious = m_pContext->GetSysNotifyCallback();
+    m_pContext->SetSysNotifyCallback(NULL);
+    m_pContext->SetSysNotifyCallback(this);
+  }
+  ~sm_MatesForget() override
+  {
+    m_pContext->SetSysNotifyCallback(NULL);
+    m_pContext->SetSysNotifyCallback(m_pPrevious);
+  }
+  SmStatus Execute(SmNotifyOperation eAction, SmObject *pObj, SmObject *pData1, SmObject *pData2, SmObject *pData3) override
+  {
+    if (sm_GoesOutOfTheMateMaps(eAction, pData1))
+      { m_rTI.ForgetEntity(pData1); }
+    return m_pPrevious != NULL ? m_pPrevious->Execute(eAction, pObj, pData1, pData2, pData3) : SM_SUCCESS;
+  }
+ private:
+  SmContext             * m_pContext;
+  SmNotifyCallback      * m_pPrevious;
+  SmTopologyIntersector & m_rTI;
+};
+
 /*******************************************************************//**
 PURPOSE: Post process after the Boolean operation and clean up
   topological edges and vertices.
@@ -864,11 +992,16 @@ SmBoolean bDebugMe=FALSE;
   // same test, but no intersection edge, so it is checked as well.
   std::unordered_set<SmEdge*> sQueued( sEdges.GetDataArray(), sEdges.GetDataArray() + lNumEdges );
   std::unordered_set<SmEdge*> sLeftInsideFace;
+  SmTArray< SmVertex* > sVertices; // the vertices checked after the edges
+  sm_PostProcessForgets sForgets( const_cast<SmContext*>( m_vTI.m_pBrep->GetContext() ), m_vTI, sQueued, sLeftInsideFace, sEdges,
+                                  sEdgeVertices, sVertices, m_sIntersectionEdges, m_sIntersectionVertices );
 
   // for every edge - find and remove topological edges (maybe merging faces) without changing the Brep shape
   for ( ii=0; ii<lNumEdges; ii++ )
     {
       SmEdge *pEdge = sEdges[ii];
+      if ( pEdge == NULL ) // deleted since it was queued
+        { continue; }
 
 #ifdef SM_DEBUG_CODE
       if (bDebugMe)
@@ -1223,15 +1356,19 @@ SmBoolean bDebugMe=FALSE;
   // These are all of the vertices in the Intersection entity maps
   // plus those of the edges that we just removed.
 
-  // Vertices to check
-  SmTArray< SmVertex* > sVertices;
-  sVertices = m_sIntersectionVertices;  // (Assignment operator)
+  // Vertices to check (none deleted: sForgets took those out)
+  for(ii=0; ii<m_sIntersectionVertices.GetSize(); ii++)
+    {
+      if ( m_sIntersectionVertices[ii] != NULL )
+        { sVertices.Add( m_sIntersectionVertices[ii] ); }
+    }
 
   // Add in the vertices of the edges that we just removed.
   // (Although they're probably already in there.)
   for(ii=0; ii<sEdgeVertices.GetSize(); ii++)
     {
-      sVertices.AddUnique( sEdgeVertices[ii] );
+      if ( sEdgeVertices[ii] != NULL )
+        { sVertices.AddUnique( sEdgeVertices[ii] ); }
     }
   //ULONG lNumEdgeVerts = sVertices.GetSize() ;
 
@@ -1261,6 +1398,8 @@ SmBoolean bDebugMe=FALSE;
   for(ii=0;ii<lNumVerts;ii++)
     {
       SmVertex *pVertex = sVertices[ii];
+      if ( pVertex == NULL ) // deleted since it was listed
+        { continue; }
 
       // pVertex may have been deleted.  If so, it will have been removed from the maps.
       if ( ! bCheckAllEdges )
@@ -2787,6 +2926,8 @@ SmStatus SmMerge::ManifoldBoolean
   SmContext *pOtherContext = SM_CONST_CAST(SmContext*,m_vTI.m_pOther->GetContext());
   pBrepContext->SetDoingBoolean (TRUE);
   pOtherContext->SetDoingBoolean(TRUE);
+  sm_MatesForget sBrepMatesForget( pBrepContext, m_vTI );
+  std::unique_ptr<sm_MatesForget> pOtherMatesForget( pOtherContext != pBrepContext ? new sm_MatesForget( pOtherContext, m_vTI ) : nullptr );
 
 #ifdef SM_USE_GLOBAL_CACHE
   // temporarily increase both context's global cache queue lengths using the SmCacheMgr mechanism.
