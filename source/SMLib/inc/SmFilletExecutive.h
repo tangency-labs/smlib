@@ -246,6 +246,7 @@ protected:
   std::vector<SmFilletOpenEnd> m_vOpenEnds;         // SolidCraft change: the fillet's ends left uncut, in m_bCliffOverflow
   std::vector<SmPoint3d>       m_vFanSplitPoints;   // SolidCraft change: where a blended edge's vertex the body touches itself at
                                                     //   was split into one vertex per fan (SplitBlendedVertexFans)
+  SmTArray<SmFace*>         m_vEarlierPassFaces;    // SolidCraft change: AddEarlierPassFace
   SmBoolean                 m_bOverflowFirst;       // SolidCraft change: TRUE = when blends of several edges overflow across cliffs, stop
                                                     //   before building anything (SM_FILERR_OVERFLOW_FIRST): the caller blends the
                                                     //   edges that overflow on their own first, then what is left of the others
@@ -465,6 +466,10 @@ public:
   void      SetClassifyOnly(SmBoolean bOnly) { m_bClassifyOnly = bOnly; }
   void      SetSweptTurns(SmBoolean bSwept) { m_bSweptTurns = bSwept; }
   void      SetKeepFeatures(SmBoolean bKeep) { m_bKeepFeatures = bKeep; } // SolidCraft change: keep features (SmFilletKeepFeatures.cpp)
+  // SolidCraft change: the faces an earlier pass of the same blend made (the rounds that overflow
+  // go first): an edge of theirs a later round runs on into is no partial tangent chain's end
+  void      AddEarlierPassFace(SmFace * pFace) { m_vEarlierPassFaces.Add( pFace ); }
+  SmBoolean IsEarlierPassFace(const SmFace * cpFace) const;
   // SolidCraft change: a refusal's largest radius that builds (m_dFitRadius), for the blend of pEdge
   void      NoteFitRadius(double dRadius, SmEdge * pEdge, ULONG lKind = 0) { m_dFitRadius = dRadius; m_pFitEdge = pEdge; m_lFitKind = lKind; }
   ULONG     GetFitKind() const { return m_lFitKind; }

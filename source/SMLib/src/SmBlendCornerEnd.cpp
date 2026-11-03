@@ -1250,7 +1250,8 @@ SmBoolean SmBlendCorner::EndAtSmoothVertex
   (const SmVertex             * cpCornerVert,
    SmEdgeuse                  * pFilEdgeuse,
    const SmTArray<SmEdgeuse*> & crAllEUs,
-   double                       dTanTolDeg)
+   double                       dTanTolDeg,
+   const SmFilletExecutive    * cpExec)
 {
   for (ULONG ii=0; ii<crAllEUs.GetSize(); ii++)
     {
@@ -1263,6 +1264,11 @@ SmBoolean SmBlendCorner::EndAtSmoothVertex
         { continue; }
       // the edge running on along one of the blended edge's faces
       SmFace * pFaces[2] = { pEU->GetFace(), pEU->GetRadial()->GetFace() };
+      // an edge of a round an earlier pass of this blend made (the rounds that overflow go first)
+      // is the other round of one blend: the two meet as the corner of both, as when they go
+      // together, never with an End and its cap between them
+      if ( cpExec != NULL && ( cpExec->IsEarlierPassFace( pFaces[0] ) || cpExec->IsEarlierPassFace( pFaces[1] )))
+        { continue; }
       SmBoolean bAlongItsFace = FALSE;
       for (ULONG ff=0; ff<2; ff++)
         {

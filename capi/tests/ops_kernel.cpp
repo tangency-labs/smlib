@@ -10544,10 +10544,8 @@ const TangentEndCase SCENARIO_CASES[] = {
     {"variable_round_from_zero_at_a_corner", scenario_variable_round_from_zero_at_a_corner, nullptr},
     {"thread_grooves_union_the_same_every_time", scenario_thread_grooves_union_the_same_every_time,
      "the union's merge keeps deleted edges and vertices in its lists and mate maps; a new edge or vertex at a freed address reads as an old one, so the body depends on where its objects sit"},
-    {"plate_edge_rounds_as_thick_as_the_plate", scenario_plate_edge_rounds_as_thick_as_the_plate,
-     "the round that goes second ends at a smooth-vertex End where it runs into the first round's end arc, leaving a 2 x 2 shoulder (0.949852 more)"},
-    {"notched_block_outline_rounds_meet_in_mitres", scenario_notched_block_outline_rounds_meet_in_mitres,
-     "the rounds that go second end at smooth-vertex Ends where they run into the first rounds' end arcs, leaving two 8 x 8 shoulders (121.581 more)"},
+    {"plate_edge_rounds_as_thick_as_the_plate", scenario_plate_edge_rounds_as_thick_as_the_plate, nullptr},
+    {"notched_block_outline_rounds_meet_in_mitres", scenario_notched_block_outline_rounds_meet_in_mitres, nullptr},
     {"round_ending_where_its_edge_runs_on_into_a_tangent_seam", scenario_round_ending_where_its_edge_runs_on_into_a_tangent_seam, nullptr},
 };
 
