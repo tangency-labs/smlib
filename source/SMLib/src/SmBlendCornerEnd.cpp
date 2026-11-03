@@ -1243,7 +1243,8 @@ NOTES: With tangent propagation off, only the selected edges are rounded;
    between other faces, the seam of two other blends, is the end of the
    side faces: the End on the end faces past it takes it.) A tangent edge of the other convexity (a
    boss's base running on as the rim of an overhang past a wall) is no such
-   continuation: the End on the end face past it takes it.
+   continuation: the End on the end face past it takes it. Nor is an edge whose
+   faces meet tangentially (it has no convexity).
 ***********************************************************************/
 SmBoolean SmBlendCorner::EndAtSmoothVertex
   (const SmVertex             * cpCornerVert,
@@ -1255,6 +1256,10 @@ SmBoolean SmBlendCorner::EndAtSmoothVertex
     {
       SmEdgeuse * pEU = crAllEUs[ii];
       if ( pEU == NULL || pEU->GetEdge() == pFilEdgeuse->GetEdge() )
+        { continue; }
+      // an edge whose faces meet tangentially (a flat side running onto a round end) has no
+      // convexity: it is no edge of a tangent chain, and the End on the end face takes the vertex
+      if ( sm_CheckTangentialEdgeuseAtVertex( pEU, cpCornerVert, dTanTolDeg ) )
         { continue; }
       // the edge running on along one of the blended edge's faces
       SmFace * pFaces[2] = { pEU->GetFace(), pEU->GetRadial()->GetFace() };

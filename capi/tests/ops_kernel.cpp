@@ -10548,8 +10548,7 @@ const TangentEndCase SCENARIO_CASES[] = {
      "the round that goes second ends at a smooth-vertex End where it runs into the first round's end arc, leaving a 2 x 2 shoulder (0.949852 more)"},
     {"notched_block_outline_rounds_meet_in_mitres", scenario_notched_block_outline_rounds_meet_in_mitres,
      "the rounds that go second end at smooth-vertex Ends where they run into the first rounds' end arcs, leaving two 8 x 8 shoulders (121.581 more)"},
-    {"round_ending_where_its_edge_runs_on_into_a_tangent_seam", scenario_round_ending_where_its_edge_runs_on_into_a_tangent_seam,
-     "the tangent seam is taken for a tangent chain's next edge: the round ends at a smooth-vertex End, its caps two more faces on the slot's walls"},
+    {"round_ending_where_its_edge_runs_on_into_a_tangent_seam", scenario_round_ending_where_its_edge_runs_on_into_a_tangent_seam, nullptr},
 };
 
 int scenario_cases(bool known_failing, const char *only)
