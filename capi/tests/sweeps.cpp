@@ -397,6 +397,31 @@ int main()
         smlib_flat_free(f);
         smlib_brep_free(b);
     }
+    // A spline 7e-7 off its 0.89 mm chord (from an Onshape export, SolidCraft #11394), closed by
+    // three lines, 10 up: its wall is the spline swept, not the cylinder of radius 217 m through
+    // it, whose frame the flat round trip did not recover to its check's zero (SmSurfOfRevolution
+    // test #10, offset 5.2e-4, so every boolean with the body was refused).
+    {
+        List flat;
+        flat.kinds.insert(flat.kinds.end(), {SMLIB_CURVE_NURBS, 3, 4});
+        flat.reals.insert(flat.reals.end(), {-69.446366, 2.808157, 0, 1, -69.743002617, 2.828967043, 0, 1, -70.039639304, 2.849776091, 0, 1,
+                                             -70.336276, 2.870585, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1});
+        flat.line(-70.336276, 2.870585, 0, -70.336276, -5, 0).line(-70.336276, -5, 0, -69.446366, -5, 0).line(-69.446366, -5, 0, -69.446366, 2.808157, 0);
+        b = nullptr;
+        CHECK(smlib_extrude(flat.kinds.data(), flat.nk(), flat.reals.data(), flat.nr(), Z, 10.0, 0.0, SMLIB_DRAFT_CORNER_TANGENT, 1, &b, nullptr) == SMLIB_OK);
+        smlib_flat *f = nullptr;
+        const int64_t *types = nullptr;
+        int64_t n = 0;
+        CHECK(b != nullptr && smlib_brep_export(b, &f) == SMLIB_OK);
+        CHECK(f != nullptr && smlib_flat_get_i64(f, SMLIB_FLAT_FACE_SURFACE_TYPE, &types, &n) == SMLIB_OK);
+        CHECK(n == 6 && std::count(types, types + n, static_cast<int64_t>(SMLIB_FLAT_SURFACE_CYLINDER)) == 0);
+        smlib_brep *back = nullptr;
+        const int32_t s = f != nullptr ? smlib_brep_import(f, &back) : SMLIB_ERR_ARG;
+        // The trapezoid under the chord, 10 up (the spline's bulge adds 3e-6).
+        expect("extrude a near-straight spline, round trip", s, &back, 0.88991 * (7.870585 + 7.808157) / 2.0 * 10.0, 1e-6);
+        smlib_flat_free(f);
+        smlib_brep_free(b);
+    }
     List sq;
     sq.polygon({-5, -5, 0, 5, -5, 0, 5, 5, 0, -5, 5, 0});
     double t = std::tan(10.0 * PI / 180.0);
