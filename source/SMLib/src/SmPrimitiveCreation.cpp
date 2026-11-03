@@ -1299,6 +1299,19 @@ static double ArcZero(const SmCurve* pCurve)
 }
 
 /*******************************************************************/ /**
+ PURPOSE: SolidCraft: whether a linear sweep makes pCurve's wall a cylinder: pCurve is an arc
+          to ArcZero and is not straight to the body's tolerance dTol. A curve within dTol of
+          its chord lies on a circle only through a bulge below the tolerance (a spline 7e-7 off
+          its 0.89 mm chord lies on one of radius 217 m), so it is swept as itself. A cylinder
+          that flat is not rebuilt from its NURB to its own check's zero: after a flat round
+          trip, SmSurfOfRevolution test #10 is off by 5.2e-4 (SolidCraft #11394).
+ ***********************************************************************/
+static SmBoolean IsSweptArc(const SmCurve* pCurve, double dTol, SmAxis2Placement& rFrame, double& rdRadius, double& rdStartDeg, double& rdEndDeg)
+{
+    return !pCurve->IsLinear(dTol) && pCurve->IsArc(8, ArcZero(pCurve), rFrame, rdRadius, rdStartDeg, rdEndDeg);
+}
+
+/*******************************************************************/ /**
  PURPOSE: Creates a planar face from each of the given curves,
              and extrudes them, possibly into a solid.
 
@@ -1450,8 +1463,8 @@ SmStatus SmPrimitiveCreation::CreateLinearSweep(SmTArray<SmCurve*>& cr3DCurves, 
             }
         }
         // If the generation curve is a circle or an arc, then create an SmCylinder
-        // (SolidCraft: an arc to ArcZero, not to the body's tolerance).
-        else if (pCrvToExtrude->IsArc(8, ArcZero(pCrvToExtrude), sFrame, dRadius, dStartAngleDeg, dEndAngleDeg))
+        // (SolidCraft: IsSweptArc).
+        else if (IsSweptArc(pCrvToExtrude, dTol, sFrame, dRadius, dStartAngleDeg, dEndAngleDeg))
         {
             SER( ArcSweepCylinder(*pContext, sFrame, dRadius, dStartAngleDeg, dEndAngleDeg, sSweepDir, dSweepDist, dTol, pExtSurface) );
         }
@@ -1754,8 +1767,8 @@ SmBoolean bDebugMe = FALSE ;
           }
       }
       // If the generation curve is a circle or an arc, then create an SmCylinder
-      // (SolidCraft: an arc to ArcZero, not to the body's tolerance).
-      else if (pCrvToExtrude->IsArc(8, ArcZero(pCrvToExtrude), sFrame, dRadius, dStartAngleDeg, dEndAngleDeg))
+      // (SolidCraft: IsSweptArc).
+      else if (IsSweptArc(pCrvToExtrude, dTol, sFrame, dRadius, dStartAngleDeg, dEndAngleDeg))
       {
           SER( ArcSweepCylinder(*pContext, sFrame, dRadius, dStartAngleDeg, dEndAngleDeg, crSweepVec, dSweepDist, dTol, pExtSurface) );
       }
