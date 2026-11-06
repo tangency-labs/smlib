@@ -5119,7 +5119,11 @@ static ULONG lDebugCount = 0 ;
   // STEP 6. delete Brep->faces on the DelFaces list
   //          note: when Infinite region happens to be merged, it's kept and the other merge region is deleted
     {
-      SER(m_vTI.DeleteFaces(sDelFaces, &sKeepAsWires));
+      const SmBoolean bUnionKeepUnattributedSolid =
+        eOperation==SM_BO_UNION && m_bManifoldBoolean && !m_bImprinting
+        && !m_bImprintAndClassifyFaces && !m_bCookieCutter
+        && !m_bKeepOtherBrep && m_bBooleanPostProcess;
+      SER(m_vTI.DeleteFaces(sDelFaces, &sKeepAsWires, bUnionKeepUnattributedSolid));
     
     } // end STEP 6 - delete Brep->faces on the DelFaces list
 
