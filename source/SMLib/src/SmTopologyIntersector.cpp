@@ -9,6 +9,7 @@
 #include "StdAfx.h"
 
 #include <SmTopologyIntersector.h>
+#include <SmAttribute.h>
 
 #ifndef __SMBREP_H__
 #include <SmBrep.h>
@@ -457,12 +458,20 @@ NOTES: when Infinite Region happens to be merged, it is kept and
   the region to which it is being merged is deleted.
 ***********************************************************************/
 SmStatus SmTopologyIntersector::DeleteFaces
+ (const SmTArray<SmFace*> & crFaces,
+  const SmTArray<SmEdge*> * pOptKeepAsWires)
+{
+  return DeleteFaces(crFaces,pOptKeepAsWires,FALSE);
+}
+
+SmStatus SmTopologyIntersector::DeleteFaces
  (const SmTArray<SmFace*> & crFaces,         // in : Brep faces to delete
-  const SmTArray<SmEdge*> * pOptKeepAsWires) // in : list of edges to turn into wires if all the faces
+  const SmTArray<SmEdge*> * pOptKeepAsWires, // in : list of edges to turn into wires if all the faces
                                              //      to which they are attached happen to get deleted.
                                              //      Edges not on this list are deleted when all 
                                              //      the faces to which they are attached are deleted.
                                              //      NULL to ignore, default:[NULL].
+  SmBoolean bUnionKeepUnattributedSolid)     // in : narrowly scoped normal manifold union policy
 {
   // locals
   SmTArray<SmVertex*> sFacesVertices(128), sFaceVertices(128);
@@ -512,9 +521,27 @@ SmBoolean bDebugMe = FALSE;
       }
 #endif // SM_DEBUG_CODE
 
-      // delete TargetFace from its Brep 
-      //   note: when Infinite region merges it's kept and other region is deleted
-      SER( pBrep->DeleteFace( pF, FALSE ));  // FALSE = don't delete dangling edges and vertices,
+      // For ordinary manifold union only, a face may disappear
+      // between two *unattributed* A regions. A material point is necessarily
+      // material in A union B. Keep the existing A-solid region rather than
+      // DeleteFace's generic void preference, but only when both regions are
+      // non-infinite and neither has Boolean merge ancestry to propagate.
+      // Other operations, specialized modes and attributed merges retain the
+      // original survivor policy and STEP7 ancestry-based truth calculation.
+      SmRegion* pUnionRegionToKeep = NULL;
+      if (bUnionKeepUnattributedSolid) {
+        SmFaceuse *pUse1=NULL,*pUse2=NULL; pF->GetFaceuses(pUse1,pUse2);
+        SmRegion* r1=(pUse1 && pUse1->GetShell()) ? pUse1->GetShell()->GetRegion() : NULL;
+        SmRegion* r2=(pUse2 && pUse2->GetShell()) ? pUse2->GetShell()->GetRegion() : NULL;
+        if (r1 && r2 && r1!=r2 && !r1->IsInfiniteRegion() && !r2->IsInfiniteRegion()
+            && r1->IsVoid()!=r2->IsVoid()
+            && !r1->FindAttribute(SM_AI_OTHER_REGION_ID)
+            && !r2->FindAttribute(SM_AI_OTHER_REGION_ID))
+          pUnionRegionToKeep = r1->IsVoid() ? r2 : r1;
+      }
+
+      // The selection above excludes infinite regions; otherwise use default policy.
+      SER( pBrep->DeleteFace( pF, FALSE, TRUE, NULL, pUnionRegionToKeep ));  // FALSE = don't delete dangling edges and vertices,
                                              //         we do that below in accordance with pOptKeepAsWires.
 #ifdef SM_DEBUG_CODE
       if (bDebugMe)

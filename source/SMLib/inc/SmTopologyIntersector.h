@@ -230,6 +230,16 @@ public:
                                                                ///<      : NULL to ignore, default:[NULL].                     <br>
     ) ;
 
+
+    // Internal ordinary manifold union variant; the existing two-argument
+    // symbol and all callers retain their original survivor semantics.
+    SmStatus DeleteFaces
+    (
+      const SmTArray<SmFace*> & crFaces,
+      const SmTArray<SmEdge*> * pOptKeepAsWires,
+      SmBoolean bUnionKeepUnattributedSolid
+    );
+
     SmStatus FixGaps
     (
       const SmTArray<SmVertex*> & crSingleVertices,            ///< [in ]: list of single vertices   <br>

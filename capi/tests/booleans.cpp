@@ -103,6 +103,28 @@ void expect(const char *what, const smlib_brep *a, const smlib_brep *b, int32_t 
     smlib_brep_free(r);
 }
 
+// Refill a box-shaped cavity exactly, or with a box overlapping its inner walls.
+void cavity_fill()
+{
+    smlib_brep *outer = box(0, 0, 0, 10, 10, 10);
+    smlib_brep *inner = box(2, 2, 2, 8, 8, 8);
+    smlib_brep *larger = box(1, 1, 1, 9, 9, 9);
+    smlib_brep *hollow = nullptr;
+    CHECK(smlib_boolean(outer, inner, SMLIB_BOOLEAN_SUBTRACT, &hollow) == SMLIB_OK);
+    if (hollow != nullptr)
+    {
+        for (const smlib_brep *fill : {inner, larger})
+        {
+            expect("hollow union fill", hollow, fill, SMLIB_BOOLEAN_UNION, 1000, 1e-7, 1);
+            expect("fill union hollow", fill, hollow, SMLIB_BOOLEAN_UNION, 1000, 1e-7, 1);
+        }
+    }
+    for (smlib_brep *b : {hollow, larger, inner, outer})
+    {
+        smlib_brep_free(b);
+    }
+}
+
 // A cylinder of SMLib's own along `axis` (0 x, 1 y, 2 z) from its base centre.
 smlib_brep *cylinder(int axis, double x, double y, double z, double r, double h)
 {
@@ -1175,6 +1197,7 @@ int main(int argc, char **argv)
         {"cylinder_grazing_box_edge", cylinder_grazing_box_edge},
         {"pleated_skins_join", pleated_skins_join},
         {"grazing_edge_crossing", grazing_edge_crossing},
+        {"cavity_fill", cavity_fill},
         {"sealed_void_join", sealed_void_join},
         {"overlapped_k_joint", overlapped_k_joint},
         {"equal_rods_join", equal_rods_join},

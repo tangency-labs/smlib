@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+### Fixed
+- Filling a cavity in an ordinary manifold union preserves the material region in either operand order.
+
 ## [1.1.0-alpha.1]
 ### Fixed
 - `smlib_fillet` no longer ends a round with a smooth-vertex End and a plane cap where its edge runs on into an edge whose faces meet tangentially (a flat side running onto a round end), which has no convexity and is no edge of a tangent chain. The round ends on the end face past the vertex, as before 1.1.0-alpha; such a round no longer gains two cap faces on the walls it ends on.
